@@ -63,4 +63,46 @@ final class ResilientHermesClient: HermesClientProtocol {
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
         try await primary.injectVoiceTranscript(voiceSessionId: voiceSessionId)
     }
+
+    // MARK: - Session Management
+
+    func listSessions(limit: Int, offset: Int) async -> [SessionSummary] {
+        await primary.listSessions(limit: limit, offset: offset)
+    }
+
+    func loadSession(id: UUID) async -> Conversation {
+        await primary.loadSession(id: id)
+    }
+
+    func createSession(title: String?) async -> Conversation {
+        await primary.createSession(title: title)
+    }
+
+    func renameSession(id: UUID, title: String) async {
+        await primary.renameSession(id: id, title: title)
+    }
+
+    func archiveSession(id: UUID) async {
+        await primary.archiveSession(id: id)
+    }
+
+    func pinSession(id: UUID) async {
+        await primary.pinSession(id: id)
+    }
+
+    func unpinSession(id: UUID) async {
+        await primary.unpinSession(id: id)
+    }
+
+    func deleteSession(id: UUID) async {
+        await primary.deleteSession(id: id)
+    }
+
+    func setActiveSession(id: UUID) async {
+        await primary.setActiveSession(id: id)
+    }
+
+    func searchSessions(query: String) async -> [SessionSummary] {
+        await primary.searchSessions(query: query)
+    }
 }

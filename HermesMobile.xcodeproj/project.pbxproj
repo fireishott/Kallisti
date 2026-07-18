@@ -126,6 +126,7 @@
 		C5CFC7EFE001ED7BC1EA4AD4 /* CaptureScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DED02E086C9C76B2628D59D /* CaptureScreen.swift */; };
 		C7452B1D2AA98D2A5E02056F /* MockMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A40E5EA51E036A1BD1C3AE /* MockMediaService.swift */; };
 		C877C77B3DB9D162B70F6E80 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6063F0C3EB257DC070FFBAC3 /* Conversation.swift */; };
+		D1A2B3C4E5F6A7B8C9D0E1F2 /* SessionSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E1D0C9B8A7F6E5D4C3B2A1 /* SessionSummary.swift */; };
 		C99F0FEC8F2FF6C7AFAA8A94 /* UserSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33AA48ED37DFFBB2A6757A41 /* UserSettings.swift */; };
 		C9A79DA143EE532669AA4961 /* LiveMotionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9866832C1360E12474ACA37 /* LiveMotionService.swift */; };
 		CA30016E1E14245DE4E23BBE /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9386D66627C83DCF370CDC9 /* MockSyncCoordinator.swift */; };
@@ -266,6 +267,7 @@
 		5FCF8BFBF91DE28E8784BDD0 /* PermissionType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionType.swift; sourceTree = "<group>"; };
 		60595DBB84195D18930C1EA4 /* AppSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSessionStore.swift; sourceTree = "<group>"; };
 		6063F0C3EB257DC070FFBAC3 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
+		F2E1D0C9B8A7F6E5D4C3B2A1 /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
 		607671AC8EF52AAFE3131430 /* LiveVoiceSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveVoiceSessionService.swift; sourceTree = "<group>"; };
 		6109316083425073F0703CE6 /* MarkdownContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentView.swift; sourceTree = "<group>"; };
 		64446C4449B800327AED04F1 /* PermissionsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsScreen.swift; sourceTree = "<group>"; };
@@ -705,6 +707,7 @@
 				B930D429179DCD2E18B056CF /* CodeDiff.swift */,
 				31A754F555998852844790A8 /* ConnectionStatus.swift */,
 				6063F0C3EB257DC070FFBAC3 /* Conversation.swift */,
+				F2E1D0C9B8A7F6E5D4C3B2A1 /* SessionSummary.swift */,
 				A20870910260860BA2EF0F2D /* DeviceCapability.swift */,
 				43EABB109930DF9870A27636 /* DeviceRegistrationRequest.swift */,
 				078C83E5060FEBACAC22F2F2 /* HermesActivityAttributes.swift */,
@@ -936,6 +939,7 @@
 				126F6AF7FCA856CFDF39421F /* ConnectionStatus.swift in Sources */,
 				4CDD8580F03823A1A9ABD9A5 /* ContentView.swift in Sources */,
 				C877C77B3DB9D162B70F6E80 /* Conversation.swift in Sources */,
+				D1A2B3C4E5F6A7B8C9D0E1F2 /* SessionSummary.swift in Sources */,
 				8B995CDE1CECBA332A9984BD /* DemoData.swift in Sources */,
 				0FABB63592F7BD36617CFD00 /* Design.swift in Sources */,
 				6E62879A59CA5F4B11AA2011 /* DeviceCapability.swift in Sources */,

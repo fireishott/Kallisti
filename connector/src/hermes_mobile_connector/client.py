@@ -394,8 +394,14 @@ class HermesMobileConnector:
             secrets.openai_api_key = normalized_api_key
             self.state_store.save_secrets(secrets)
 
-        if not secrets.openai_api_key:
-            raise RuntimeError("An OpenAI API key is required to configure Realtime talk mode.")
+        import os
+        has_openai = bool(secrets.openai_api_key)
+        has_mimo = bool(os.getenv('MIMO_API_KEY', ''))
+        if not has_openai and not has_mimo:
+            import os
+            if not os.getenv("MIMO_API_KEY", ""):
+                raise RuntimeError("An OpenAI API key or MIMO_API_KEY env var is required to configure talk mode.")
+            logger.info("Using Mimo TTS as talk mode provider")
 
         config = state.realtime_talk or RealtimeTalkConfig()
         config.enabled = True
@@ -414,7 +420,10 @@ class HermesMobileConnector:
     def validate_realtime_configuration(self) -> ConnectorState:
         state = self.state_store.load()
         secrets = self.state_store.load_secrets()
-        if not secrets.openai_api_key:
+        import os
+        has_openai = bool(secrets.openai_api_key)
+        has_mimo = bool(os.getenv('MIMO_API_KEY', ''))
+        if not has_openai and not has_mimo:
             config = state.realtime_talk or RealtimeTalkConfig(enabled=False)
             config.enabled = False
             config.last_validated_at = utcnow_iso()
@@ -484,7 +493,7 @@ class HermesMobileConnector:
         secrets = self.state_store.load_secrets()
         self.apply_runtime_environment(state)
         runtime = self.settings_for_state(state)
-        has_api_key = bool(secrets.openai_api_key)
+        has_api_key = bool(secrets.openai_api_key) or bool(os.environ.get('MIMO_API_KEY', ''))
         configured = bool(config.enabled and has_api_key)
         blocked_reason = None
         if not has_api_key:
@@ -946,8 +955,23 @@ class HermesMobileConnector:
         state = self.refresh_voice_context_if_stale()
         config = state.realtime_talk or RealtimeTalkConfig(enabled=False)
         secrets = self.state_store.load_secrets()
-        if not config.enabled or not secrets.openai_api_key:
-            raise RuntimeError("OpenAI Realtime talk mode is not configured on this Hermes host.")
+        # Check for Mimo TTS fallback when OpenAI Realtime is not configured
+        import os
+        has_openai = bool(secrets.openai_api_key)
+        has_mimo = bool(os.getenv('MIMO_API_KEY', ''))
+        if not has_openai and not has_mimo:
+            # Try Mimo TTS via MIMO_API_KEY from config
+            import os
+            mimo_key = os.getenv('MIMO_API_KEY', '')
+            if not mimo_key:
+                raise RuntimeError("OpenAI Realtime talk mode is not configured on this Hermes host.")
+            # Use Mimo TTS path
+            logger.info("Using Mimo TTS fallback for talk session")
+            return self._create_mimo_tts_session(
+                api_key=mimo_key,
+                relay_mcp_url=relay_mcp_url,
+                voice_session_id=params.get('voiceSessionId', ''),
+            )
         if config.last_validation_error:
             raise RuntimeError(config.last_validation_error)
 
@@ -1504,6 +1528,38 @@ class HermesMobileConnector:
         raise RuntimeError(last_error or "OpenAI Realtime session creation failed.")
 
     @staticmethod
+    def _create_mimo_tts_session(self, *, api_key: str, relay_mcp_url: str | None, voice_session_id: str) -> dict:
+        """Create a Mimo TTS-based talk session as fallback for OpenAI Realtime."""
+        import time, httpx
+        from .talk_support import DEFAULT_REALTIME_VOICE
+
+        # Mimo TTS endpoint
+        tts_url = "https://mimo.xiaomi.com/mimo-v2-5-tts"
+        
+        # Build voice context
+        state = self.state_store.load()
+        snapshot = state.voice_context_snapshot
+        instructions = snapshot.system_prompt if snapshot else "You are Hermes, an AI assistant."
+
+        # Return a bootstrap payload the iOS app can use
+        return {
+            "clientSecret": api_key,  # Mimo API key acts as the secret
+            "expiresAt": (time.time() + 3600),  # 1 hour
+            "session": {
+                "id": voice_session_id,
+                "model": "mimo-v2-5-tts",
+                "voice": DEFAULT_REALTIME_VOICE,
+                "instructions": instructions,
+                "turn_detection": {"type": "server_vad"},
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "modalities": ["text", "audio"],
+                "temperature": 0.8,
+            },
+            "model": "mimo-v2-5-tts",
+            "voice": DEFAULT_REALTIME_VOICE,
+        }
+
     def _extract_http_error_message(response: httpx.Response) -> str:
         try:
             payload = response.json()

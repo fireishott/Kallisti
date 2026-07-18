@@ -1,0 +1,11 @@
+services:
+  connector:
+    build: /home/fihadmin/Hermes-iOS/connector
+    container_name: hermes-mobile-connector
+    restart: unless-stopped
+    environment:
+      - HERMES_MOBILE_CONNECTOR_HOME=/state
+      - RELAY_ENVIRONMENT=production
+    volumes:
+      - /home/fihadmin/.hermes/profiles/ignyte/home/.hermes-mobile:/state
+    network_mode: host

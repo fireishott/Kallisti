@@ -109,6 +109,44 @@ final class MockHermesClient: HermesClientProtocol {
         return currentConversation ?? Conversation(title: "Hermes")
     }
 
+    // MARK: - Session Management
+
+    func listSessions(limit: Int, offset: Int) async -> [SessionSummary] {
+        [
+            SessionSummary(title: "Current Chat", previewText: "Hey Hermes, how's it going?", isActive: true),
+            SessionSummary(title: "Project Ideas", previewText: "Let's brainstorm some new features", isPinned: true, messageCount: 24),
+            SessionSummary(title: "Debug Help", previewText: "Fixing the auth flow issue", source: .telegram),
+        ]
+    }
+
+    func loadSession(id: UUID) async -> Conversation {
+        let conversation = DemoData.sampleConversation
+        currentConversation = conversation
+        return conversation
+    }
+
+    func createSession(title: String?) async -> Conversation {
+        let conversation = Conversation(title: title ?? "New Chat")
+        currentConversation = conversation
+        return conversation
+    }
+
+    func renameSession(id: UUID, title: String) async {}
+
+    func archiveSession(id: UUID) async {}
+
+    func pinSession(id: UUID) async {}
+
+    func unpinSession(id: UUID) async {}
+
+    func deleteSession(id: UUID) async {}
+
+    func setActiveSession(id: UUID) async {}
+
+    func searchSessions(query: String) async -> [SessionSummary] {
+        await listSessions(limit: 50, offset: 0)
+    }
+
     private func generateResponse(for input: String) -> String {
         let responses = [
             "I've looked into that for you. Based on what I can see, here's what I'd suggest...",

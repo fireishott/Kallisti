@@ -482,6 +482,209 @@ final class LiveHermesClient: HermesClientProtocol {
         }
     }
 
+    // MARK: - Session Management
+
+    private struct SessionsListResponse: Decodable {
+        let sessions: [RelaySessionSummary]
+        let total: Int
+    }
+
+    private struct SingleSessionResponse: Decodable {
+        let conversation: RelayConversation
+    }
+
+    private struct RelaySessionSummary: Decodable {
+        let id: UUID
+        let title: String?
+        let previewText: String?
+        let updatedAt: Date?
+        let createdAt: Date?
+        let isPinned: Bool?
+        let messageCount: Int?
+        let source: String?
+        let isActive: Bool?
+    }
+
+    func listSessions(limit: Int = 50, offset: Int = 0) async -> [SessionSummary] {
+        do {
+            let response: SessionsListResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.get(
+                    path: "sessions?limit=\(limit)&offset=\(offset)",
+                    accessToken: token
+                )
+            }
+            return response.sessions.map(mapSessionSummary)
+        } catch {
+            Self.logger.warning("Failed to list sessions: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func loadSession(id: UUID) async -> Conversation {
+        do {
+            let response: SingleSessionResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.get(
+                    path: "sessions/\(id.uuidString.lowercased())",
+                    accessToken: token
+                )
+            }
+            let conversation = mapConversation(response.conversation)
+            currentConversation = conversation
+            connectionStatus = .connected
+            return conversation
+        } catch {
+            Self.logger.warning("Failed to load session \(id): \(error.localizedDescription)")
+            connectionStatus = .error
+            return currentConversation ?? fallbackConversation()
+        }
+    }
+
+    func createSession(title: String?) async -> Conversation {
+        struct CreateSessionBody: Encodable {
+            let title: String?
+        }
+        do {
+            let response: SingleSessionResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "sessions",
+                    body: CreateSessionBody(title: title),
+                    accessToken: token
+                )
+            }
+            let conversation = mapConversation(response.conversation)
+            currentConversation = conversation
+            connectionStatus = .connected
+            return conversation
+        } catch {
+            Self.logger.warning("Failed to create session: \(error.localizedDescription)")
+            connectionStatus = .error
+            return currentConversation ?? fallbackConversation()
+        }
+    }
+
+    func renameSession(id: UUID, title: String) async {
+        struct RenameBody: Encodable {
+            let title: String
+        }
+        do {
+            let _: EmptyResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.patch(
+                    path: "sessions/\(id.uuidString.lowercased())",
+                    body: RenameBody(title: title),
+                    accessToken: token
+                )
+            }
+        } catch {
+            Self.logger.warning("Failed to rename session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func archiveSession(id: UUID) async {
+        do {
+            let _: EmptyResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "sessions/\(id.uuidString.lowercased())/archive",
+                    accessToken: token
+                )
+            }
+        } catch {
+            Self.logger.warning("Failed to archive session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func pinSession(id: UUID) async {
+        do {
+            let _: EmptyResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "sessions/\(id.uuidString.lowercased())/pin",
+                    accessToken: token
+                )
+            }
+        } catch {
+            Self.logger.warning("Failed to pin session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func unpinSession(id: UUID) async {
+        do {
+            let _: EmptyResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "sessions/\(id.uuidString.lowercased())/unpin",
+                    accessToken: token
+                )
+            }
+        } catch {
+            Self.logger.warning("Failed to unpin session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func deleteSession(id: UUID) async {
+        do {
+            let _: EmptyResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.delete(
+                    path: "sessions/\(id.uuidString.lowercased())",
+                    accessToken: token
+                )
+            }
+        } catch {
+            Self.logger.warning("Failed to delete session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func setActiveSession(id: UUID) async {
+        struct SetActiveBody: Encodable {
+            let id: UUID
+        }
+        do {
+            let response: SingleSessionResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "sessions/current",
+                    body: SetActiveBody(id: id),
+                    accessToken: token
+                )
+            }
+            let conversation = mapConversation(response.conversation)
+            currentConversation = conversation
+            connectionStatus = .connected
+        } catch {
+            Self.logger.warning("Failed to set active session \(id): \(error.localizedDescription)")
+        }
+    }
+
+    func searchSessions(query: String) async -> [SessionSummary] {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            return []
+        }
+        do {
+            let response: SessionsListResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.get(
+                    path: "sessions/search?q=\(encoded)",
+                    accessToken: token
+                )
+            }
+            return response.sessions.map(mapSessionSummary)
+        } catch {
+            Self.logger.warning("Failed to search sessions: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private struct EmptyResponse: Decodable {}
+
+    private func mapSessionSummary(_ relay: RelaySessionSummary) -> SessionSummary {
+        SessionSummary(
+            id: relay.id,
+            title: relay.title ?? "Untitled",
+            previewText: relay.previewText ?? "",
+            lastActivity: relay.updatedAt ?? .now,
+            createdAt: relay.createdAt ?? .now,
+            isPinned: relay.isPinned ?? false,
+            messageCount: relay.messageCount ?? 0,
+            source: SessionSource(rawValue: relay.source ?? "") ?? .unknown,
+            isActive: relay.isActive ?? false
+        )
+    }
+
     private func failureMessage(for error: Error) -> String {
         let rawError: String
         if let clientError = error as? RelayAPIClient.ClientError {

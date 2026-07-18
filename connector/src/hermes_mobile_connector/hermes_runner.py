@@ -97,7 +97,7 @@ class HermesCLIExecutor:
         if completed.returncode != 0:
             return None
 
-        output = completed.stdout.strip() or completed.stderr.strip()
+        output = (completed.stdout.strip() or completed.stderr.strip()).splitlines()[0]
         return output or None
 
     def send_message(
