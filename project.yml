@@ -1,8 +1,8 @@
-name: HermesMobile
+name: Herald
 options:
   # Public-safe defaults. Replace locally if you regenerate the project
   # for a private deployment with your own signing/bundle identifiers.
-  bundleIdPrefix: io.hermesmobile
+  bundleIdPrefix: net.fihonline
   deploymentTarget:
     iOS: "26.0"
   xcodeVersion: "26.3"
@@ -30,52 +30,52 @@ packages:
     version: 130.0.0
 
 targets:
-  HermesMobile:
+  Herald:
     type: application
     platform: iOS
     entitlements:
-      path: HermesMobile/HermesMobile.entitlements
+      path: Herald/Herald.entitlements
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
         com.apple.developer.healthkit.background-delivery: true
         com.apple.security.application-groups:
-          - group.io.hermesmobile.HermesMobile
+          - group.net.fihonline.herald
     sources:
-      - path: HermesMobile
+      - path: Herald
         excludes:
           - "**/.DS_Store"
     resources:
-      - path: HermesMobile/Resources
+      - path: Herald/Resources
         optional: true
     dependencies:
       - package: WebRTC
-      - target: HermesMobileWidgets
+      - target: HeraldWidgets
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.hermesmobile.HermesMobile
-        PRODUCT_NAME: HermesMobile
-        MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "5"
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
+        PRODUCT_NAME: Herald
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Automatic
-        INFOPLIST_KEY_CFBundleDisplayName: HermesMobile
+        INFOPLIST_KEY_CFBundleDisplayName: Herald
     info:
-      path: HermesMobile/Resources/Info.plist
+      path: Herald/Resources/Info.plist
       properties:
-        CFBundleDisplayName: Hermes
-        CFBundleShortVersionString: "1.3.0"
-        CFBundleVersion: "4"
+        CFBundleDisplayName: Herald
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
         UILaunchScreen: {}
-        NSLocationWhenInUseUsageDescription: "Hermes uses your location to provide contextual recommendations and nearby suggestions."
-        NSHealthShareUsageDescription: "Hermes reads your health data to offer personalized wellness insights."
-        NSHealthUpdateUsageDescription: "Hermes does not write health data, but this permission is required by the system."
-        NSCameraUsageDescription: "Hermes uses the camera to capture photos and documents for analysis."
-        NSPhotoLibraryUsageDescription: "Hermes accesses your photo library to help organize and search your photos."
-        NSMicrophoneUsageDescription: "Hermes uses the microphone for voice conversations in Talk Mode."
-        NSLocationAlwaysAndWhenInUseUsageDescription: "Hermes uses your location in the background to provide contextual awareness and proactive suggestions."
-        NSMotionUsageDescription: "Hermes uses motion data to understand your current activity for contextual awareness."
-        NSSpeechRecognitionUsageDescription: "Hermes uses speech recognition for voice commands and local transcription."
+        NSLocationWhenInUseUsageDescription: "Herald uses your location to provide contextual recommendations and nearby suggestions."
+        NSHealthShareUsageDescription: "Herald reads your health data to offer personalized wellness insights."
+        NSHealthUpdateUsageDescription: "Herald does not write health data, but this permission is required by the system."
+        NSCameraUsageDescription: "Herald uses the camera to capture photos and documents for analysis."
+        NSPhotoLibraryUsageDescription: "Herald accesses your photo library to help organize and search your photos."
+        NSMicrophoneUsageDescription: "Herald uses the microphone for voice conversations in Talk Mode."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Herald uses your location in the background to provide contextual awareness and proactive suggestions."
+        NSMotionUsageDescription: "Herald uses motion data to understand your current activity for contextual awareness."
+        NSSpeechRecognitionUsageDescription: "Herald uses speech recognition for voice commands and local transcription."
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         UIBackgroundModes:
@@ -91,51 +91,51 @@ targets:
                 UISceneConfigurationName: CarPlay
                 UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate"
 
-  HermesMobileWidgets:
+  HeraldWidgets:
     type: app-extension
     platform: iOS
     sources:
-      - path: HermesMobileWidgets
+      - path: HeraldWidgets
     entitlements:
-      path: HermesMobileWidgets/HermesMobileWidgets.entitlements
+      path: HeraldWidgets/HeraldWidgets.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.io.hermesmobile.HermesMobile
+          - group.net.fihonline.herald
     info:
-      path: HermesMobileWidgets/Info.plist
+      path: HeraldWidgets/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.hermesmobile.HermesMobile.Widgets
-        PRODUCT_NAME: HermesMobileWidgets
-        MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "5"
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
+        PRODUCT_NAME: HeraldWidgets
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "1,2"
 
-  HermesMobileTests:
+  HeraldTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: HermesMobileTests
+      - path: HeraldTests
     dependencies:
-      - target: HermesMobile
+      - target: Herald
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.hermesmobile.HermesMobile.tests
-        TEST_TARGET_NAME: HermesMobile
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.tests
+        TEST_TARGET_NAME: Herald
         GENERATE_INFOPLIST_FILE: true
 
-  HermesMobileUITests:
+  HeraldUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - path: HermesMobileUITests
+      - path: HeraldUITests
     dependencies:
-      - target: HermesMobile
+      - target: Herald
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.hermesmobile.HermesMobile.uitests
-        TEST_TARGET_NAME: HermesMobile
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.uitests
+        TEST_TARGET_NAME: Herald
         GENERATE_INFOPLIST_FILE: true
