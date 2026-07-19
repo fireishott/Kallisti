@@ -62,14 +62,14 @@ final class SessionListStore {
         }
     }
 
-    private let hermesClient: any HeraldClientProtocol
+    private let heraldClient: any HeraldClientProtocol
     private let chatStore: ChatStore
     private let settingsStore: SettingsStore
     private var searchTask: Task<Void, Never>?
     private var searchObservationTask: Task<Void, Never>?
 
-    init(hermesClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore) {
-        self.hermesClient = hermesClient
+    init(heraldClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore) {
+        self.heraldClient = heraldClient
         self.chatStore = chatStore
         self.settingsStore = settingsStore
         observeSearchQuery()
@@ -83,7 +83,7 @@ final class SessionListStore {
         defer { isLoading = false }
 
         do {
-            let response = try await hermesClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
+            let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
             currentOffset = response.sessions.count
             totalCount = response.total
             splitSessions(response.sessions)
@@ -98,7 +98,7 @@ final class SessionListStore {
         defer { isLoading = false }
 
         do {
-            let response = try await hermesClient.listSessions(limit: pageSize, offset: currentOffset, allDevices: showAllDevices)
+            let response = try await heraldClient.listSessions(limit: pageSize, offset: currentOffset, allDevices: showAllDevices)
             currentOffset += response.sessions.count
             // Merge new sessions and re-split
             let allSessions = pinnedSessions + recentSessions + response.sessions
@@ -118,7 +118,7 @@ final class SessionListStore {
         }
 
         do {
-            let results = try await hermesClient.searchSessions(query: query, allDevices: showAllDevices)
+            let results = try await heraldClient.searchSessions(query: query, allDevices: showAllDevices)
             searchResults = results
         } catch {
             errorMessage = error.localizedDescription
@@ -130,7 +130,7 @@ final class SessionListStore {
 
     func createNewSession(title: String = "New Chat") async {
         do {
-            let session = try await hermesClient.createSession(title: title)
+            let session = try await heraldClient.createSession(title: title)
             recentSessions.insert(session, at: 0)
             await switchToSession(session)
         } catch {
@@ -140,7 +140,7 @@ final class SessionListStore {
 
     func switchToSession(_ session: SessionSummary) async {
         do {
-            let conversation = try await hermesClient.loadConversation(id: session.id)
+            let conversation = try await heraldClient.loadConversation(id: session.id)
             chatStore.conversation = conversation
             if let latestUsage = conversation.latestUsage {
                 chatStore.lastTokenUsage = latestUsage
@@ -153,7 +153,7 @@ final class SessionListStore {
 
     func deleteSession(_ session: SessionSummary) async {
         do {
-            try await hermesClient.deleteSession(id: session.id)
+            try await heraldClient.deleteSession(id: session.id)
             pinnedSessions.removeAll { $0.id == session.id }
             recentSessions.removeAll { $0.id == session.id }
             archivedSessions.removeAll { $0.id == session.id }
@@ -165,7 +165,7 @@ final class SessionListStore {
 
     func archiveSession(_ session: SessionSummary) async {
         do {
-            try await hermesClient.archiveSession(id: session.id)
+            try await heraldClient.archiveSession(id: session.id)
             pinnedSessions.removeAll { $0.id == session.id }
             recentSessions.removeAll { $0.id == session.id }
             searchResults?.removeAll { $0.id == session.id }
@@ -180,7 +180,7 @@ final class SessionListStore {
 
     func togglePin(_ session: SessionSummary) async {
         do {
-            let updated = try await hermesClient.togglePinSession(id: session.id)
+            let updated = try await heraldClient.togglePinSession(id: session.id)
             // Remove from current location
             pinnedSessions.removeAll { $0.id == session.id }
             recentSessions.removeAll { $0.id == session.id }
@@ -203,7 +203,7 @@ final class SessionListStore {
 
     func renameSession(_ session: SessionSummary, newTitle: String) async {
         do {
-            let updated = try await hermesClient.renameSession(id: session.id, title: newTitle)
+            let updated = try await heraldClient.renameSession(id: session.id, title: newTitle)
             if let idx = pinnedSessions.firstIndex(where: { $0.id == session.id }) {
                 pinnedSessions[idx] = updated
             }
@@ -228,7 +228,7 @@ final class SessionListStore {
     /// All sessions grouped by source for platform sub-sections.
     var sessionsBySource: [(source: String, sessions: [SessionSummary])] {
         let all = recentSessions
-        let grouped = Dictionary(grouping: all) { $0.source ?? "hermes" }
+        let grouped = Dictionary(grouping: all) { $0.source ?? "herald" }
         return grouped
             .sorted { $0.key < $1.key }
             .map { (source: $0.key, sessions: $0.value) }

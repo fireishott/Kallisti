@@ -68,7 +68,7 @@ final class MockVoiceSessionService: VoiceSessionServiceProtocol {
 
             transcriptItems.append(
                 TranscriptItem(
-                    speaker: .hermes,
+                    speaker: .herald,
                     text: "You have one important follow-up waiting and a fresh location summary available.",
                     isPartial: true
                 )

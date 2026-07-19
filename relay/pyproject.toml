@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-mobile-relay"
-version = "0.1.0"
-description = "FastAPI relay for Hermes Mobile."
+name = "herald-relay"
+version = "1.0.0"
+description = "FastAPI relay for Herald."
 requires-python = ">=3.11"
 dependencies = [
   "cryptography>=46.0.0,<47.0.0",
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hermes-mobile-relay-admin = "app.admin:main"
+herald-relay-admin = "app.admin:main"
 
 [project.optional-dependencies]
 dev = [

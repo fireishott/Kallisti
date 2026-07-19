@@ -35,7 +35,7 @@ def build_client(tmp_path, **overrides):
         phone_pairing_max_attempts_per_ip=3,
         phone_pairing_rate_limit_window_seconds=300,
         host_enrollment_code_ttl_seconds=900,
-        hermes_adapter="connector",
+        herald_adapter="connector",
         connector_sync_wait_seconds=2,
         connector_job_lease_seconds=30,
         connector_heartbeat_timeout_seconds=5,
@@ -54,8 +54,8 @@ CONNECTOR_SETUP = {
         "platform": "macos",
         "hostname": "test-host",
         "connectorVersion": "0.1.0",
-        "hermesCommand": "/usr/local/bin/hermes",
-        "hermesVersion": "hermes 1.2.3",
+        "heraldCommand": "/usr/local/bin/hermes",
+        "heraldVersion": "hermes 1.2.3",
     },
 }
 
@@ -65,8 +65,8 @@ HELLO_PAYLOAD = {
         "platform": "macos",
         "hostname": "test-host",
         "connectorVersion": "0.1.0",
-        "hermesCommand": "/usr/local/bin/hermes",
-        "hermesVersion": "hermes 1.2.3",
+        "heraldCommand": "/usr/local/bin/hermes",
+        "heraldVersion": "hermes 1.2.3",
     },
 }
 
@@ -184,7 +184,7 @@ def test_sse_completed_job_fast_path_returns_done_with_usage_and_message(tmp_pat
         assert data["status"] == "completed"
         assert data["jobId"] == job["id"]
         assert data["usage"]["total_tokens"] == 150
-        assert data["message"]["role"] == "hermes"
+        assert data["message"]["role"] == "herald"
         assert data["message"]["text"] == "Fast path reply"
         assert data["message"]["jobId"] == job["id"]
 
@@ -397,8 +397,8 @@ def test_sse_rejects_job_owned_by_different_user(tmp_path):
                 "platform": "macos",
                 "hostname": "test-host",
                 "connectorVersion": "0.1.0",
-                "hermesCommand": "/usr/local/bin/hermes",
-                "hermesVersion": "hermes 1.2.3",
+                "heraldCommand": "/usr/local/bin/hermes",
+                "heraldVersion": "hermes 1.2.3",
             },
         }).json()["data"]
         pairing_2 = client.post(

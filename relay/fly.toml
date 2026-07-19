@@ -1,5 +1,5 @@
 # Replace `app` and `PUBLIC_BASE_URL` with your own deployment values.
-app = "hermes-mobile-relay"
+app = "herald-relay"
 primary_region = "iad"
 kill_signal = "SIGINT"
 kill_timeout = "30s"
@@ -7,7 +7,7 @@ kill_timeout = "30s"
 [env]
 RELAY_ENVIRONMENT = "production"
 PUBLIC_BASE_URL = "https://your-relay.example.com/v1"
-HERMES_ADAPTER = "connector"
+HERALD_ADAPTER = "connector"
 DATABASE_URL = "sqlite:////data/relay.db"
 
 [mounts]

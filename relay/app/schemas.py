@@ -62,8 +62,8 @@ class HostConnectorInfo(BaseModel):
     platform: str
     hostname: str
     connectorVersion: str
-    hermesCommand: str
-    hermesVersion: str | None = None
+    heraldCommand: str
+    heraldVersion: str | None = None
 
 
 class ConnectorSetupRequest(BaseModel):

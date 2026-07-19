@@ -73,7 +73,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
 
     /// Whether this message was transcribed from a voice session.
     var isVoiceTranscript: Bool {
-        sender == .voiceUser || sender == .voiceHermes
+        sender == .voiceUser || sender == .voiceHerald
     }
 
     init(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.hermes_adapter import HermesChatResult
+from app.herald_adapter import HeraldChatResult
 from app.main import create_app
 
 
@@ -89,7 +89,7 @@ def test_push_and_inbox_roundtrip(tmp_path):
             json={
                 "kind": "approval",
                 "title": "Approve trip plan",
-                "body": "Hermes needs confirmation before booking the train.",
+                "body": "Herald needs confirmation before booking the train.",
                 "priority": "high",
                 "payload": {"requestId": "trip-123"},
             },
@@ -183,7 +183,7 @@ def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
             })
             return PushResult.SENT
 
-    with build_client(tmp_path, hermes_adapter="mock") as client:
+    with build_client(tmp_path, herald_adapter="mock") as client:
         client.app.state.apns_client = StubAPNsClient()
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
@@ -211,15 +211,15 @@ def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
         message_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes"},
+            json={"text": "Hello Herald"},
         )
         assert message_response.status_code == 200
 
         alerts = client.app.state.apns_client.alerts
         assert len(alerts) == 1
         assert alerts[0]["token"] == "deadbeef"
-        assert alerts[0]["title"] == "Hermes"
-        assert "Hello Hermes" in alerts[0]["body"]
+        assert alerts[0]["title"] == "Herald"
+        assert "Hello Herald" in alerts[0]["body"]
 
 
 def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_path):
@@ -249,7 +249,7 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
         })
         return True
 
-    with build_client(tmp_path, hermes_adapter="mock") as client:
+    with build_client(tmp_path, herald_adapter="mock") as client:
         client.app.state.apns_client = StubAPNsClient()
         client.app.state.push_broker_sender = stub_broker_sender
         register_data = register_device(client)
@@ -283,16 +283,16 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
         message_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes"},
+            json={"text": "Hello Herald"},
         )
         assert message_response.status_code == 200
 
         assert broker_calls == [{
             "registration_id": broker_calls[0]["registration_id"],
-            "title": "Hermes",
+            "title": "Herald",
             "body": broker_calls[0]["body"],
         }]
-        assert "Hello Hermes" in broker_calls[0]["body"]
+        assert "Hello Herald" in broker_calls[0]["body"]
         assert client.app.state.apns_client.alerts == []
 
 
@@ -311,11 +311,11 @@ def test_chat_roundtrip_uses_relay_conversation(tmp_path):
         message_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes"},
+            json={"text": "Hello Herald"},
         )
         assert message_response.status_code == 200
-        assert message_response.json()["data"]["message"]["role"] == "hermes"
-        assert "Hello Hermes" in message_response.json()["data"]["message"]["text"]
+        assert message_response.json()["data"]["message"]["role"] == "herald"
+        assert "Hello Herald" in message_response.json()["data"]["message"]["text"]
 
         updated_conversation = client.get(
             "/v1/conversations/current",
@@ -355,28 +355,28 @@ def test_chat_accepts_attachment_only_message_and_round_trips_metadata(tmp_path)
         assert data["conversation"]["messages"][0]["attachments"][0]["mimeType"] == "text/plain"
 
 
-def test_chat_roundtrip_persists_hermes_session_id_for_resume(tmp_path):
-    class StubHermesAdapter:
+def test_chat_roundtrip_persists_herald_session_id_for_resume(tmp_path):
+    class StubHeraldAdapter:
         def __init__(self) -> None:
             self.calls: list[str | None] = []
 
         def send_message(self, *, latest_user_message, history, session_id=None):
             self.calls.append(session_id)
             if session_id is None:
-                return HermesChatResult(text="First reply", session_id="session-123")
-            return HermesChatResult(text="Second reply", session_id=session_id)
+                return HeraldChatResult(text="First reply", session_id="session-123")
+            return HeraldChatResult(text="Second reply", session_id=session_id)
 
-    stub_adapter = StubHermesAdapter()
+    stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.hermes_adapter = stub_adapter
+        client.app.state.herald_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
 
         first_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes"},
+            json={"text": "Hello Herald"},
         )
         assert first_response.status_code == 200
 
@@ -391,18 +391,18 @@ def test_chat_roundtrip_persists_hermes_session_id_for_resume(tmp_path):
 
 
 def test_chat_create_message_is_idempotent_for_client_message_id(tmp_path):
-    class StubHermesAdapter:
+    class StubHeraldAdapter:
         def __init__(self) -> None:
             self.call_count = 0
 
         def send_message(self, *, latest_user_message, history, session_id=None):
             self.call_count += 1
-            return HermesChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
+            return HeraldChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
 
-    stub_adapter = StubHermesAdapter()
+    stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.hermes_adapter = stub_adapter
+        client.app.state.herald_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
         client_message_id = "11111111-2222-3333-4444-555555555555"
@@ -410,12 +410,12 @@ def test_chat_create_message_is_idempotent_for_client_message_id(tmp_path):
         first_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes", "clientMessageId": client_message_id},
+            json={"text": "Hello Herald", "clientMessageId": client_message_id},
         )
         second_response = client.post(
             "/v1/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"text": "Hello Hermes", "clientMessageId": client_message_id},
+            json={"text": "Hello Herald", "clientMessageId": client_message_id},
         )
 
         assert first_response.status_code == 200
@@ -484,12 +484,12 @@ def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):
     # get_or_create_current_conversation. That silently misrouted messages sent
     # from a newly-created session into a different (often much older) session,
     # which looked like "new session shows old messages" / "no response" on iOS.
-    class StubHermesAdapter:
+    class StubHeraldAdapter:
         def send_message(self, *, latest_user_message, history, session_id=None):
-            return HermesChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
+            return HeraldChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
 
     with build_client(tmp_path) as client:
-        client.app.state.hermes_adapter = StubHermesAdapter()
+        client.app.state.herald_adapter = StubHeraldAdapter()
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
         headers = {"Authorization": f"Bearer {access_token}"}

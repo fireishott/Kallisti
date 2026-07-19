@@ -76,17 +76,17 @@ class PairingInvite(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class HermesHost(Base):
-    __tablename__ = "hermes_hosts"
+class HeraldHost(Base):
+    __tablename__ = "herald_hosts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(Text)
     platform: Mapped[str | None] = mapped_column(Text)
     hostname: Mapped[str | None] = mapped_column(Text)
-    hermes_command: Mapped[str | None] = mapped_column(Text)
-    hermes_version: Mapped[str | None] = mapped_column(Text)
-    hermes_model: Mapped[str | None] = mapped_column(Text)
+    herald_command: Mapped[str | None] = mapped_column(Text)
+    herald_version: Mapped[str | None] = mapped_column(Text)
+    herald_model: Mapped[str | None] = mapped_column(Text)
     connector_version: Mapped[str | None] = mapped_column(Text)
     connector_token_hash: Mapped[str | None] = mapped_column(Text)
     active_connection_nonce: Mapped[str | None] = mapped_column(Text)
@@ -105,7 +105,7 @@ class HostEnrollmentInvite(Base):
     token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    redeemed_host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("hermes_hosts.id"))
+    redeemed_host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("herald_hosts.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -115,8 +115,8 @@ class PhonePairingCode(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("hermes_hosts.id"), nullable=False)
-    created_by_host_id: Mapped[str] = mapped_column(String(36), ForeignKey("hermes_hosts.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
+    created_by_host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
     code_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -233,8 +233,8 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     device_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("devices.id"), nullable=True)
-    title: Mapped[str] = mapped_column(Text, nullable=False, default="Hermes")
-    hermes_session_id: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="Herald")
+    herald_session_id: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -266,7 +266,7 @@ class MessageJob(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), nullable=False)
     user_message_id: Mapped[str] = mapped_column(String(36), ForeignKey("messages.id"), nullable=False, unique=True)
-    host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("hermes_hosts.id"))
+    host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("herald_hosts.id"))
     claimed_connection_nonce: Mapped[str | None] = mapped_column(Text)
     session_id_snapshot: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
@@ -289,7 +289,7 @@ class VoiceSession(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("hermes_hosts.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     relay_tool_token_hash: Mapped[str | None] = mapped_column(Text)
     realtime_session_id: Mapped[str | None] = mapped_column(Text)

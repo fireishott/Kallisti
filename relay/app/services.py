@@ -11,13 +11,13 @@ from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .hermes_adapter import HermesAdapter, HermesChatResult, HermesConversationMessage
+from .herald_adapter import HeraldAdapter, HeraldChatResult, HeraldConversationMessage
 from .models import (
     AuditLog,
     AuthSession,
     Conversation,
     Device,
-    HermesHost,
+    HeraldHost,
     HostEnrollmentInvite,
     InboxAction,
     InboxItem,
@@ -34,7 +34,7 @@ from .models import (
 from .pairing import generate_phone_pairing_code, normalize_phone_pairing_code
 from .security import generate_token, hash_token, issue_tokens, normalize_datetime
 
-logger = logging.getLogger("hermes.relay")
+logger = logging.getLogger("herald.relay")
 
 
 def ensure_default_user(db: Session, settings: Settings) -> User:
@@ -83,22 +83,22 @@ def setup_connector_account(
     settings: Settings,
     platform: str,
     hostname: str,
-    hermes_command: str,
-    hermes_version: str | None,
+    herald_command: str,
+    herald_version: str | None,
     connector_version: str,
-) -> tuple[User, HermesHost, str]:
+) -> tuple[User, HeraldHost, str]:
     connector_token = generate_token()
     user = User(display_name=hostname)
     db.add(user)
     db.flush()
 
-    host = HermesHost(
+    host = HeraldHost(
         user_id=user.id,
         display_name=hostname,
         platform=platform,
         hostname=hostname,
-        hermes_command=hermes_command,
-        hermes_version=hermes_version,
+        herald_command=herald_command,
+        herald_version=herald_version,
         connector_version=connector_version,
         connector_token_hash=hash_token(connector_token),
     )
@@ -122,7 +122,7 @@ def create_phone_pairing_code(
     db: Session,
     *,
     settings: Settings,
-    host: HermesHost,
+    host: HeraldHost,
 ) -> tuple[PhonePairingCode, str]:
     code = _create_unique_phone_pairing_code(db)
     pairing_code = PhonePairingCode(
@@ -353,7 +353,7 @@ def redeem_phone_pairing_code(
     if normalize_datetime(pairing_code.expires_at) < utcnow():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone pairing code has expired.")
 
-    host = db.get(HermesHost, pairing_code.host_id)
+    host = db.get(HeraldHost, pairing_code.host_id)
     if host is None or host.revoked_at is not None or host.connector_token_hash is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone pairing code is invalid.")
 
@@ -392,10 +392,10 @@ def redeem_host_enrollment_invite(
     connector_display_name: str | None,
     platform: str,
     hostname: str,
-    hermes_command: str,
-    hermes_version: str | None,
+    herald_command: str,
+    herald_version: str | None,
     connector_version: str,
-) -> tuple[HostEnrollmentInvite, HermesHost, str]:
+) -> tuple[HostEnrollmentInvite, HeraldHost, str]:
     invite = db.scalar(select(HostEnrollmentInvite).where(HostEnrollmentInvite.token_hash == hash_token(invite_token)))
 
     if invite is None:
@@ -408,15 +408,15 @@ def redeem_host_enrollment_invite(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This host setup code has expired.")
 
     connector_token = generate_token()
-    host = db.scalar(select(HermesHost).where(HermesHost.user_id == invite.user_id))
+    host = db.scalar(select(HeraldHost).where(HeraldHost.user_id == invite.user_id))
     if host is None:
-        host = HermesHost(
+        host = HeraldHost(
             user_id=invite.user_id,
             display_name=connector_display_name,
             platform=platform,
             hostname=hostname,
-            hermes_command=hermes_command,
-            hermes_version=hermes_version,
+            herald_command=herald_command,
+            herald_version=herald_version,
             connector_version=connector_version,
             connector_token_hash=hash_token(connector_token),
         )
@@ -425,8 +425,8 @@ def redeem_host_enrollment_invite(
         host.display_name = connector_display_name
         host.platform = platform
         host.hostname = hostname
-        host.hermes_command = hermes_command
-        host.hermes_version = hermes_version
+        host.herald_command = herald_command
+        host.herald_version = herald_version
         host.connector_version = connector_version
         host.connector_token_hash = hash_token(connector_token)
         host.active_connection_nonce = None
@@ -451,15 +451,15 @@ def revoke_auth_session(db: Session, *, auth_session: AuthSession) -> AuthSessio
     return auth_session
 
 
-def current_hermes_host_for_user(db: Session, *, user_id: str) -> HermesHost | None:
-    host = db.scalar(select(HermesHost).where(HermesHost.user_id == user_id))
+def current_herald_host_for_user(db: Session, *, user_id: str) -> HeraldHost | None:
+    host = db.scalar(select(HeraldHost).where(HeraldHost.user_id == user_id))
     if host is None or host.revoked_at is not None or host.connector_token_hash is None:
         return None
     return host
 
 
-def revoke_current_hermes_host(db: Session, *, user_id: str) -> HermesHost | None:
-    host = db.scalar(select(HermesHost).where(HermesHost.user_id == user_id))
+def revoke_current_herald_host(db: Session, *, user_id: str) -> HeraldHost | None:
+    host = db.scalar(select(HeraldHost).where(HeraldHost.user_id == user_id))
     if host is None:
         return None
 
@@ -471,11 +471,11 @@ def revoke_current_hermes_host(db: Session, *, user_id: str) -> HermesHost | Non
     return host
 
 
-def authenticate_hermes_host(db: Session, *, connector_token: str) -> HermesHost:
+def authenticate_herald_host(db: Session, *, connector_token: str) -> HeraldHost:
     host = db.scalar(
-        select(HermesHost).where(
-            HermesHost.connector_token_hash == hash_token(connector_token),
-            HermesHost.revoked_at.is_(None),
+        select(HeraldHost).where(
+            HeraldHost.connector_token_hash == hash_token(connector_token),
+            HeraldHost.revoked_at.is_(None),
         )
     )
     if host is None:
@@ -483,26 +483,26 @@ def authenticate_hermes_host(db: Session, *, connector_token: str) -> HermesHost
     return host
 
 
-def activate_hermes_host_connection(
+def activate_herald_host_connection(
     db: Session,
     *,
-    host: HermesHost,
+    host: HeraldHost,
     connection_nonce: str,
     connector_version: str,
     platform: str,
     hostname: str,
-    hermes_command: str,
-    hermes_version: str | None,
-    hermes_model: str | None = None,
+    herald_command: str,
+    herald_version: str | None,
+    herald_model: str | None = None,
     display_name: str | None = None,
-) -> HermesHost:
+) -> HeraldHost:
     host.active_connection_nonce = connection_nonce
     host.connector_version = connector_version
     host.platform = platform
     host.hostname = hostname
-    host.hermes_command = hermes_command
-    host.hermes_version = hermes_version
-    host.hermes_model = hermes_model
+    host.herald_command = herald_command
+    host.herald_version = herald_version
+    host.herald_model = herald_model
     host.display_name = display_name
     host.last_seen_at = utcnow()
     host.last_connected_at = utcnow()
@@ -511,8 +511,8 @@ def activate_hermes_host_connection(
     return host
 
 
-def touch_hermes_host_connection(db: Session, *, host_id: str, connection_nonce: str) -> HermesHost | None:
-    host = db.get(HermesHost, host_id)
+def touch_herald_host_connection(db: Session, *, host_id: str, connection_nonce: str) -> HeraldHost | None:
+    host = db.get(HeraldHost, host_id)
     if host is None or host.revoked_at is not None:
         return None
     if host.active_connection_nonce != connection_nonce:
@@ -524,8 +524,8 @@ def touch_hermes_host_connection(db: Session, *, host_id: str, connection_nonce:
     return host
 
 
-def deactivate_hermes_host_connection(db: Session, *, host_id: str, connection_nonce: str) -> HermesHost | None:
-    host = db.get(HermesHost, host_id)
+def deactivate_herald_host_connection(db: Session, *, host_id: str, connection_nonce: str) -> HeraldHost | None:
+    host = db.get(HeraldHost, host_id)
     if host is None:
         return None
     if host.active_connection_nonce != connection_nonce:
@@ -707,7 +707,7 @@ def inject_voice_transcript(
         base_created_at = max(normalize_datetime(last_message_at), base_created_at)
 
     for index, turn in enumerate(turns):
-        role = "voice_user" if turn.role == "user" else "voice_hermes"
+        role = "voice_user" if turn.role == "user" else "voice_herald"
         append_message(
             db,
             conversation=conversation,
@@ -734,7 +734,7 @@ def inject_voice_transcript(
     return conversation
 
 
-def hermes_host_is_online(db: Session, *, host: HermesHost | None, settings: Settings) -> bool:
+def herald_host_is_online(db: Session, *, host: HeraldHost | None, settings: Settings) -> bool:
     if host is None or host.revoked_at is not None or host.last_seen_at is None:
         return False
 
@@ -966,8 +966,8 @@ def get_or_create_current_conversation(db: Session, *, user_id: str, device_id: 
         conversation = Conversation(
             user_id=user_id,
             device_id=device_id,
-            title="Hermes",
-            source="hermes" if device_id is None else "ios",
+            title="Herald",
+            source="herald" if device_id is None else "ios",
         )
         db.add(conversation)
         db.commit()
@@ -990,7 +990,7 @@ def archive_current_conversation(db: Session, *, user_id: str, device_id: str | 
         return None
 
     conversation.is_archived = True
-    conversation.hermes_session_id = None
+    conversation.herald_session_id = None
     conversation.updated_at = utcnow()
     db.commit()
     db.refresh(conversation)
@@ -1074,7 +1074,7 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
-    if role == "user" and conversation.title == "Hermes":
+    if role == "user" and conversation.title == "Herald":
         derived_title = derive_title_from_message(text)
         if derived_title:
             conversation.title = derived_title
@@ -1174,7 +1174,7 @@ def log_stale_queued_jobs(db: Session) -> None:
 def claim_next_message_job(
     db: Session,
     *,
-    host: HermesHost,
+    host: HeraldHost,
     connection_nonce: str,
     settings: Settings,
 ) -> MessageJob | None:
@@ -1276,13 +1276,13 @@ def complete_message_job(
     result_message = _finalize_job_message(
         db,
         job=job,
-        role="hermes",
+        role="herald",
         text=text,
         delivery_status="delivered",
         attachments_data=attachments,
     )
     user_message.delivery_status = "delivered"
-    conversation.hermes_session_id = session_id or conversation.hermes_session_id
+    conversation.herald_session_id = session_id or conversation.herald_session_id
     job.status = "completed"
     job.completed_at = utcnow()
     job.result_text = text
@@ -1332,7 +1332,7 @@ def fail_message_job(
         db,
         job=job,
         role="system",
-        text=f"Hermes could not process this message: {error_text}",
+        text=f"Herald could not process this message: {error_text}",
         delivery_status="delivered",
     )
     user_message.delivery_status = "failed"
@@ -1346,15 +1346,15 @@ def fail_message_job(
     return job
 
 
-def generate_hermes_reply(
+def generate_herald_reply(
     *,
-    adapter: HermesAdapter,
+    adapter: HeraldAdapter,
     latest_user_message: str,
     history: list[Message],
     session_id: str | None = None,
-) -> HermesChatResult:
+) -> HeraldChatResult:
     replay_history = [
-        HermesConversationMessage(role=message.role, text=message.text)
+        HeraldConversationMessage(role=message.role, text=message.text)
         for message in history
     ]
     return adapter.send_message(
@@ -1368,7 +1368,7 @@ def process_message_job_with_adapter(
     db: Session,
     *,
     job_id: str,
-    adapter: HermesAdapter,
+    adapter: HeraldAdapter,
 ) -> MessageJob | None:
     job = db.get(MessageJob, job_id)
     if job is None:
@@ -1384,7 +1384,7 @@ def process_message_job_with_adapter(
         message_id=user_message.id,
     )
     try:
-        hermes_reply = generate_hermes_reply(
+        herald_reply = generate_herald_reply(
             adapter=adapter,
             latest_user_message=user_message.text,
             history=history,
@@ -1403,8 +1403,8 @@ def process_message_job_with_adapter(
         db,
         job_id=job.id,
         connection_nonce=None,
-        text=hermes_reply.text,
-        session_id=hermes_reply.session_id or job.session_id_snapshot,
+        text=herald_reply.text,
+        session_id=herald_reply.session_id or job.session_id_snapshot,
     )
 
 
@@ -1643,7 +1643,7 @@ def serialize_inbox_item(item: InboxItem) -> dict:
     }
 
 
-def serialize_hermes_host(db: Session, *, host: HermesHost | None, settings: Settings) -> dict | None:
+def serialize_herald_host(db: Session, *, host: HeraldHost | None, settings: Settings) -> dict | None:
     if host is None or host.revoked_at is not None or host.connector_token_hash is None:
         return None
 
@@ -1653,12 +1653,12 @@ def serialize_hermes_host(db: Session, *, host: HermesHost | None, settings: Set
         "hostname": host.hostname,
         "platform": host.platform,
         "connectorVersion": host.connector_version,
-        "hermesCommand": host.hermes_command,
-        "hermesVersion": host.hermes_version,
-        "hermesModel": host.hermes_model,
+        "heraldCommand": host.herald_command,
+        "heraldVersion": host.herald_version,
+        "heraldModel": host.herald_model,
         "lastSeenAt": host.last_seen_at,
         "lastConnectedAt": host.last_connected_at,
-        "isOnline": hermes_host_is_online(db, host=host, settings=settings),
+        "isOnline": herald_host_is_online(db, host=host, settings=settings),
     }
 
 

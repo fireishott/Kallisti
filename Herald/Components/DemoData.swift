@@ -11,7 +11,7 @@ nonisolated enum DemoData {
             title: "Herald Agent",
             messages: [
                 Message(
-                    sender: .hermes,
+                    sender: .herald,
                     content: "Good morning! I've been reviewing your schedule for today. You have a team standup at 10 AM and a design review at 2 PM. Would you like me to prepare any talking points?",
                     timestamp: cal.date(byAdding: .hour, value: -3, to: now) ?? now,
                     status: .delivered
@@ -23,7 +23,7 @@ nonisolated enum DemoData {
                     status: .delivered
                 ),
                 Message(
-                    sender: .hermes,
+                    sender: .herald,
                     content: "Done. I've compiled the latest Figma exports and summarized the three key feedback themes from last week's session: navigation clarity, color contrast accessibility, and onboarding flow length. I've also flagged two open questions from Elena's comments. Want me to create a brief deck?",
                     timestamp: cal.date(byAdding: .hour, value: -2, to: now) ?? now,
                     status: .delivered
@@ -35,7 +35,7 @@ nonisolated enum DemoData {
                     status: .delivered
                 ),
                 Message(
-                    sender: .hermes,
+                    sender: .herald,
                     content: "I'll have that ready within the hour. Also, I noticed your grocery delivery is scheduled for 4 PM today. Should I keep that or reschedule given the design review might run long?",
                     timestamp: cal.date(byAdding: .hour, value: -1, to: now) ?? now,
                     status: .delivered
@@ -47,7 +47,7 @@ nonisolated enum DemoData {
                     status: .delivered
                 ),
                 Message(
-                    sender: .hermes,
+                    sender: .herald,
                     content: "Rescheduled to 6 PM. Your delivery window is now 6:00-6:30 PM. I'll send you a reminder at 5:45. Is there anything else you'd like me to handle before the standup?",
                     timestamp: cal.date(byAdding: .minute, value: -30, to: now) ?? now,
                     status: .delivered
@@ -193,7 +193,7 @@ nonisolated enum DemoData {
                 title: "Morning briefing",
                 previewText: "Good morning! Here's your schedule and priorities...",
                 lastActivity: cal.date(byAdding: .hour, value: -3, to: now) ?? now,
-                source: "hermes-ios"
+                source: "herald-ios"
             ),
             SessionSummary(
                 title: "Grocery list update",

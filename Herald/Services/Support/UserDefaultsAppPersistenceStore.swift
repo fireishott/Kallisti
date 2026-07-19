@@ -3,13 +3,13 @@ import Foundation
 @MainActor
 final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
     private enum Keys {
-        static let userSettings = "hermes.userSettings"
-        static let sessionState = "hermes.sessionState"
-        static let inboxState = "hermes.inboxState"
-        static let pairedRelayConfiguration = "hermes.pairedRelayConfiguration"
-        static let sensorOutboxState = "hermes.sensorOutboxState"
-        static let conversationCache = "hermes.conversationCache"
-        static let healthAnchorPrefix = "hermes.healthAnchor."
+        static let userSettings = "herald.userSettings"
+        static let sessionState = "herald.sessionState"
+        static let inboxState = "herald.inboxState"
+        static let pairedRelayConfiguration = "herald.pairedRelayConfiguration"
+        static let sensorOutboxState = "herald.sensorOutboxState"
+        static let conversationCache = "herald.conversationCache"
+        static let healthAnchorPrefix = "herald.healthAnchor."
     }
 
     private let defaults: UserDefaults

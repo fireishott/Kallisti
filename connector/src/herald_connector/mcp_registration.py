@@ -13,7 +13,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 
-MCP_SERVER_NAME = "hermes_mobile"
+MCP_SERVER_NAME = "herald"
 MCP_TOOL_NAMES = [
     "get_user_location",
     "get_location_history",

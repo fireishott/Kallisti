@@ -476,7 +476,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
 
-        return Message(sender: .hermes, content: "", jobID: jobId, status: .delivered)
+        return Message(sender: .herald, content: "", jobID: jobId, status: .delivered)
     }
 
     private func validateRequestBodySize(for body: MessageCreateBody) throws {

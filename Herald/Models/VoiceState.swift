@@ -66,13 +66,13 @@ enum TalkConnectionState: String, Codable, Hashable, Sendable {
 
 enum TranscriptSpeaker: String, Codable, Hashable, Sendable {
     case user
-    case hermes
+    case herald
     case system
 
     var displayLabel: String {
         switch self {
         case .user: "You"
-        case .hermes: "Herald"
+        case .herald: "Herald"
         case .system: "System"
         }
     }

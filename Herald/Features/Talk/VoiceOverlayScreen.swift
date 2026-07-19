@@ -130,7 +130,7 @@ struct VoiceOverlayScreen: View {
                         .opacity(item.isPartial ? 0.55 : 1)
                 }
             }
-        case .hermes:
+        case .herald:
             HStack {
                 Text(item.text)
                     .font(Design.Typography.body)

@@ -9,7 +9,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from .hermes_runner import HermesChatResult, HermesConversationMessage
+from .herald_runner import HeraldChatResult, HeraldConversationMessage
 
 
 # Tool progress markers injected by the API server's _on_tool_progress callback:
@@ -34,8 +34,8 @@ class StreamEvent:
 
 
 @dataclass
-class HermesAPIExecutor:
-    """Talks to the Hermes API server at ``/v1/chat/completions``."""
+class HeraldAPIExecutor:
+    """Talks to the Herald API server at ``/v1/chat/completions``."""
 
     api_server_url: str = DEFAULT_API_SERVER_URL
     api_server_key: str | None = None
@@ -51,7 +51,7 @@ class HermesAPIExecutor:
 
     @staticmethod
     def _api_role(role: str) -> str:
-        if role in ("hermes", "voice_hermes"):
+        if role in ("herald", "voice_herald"):
             return "assistant"
         if role == "voice_user":
             return "user"
@@ -61,7 +61,7 @@ class HermesAPIExecutor:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage] | None,
+        history: list[HeraldConversationMessage] | None,
         attachments: list[dict] | None = None,
     ) -> list[dict]:
         messages: list[dict] = [
@@ -148,10 +148,10 @@ class HermesAPIExecutor:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage] | None = None,
+        history: list[HeraldConversationMessage] | None = None,
         session_id: str | None = None,
         attachments: list[dict] | None = None,
-    ) -> HermesChatResult:
+    ) -> HeraldChatResult:
         """Send a single message and wait for the full response."""
         headers = {
             **self._auth_headers(),
@@ -191,7 +191,7 @@ class HermesAPIExecutor:
 
             usage = body.get("usage")
 
-            return HermesChatResult(
+            return HeraldChatResult(
                 text=text.strip(),
                 session_id=result_session_id,
                 usage=usage,
@@ -205,7 +205,7 @@ class HermesAPIExecutor:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage] | None = None,
+        history: list[HeraldConversationMessage] | None = None,
         session_id: str | None = None,
         attachments: list[dict] | None = None,
     ) -> AsyncIterator[StreamEvent]:

@@ -1,4 +1,4 @@
-# Hermes iOS — Maintainer Notes
+# Herald — Maintainer Notes
 
 This file is for maintainers who want a short internal snapshot of the current implementation. It is **not** the recommended onboarding guide for public users.
 
@@ -12,7 +12,7 @@ Start here instead:
 ## Current architecture
 
 ```text
-iOS App ──HTTP/SSE──▶ Relay ──WebSocket──▶ Connector ──▶ Hermes Agent
+iOS App ──HTTP/SSE──▶ Relay ──WebSocket──▶ Connector ──▶ Herald Agent
 ```
 
 ## Current focus
@@ -24,7 +24,7 @@ iOS App ──HTTP/SSE──▶ Relay ──WebSocket──▶ Connector ──�
 ## What is broadly working
 
 - streaming chat and attachment delivery
-- voice mode with Realtime bootstrap and Hermes delegation
+- voice mode with Realtime bootstrap and Herald delegation
 - dynamic slash-command catalog from Hermes surfaces
 - sensor pipeline (location, health, motion) through connector SQLite + MCP tools
 - widgets, Live Activities, inline image rendering, and model/context UI

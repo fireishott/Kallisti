@@ -99,7 +99,7 @@ struct HeraldApp: App {
     }
 
     private func handleDeeplink(_ url: URL) {
-        guard url.scheme == "hermes" else { return }
+        guard url.scheme == "herald" else { return }
         switch url.host {
         case "chat":
             container.router.activeSheet = nil

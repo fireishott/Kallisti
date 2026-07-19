@@ -1,1 +1,1 @@
-"""Hermes Mobile relay package."""
+"""Herald relay package."""

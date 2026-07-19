@@ -86,9 +86,9 @@ def run_create_setup_code() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="hermes-mobile-relay-admin")
+    parser = argparse.ArgumentParser(prog="herald-relay-admin")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("create-setup-code", help="Create a single-use Hermes Mobile pairing setup code.")
+    subparsers.add_parser("create-setup-code", help="Create a single-use Herald pairing setup code.")
     return parser
 
 

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.database import Database
-from app.models import AuditLog, AuthSession, HermesHost, InboxItem, PushRegistration, User, VoiceTurn, utcnow
+from app.models import AuditLog, AuthSession, HeraldHost, InboxItem, PushRegistration, User, VoiceTurn, utcnow
 from app.services import (
     append_message,
     create_voice_session,
@@ -149,7 +149,7 @@ def test_inject_voice_transcript_appends_after_existing_chat_messages(tmp_path):
             delivery_status="delivered",
         )
 
-        host = HermesHost(
+        host = HeraldHost(
             id="host-123",
             user_id=user.id,
             display_name="Test Host",
@@ -208,7 +208,7 @@ def test_first_user_message_updates_default_conversation_title(tmp_path):
     with database.session() as db:
         user = ensure_default_user(db, settings)
         conversation = get_or_create_current_conversation(db, user_id=user.id)
-        assert conversation.title == "Hermes"
+        assert conversation.title == "Herald"
 
         append_message(
             db,

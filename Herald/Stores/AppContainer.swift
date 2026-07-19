@@ -6,8 +6,8 @@ final class AppContainer {
     // Pre-1.1.1 releases stored the raw APNs token in UserDefaults.standard under
     // this key. We now keep the token in Keychain (ThisDeviceOnly). The legacy
     // key is read once on first launch after upgrade to migrate + delete.
-    private static let legacyAPNsTokenDefaultsKey = "hermes.apns.deviceToken"
-    static let apnsTokenKeychainKey = "hermes.apns.deviceToken"
+    private static let legacyAPNsTokenDefaultsKey = "herald.apns.deviceToken"
+    static let apnsTokenKeychainKey = "herald.apns.deviceToken"
     private static let sharedDefaultContainer = AppContainer.makeDefault()
 
     let router = TabRouter()
@@ -220,7 +220,7 @@ final class AppContainer {
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
 
-        let hermesClient = ResilientHeraldClient(
+        let heraldClient = ResilientHeraldClient(
             primary: LiveHeraldClient(
                 apiClient: apiClient,
                 accessTokenProvider: { await sessionStore.currentAccessToken() },
@@ -264,7 +264,7 @@ final class AppContainer {
             )
         }
 
-        let chatStore = ChatStore(hermesClient: hermesClient, persistence: persistence)
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
         let container = AppContainer(
             sessionStore: sessionStore,
@@ -286,7 +286,7 @@ final class AppContainer {
             ),
             settingsStore: settingsStore,
             talkStore: TalkStore(voiceService: voiceService),
-            sessionListStore: SessionListStore(hermesClient: hermesClient, chatStore: chatStore, settingsStore: settingsStore),
+            sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore),
             sensorUploadService: sensorUploadService,
             apiClient: apiClient,
             notificationService: notificationService,

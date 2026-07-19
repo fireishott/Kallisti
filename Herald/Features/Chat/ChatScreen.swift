@@ -196,7 +196,7 @@ struct ChatScreen: View {
     /// preferring it here means the chip updates the moment a switch
     /// succeeds instead of waiting for the next command-catalog refresh.
     private var displayedModelName: String? {
-        modelStore.activeModel?.name ?? chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
+        modelStore.activeModel?.name ?? chatStore.activeModelName ?? hostStore.currentHost?.heraldModel
     }
 
     private var effectiveContextWindow: Int? {
@@ -838,7 +838,7 @@ struct ChatScreen: View {
         var visibleIndex = 0
 
         for msg in messages {
-            guard msg.sender == .user || msg.sender == .hermes else { continue }
+            guard msg.sender == .user || msg.sender == .herald else { continue }
             visibleIndex += 1
             let role = msg.sender == .user ? "You" : "Herald"
             let preview = msg.content.prefix(previewLimit)

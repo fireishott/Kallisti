@@ -24,7 +24,7 @@ def build_client(tmp_path):
         phone_pairing_max_attempts_per_ip=3,
         phone_pairing_rate_limit_window_seconds=300,
         host_enrollment_code_ttl_seconds=900,
-        hermes_adapter="connector",
+        herald_adapter="connector",
         connector_sync_wait_seconds=2,
         connector_job_lease_seconds=30,
         connector_heartbeat_timeout_seconds=5,
@@ -42,8 +42,8 @@ def connector_setup_payload(owner_display_name: str = "Taylor") -> dict:
             "platform": "macos",
             "hostname": "test-host",
             "connectorVersion": "0.1.0",
-            "hermesCommand": "/usr/local/bin/hermes",
-            "hermesVersion": "hermes 1.2.3",
+            "heraldCommand": "/usr/local/bin/hermes",
+            "heraldVersion": "hermes 1.2.3",
         },
     }
 
@@ -200,8 +200,8 @@ def test_connected_host_gets_job_and_preserves_session_resume(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                         "displayName": "Home Mac mini",
                     },
                 }
@@ -282,8 +282,8 @@ def test_completed_job_events_include_usage_and_result_message(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -326,7 +326,7 @@ def test_completed_job_events_include_usage_and_result_message(tmp_path):
             payload = json.loads(events_response.text.split("data: ", maxsplit=1)[1].strip())
             assert payload["status"] == "completed"
             assert payload["usage"]["totalTokens"] == 20
-            assert payload["message"]["role"] == "hermes"
+            assert payload["message"]["role"] == "herald"
             assert payload["message"]["jobId"] == job["id"]
 
 
@@ -351,8 +351,8 @@ def test_failed_job_response_and_conversation_include_job_id(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -408,8 +408,8 @@ def test_talk_readiness_reflects_connector_configuration(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -439,7 +439,7 @@ def test_talk_readiness_reflects_connector_configuration(tmp_path):
                         "preferredModels": ["gpt-realtime-1.5", "gpt-realtime"],
                         "selectedModel": None,
                         "voice": "verse",
-                        "blockedReason": "OpenAI Realtime is not configured on this Hermes host.",
+                        "blockedReason": "OpenAI Realtime is not configured on this Herald host.",
                         "voiceContextUpdatedAt": "2026-04-01T12:00:00Z",
                     },
                 }
@@ -451,7 +451,7 @@ def test_talk_readiness_reflects_connector_configuration(tmp_path):
             assert data["ready"] is False
             assert data["hostOnline"] is True
             assert data["configured"] is False
-            assert data["blockedReason"] == "OpenAI Realtime is not configured on this Hermes host."
+            assert data["blockedReason"] == "OpenAI Realtime is not configured on this Herald host."
             assert data["voice"] == "verse"
 
 
@@ -476,8 +476,8 @@ def test_talk_session_create_and_end_roundtrip(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -577,8 +577,8 @@ def test_talk_turn_endpoint_persists_final_turns_and_is_idempotent(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -641,7 +641,7 @@ def test_talk_turn_endpoint_persists_final_turns_and_is_idempotent(tmp_path):
                     voice_session_id=voice_session_id,
                     role="assistant",
                     source="tool",
-                    text="Hermes tool reply",
+                    text="Herald tool reply",
                 )
                 turns = db.query(VoiceTurn).filter(VoiceTurn.voice_session_id == voice_session_id).all()
 
@@ -670,8 +670,8 @@ def test_talk_session_end_is_idempotent(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -759,8 +759,8 @@ def test_talk_session_returns_conflict_when_connector_is_unconfigured(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -785,13 +785,13 @@ def test_talk_session_returns_conflict_when_connector_is_unconfigured(tmp_path):
                     "type": "rpc.response",
                     "requestId": rpc["requestId"],
                     "success": False,
-                    "error": "OpenAI Realtime talk mode is not configured on this Hermes host.",
+                    "error": "OpenAI Realtime talk mode is not configured on this Herald host.",
                 }
             )
             thread.join(timeout=5)
 
             assert response["payload"].status_code == 409
-            assert response["payload"].json()["detail"] == "OpenAI Realtime talk mode is not configured on this Hermes host."
+            assert response["payload"].json()["detail"] == "OpenAI Realtime talk mode is not configured on this Herald host."
 
 
 def test_sensor_delivery_returns_retry_offline_and_delivered_after_connector_ack(tmp_path):
@@ -823,8 +823,8 @@ def test_sensor_delivery_returns_retry_offline_and_delivered_after_connector_ack
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -880,8 +880,8 @@ def test_stale_connector_disconnect_does_not_remove_newer_live_socket(tmp_path):
                         "platform": "macos",
                         "hostname": "test-host",
                         "connectorVersion": "0.1.0",
-                        "hermesCommand": "/usr/local/bin/hermes",
-                        "hermesVersion": "hermes 1.2.3",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
                     },
                 }
             )
@@ -898,8 +898,8 @@ def test_stale_connector_disconnect_does_not_remove_newer_live_socket(tmp_path):
                             "platform": "macos",
                             "hostname": "test-host",
                             "connectorVersion": "0.1.0",
-                            "hermesCommand": "/usr/local/bin/hermes",
-                            "hermesVersion": "hermes 1.2.3",
+                            "heraldCommand": "/usr/local/bin/hermes",
+                            "heraldVersion": "hermes 1.2.3",
                         },
                     }
                 )
@@ -945,7 +945,7 @@ def build_client_with_overrides(tmp_path, db_name="relay-custom.db", **overrides
         phone_pairing_max_attempts_per_ip=3,
         phone_pairing_rate_limit_window_seconds=300,
         host_enrollment_code_ttl_seconds=900,
-        hermes_adapter="connector",
+        herald_adapter="connector",
         connector_sync_wait_seconds=2,
         connector_job_lease_seconds=30,
         connector_heartbeat_timeout_seconds=5,

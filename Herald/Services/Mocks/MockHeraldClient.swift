@@ -33,15 +33,15 @@ final class MockHeraldClient: HeraldClientProtocol {
         try? await Task.sleep(for: .seconds(responseDelay))
 
         let response = generateResponse(for: content)
-        let hermesMessage = Message(
-            sender: .hermes,
+        let heraldMessage = Message(
+            sender: .herald,
             content: response,
             status: .delivered
         )
 
-        currentConversation?.messages.append(hermesMessage)
+        currentConversation?.messages.append(heraldMessage)
 
-        return hermesMessage
+        return heraldMessage
     }
 
     func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -76,15 +76,15 @@ final class MockHeraldClient: HeraldClientProtocol {
                     continuation.yield(.textDelta(String(word) + " "))
                 }
 
-                let hermesMessage = Message(
-                    sender: .hermes,
+                let heraldMessage = Message(
+                    sender: .herald,
                     content: response,
                     status: .delivered
                 )
-                self.currentConversation?.messages.append(hermesMessage)
+                self.currentConversation?.messages.append(heraldMessage)
 
                 continuation.yield(.finished(
-                    hermesMessage,
+                    heraldMessage,
                     TokenUsage(promptTokens: 150, completionTokens: 80, totalTokens: 230),
                     nil
                 ))

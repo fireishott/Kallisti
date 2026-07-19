@@ -5,12 +5,12 @@ final class MockHeraldHostService: HeraldHostServiceProtocol {
     var currentHost: HeraldHostStatus? = HeraldHostStatus(
         id: UUID(),
         displayName: "Mock Herald Host",
-        hostname: "mock-hermes.local",
+        hostname: "mock-herald.local",
         platform: "macos",
         connectorVersion: "0.1.0",
-        hermesCommand: "hermes",
-        hermesVersion: "hermes mock",
-        hermesModel: "gpt-5.4-mini",
+        heraldCommand: "herald",
+        heraldVersion: "herald mock",
+        heraldModel: "gpt-5.4-mini",
         lastSeenAt: .now,
         lastConnectedAt: .now,
         isOnline: true

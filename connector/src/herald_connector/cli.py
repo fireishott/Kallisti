@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import qrcode
 
-from .client import HermesMobileConnector
+from .client import HeraldConnector
 from .service_management import build_service_manager
 
 
@@ -162,7 +162,7 @@ def deploy_relay_to_fly() -> tuple[str, str]:
 
     # 3. App name
     default_user = os.getenv("USER") or getpass.getuser() or "user"
-    default_app = f"hermes-relay-{default_user}".lower().replace("_", "-")
+    default_app = f"herald-relay-{default_user}".lower().replace("_", "-")
     app_name = prompt("Fly app name", default=default_app)
 
     # 4. Region
@@ -308,7 +308,7 @@ def deploy_relay_to_fly() -> tuple[str, str]:
     return relay_url, setup_secret
 
 
-def resolve_relay_url(connector: HermesMobileConnector) -> tuple[str, str | None]:
+def resolve_relay_url(connector: HeraldConnector) -> tuple[str, str | None]:
     """Detect or prompt for a relay URL. Returns (relay_url, setup_secret_or_none)."""
     # Check env var first
     existing = connector.default_relay_url()
@@ -376,7 +376,7 @@ def print_header(text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="herald",
-        description="Connect your Hermes CLI to Herald.",
+        description="Connect your runtime to Herald.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -390,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enroll = subparsers.add_parser("enroll", help="(Legacy) Redeem an HC1 host setup code.")
     enroll.add_argument("--code", required=True, help="HC1 setup code.")
-    enroll.add_argument("--display-name", help="Optional label for this Hermes host.")
+    enroll.add_argument("--display-name", help="Optional label for this Herald host.")
     enroll.add_argument(
         "--skip-mcp",
         action="store_true",
@@ -403,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     configure_realtime = subparsers.add_parser(
         "configure-realtime",
-        help="Add or update the OpenAI Realtime configuration stored on this Hermes host.",
+        help="Add or update the OpenAI Realtime configuration stored on this Herald host.",
     )
     configure_realtime.add_argument("--clear", action="store_true", help="Remove the stored OpenAI API key and disable talk mode.")
     configure_realtime.add_argument(
@@ -414,7 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("pair-phone", help="Generate a short-lived phone pairing code and QR.")
     subparsers.add_parser("run", help="Run the long-lived Herald connector.")
     subparsers.add_parser("status", help="Show the current connector state.")
-    subparsers.add_parser("validate-mcp", help="Verify Hermes can discover the Herald MCP tools.")
+    subparsers.add_parser("validate-mcp", help="Verify runtime can discover the Herald MCP tools.")
     subparsers.add_parser("reset", help="Remove local connector state and start fresh.")
 
     service = subparsers.add_parser("service", help="Manage the connector background service.")
@@ -433,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ── Interactive wizard (no subcommand) ───────────────────────────
 
-def run_wizard(connector: HermesMobileConnector) -> int:
+def run_wizard(connector: HeraldConnector) -> int:
     print_header("Herald Connector Setup")
 
     # Check for existing state
@@ -449,11 +449,11 @@ def run_wizard(connector: HermesMobileConnector) -> int:
         pass
 
     # Step 1: Validate Hermes CLI
-    print_header("Step 1 of 5 — Verify Hermes CLI")
+    print_header("Step 1 of 5 — Verify Runtime CLI")
     metadata = connector.metadata()
     if metadata.hermes_version is None:
-        print(f"Could not find Hermes at: {metadata.hermes_command}")
-        print("Install Hermes or set HERMES_COMMAND to its path.")
+        print(f"Could not find runtime at: {metadata.hermes_command}")
+        print("Install the runtime or set HERALD_COMMAND to its path.")
         return 1
     print(f"Found: {metadata.hermes_version}")
     print(f"Command: {metadata.hermes_command}")
@@ -484,7 +484,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
     print()
 
     should_configure_mcp = confirm(
-        "Automatically configure iOS tools MCP (Location Services, Health, and sensor context) in your Hermes Agent config file?",
+        "Automatically configure iOS tools MCP (Location Services, Health, and sensor context) in your Agent config file?",
         default=True,
     )
     if should_configure_mcp:
@@ -519,7 +519,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
     return _wizard_post_setup(connector)
 
 
-def _wizard_post_setup(connector: HermesMobileConnector) -> int:
+def _wizard_post_setup(connector: HeraldConnector) -> int:
     # Step 4: Phone pairing
     print_header("Step 4 of 5 — Pair Your Phone")
     print("Generate a one-time code for the Herald app.\n")
@@ -598,7 +598,7 @@ def _wizard_post_setup(connector: HermesMobileConnector) -> int:
 
 # ── Individual subcommands ───────────────────────────────────────
 
-def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int:
+def cmd_setup(args: argparse.Namespace, connector: HeraldConnector) -> int:
     try:
         existing = connector.state_store.load()
         print(f"Already set up for {existing.relay_url}.")
@@ -623,7 +623,7 @@ def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int
     return 0
 
 
-def cmd_configure_mcp(connector: HermesMobileConnector) -> int:
+def cmd_configure_mcp(connector: HeraldConnector) -> int:
     state = connector.configure_mcp()
     print(f"Configured Herald MCP for host {state.host_id}")
     for line in connector.validate_mcp():
@@ -631,7 +631,7 @@ def cmd_configure_mcp(connector: HermesMobileConnector) -> int:
     return 0
 
 
-def cmd_configure_realtime(args: argparse.Namespace, connector: HermesMobileConnector) -> int:
+def cmd_configure_realtime(args: argparse.Namespace, connector: HeraldConnector) -> int:
     if args.clear:
         state = connector.configure_realtime(clear=True, validate=False)
         print(f"Cleared OpenAI Realtime config for host {state.host_id}")
@@ -649,7 +649,7 @@ def cmd_configure_realtime(args: argparse.Namespace, connector: HermesMobileConn
     return 0
 
 
-def cmd_enroll(args: argparse.Namespace, connector: HermesMobileConnector) -> int:
+def cmd_enroll(args: argparse.Namespace, connector: HeraldConnector) -> int:
     state = connector.enroll(
         code=args.code,
         display_name=args.display_name,
@@ -662,7 +662,7 @@ def cmd_enroll(args: argparse.Namespace, connector: HermesMobileConnector) -> in
     return 0
 
 
-def cmd_pair_phone(connector: HermesMobileConnector) -> int:
+def cmd_pair_phone(connector: HeraldConnector) -> int:
     pairing = connector.create_phone_pairing_code()
     state = connector.state_store.load()
     relay_url = state.relay_url or ""
@@ -683,23 +683,23 @@ def cmd_pair_phone(connector: HermesMobileConnector) -> int:
     return 0
 
 
-def cmd_run(connector: HermesMobileConnector) -> int:
+def cmd_run(connector: HeraldConnector) -> int:
     return _run_foreground(connector)
 
 
-def cmd_status(connector: HermesMobileConnector) -> int:
+def cmd_status(connector: HeraldConnector) -> int:
     for line in connector.status_lines():
         print(line)
     return 0
 
 
-def cmd_validate_mcp(connector: HermesMobileConnector) -> int:
+def cmd_validate_mcp(connector: HeraldConnector) -> int:
     for line in connector.validate_mcp():
         print(line)
     return 0
 
 
-def cmd_reset(connector: HermesMobileConnector) -> int:
+def cmd_reset(connector: HeraldConnector) -> int:
     try:
         connector.state_store.load()
     except RuntimeError:
@@ -715,7 +715,7 @@ def cmd_reset(connector: HermesMobileConnector) -> int:
     return 0
 
 
-def cmd_service(args: argparse.Namespace, connector: HermesMobileConnector) -> int:
+def cmd_service(args: argparse.Namespace, connector: HeraldConnector) -> int:
     manager = build_service_manager(connector.state_store)
     action = args.service_command
 
@@ -751,7 +751,7 @@ def cmd_service(args: argparse.Namespace, connector: HermesMobileConnector) -> i
     raise SystemExit("Service command is required.")
 
 
-def _run_foreground(connector: HermesMobileConnector) -> int:
+def _run_foreground(connector: HeraldConnector) -> int:
     print("Connector running. Press Ctrl+C to stop.\n")
     asyncio.run(connector.run_forever())
     return 0
@@ -766,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser = build_parser()
     args = parser.parse_args(argv)
-    connector = HermesMobileConnector()
+    connector = HeraldConnector()
 
     if args.command is None:
         return run_wizard(connector)

@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 @Observable
 final class PairingStore {
-    private static let onboardingKey = "hermes.needsPermissionsOnboarding"
+    private static let onboardingKey = "herald.needsPermissionsOnboarding"
 
     var pairedRelayConfiguration: PairedRelayConfiguration?
     var isWorking = false

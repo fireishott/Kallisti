@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from herald_connector.client import HermesMobileConnector
-from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from herald_connector.client import HeraldConnector
+from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
 from herald_connector.service_management import (
     MacOSLaunchAgentManager,
     UnsupportedServiceManager,
@@ -18,12 +18,12 @@ from herald_connector.service_management import (
 from herald_connector.state import ConnectorRuntimeConfig, ConnectorState, ConnectorStateStore
 
 
-def make_executor(command: str = "env-hermes") -> HermesCLIExecutor:
-    return HermesCLIExecutor(
-        ConnectorHermesSettings(
+def make_executor(command: str = "env-hermes") -> HeraldCLIExecutor:
+    return HeraldCLIExecutor(
+        ConnectorHeraldSettings(
             hermes_command=command,
-            hermes_workdir="/tmp/env-workdir",
-            hermes_provider="env-provider",
+            herald_workdir="/tmp/env-workdir",
+            herald_provider="env-provider",
             hermes_model="env-model",
             hermes_toolsets="env-tools",
             hermes_source="tool",
@@ -38,8 +38,8 @@ def make_runtime_config(tmp_path: Path) -> ConnectorRuntimeConfig:
         state_dir=str(tmp_path / "connector-state"),
         relay_url="https://relay.example.com/v1",
         hermes_command="/opt/hermes/bin/hermes",
-        hermes_workdir="/srv/hermes-project",
-        hermes_provider="openai-codex",
+        herald_workdir="/srv/hermes-project",
+        herald_provider="openai-codex",
         hermes_model="gpt-5.4",
         hermes_toolsets="native-mcp",
         hermes_source="tool",
@@ -78,13 +78,13 @@ def test_state_store_round_trips_runtime_config(tmp_path):
 def test_connector_prefers_persisted_runtime_config_over_env_settings(tmp_path):
     runtime_config = make_runtime_config(tmp_path)
     store = make_state_store(tmp_path, runtime_config)
-    connector = HermesMobileConnector(state_store=store, executor=make_executor())
+    connector = HeraldConnector(state_store=store, executor=make_executor())
 
     settings = connector.settings_for_state(store.load())
 
     assert settings.hermes_command == "/opt/hermes/bin/hermes"
-    assert settings.hermes_workdir == "/srv/hermes-project"
-    assert settings.hermes_provider == "openai-codex"
+    assert settings.herald_workdir == "/srv/hermes-project"
+    assert settings.herald_provider == "openai-codex"
 
 
 def test_macos_install_writes_launchagent_plist_and_runner(monkeypatch, tmp_path):

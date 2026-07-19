@@ -1,6 +1,6 @@
 # Fly.io deployment
 
-This guide is the manual Fly.io path for the Hermes iOS relay.
+This guide is the manual Fly.io path for the Herald relay.
 
 > [!NOTE]
 > The connector setup wizard can guide you through a Fly deployment. Use this document if you want to do the same steps manually or troubleshoot the wizard.
@@ -124,8 +124,8 @@ The health endpoint should return a healthy relay response.
 ## After deploy
 
 1. Point the connector at `https://your-relay-app.fly.dev/v1`
-2. Run `hermes-mobile setup`
-3. Run `hermes-mobile pair-phone`
+2. Run `herald-connector setup`
+3. Run `herald-connector pair-phone`
 4. Point the iOS app at the same relay URL
 
 If the setup wizard already deployed the relay for you, you can still use this guide to verify or repair the deployment.

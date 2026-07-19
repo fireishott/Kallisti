@@ -11,50 +11,50 @@ from .state import ConnectorRuntimeConfig
 
 
 @dataclass(frozen=True)
-class HermesConversationMessage:
+class HeraldConversationMessage:
     role: str
     text: str
 
 
 @dataclass(frozen=True)
-class HermesChatResult:
+class HeraldChatResult:
     text: str
     session_id: str | None = None
     usage: dict | None = None
 
 
 @dataclass(frozen=True)
-class ConnectorHermesSettings:
-    hermes_command: str
-    hermes_workdir: str | None
-    hermes_provider: str | None
-    hermes_model: str | None
-    hermes_toolsets: str | None
-    hermes_source: str
-    hermes_history_limit: int
+class ConnectorHeraldSettings:
+    herald_command: str
+    herald_workdir: str | None
+    herald_provider: str | None
+    herald_model: str | None
+    herald_toolsets: str | None
+    herald_source: str
+    herald_history_limit: int
 
     @classmethod
-    def from_env(cls) -> "ConnectorHermesSettings":
+    def from_env(cls) -> "ConnectorHeraldSettings":
         return cls(
-            hermes_command=os.getenv("HERMES_COMMAND", "hermes"),
-            hermes_workdir=os.getenv("HERMES_WORKDIR") or None,
-            hermes_provider=os.getenv("HERMES_PROVIDER") or None,
-            hermes_model=os.getenv("HERMES_MODEL") or None,
-            hermes_toolsets=os.getenv("HERMES_TOOLSETS") or None,
-            hermes_source=os.getenv("HERMES_SOURCE", "tool"),
-            hermes_history_limit=int(os.getenv("HERMES_HISTORY_LIMIT", "20")),
+            herald_command=os.getenv("HERMES_COMMAND", "hermes"),
+            herald_workdir=os.getenv("HERMES_WORKDIR") or None,
+            herald_provider=os.getenv("HERMES_PROVIDER") or None,
+            herald_model=os.getenv("HERMES_MODEL") or None,
+            herald_toolsets=os.getenv("HERMES_TOOLSETS") or None,
+            herald_source=os.getenv("HERMES_SOURCE", "tool"),
+            herald_history_limit=int(os.getenv("HERMES_HISTORY_LIMIT", "20")),
         )
 
     @classmethod
-    def from_runtime_config(cls, config: ConnectorRuntimeConfig) -> "ConnectorHermesSettings":
+    def from_runtime_config(cls, config: ConnectorRuntimeConfig) -> "ConnectorHeraldSettings":
         return cls(
-            hermes_command=config.hermes_command,
-            hermes_workdir=config.hermes_workdir,
-            hermes_provider=config.hermes_provider,
-            hermes_model=config.hermes_model,
-            hermes_toolsets=config.hermes_toolsets,
-            hermes_source=config.hermes_source,
-            hermes_history_limit=config.hermes_history_limit,
+            herald_command=config.herald_command,
+            herald_workdir=config.herald_workdir,
+            herald_provider=config.herald_provider,
+            herald_model=config.herald_model,
+            herald_toolsets=config.herald_toolsets,
+            herald_source=config.herald_source,
+            herald_history_limit=config.herald_history_limit,
         )
 
 
@@ -65,18 +65,18 @@ class CLIHermesResponse:
     missing_session: bool = False
 
 
-class HermesCLIExecutor:
+class HeraldCLIExecutor:
     SESSION_ID_PATTERN = re.compile(r"(?m)^session_id:\s*(?P<session_id>\S+)\s*$")
 
-    def __init__(self, settings: ConnectorHermesSettings | None = None) -> None:
-        self.settings = settings or ConnectorHermesSettings.from_env()
+    def __init__(self, settings: ConnectorHeraldSettings | None = None) -> None:
+        self.settings = settings or ConnectorHeraldSettings.from_env()
 
     def resolved_command_path(self) -> str | None:
-        match = shutil.which(self.settings.hermes_command)
+        match = shutil.which(self.settings.herald_command)
         if match:
             return str(Path(match).resolve())
 
-        candidate = Path(self.settings.hermes_command).expanduser()
+        candidate = Path(self.settings.herald_command).expanduser()
         if candidate.exists():
             return str(candidate.resolve())
 
@@ -89,7 +89,7 @@ class HermesCLIExecutor:
 
         completed = subprocess.run(
             [command_path, "--version"],
-            cwd=self.settings.hermes_workdir or None,
+            cwd=self.settings.herald_workdir or None,
             capture_output=True,
             text=True,
             check=False,
@@ -108,11 +108,11 @@ class HermesCLIExecutor:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None = None,
-    ) -> HermesChatResult:
-        if shutil.which(self.settings.hermes_command) is None:
-            raise RuntimeError(f"Hermes command not found: {self.settings.hermes_command}")
+    ) -> HeraldChatResult:
+        if shutil.which(self.settings.herald_command) is None:
+            raise RuntimeError(f"Hermes command not found: {self.settings.herald_command}")
 
         response = self._send_with_resume(
             latest_user_message=latest_user_message,
@@ -126,13 +126,13 @@ class HermesCLIExecutor:
         if not response.text:
             raise RuntimeError("Hermes CLI returned an empty response.")
 
-        return HermesChatResult(text=response.text, session_id=response.session_id or session_id)
+        return HeraldChatResult(text=response.text, session_id=response.session_id or session_id)
 
     def _send_with_resume(
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None,
     ) -> CLIHermesResponse:
         if session_id:
@@ -144,31 +144,31 @@ class HermesCLIExecutor:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
     ) -> CLIHermesResponse:
         prompt = self._build_prompt(latest_user_message=latest_user_message, history=history)
         return self._run_command(self._build_command(query=prompt))
 
     def _build_command(self, *, query: str, session_id: str | None = None) -> list[str]:
-        command = [self.settings.hermes_command, "chat", "-Q", "-q", query]
+        command = [self.settings.herald_command, "chat", "-Q", "-q", query]
 
         if session_id:
             command.extend(["--resume", session_id])
-        if self.settings.hermes_provider:
-            command.extend(["--provider", self.settings.hermes_provider])
-        if self.settings.hermes_model:
-            command.extend(["--model", self.settings.hermes_model])
-        if self.settings.hermes_toolsets:
-            command.extend(["--toolsets", self.settings.hermes_toolsets])
-        if self.settings.hermes_source:
-            command.extend(["--source", self.settings.hermes_source])
+        if self.settings.herald_provider:
+            command.extend(["--provider", self.settings.herald_provider])
+        if self.settings.herald_model:
+            command.extend(["--model", self.settings.herald_model])
+        if self.settings.herald_toolsets:
+            command.extend(["--toolsets", self.settings.herald_toolsets])
+        if self.settings.herald_source:
+            command.extend(["--source", self.settings.herald_source])
 
         return command
 
     def _run_command(self, command: list[str]) -> CLIHermesResponse:
         completed = subprocess.run(
             command,
-            cwd=self.settings.hermes_workdir or None,
+            cwd=self.settings.herald_workdir or None,
             capture_output=True,
             text=True,
             check=False,
@@ -223,9 +223,9 @@ class HermesCLIExecutor:
         )
         return any(stripped.startswith(prefix) for prefix in metadata_prefixes)
 
-    def _build_prompt(self, *, latest_user_message: str, history: list[HermesConversationMessage]) -> str:
+    def _build_prompt(self, *, latest_user_message: str, history: list[HeraldConversationMessage]) -> str:
         history_lines = []
-        for message in history[-self.settings.hermes_history_limit :]:
+        for message in history[-self.settings.herald_history_limit :]:
             prefix = "User" if message.role in ("user", "voice_user") else "Herald"
             history_lines.append(f"{prefix}: {message.text}")
 

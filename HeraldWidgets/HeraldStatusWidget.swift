@@ -88,7 +88,7 @@ private struct HeraldStatusView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .widgetURL(URL(string: "hermes://chat"))
+        .widgetURL(URL(string: "herald://chat"))
     }
 
     // MARK: - Accessory Circular (Lock Screen + CarPlay)
@@ -106,7 +106,7 @@ private struct HeraldStatusView: View {
                 .fill(entry.data.hostOnline ? HeraldBrand.accent : .gray)
                 .frame(width: 5, height: 5)
         }
-        .widgetURL(URL(string: "hermes://chat"))
+        .widgetURL(URL(string: "herald://chat"))
     }
 
     // MARK: - Accessory Rectangular (Lock Screen)
@@ -141,7 +141,7 @@ private struct HeraldStatusView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .widgetURL(URL(string: "hermes://chat"))
+        .widgetURL(URL(string: "herald://chat"))
     }
 }
 

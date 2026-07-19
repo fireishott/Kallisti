@@ -61,7 +61,7 @@ private struct HeraldHealthView: View {
                 )
             }
         }
-        .widgetURL(URL(string: "hermes://health"))
+        .widgetURL(URL(string: "herald://health"))
     }
 
     private func metricCard(icon: String, label: String, value: String) -> some View {

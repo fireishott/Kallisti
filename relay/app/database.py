@@ -45,8 +45,47 @@ class Database:
 
     def _run_migrations(self) -> None:
         inspector = inspect(self.engine)
+        table_names = set(inspector.get_table_names())
 
         with self.engine.begin() as connection:
+            # Herald rebrand migration: rename hermes_hosts table and columns
+            if "hermes_hosts" in table_names and "herald_hosts" not in table_names:
+                connection.execute(text("ALTER TABLE hermes_hosts RENAME TO herald_hosts"))
+                # Rebuild foreign keys that pointed to hermes_hosts
+                for table, col in [
+                    ("host_enrollment_invites", "redeemed_host_id"),
+                    ("phone_pairing_codes", "host_id"),
+                    ("phone_pairing_codes", "created_by_host_id"),
+                    ("message_jobs", "host_id"),
+                    ("voice_sessions", "host_id"),
+                ]:
+                    if table in table_names:
+                        cols = {c["name"] for c in inspector.get_columns(table)}
+                        if col in cols:
+                            pass  # FK column names don't change, only the target table
+                # Rename columns inside the now-renamed herald_hosts table
+                for old_col, new_col in [
+                    ("hermes_command", "herald_command"),
+                    ("hermes_version", "herald_version"),
+                    ("hermes_model", "herald_model"),
+                ]:
+                    try:
+                        connection.execute(text(f"ALTER TABLE herald_hosts RENAME COLUMN {old_col} TO {new_col}"))
+                    except Exception:
+                        pass  # Column may already be renamed or not exist
+            elif "hermes_hosts" in table_names and "herald_hosts" in table_names:
+                # Both exist (partial migration?) — drop old after verifying
+                connection.execute(text("DROP TABLE IF EXISTS hermes_hosts"))
+
+            # Rename hermes_session_id on conversations
+            if "conversations" in table_names:
+                conv_cols = {c["name"] for c in inspector.get_columns("conversations")}
+                if "hermes_session_id" in conv_cols and "herald_session_id" not in conv_cols:
+                    try:
+                        connection.execute(text("ALTER TABLE conversations RENAME COLUMN hermes_session_id TO herald_session_id"))
+                    except Exception:
+                        pass
+
             device_columns = {column["name"] for column in inspector.get_columns("devices")}
             if "app_state" not in device_columns:
                 connection.execute(text("ALTER TABLE devices ADD COLUMN app_state TEXT"))
@@ -56,9 +95,9 @@ class Database:
                 else:
                     connection.execute(text("ALTER TABLE devices ADD COLUMN app_state_updated_at TIMESTAMP WITH TIME ZONE"))
 
-            host_columns = {column["name"] for column in inspector.get_columns("hermes_hosts")}
-            if "hermes_model" not in host_columns:
-                connection.execute(text("ALTER TABLE hermes_hosts ADD COLUMN hermes_model TEXT"))
+            host_columns = {column["name"] for column in inspector.get_columns("herald_hosts")}
+            if "herald_model" not in host_columns:
+                connection.execute(text("ALTER TABLE herald_hosts ADD COLUMN herald_model TEXT"))
 
             push_columns = {column["name"] for column in inspector.get_columns("push_registrations")}
             if "transport" not in push_columns:
@@ -75,8 +114,8 @@ class Database:
                 connection.execute(text("ALTER TABLE push_registrations ADD COLUMN token_debug_suffix TEXT"))
 
             conversation_columns = {column["name"] for column in inspector.get_columns("conversations")}
-            if "hermes_session_id" not in conversation_columns:
-                connection.execute(text("ALTER TABLE conversations ADD COLUMN hermes_session_id TEXT"))
+            if "herald_session_id" not in conversation_columns:
+                connection.execute(text("ALTER TABLE conversations ADD COLUMN herald_session_id TEXT"))
 
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "delivery_status" not in message_columns:

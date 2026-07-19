@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 
-logger = logging.getLogger("hermes.relay")
+logger = logging.getLogger("herald.relay")
 
 import json
 
@@ -28,8 +28,8 @@ from .app_attest import AppAttestVerificationError, verify_app_attest_registrati
 from .app_attest_trust import AppAttestTrustAnchorError, load_bundled_app_attest_roots
 from .config import Settings
 from .database import Database
-from .hermes_adapter import build_hermes_adapter
-from .models import Conversation, HermesHost, Message, PushRegistration
+from .herald_adapter import build_herald_adapter
+from .models import Conversation, HeraldHost, Message, PushRegistration
 from .pairing import HostSetupCodePayload, format_phone_pairing_code, build_host_setup_code
 from .push_broker import create_push_broker_challenge, serialize_push_broker_challenge
 from .push_broker import (
@@ -67,11 +67,11 @@ from .schemas import (
 )
 from .security import AuthContext, get_auth_context, get_db, get_settings, require_internal_key
 from .services import (
-    activate_hermes_host_connection,
+    activate_herald_host_connection,
     append_message,
     archive_current_conversation,
     archive_session,
-    authenticate_hermes_host,
+    authenticate_herald_host,
     build_connector_websocket_url,
     claim_next_message_job,
     complete_message_job,
@@ -82,9 +82,9 @@ from .services import (
     create_host_enrollment_invite,
     create_inbox_item,
     create_message_job,
-    current_hermes_host_for_user,
+    current_herald_host_for_user,
     active_push_registrations_for_user,
-    deactivate_hermes_host_connection,
+    deactivate_herald_host_connection,
     delete_session,
     device_is_foreground,
     end_voice_session,
@@ -98,7 +98,7 @@ from .services import (
     get_voice_session,
     inject_voice_transcript,
     get_user_message_by_client_message_id,
-    hermes_host_is_online,
+    herald_host_is_online,
     list_conversation_messages,
     list_inbox_actions,
     list_inbox_items,
@@ -112,11 +112,11 @@ from .services import (
     refresh_auth_session,
     rename_session,
     revoke_auth_session,
-    revoke_current_hermes_host,
+    revoke_current_herald_host,
     rotate_auth_session,
     search_sessions,
     serialize_conversation,
-    serialize_hermes_host,
+    serialize_herald_host,
     serialize_inbox_item,
     serialize_message,
     serialize_session_summary,
@@ -124,7 +124,7 @@ from .services import (
     serialize_voice_turn,
     setup_connector_account,
     toggle_pin_session,
-    touch_hermes_host_connection,
+    touch_herald_host_connection,
     update_device_app_state,
     upsert_device,
     upsert_push_registration,
@@ -248,14 +248,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def _log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
-        logging.getLogger("hermes.relay").warning(
+        logging.getLogger("herald.relay").warning(
             "422 validation error on %s %s: %s", request.method, request.url.path, exc.errors()
         )
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     app.state.settings = settings
     app.state.database = database
-    app.state.hermes_adapter = build_hermes_adapter(settings)
+    app.state.herald_adapter = build_herald_adapter(settings)
     # Load the bundled + pinned Apple App Attest root CA. If the fingerprint
     # doesn't match or the file is missing, loudly surface the misconfiguration
     # rather than silently falling back to accepting any chain. The push-broker
@@ -321,11 +321,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def require_connector_host(
         authorization: str | None = Header(default=None),
         db: Session = Depends(get_db),
-    ) -> HermesHost:
+    ) -> HeraldHost:
         connector_token = parse_bearer_token(authorization)
         if connector_token is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing connector credential.")
-        return authenticate_hermes_host(db, connector_token=connector_token)
+        return authenticate_herald_host(db, connector_token=connector_token)
 
     async def wait_for_job_completion(job_id: str, timeout_seconds: int) -> object | None:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
@@ -401,7 +401,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if registration.transport == "relay":
                 sender = app.state.push_broker_sender
                 try:
-                    sent = await sender(registration=registration, title="Hermes", body=preview)
+                    sent = await sender(registration=registration, title="Herald", body=preview)
                 except Exception:
                     logger.warning("Push broker delivery failed for device %s", device.id, exc_info=True)
                     continue
@@ -411,7 +411,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             result = await apns_client.send_alert_push(
                 registration.apns_token,
-                title="Hermes",
+                title="Herald",
                 body=preview,
                 bundle_id=registration.bundle_id,
                 environment=registration.push_environment,
@@ -433,7 +433,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_id=user_id,
             device_id=None,
             kind="notification",
-            title="Hermes",
+            title="Herald",
             body=preview,
             priority="normal",
             payload={"conversationId": conversation_id, "messageId": message_id},
@@ -474,7 +474,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         session = connector_session_for_user(user_id)
         if session is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is offline.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Herald host is offline.")
 
         request_id = str(uuid.uuid4())
         waiter: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
@@ -493,13 +493,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as error:
             clear_connector_session(user_id, session.connection_nonce)
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is unavailable.") from error
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Herald host is unavailable.") from error
 
         try:
             return await asyncio.wait_for(waiter, timeout_seconds or settings.connector_rpc_timeout_seconds)
         except asyncio.TimeoutError as error:
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Hermes host did not respond in time.") from error
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Herald host did not respond in time.") from error
 
     async def forward_sensor_payload(
         *,
@@ -589,7 +589,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _ROLE_MAP = {
         "voice_user": "user",
-        "voice_hermes": "hermes",
+        "voice_herald": "herald",
     }
 
     def _normalize_role(role: str) -> str:
@@ -612,12 +612,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
         # Extract voice transcript messages so they can be injected into the
-        # Hermes agent's context even when it uses its own session history.
+        # Herald agent's context even when it uses its own session history.
         voice_transcript_lines: list[str] = []
         regular_history: list[dict] = []
         for message in history:
             if message.source == "voice_transcript" and message.role != "system":
-                speaker = "User" if message.role in ("voice_user", "user") else "Hermes"
+                speaker = "User" if message.role in ("voice_user", "user") else "Herald"
                 voice_transcript_lines.append(f"{speaker}: {message.text}")
             else:
                 regular_history.append({
@@ -787,7 +787,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             result = await apns_client.send_alert_push(
                 registration.apns_token,
-                title=payload.title or "Hermes",
+                title=payload.title or "Herald",
                 body=payload.body or "",
                 bundle_id=registration.bundle_id,
                 environment=registration.apns_environment,
@@ -811,8 +811,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=request_settings,
             platform=payload.connector.platform,
             hostname=payload.connector.hostname,
-            hermes_command=payload.connector.hermesCommand,
-            hermes_version=payload.connector.hermesVersion,
+            herald_command=payload.connector.heraldCommand,
+            herald_version=payload.connector.heraldVersion,
             connector_version=payload.connector.connectorVersion,
         )
         record_audit(
@@ -820,7 +820,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             actor_type="connector",
             actor_id=host.id,
             action="connector.setup",
-            entity_type="hermes_host",
+            entity_type="herald_host",
             entity_id=host.id,
             payload={"userId": user.id},
         )
@@ -843,7 +843,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/v1/connector/phone-pairing-codes")
     def create_phone_pairing(
-        host: HermesHost = Depends(require_connector_host),
+        host: HeraldHost = Depends(require_connector_host),
         db: Session = Depends(get_db),
         request_settings: Settings = Depends(get_settings),
     ) -> dict:
@@ -1110,7 +1110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 expires_at=invite.expires_at,
             )
         )
-        host = current_hermes_host_for_user(db, user_id=auth.user.id)
+        host = current_herald_host_for_user(db, user_id=auth.user.id)
         record_audit(
             db,
             actor_type="user",
@@ -1126,7 +1126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "setupCode": setup_code,
                 "expiresAt": invite.expires_at,
                 "relayHost": request_settings.public_base_url,
-                "host": serialize_hermes_host(db, host=host, settings=request_settings),
+                "host": serialize_herald_host(db, host=host, settings=request_settings),
             }
         )
 
@@ -1136,14 +1136,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Session = Depends(get_db),
         request_settings: Settings = Depends(get_settings),
     ) -> dict:
-        host = current_hermes_host_for_user(db, user_id=auth.user.id)
-        return success({"host": serialize_hermes_host(db, host=host, settings=request_settings)})
+        host = current_herald_host_for_user(db, user_id=auth.user.id)
+        return success({"host": serialize_herald_host(db, host=host, settings=request_settings)})
 
     @app.get("/v1/commands")
     async def command_catalog(
         auth: AuthContext = Depends(get_auth_context),
     ) -> dict:
-        """Return the full slash command catalog from the connected Hermes host.
+        """Return the full slash command catalog from the connected Herald host.
 
         Includes built-in gateway commands and installed skill commands.
         The iOS app uses this to populate its slash command autocomplete menu.
@@ -1163,7 +1163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def model_catalog(
         auth: AuthContext = Depends(get_auth_context),
     ) -> dict:
-        """Return the models configured on the connected Hermes host.
+        """Return the models configured on the connected Herald host.
 
         The iOS model selector shows this list grouped by provider. Switching
         is done via POST /v1/model, which edits the host's global default
@@ -1188,7 +1188,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body: ModelSetRequest,
         auth: AuthContext = Depends(get_auth_context),
     ) -> dict:
-        """Set the global default model on the connected Hermes host.
+        """Set the global default model on the connected Herald host.
 
         This edits the host's config.yaml directly via the connector's
         model.set RPC — equivalent to `/model <name> --global` in the TUI.
@@ -1337,13 +1337,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         auth: AuthContext = Depends(get_auth_context),
         db: Session = Depends(get_db),
     ) -> dict:
-        host = revoke_current_hermes_host(db, user_id=auth.user.id)
+        host = revoke_current_herald_host(db, user_id=auth.user.id)
         record_audit(
             db,
             actor_type="user",
             actor_id=auth.user.id,
             action="host.revoke",
-            entity_type="hermes_host",
+            entity_type="herald_host",
             entity_id=host.id if host else None,
         )
         db.commit()
@@ -1355,25 +1355,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Session = Depends(get_db),
         request_settings: Settings = Depends(get_settings),
     ) -> dict:
-        host = current_hermes_host_for_user(db, user_id=auth.user.id)
-        host_data = serialize_hermes_host(db, host=host, settings=request_settings)
+        host = current_herald_host_for_user(db, user_id=auth.user.id)
+        host_data = serialize_herald_host(db, host=host, settings=request_settings)
         if host is None:
             return success(
                 {
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Connect a Hermes host before starting talk mode.",
+                    "blockedReason": "Connect a Herald host before starting talk mode.",
                     "host": host_data,
                 }
             )
-        if not hermes_host_is_online(db, host=host, settings=request_settings):
+        if not herald_host_is_online(db, host=host, settings=request_settings):
             return success(
                 {
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Your Hermes host is offline.",
+                    "blockedReason": "Your Herald host is offline.",
                     "host": host_data,
                 }
             )
@@ -1400,9 +1400,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Session = Depends(get_db),
         request_settings: Settings = Depends(get_settings),
     ) -> JSONResponse:
-        host = current_hermes_host_for_user(db, user_id=auth.user.id)
-        if host is None or not hermes_host_is_online(db, host=host, settings=request_settings):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Hermes host must be online to start talk mode.")
+        host = current_herald_host_for_user(db, user_id=auth.user.id)
+        if host is None or not herald_host_is_online(db, host=host, settings=request_settings):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Herald host must be online to start talk mode.")
 
         voice_session, relay_tool_token = create_voice_session(
             db,
@@ -1577,8 +1577,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connector_display_name=payload.displayName,
             platform=payload.connector.platform,
             hostname=payload.connector.hostname,
-            hermes_command=payload.connector.hermesCommand,
-            hermes_version=payload.connector.hermesVersion,
+            herald_command=payload.connector.heraldCommand,
+            herald_version=payload.connector.heraldVersion,
             connector_version=payload.connector.connectorVersion,
         )
         record_audit(
@@ -1833,8 +1833,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sent = 0
         for reg in registrations:
             if push_type == "alert":
-                title = payload.get("title", "Hermes")
-                body_text = payload.get("body", "New message from Hermes")
+                title = payload.get("title", "Herald")
+                body_text = payload.get("body", "New message from Herald")
                 result = await apns_client.send_alert_push(
                     reg.apns_token,
                     title=title,
@@ -1872,7 +1872,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=user_id,
                 device_id=None,
                 kind="notification",
-                title=payload.get("title", "Hermes"),
+                title=payload.get("title", "Herald"),
                 body=payload.get("body", "New message")[:200],
                 priority="normal",
                 payload={"conversationId": payload.get("conversationId")},
@@ -2134,7 +2134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
         else:
             conversation = get_or_create_current_conversation(db, user_id=auth.user.id, device_id=auth.device.id)
-        initial_delivery_status = "pending" if request_settings.hermes_adapter == "connector" else "sent"
+        initial_delivery_status = "pending" if request_settings.herald_adapter == "connector" else "sent"
         attachments_raw = (
             [att.model_dump() for att in payload.attachments]
             if payload.attachments
@@ -2156,21 +2156,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_id=auth.user.id,
             conversation_id=conversation.id,
             user_message_id=user_message.id,
-            session_id_snapshot=conversation.hermes_session_id,
+            session_id_snapshot=conversation.herald_session_id,
         )
 
-        if request_settings.hermes_adapter == "connector":
+        if request_settings.herald_adapter == "connector":
             # Pre-create the event buffer so streaming events are captured
             # even before the iOS client opens its SSE connection.
             ensure_job_event_buffer(job.id)
-            host = current_hermes_host_for_user(db, user_id=auth.user.id)
-            if host is not None and hermes_host_is_online(db, host=host, settings=request_settings):
+            host = current_herald_host_for_user(db, user_id=auth.user.id)
+            if host is not None and herald_host_is_online(db, host=host, settings=request_settings):
                 await wait_for_job_completion(job.id, request_settings.connector_sync_wait_seconds)
         else:
             process_message_job_with_adapter(
                 db,
                 job_id=job.id,
-                adapter=app.state.hermes_adapter,
+                adapter=app.state.herald_adapter,
             )
             db.expire_all()
             completed_job = get_message_job(db, job_id=job.id)
@@ -2191,7 +2191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # opens an SSE connection for streaming. If we return "delivered" here
         # (because the connector finished before db.expire_all), the client
         # skips SSE and never sees streaming events.
-        if request_settings.hermes_adapter == "connector" and payload_data["replyState"] != "failed":
+        if request_settings.herald_adapter == "connector" and payload_data["replyState"] != "failed":
             payload_data["replyState"] = "pending"
             strip_current_job_result_from_pending_payload(payload_data, job_id=job.id)
             status_code = status.HTTP_202_ACCEPTED
@@ -2398,7 +2398,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         record_audit(
             db,
-            actor_type="hermes",
+            actor_type="herald",
             action="internal.inbox.create",
             entity_type="inbox_item",
             entity_id=item.id,
@@ -2454,17 +2454,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             with database.session() as db:
-                host = authenticate_hermes_host(db, connector_token=connector_token)
-                activated_host = activate_hermes_host_connection(
+                host = authenticate_herald_host(db, connector_token=connector_token)
+                activated_host = activate_herald_host_connection(
                     db,
                     host=host,
                     connection_nonce=connection_nonce,
                     connector_version=connector_info.get("connectorVersion", "unknown"),
                     platform=connector_info.get("platform", "unknown"),
                     hostname=connector_info.get("hostname", "unknown"),
-                    hermes_command=connector_info.get("hermesCommand", "hermes"),
-                    hermes_version=connector_info.get("hermesVersion"),
-                    hermes_model=connector_info.get("hermesModel"),
+                    herald_command=connector_info.get("heraldCommand", "hermes"),
+                    herald_version=connector_info.get("heraldVersion"),
+                    herald_model=connector_info.get("heraldModel"),
                     display_name=connector_info.get("displayName"),
                 )
                 host_id = activated_host.id
@@ -2480,14 +2480,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ready_payload = {
                     "type": "ready",
                     "version": 1,
-                    "host": serialize_hermes_host(db, host=activated_host, settings=settings),
+                    "host": serialize_herald_host(db, host=activated_host, settings=settings),
                 }
 
             await websocket.send_json(jsonable_encoder(ready_payload))
 
             while True:
                 with database.session() as db:
-                    host = db.get(HermesHost, host_id)
+                    host = db.get(HeraldHost, host_id)
                     if host is None or host.active_connection_nonce != connection_nonce or host.revoked_at is not None:
                         await websocket.close(code=4401)
                         return
@@ -2548,7 +2548,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                         while True:
                             if time.monotonic() >= job_deadline:
-                                fail_stuck_job("Hermes host stopped responding.")
+                                fail_stuck_job("Herald host stopped responding.")
                                 await websocket.close(code=1011)
                                 return
 
@@ -2558,14 +2558,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     timeout=settings.connector_heartbeat_timeout_seconds,
                                 )
                             except asyncio.TimeoutError:
-                                fail_stuck_job("Hermes host stopped responding.")
+                                fail_stuck_job("Herald host stopped responding.")
                                 await websocket.close(code=1011)
                                 return
 
                             message_type = incoming.get("type")
                             if message_type == "heartbeat":
                                 with database.session() as db:
-                                    touched = touch_hermes_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+                                    touched = touch_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
                                 if touched is None:
                                     await websocket.close(code=4401)
                                     return
@@ -2650,7 +2650,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         db,
                                         job_id=claimed_job.id,
                                         connection_nonce=connection_nonce,
-                                        error_text=incoming.get("error", "Hermes connector failed."),
+                                        error_text=incoming.get("error", "Herald connector failed."),
                                         retryable=bool(incoming.get("retryable", False)),
                                     )
                                     if failed is None:
@@ -2693,7 +2693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 if incoming.get("type") == "heartbeat":
                     with database.session() as db:
-                        touched = touch_hermes_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+                        touched = touch_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
                     if touched is None:
                         await websocket.close(code=4401)
                         return
@@ -2705,7 +2705,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         delivered=incoming.get("deliveryState", "delivered") == "delivered",
                     )
                     with database.session() as db:
-                        touched = touch_hermes_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+                        touched = touch_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
                     if touched is None:
                         await websocket.close(code=4401)
                         return
@@ -2719,7 +2719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         error=incoming.get("error"),
                     )
                     with database.session() as db:
-                        touched = touch_hermes_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+                        touched = touch_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
                     if touched is None:
                         await websocket.close(code=4401)
                         return
@@ -2743,7 +2743,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             db,
                             job_id=in_flight_job_id,
                             connection_nonce=connection_nonce,
-                            error_text="Hermes connector disconnected before completing the response.",
+                            error_text="Herald connector disconnected before completing the response.",
                             retryable=False,
                         )
                         result_message = (
@@ -2758,7 +2758,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "data": {
                             "jobId": in_flight_job_id,
                             "status": "failed",
-                            "error": "Hermes connector disconnected.",
+                            "error": "Herald connector disconnected.",
                             "message": result_message,
                         },
                     })
@@ -2771,7 +2771,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if host_id is not None:
                 clear_connector_session(user_id, connection_nonce)
                 with database.session() as db:
-                    deactivate_hermes_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+                    deactivate_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
 
     return app
 

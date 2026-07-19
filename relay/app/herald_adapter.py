@@ -10,47 +10,47 @@ from .config import Settings
 
 
 @dataclass(frozen=True)
-class HermesConversationMessage:
+class HeraldConversationMessage:
     role: str
     text: str
 
 
 @dataclass(frozen=True)
-class HermesChatResult:
+class HeraldChatResult:
     text: str
     session_id: str | None = None
 
 
 @dataclass(frozen=True)
-class CLIHermesResponse:
+class CLIHeraldResponse:
     text: str
     session_id: str | None
     missing_session: bool = False
 
 
-class HermesAdapter(Protocol):
+class HeraldAdapter(Protocol):
     def send_message(
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None = None,
-    ) -> HermesChatResult:
+    ) -> HeraldChatResult:
         ...
 
 
-class MockHermesAdapter:
+class MockHeraldAdapter:
     def send_message(
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None = None,
-    ) -> HermesChatResult:
-        return HermesChatResult(text=f"Mock Herald reply: {latest_user_message}")
+    ) -> HeraldChatResult:
+        return HeraldChatResult(text=f"Mock Herald reply: {latest_user_message}")
 
 
-class CLIHermesAdapter:
+class CLIHeraldAdapter:
     SESSION_ID_PATTERN = re.compile(r"(?m)^session_id:\s*(?P<session_id>\S+)\s*$")
 
     def __init__(self, settings: Settings) -> None:
@@ -60,11 +60,11 @@ class CLIHermesAdapter:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None = None,
-    ) -> HermesChatResult:
-        if shutil.which(self.settings.hermes_command) is None:
-            raise RuntimeError(f"Herald command not found: {self.settings.hermes_command}")
+    ) -> HeraldChatResult:
+        if shutil.which(self.settings.herald_command) is None:
+            raise RuntimeError(f"Herald command not found: {self.settings.herald_command}")
 
         response = self._send_with_resume(
             latest_user_message=latest_user_message,
@@ -78,15 +78,15 @@ class CLIHermesAdapter:
         if not response.text:
             raise RuntimeError("Herald CLI returned an empty response.")
 
-        return HermesChatResult(text=response.text, session_id=response.session_id or session_id)
+        return HeraldChatResult(text=response.text, session_id=response.session_id or session_id)
 
     def _send_with_resume(
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
+        history: list[HeraldConversationMessage],
         session_id: str | None,
-    ) -> CLIHermesResponse:
+    ) -> CLIHeraldResponse:
         if session_id:
             command = self._build_command(query=latest_user_message, session_id=session_id)
             return self._run_command(command)
@@ -96,31 +96,31 @@ class CLIHermesAdapter:
         self,
         *,
         latest_user_message: str,
-        history: list[HermesConversationMessage],
-    ) -> CLIHermesResponse:
+        history: list[HeraldConversationMessage],
+    ) -> CLIHeraldResponse:
         prompt = self._build_prompt(latest_user_message=latest_user_message, history=history)
         return self._run_command(self._build_command(query=prompt))
 
     def _build_command(self, *, query: str, session_id: str | None = None) -> list[str]:
-        command = [self.settings.hermes_command, "chat", "-Q", "-q", query]
+        command = [self.settings.herald_command, "chat", "-Q", "-q", query]
 
         if session_id:
             command.extend(["--resume", session_id])
-        if self.settings.hermes_provider:
-            command.extend(["--provider", self.settings.hermes_provider])
-        if self.settings.hermes_model:
-            command.extend(["--model", self.settings.hermes_model])
-        if self.settings.hermes_toolsets:
-            command.extend(["--toolsets", self.settings.hermes_toolsets])
-        if self.settings.hermes_source:
-            command.extend(["--source", self.settings.hermes_source])
+        if self.settings.herald_provider:
+            command.extend(["--provider", self.settings.herald_provider])
+        if self.settings.herald_model:
+            command.extend(["--model", self.settings.herald_model])
+        if self.settings.herald_toolsets:
+            command.extend(["--toolsets", self.settings.herald_toolsets])
+        if self.settings.herald_source:
+            command.extend(["--source", self.settings.herald_source])
 
         return command
 
-    def _run_command(self, command: list[str]) -> CLIHermesResponse:
+    def _run_command(self, command: list[str]) -> CLIHeraldResponse:
         completed = subprocess.run(
             command,
-            cwd=self.settings.hermes_workdir or None,
+            cwd=self.settings.herald_workdir or None,
             capture_output=True,
             text=True,
             check=False,
@@ -132,7 +132,7 @@ class CLIHermesAdapter:
 
         return self._parse_cli_output(completed.stdout)
 
-    def _parse_cli_output(self, output: str) -> CLIHermesResponse:
+    def _parse_cli_output(self, output: str) -> CLIHeraldResponse:
         session_match = self.SESSION_ID_PATTERN.search(output)
         session_id = session_match.group("session_id") if session_match else None
         body = self.SESSION_ID_PATTERN.sub("", output).strip()
@@ -142,7 +142,7 @@ class CLIHermesAdapter:
             lines.pop(0)
 
         text = "\n".join(lines).strip()
-        return CLIHermesResponse(
+        return CLIHeraldResponse(
             text=text,
             session_id=session_id,
             missing_session=text.startswith("Session not found:"),
@@ -153,12 +153,12 @@ class CLIHermesAdapter:
         return (
             not stripped
             or stripped.startswith("↻ Resumed session ")
-            or stripped.startswith("╭─ ⚕ Hermes")
+            or stripped.startswith("╭─ ⚕ Herald")
         )
 
-    def _build_prompt(self, *, latest_user_message: str, history: list[HermesConversationMessage]) -> str:
+    def _build_prompt(self, *, latest_user_message: str, history: list[HeraldConversationMessage]) -> str:
         history_lines = []
-        for message in history[-self.settings.hermes_history_limit :]:
+        for message in history[-self.settings.herald_history_limit :]:
             prefix = "User" if message.role == "user" else "Herald"
             history_lines.append(f"{prefix}: {message.text}")
 
@@ -173,7 +173,7 @@ class CLIHermesAdapter:
         )
 
 
-def build_hermes_adapter(settings: Settings) -> HermesAdapter:
-    if settings.hermes_adapter == "cli":
-        return CLIHermesAdapter(settings)
-    return MockHermesAdapter()
+def build_herald_adapter(settings: Settings) -> HeraldAdapter:
+    if settings.herald_adapter == "cli":
+        return CLIHeraldAdapter(settings)
+    return MockHeraldAdapter()

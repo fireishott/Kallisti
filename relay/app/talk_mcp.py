@@ -1,8 +1,8 @@
 """MCP endpoint for voice mode tool delegation.
 
 Implements the MCP Streamable HTTP protocol directly for a single tool:
-``hermes_delegate``.  OpenAI's Realtime API calls this server-side during
-voice sessions to delegate requests to the Hermes agent.
+``herald_delegate``.  OpenAI's Realtime API calls this server-side during
+voice sessions to delegate requests to the Herald agent.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 HERMES_DELEGATE_TOOL = {
-    "name": "hermes_delegate",
+    "name": "herald_delegate",
     "description": (
-        "Delegate a voice request to the connected Hermes host. "
+        "Delegate a voice request to the connected Herald host. "
         "Use this when the user asks for something that requires "
         "tool access, file reads, memory lookups, or any action "
         "beyond what your cached context provides."
@@ -37,14 +37,14 @@ HERMES_DELEGATE_TOOL = {
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The natural-language request to send to Hermes.",
+                "description": "The natural-language request to send to Herald.",
             },
         },
         "required": ["prompt"],
     },
 }
 
-MCP_SERVER_INFO = {"name": "hermes-mobile-talk", "version": "1.0.0"}
+MCP_SERVER_INFO = {"name": "herald-talk", "version": "1.0.0"}
 MCP_CAPABILITIES = {"tools": {"listChanged": False}}
 
 
@@ -184,7 +184,7 @@ async def _handle_tools_call(
     tool_name = params.get("name", "")
     arguments = params.get("arguments", {})
 
-    if tool_name != "hermes_delegate":
+    if tool_name != "herald_delegate":
         return _err(req_id, -32601, f"Unknown tool: {tool_name}")
 
     prompt = arguments.get("prompt", "").strip()
@@ -202,7 +202,7 @@ async def _handle_tools_call(
                 text=prompt,
             )
 
-        # Delegate to the Hermes agent via the connector
+        # Delegate to the Herald agent via the connector
         result = await app.state.send_connector_rpc(
             user_id,
             method="talk.delegate",
@@ -222,7 +222,7 @@ async def _handle_tools_call(
                 voice_session_id=voice_session.id,
                 role="assistant",
                 source="tool",
-                text=text or "Hermes returned an empty delegation result.",
+                text=text or "Herald returned an empty delegation result.",
             )
 
         return _ok(req_id, {
@@ -230,7 +230,7 @@ async def _handle_tools_call(
             "isError": False,
         })
     except Exception:
-        logger.exception("hermes_delegate failed")
+        logger.exception("herald_delegate failed")
         return _ok(req_id, {
             "content": [{"type": "text", "text": "The delegation request failed. Please try again."}],
             "isError": True,

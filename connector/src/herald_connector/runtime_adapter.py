@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import AsyncIterator, Protocol
 
-from .hermes_runner import HermesCLIExecutor, HermesConversationMessage
+from .herald_runner import HeraldCLIExecutor, HeraldConversationMessage
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,10 @@ class HostRuntimeAdapter(Protocol):
     ) -> RuntimeTurnResult: ...
 
 
-class HermesRuntimeAdapter:
+class HeraldRuntimeAdapter:
     """CLI subprocess adapter (original implementation)."""
 
-    def __init__(self, executor: HermesCLIExecutor) -> None:
+    def __init__(self, executor: HeraldCLIExecutor) -> None:
         self.executor = executor
 
     def send_text_message(
@@ -53,7 +53,7 @@ class HermesRuntimeAdapter:
         result = self.executor.send_message(
             latest_user_message=latest_user_message,
             history=[
-                HermesConversationMessage(role=message.role, text=message.text)
+                HeraldConversationMessage(role=message.role, text=message.text)
                 for message in history
             ],
             session_id=session_id,
@@ -74,10 +74,10 @@ class HermesRuntimeAdapter:
         return RuntimeTurnResult(text=result.text, session_id=result.session_id)
 
 
-class HermesAPIRuntimeAdapter:
-    """HTTP API adapter — talks to the Hermes API server with streaming support."""
+class HeraldAPIRuntimeAdapter:
+    """HTTP API adapter — talks to the Herald API server with streaming support."""
 
-    def __init__(self, executor) -> None:  # HermesAPIExecutor
+    def __init__(self, executor) -> None:  # HeraldAPIExecutor
         self.executor = executor
         self.supports_streaming = True
 
@@ -93,7 +93,7 @@ class HermesAPIRuntimeAdapter:
             self.executor.send_message(
                 latest_user_message=latest_user_message,
                 history=[
-                    HermesConversationMessage(role=message.role, text=message.text)
+                    HeraldConversationMessage(role=message.role, text=message.text)
                     for message in history
                 ],
                 session_id=session_id,
@@ -117,7 +117,7 @@ class HermesAPIRuntimeAdapter:
         async for event in self.executor.stream_message(
             latest_user_message=latest_user_message,
             history=[
-                HermesConversationMessage(role=message.role, text=message.text)
+                HeraldConversationMessage(role=message.role, text=message.text)
                 for message in history
             ],
             session_id=session_id,

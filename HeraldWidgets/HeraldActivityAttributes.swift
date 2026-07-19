@@ -7,7 +7,7 @@ struct HeraldActivityAttributes: ActivityAttributes, Sendable {
     /// Dynamic data — updated throughout the activity's lifetime.
     struct ContentState: Codable, Hashable, Sendable {
         var status: String            // "Listening", "Thinking", "Working on that…"
-        var toolName: String?         // e.g., "hermes_delegate", "vision_analyze"
+        var toolName: String?         // e.g., "herald_delegate", "vision_analyze"
         var elapsedSeconds: Int       // seconds since activity started (fallback for non-timer contexts)
         var startDate: Date?          // used by Text(timerInterval:) for a live-ticking clock
         var sessionType: String       // "voice", "chat", "tool"

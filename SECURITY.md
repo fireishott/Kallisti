@@ -2,7 +2,7 @@
 
 ## Reporting Vulnerabilities
 
-If you discover a security vulnerability in Hermes iOS, please report it responsibly:
+If you discover a security vulnerability in Herald, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities
 2. Email security concerns to the maintainers directly
@@ -17,7 +17,7 @@ We will acknowledge receipt within 48 hours and work with you on a fix.
 The relay is the only internet-facing component. It handles:
 
 - **Authentication:** Bearer token auth for iOS clients, connector credential for WebSocket
-- **CONNECTOR_SETUP_SECRET:** Optional shared secret that gates new connector registration. When set as an env var on the relay, the connector must provide the same value during `hermes-mobile setup`. Strongly recommended for production deployments.
+- **CONNECTOR_SETUP_SECRET:** Optional shared secret that gates new connector registration. When set as an env var on the relay, the connector must provide the same value during `herald-connector setup`. Strongly recommended for production deployments.
 - **INTERNAL_API_KEY:** Gates internal admin endpoints. Must be changed from the default `"replace-me"` in production — the relay logs a security warning if the default is used outside development.
 - **Token lifecycle:** Access tokens (1h default), refresh tokens (30d default), phone pairing codes (10min default) are all configurable via env vars.
 
@@ -26,14 +26,14 @@ The relay is the only internet-facing component. It handles:
 The connector runs on the same machine as the Hermes Agent:
 
 - **WebSocket auth:** Authenticates to the relay using a credential obtained during setup
-- **Sensor data:** Stored locally in SQLite at `~/.hermes-mobile/state/sensors.db`
+- **Sensor data:** Stored locally in SQLite at `/.herald/state/sensors.db`
 - **MCP tools:** The `query_sensor_data` tool opens a read-only SQLite connection, preventing write-based SQL injection even if the LLM crafts a malicious query
-- **OpenAI API key:** Stored in `~/.hermes-mobile/secrets.json` (not in state.json), used only for Realtime voice sessions
+- **OpenAI API key:** Stored in `/.herald/secrets.json` (not in state.json), used only for Realtime voice sessions
 
 ### iOS App
 
 - **Relay URL:** Configured during onboarding, persisted locally. Not hardcoded.
-- **Credentials:** Stored in the iOS Keychain (service name: `io.hermesmobile.Herald.session`)
+- **Credentials:** Stored in the iOS Keychain (service name: `net.fihonline.herald.session`)
 - **Health data:** Read-only HealthKit access, uploaded to the relay only when the connector is connected and acknowledges receipt
 - **Camera/mic:** Requested just-in-time, not at launch. Camera frames for voice mode are sent directly to OpenAI via WebRTC, not through the relay.
 

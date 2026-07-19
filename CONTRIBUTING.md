@@ -1,6 +1,6 @@
-# Contributing to Hermes iOS
+# Contributing to Herald
 
-Thanks for your interest in contributing! This project is an independent iOS companion app for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) framework, with a self-hosted relay and connector architecture.
+Thanks for your interest in contributing! This project is an independent iOS companion app for the [Herald Agent](https://github.com/NousResearch/hermes-agent) framework, with a self-hosted relay and connector architecture.
 
 ## Getting Started
 
@@ -8,7 +8,7 @@ Thanks for your interest in contributing! This project is an independent iOS com
 2. Read [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for env var reference
 3. Set up local development:
    - **Relay:** `cd relay && pip install -e . && uvicorn app.main:app`
-   - **Connector:** `cd connector && pip install -e . && hermes-mobile setup`
+   - **Connector:** `cd connector && pip install -e . && herald-connector setup`
    - **iOS App:** Open `Herald.xcodeproj` in Xcode 26+
 
 ## Development Requirements
@@ -16,7 +16,7 @@ Thanks for your interest in contributing! This project is an independent iOS com
 - **iOS App:** Xcode 26+, iOS 26 SDK, Swift 6.2
 - **Relay:** Python 3.12+
 - **Connector:** Python 3.11+
-- **Hermes Agent:** Installed locally with MCP support
+- **Herald Agent:** Installed locally with MCP support
 
 ## Running Tests
 
@@ -50,11 +50,11 @@ xcodebuild test -project Herald.xcodeproj -scheme Herald \
 The codebase has three independent pieces that communicate over the network:
 
 ```
-iOS App ──HTTP/SSE──▶ Relay ◀──WebSocket──▶ Connector ──▶ Hermes Agent
+iOS App ──HTTP/SSE──▶ Relay ◀──WebSocket──▶ Connector ──▶ Herald Agent
 ```
 
 - **Relay** is stateless and deployable anywhere (Fly.io, Railway, your own server)
-- **Connector** runs alongside the Hermes Agent on the user's machine
+- **Connector** runs alongside the Herald Agent on the user's machine
 - **iOS App** connects to the relay via the URL configured during onboarding
 
 Changes to wire protocols (WebSocket messages, SSE events, REST endpoints) require coordination across all three. Changes within a single component (UI, MCP tools, sensor storage) can be developed independently.
@@ -65,4 +65,4 @@ Please use GitHub Issues. Include:
 - Which component (iOS app, relay, connector)
 - Steps to reproduce
 - Relevant logs (strip personal info)
-- Your deployment setup (self-hosted relay URL, Hermes version)
+- Your deployment setup (self-hosted relay URL, Herald version)

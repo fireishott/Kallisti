@@ -14,7 +14,7 @@ import subprocess
 import sys
 import uuid
 
-logger = logging.getLogger("hermes.mobile.connector")
+logger = logging.getLogger("herald.connector")
 
 import httpx
 from websockets.asyncio.client import connect as websocket_connect
@@ -53,7 +53,7 @@ _GATEWAY_COMMANDS: list[dict] = [
     {"name": "help", "description": "Show available commands", "category": "Info", "args": None, "aliases": [], "gatewayOnly": False},
     {"name": "usage", "description": "Show token usage", "category": "Info", "args": None, "aliases": [], "gatewayOnly": False},
     {"name": "insights", "description": "Show usage insights", "category": "Info", "args": "[days]", "aliases": [], "gatewayOnly": False},
-    {"name": "update", "description": "Update Hermes Agent", "category": "Info", "args": None, "aliases": [], "gatewayOnly": True},
+    {"name": "update", "description": "Update Herald Agent", "category": "Info", "args": None, "aliases": [], "gatewayOnly": True},
 ]
 
 
@@ -182,8 +182,8 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
         pass
     return None
 from .git_diff import capture_diff, capture_snapshot
-from .hermes_api_executor import HermesAPIExecutor
-from .hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from .herald_api_executor import HeraldAPIExecutor
+from .herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
 from .mcp_registration import (
     inspect_native_mcp_registration,
     native_mcp_readiness_message,
@@ -192,7 +192,7 @@ from .mcp_registration import (
     validate_native_mcp_server,
 )
 from .sensor_store import HealthSample, LocationReading, SensorStore
-from .runtime_adapter import HermesAPIRuntimeAdapter, HermesRuntimeAdapter, HostRuntimeAdapter, RuntimeConversationMessage
+from .runtime_adapter import HeraldAPIRuntimeAdapter, HeraldRuntimeAdapter, HostRuntimeAdapter, RuntimeConversationMessage
 from .service_management import build_service_manager
 from .setup_code import decode_host_setup_code
 from .state import (
@@ -358,17 +358,17 @@ def _read_dynamic_catalog_models(hermes_home: Path, config: dict) -> list[dict]:
     return results
 
 
-class HermesMobileConnector:
+class HeraldConnector:
     def __init__(
         self,
         *,
         state_store: ConnectorStateStore | None = None,
-        executor: HermesCLIExecutor | None = None,
+        executor: HeraldCLIExecutor | None = None,
         heartbeat_interval_seconds: float = 10.0,
         reconnect_delay_seconds: float = 3.0,
     ) -> None:
         self.state_store = state_store or ConnectorStateStore()
-        self.executor = executor or HermesCLIExecutor()
+        self.executor = executor or HeraldCLIExecutor()
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self._sensor_store: SensorStore | None = None
@@ -386,10 +386,10 @@ class HermesMobileConnector:
         self,
         *,
         display_name: str | None = None,
-        settings: ConnectorHermesSettings | None = None,
+        settings: ConnectorHeraldSettings | None = None,
     ) -> ConnectorMetadata:
         effective_settings = settings or self.executor.settings
-        version_executor = HermesCLIExecutor(effective_settings)
+        version_executor = HeraldCLIExecutor(effective_settings)
         # Read model name from config
         hermes_home = self._resolve_hermes_home()
         model_info = self._read_active_model(hermes_home)
@@ -429,9 +429,9 @@ class HermesMobileConnector:
                 "platform": metadata.platform,
                 "hostname": metadata.hostname,
                 "connectorVersion": metadata.connector_version,
-                "hermesCommand": metadata.hermes_command,
-                "hermesVersion": metadata.hermes_version,
-                            "hermesModel": metadata.hermes_model,
+                "heraldCommand": metadata.hermes_command,
+                "heraldVersion": metadata.hermes_version,
+                            "heraldModel": metadata.hermes_model,
             },
         }
         setup_secret = os.getenv("CONNECTOR_SETUP_SECRET")
@@ -478,9 +478,9 @@ class HermesMobileConnector:
                     "platform": metadata.platform,
                     "hostname": metadata.hostname,
                     "connectorVersion": metadata.connector_version,
-                    "hermesCommand": metadata.hermes_command,
-                    "hermesVersion": metadata.hermes_version,
-                            "hermesModel": metadata.hermes_model,
+                    "heraldCommand": metadata.hermes_command,
+                    "heraldVersion": metadata.hermes_version,
+                            "heraldModel": metadata.hermes_model,
                 },
             },
             timeout=30.0,
@@ -697,9 +697,9 @@ class HermesMobileConnector:
                             "platform": metadata.platform,
                             "hostname": metadata.hostname,
                             "connectorVersion": metadata.connector_version,
-                            "hermesCommand": metadata.hermes_command,
-                            "hermesVersion": metadata.hermes_version,
-                            "hermesModel": metadata.hermes_model,
+                            "heraldCommand": metadata.hermes_command,
+                            "heraldVersion": metadata.hermes_version,
+                            "heraldModel": metadata.hermes_model,
                             "displayName": metadata.display_name,
                         },
                     }
@@ -2260,16 +2260,16 @@ class HermesMobileConnector:
             api_server_key=os.getenv("HERMES_API_SERVER_KEY") or None,
         )
 
-    def settings_for_state(self, state: ConnectorState) -> ConnectorHermesSettings:
+    def settings_for_state(self, state: ConnectorState) -> ConnectorHeraldSettings:
         if state.runtime_config is not None:
-            return ConnectorHermesSettings.from_runtime_config(state.runtime_config)
+            return ConnectorHeraldSettings.from_runtime_config(state.runtime_config)
         return self.executor.settings
 
-    def executor_for_state(self, state: ConnectorState) -> HermesCLIExecutor:
-        return HermesCLIExecutor(self.settings_for_state(state))
+    def executor_for_state(self, state: ConnectorState) -> HeraldCLIExecutor:
+        return HeraldCLIExecutor(self.settings_for_state(state))
 
     def runtime_adapter_for_state(self, state: ConnectorState) -> HostRuntimeAdapter:
-        return HermesRuntimeAdapter(self.executor_for_state(state))
+        return HeraldRuntimeAdapter(self.executor_for_state(state))
 
     async def runtime_adapter_for_state_async(self, state: ConnectorState) -> HostRuntimeAdapter:
         """Prefer the API server adapter when available, fall back to CLI.
@@ -2289,16 +2289,16 @@ class HermesMobileConnector:
         api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
 
         if api_url or api_key:
-            executor = HermesAPIExecutor(
+            executor = HeraldAPIExecutor(
                 api_server_url=api_url or "http://localhost:8642",
                 api_server_key=api_key,
             )
             if await executor.health_check():
-                adapter = HermesAPIRuntimeAdapter(executor)
+                adapter = HeraldAPIRuntimeAdapter(executor)
                 self._health_cache = (now, adapter)
                 return adapter
 
-        cli_adapter = HermesRuntimeAdapter(self.executor_for_state(state))
+        cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._health_cache = (now, cli_adapter)
         return cli_adapter
 

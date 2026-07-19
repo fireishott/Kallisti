@@ -166,7 +166,7 @@ final class CameraCaptureManager: NSObject {
     private var frameTimer: Timer?
     private var latestCompressedFrame: Data?
     private var isRunning = false
-    private let captureQueue = DispatchQueue(label: "hermes.camera.capture", qos: .userInitiated)
+    private let captureQueue = DispatchQueue(label: "herald.camera.capture", qos: .userInitiated)
 
     func start(front: Bool) {
         guard !isRunning else { return }

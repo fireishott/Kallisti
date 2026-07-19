@@ -137,7 +137,7 @@ struct iPadRightPanelView: View {
                 Circle().fill(.yellow).frame(width: 8, height: 8)
                 Circle().fill(.green).frame(width: 8, height: 8)
                 Spacer()
-                Text("hermes — bash")
+                Text("herald — bash")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Design.Colors.secondaryForeground)
                 Spacer()
@@ -147,12 +147,12 @@ struct iPadRightPanelView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("$ hermes agent --version")
+                    Text("$ herald agent --version")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
                     Text("Herald Agent v2.1.0 — Nous Research")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)
                     Text("")
-                    Text("$ tail -f ~/.hermes/logs/agent.log")
+                    Text("$ tail -f ~/.herald/logs/agent.log")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
                     Text("Connected to relay · Host: \(hostStore.currentHost?.displayName ?? "unknown")")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)

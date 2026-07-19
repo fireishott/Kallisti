@@ -38,7 +38,7 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
         case "discord":               "gamecontroller.fill"
         case "whatsapp":              "phone.fill"
         case "web":                   "globe"
-        case "ios", "hermes-ios":     "iphone"
+        case "ios", "herald-ios":     "iphone"
         case "cli", "terminal":       "terminal.fill"
         case "voice", "talk":         "waveform"
         default:                      "bubble.left.and.bubble.right"

@@ -157,7 +157,7 @@ final class CarPlayVoiceManager {
     }
 
     private func lastAssistantText() -> String {
-        let lastAssistant = talkStore.transcriptItems.reversed().first(where: { $0.speaker == .hermes })
+        let lastAssistant = talkStore.transcriptItems.reversed().first(where: { $0.speaker == .herald })
         let trimmed = lastAssistant?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return "Herald is speaking" }
         return String(trimmed.prefix(Self.maxTranscriptTitleLength))

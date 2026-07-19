@@ -551,7 +551,7 @@ private struct PairingStepView: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .lineSpacing(-4)
 
-                Text("printed by `hermes-mobile pair-phone`.")
+                Text("printed by `herald-connector pair-phone`.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }

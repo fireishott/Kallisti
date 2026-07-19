@@ -54,7 +54,7 @@ final class ChatStore {
     /// active profile name on the owning ProfileStore.
     var profileStore: ProfileStore?
 
-    private let hermesClient: any HeraldClientProtocol
+    private let heraldClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 
@@ -62,8 +62,8 @@ final class ChatStore {
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
 
-    init(hermesClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
-        self.hermesClient = hermesClient
+    init(heraldClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
+        self.heraldClient = heraldClient
         self.persistence = persistence
     }
 
@@ -84,7 +84,7 @@ final class ChatStore {
         let cachedConversation = conversation ?? persistence.loadConversationCache()
         conversation = mergeConversationMetadata(
             from: cachedConversation,
-            into: await hermesClient.loadConversation()
+            into: await heraldClient.loadConversation()
         )
         if let latestUsage = conversation?.latestUsage {
             lastTokenUsage = latestUsage
@@ -124,7 +124,7 @@ final class ChatStore {
         let placeholderID = UUID()
         let placeholder = Message(
             id: placeholderID,
-            sender: .hermes,
+            sender: .herald,
             content: "",
             status: .sending,
             isStreaming: true
@@ -201,7 +201,7 @@ final class ChatStore {
         clientMessageID: UUID,
         placeholderID: UUID
     ) async -> Bool {
-        let stream = hermesClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID)
+        let stream = heraldClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID)
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
@@ -280,7 +280,7 @@ final class ChatStore {
                     }
                     self.conversation = self.mergeConversationMetadata(
                         from: self.conversation,
-                        into: self.hermesClient.currentConversation
+                        into: self.heraldClient.currentConversation
                     )
                     if let latestUsage = self.conversation?.latestUsage {
                         self.lastTokenUsage = latestUsage
@@ -396,7 +396,7 @@ final class ChatStore {
         streamingMessageID = nil
         stallRetryCounts.removeAll()
         chatLiveActivity.endActivity()
-        let fresh = try await hermesClient.clearConversation()
+        let fresh = try await heraldClient.clearConversation()
         conversation = fresh
         lastTokenUsage = fresh.latestUsage
         pendingMessageSentAt = nil
@@ -438,7 +438,7 @@ final class ChatStore {
 
     func injectVoiceTranscript(voiceSessionId: UUID, duration: TimeInterval) async {
         do {
-            let updated = try await hermesClient.injectVoiceTranscript(voiceSessionId: voiceSessionId)
+            let updated = try await heraldClient.injectVoiceTranscript(voiceSessionId: voiceSessionId)
             conversation = updated
             lastTokenUsage = updated.latestUsage
 
@@ -464,7 +464,7 @@ final class ChatStore {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = formatter.string(from: Date())
-        let filename = "hermes_conversation_\(timestamp).json"
+        let filename = "herald_conversation_\(timestamp).json"
 
         let exportData: [String: Any] = [
             "title": conversation.title,
@@ -717,9 +717,9 @@ final class ChatStore {
     /// actually on screen.
     private func refreshActiveConversation() async -> Conversation? {
         if let activeID = conversation?.id {
-            return try? await hermesClient.loadConversation(id: activeID)
+            return try? await heraldClient.loadConversation(id: activeID)
         }
-        return await hermesClient.loadConversation()
+        return await heraldClient.loadConversation()
     }
 
     private func mergeConversationMetadata(
@@ -751,7 +751,7 @@ final class ChatStore {
                 local = localConversation.messages.first(where: {
                     $0.jobID == remoteJobID
                         && $0.sender == remote.sender
-                        && $0.sender == .hermes
+                        && $0.sender == .herald
                         && (!$0.toolActivities.isEmpty || $0.codeDiff != nil)
                 })
             } else {

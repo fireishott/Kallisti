@@ -55,7 +55,7 @@ Optional but recommended:
 export CONNECTOR_SETUP_SECRET=replace-with-a-bootstrap-secret
 ```
 
-If `CONNECTOR_SETUP_SECRET` is set, every connector must provide the same value during `hermes-mobile setup`.
+If `CONNECTOR_SETUP_SECRET` is set, every connector must provide the same value during `herald-connector setup`.
 
 The full variable matrix lives in [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md).
 
@@ -65,7 +65,7 @@ The tracked [fly.toml](fly.toml) contains placeholders only. Replace the app nam
 
 Two supported paths:
 
-- **Guided path**: run `hermes-mobile setup` on the connector host and choose the Fly deployment option
+- **Guided path**: run `herald-connector setup` on the connector host and choose the Fly deployment option
 - **Manual path**: follow [docs/fly-io.md](docs/fly-io.md)
 
 The tracked Fly config uses a single relay machine with SQLite on a persistent

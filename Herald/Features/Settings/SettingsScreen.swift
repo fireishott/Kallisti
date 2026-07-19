@@ -70,7 +70,7 @@ struct SettingsScreen: View {
                         iconColor: hostStatusRowColor,
                         title: "Herald Host",
                         value: hostStatusRowValue,
-                        accessibilityIdentifier: "settings.hermesHost"
+                        accessibilityIdentifier: "settings.heraldHost"
                     ) {
                         dismiss()
                         Task {

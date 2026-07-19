@@ -4,15 +4,15 @@ import Testing
 struct HeraldMobileTests {
 
     @Test func messageCreationDefaultsToSentStatus() async throws {
-        let message = Message(sender: .user, content: "Hello Hermes")
+        let message = Message(sender: .user, content: "Hello Herald")
         #expect(message.sender == .user)
-        #expect(message.content == "Hello Hermes")
+        #expect(message.content == "Hello Herald")
         #expect(message.status == .sent)
     }
 
     @Test func conversationPreviewTextShowsLastMessage() async throws {
         let messages = [
-            Message(sender: .hermes, content: "First message"),
+            Message(sender: .herald, content: "First message"),
             Message(sender: .user, content: "Second message"),
         ]
         let conversation = Conversation(title: "Test", messages: messages)

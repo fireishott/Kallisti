@@ -44,12 +44,12 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
 
-export HERMES_COMMAND=/absolute/path/to/hermes
+export HERALD_COMMAND=/absolute/path/to/hermes
 export HERMES_MOBILE_RELAY_URL=http://127.0.0.1:8000/v1   # simulator
 # or your Mac's LAN IP for a real phone
 
-hermes-mobile setup
-hermes-mobile pair-phone
+herald-connector setup
+herald-connector pair-phone
 ```
 
 ## Useful env vars

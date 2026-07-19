@@ -96,9 +96,9 @@ struct ConnectHeraldHostScreen: View {
             Text("Setup · Terminal")
                 .brandEyebrow()
 
-            setupStep(number: "1", command: "hermes-mobile setup", detail: "One-time registration")
-            setupStep(number: "2", command: "hermes-mobile pair-phone", detail: "Scan the code in-app")
-            setupStep(number: "3", command: "hermes-mobile service install", detail: "Background uptime")
+            setupStep(number: "1", command: "herald-connector setup", detail: "One-time registration")
+            setupStep(number: "2", command: "herald-connector pair-phone", detail: "Scan the code in-app")
+            setupStep(number: "3", command: "herald-connector service install", detail: "Background uptime")
         }
         .padding(Design.Spacing.lg)
         .background(Design.Colors.surface)

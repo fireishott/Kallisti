@@ -1,62 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 260" width="200" height="260">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" width="200" height="240">
   <defs>
-    <linearGradient id="flameGrad" x1="0" y1="1" x2="0.3" y2="0">
-      <stop offset="0%" stop-color="#FF3D00"/>
-      <stop offset="40%" stop-color="#FF6B00"/>
-      <stop offset="100%" stop-color="#FF9500"/>
-    </linearGradient>
-    <linearGradient id="hotCore" x1="0" y1="1" x2="0" y2="0">
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
       <stop offset="0%" stop-color="#FF6B00"/>
-      <stop offset="50%" stop-color="#FFCC00"/>
       <stop offset="100%" stop-color="#FFF5E0"/>
     </linearGradient>
-    <filter id="flameShadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
-      <feOffset dx="0" dy="2"/>
-      <feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer>
-      <feMerge>
-        <feMergeNode/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <filter id="textGlow" x="-5%" y="-10%" width="110%" height="120%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur"/>
-      <feComponentTransfer in="blur"><feFuncA type="linear" slope="0.12"/></feComponentTransfer>
-      <feMerge>
-        <feMergeNode/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
   </defs>
-
-  <!-- Flame centered -->
-  <g transform="translate(75, 10)" filter="url(#flameShadow)">
-    <path d="M32 100 C10 80 0 55 12 35 C18 25 24 38 26 45 C28 30 35 10 50 0 C45 20 48 30 52 38 C56 20 60 28 62 40 C68 28 72 40 70 58 C68 75 60 88 50 100 Z"
-          fill="url(#flameGrad)"/>
-    <path d="M50 100 C38 85 32 68 38 52 C42 42 46 50 48 58 C50 48 54 38 58 48 C62 60 60 78 50 100 Z"
-          fill="url(#hotCore)"/>
+  <g transform="translate(50, 10)">
+    <path d="M50 100 C50 100 10 60 25 30 C30 20 40 25 42 35 C44 45 30 50 35 35 C38 25 55 10 60 25 C65 40 45 55 50 65 C55 75 70 60 65 45 C62 35 75 20 80 35 C85 50 50 100 50 100Z" fill="url(#flame)"/>
   </g>
-
-  <!-- HERALD text centered -->
-  <text x="100" y="210"
-        font-family="'SF Pro Display', -apple-system, 'Helvetica Neue', Arial, sans-serif"
-        font-size="28"
-        font-weight="700"
-        letter-spacing="6"
-        text-anchor="middle"
-        fill="#F5F0E8"
-        filter="url(#textGlow)">HERALD</text>
-
-  <!-- Subtle accent line -->
-  <line x1="50" y1="222" x2="150" y2="222" stroke="#FF6B00" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
-
-  <!-- Tagline -->
-  <text x="100" y="245"
-        font-family="'SF Pro Text', -apple-system, 'Helvetica Neue', Arial, sans-serif"
-        font-size="11"
-        font-weight="500"
-        text-anchor="middle"
-        fill="#F5F0E8"
-        opacity="0.5"
-        letter-spacing="2">SELF-HOSTED AI</text>
+  <text x="100" y="180" font-family="'Helvetica Neue', Arial, sans-serif" font-size="42" font-weight="700" letter-spacing="6" fill="#F5F0E8" text-anchor="middle">HERALD</text>
 </svg>

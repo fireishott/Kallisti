@@ -780,8 +780,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             throw RelayAPIClient.ClientError.requestFailed("Failed to create WebRTC peer connection.")
         }
         let audioSource = Self.peerFactory.audioSource(with: constraints)
-        let track = Self.peerFactory.audioTrack(with: audioSource, trackId: "hermes-mobile-audio")
-        _ = connection.add(track, streamIds: ["hermes-mobile-stream"])
+        let track = Self.peerFactory.audioTrack(with: audioSource, trackId: "herald-audio")
+        _ = connection.add(track, streamIds: ["herald-stream"])
         let dataChannelConfig = RTCDataChannelConfiguration()
         let channel = connection.dataChannel(forLabel: "oai-events", configuration: dataChannelConfig)
         channel?.delegate = peerDelegate
@@ -854,7 +854,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             transcriptItems[index].text += delta
             transcriptItems[index].isPartial = true
         } else {
-            let item = TranscriptItem(speaker: .hermes, text: delta, isPartial: true)
+            let item = TranscriptItem(speaker: .herald, text: delta, isPartial: true)
             currentAssistantItemID = item.id
             if let currentAssistantConversationItemID {
                 transcriptItemIDsByConversationItemID[currentAssistantConversationItemID] = item.id
@@ -887,12 +887,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 transcriptItemIDsByConversationItemID[currentAssistantConversationItemID] = transcriptItems[index].id
             }
         } else if let last = transcriptItems.last,
-                  last.speaker == .hermes,
+                  last.speaker == .herald,
                   !last.isPartial,
                   last.text == text {
             turnID = nil
         } else if !text.isEmpty {
-            let item = TranscriptItem(speaker: .hermes, text: text, isPartial: false)
+            let item = TranscriptItem(speaker: .herald, text: text, isPartial: false)
             transcriptItems.append(item)
             turnID = item.id
             if let currentAssistantConversationItemID {
@@ -911,7 +911,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             latencyMetrics.firstAssistantFinalizedAt = .now
         }
         if let turnID {
-            persistFinalTurn(clientTurnID: turnID, speaker: .hermes, text: text)
+            persistFinalTurn(clientTurnID: turnID, speaker: .herald, text: text)
         }
         voiceState = .listening
         statusMessage = "Listening"

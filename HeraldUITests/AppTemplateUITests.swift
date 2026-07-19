@@ -7,7 +7,7 @@ final class HeraldMobileUITests: XCTestCase {
             let pairingMode: String?
         }
 
-        private static let configurationPath = "/tmp/hermesmobile-uitest-config.json"
+        private static let configurationPath = "/tmp/herald-uitest-config.json"
 
         let defaultsSuite = "uitest.defaults.\(UUID().uuidString)"
         let keychainService = "uitest.keychain.\(UUID().uuidString)"
@@ -102,7 +102,7 @@ final class HeraldMobileUITests: XCTestCase {
         completePairing(in: app, setupCode: context.setupCode)
 
         app.buttons["Open settings"].tap()
-        let manageButton = app.buttons["settings.hermesHost"]
+        let manageButton = app.buttons["settings.heraldHost"]
         XCTAssertTrue(manageButton.waitForExistence(timeout: 5))
         manageButton.tap()
 
@@ -121,7 +121,7 @@ final class HeraldMobileUITests: XCTestCase {
         completePairing(in: app, setupCode: context.setupCode)
 
         app.buttons["Open settings"].tap()
-        let manageHostButton = app.buttons["settings.hermesHost"]
+        let manageHostButton = app.buttons["settings.heraldHost"]
         XCTAssertTrue(manageHostButton.waitForExistence(timeout: 5))
         manageHostButton.tap()
 
@@ -165,7 +165,7 @@ final class HeraldMobileUITests: XCTestCase {
         XCTAssertTrue(setupCodeField.waitForExistence(timeout: 5))
         setupCodeField.tap()
         setupCodeField.typeText(setupCode)
-        app.buttons["Connect Hermes"].tap()
+        app.buttons["Connect Herald"].tap()
 
         // Permissions → Ready (tap Continue, then Open app)
         let continueFromPermissions = app.buttons["Continue"]
@@ -187,10 +187,10 @@ final class HeraldMobileUITests: XCTestCase {
         if identifiedField.exists {
             return identifiedField
         }
-        let textField = app.textFields["Reply to Hermes"]
+        let textField = app.textFields["Reply to Herald"]
         if textField.exists {
             return textField
         }
-        return app.textViews["Reply to Hermes"]
+        return app.textViews["Reply to Herald"]
     }
 }

@@ -146,7 +146,7 @@ private struct DynamicIslandMinimalPreview: View {
 
 #Preview("Lock Screen — Tool Call") {
     VStack(spacing: 20) {
-        LockScreenPreview(status: "Working on that...", toolName: "hermes_delegate", elapsedSeconds: 45)
+        LockScreenPreview(status: "Working on that...", toolName: "herald_delegate", elapsedSeconds: 45)
     }
     .padding()
     .background(Color(.systemGroupedBackground))
@@ -162,7 +162,7 @@ private struct DynamicIslandMinimalPreview: View {
 
         VStack(alignment: .leading, spacing: 6) {
             Text("Expanded").font(.caption).foregroundStyle(.secondary)
-            DynamicIslandExpandedPreview(status: "Working on that...", toolName: "hermes_delegate")
+            DynamicIslandExpandedPreview(status: "Working on that...", toolName: "herald_delegate")
                 .frame(width: 360)
         }
 

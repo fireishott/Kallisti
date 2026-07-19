@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from .client import HermesMobileConnector
+from .client import HeraldConnector
 from .state import ConnectorStateStore
 
 
@@ -14,7 +14,7 @@ def run_from_state_dir(state_dir: str) -> int:
     state = state_store.load()
     if state.runtime_config is not None and state.runtime_config.hermes_home:
         os.environ["HERMES_HOME"] = state.runtime_config.hermes_home
-    connector = HermesMobileConnector(state_store=state_store)
+    connector = HeraldConnector(state_store=state_store)
     try:
         asyncio.run(connector.run_forever())
     except KeyboardInterrupt:
