@@ -199,12 +199,17 @@ struct ChatWallpaperBackground: View {
 
     @ViewBuilder
     private var defaultBackground: some View {
-        RadialGradient(
-            colors: [tint.opacity(0.06), Color(.systemBackground)],
-            center: .center,
-            startRadius: 0,
-            endRadius: 500
-        )
+        ZStack {
+            Color(.systemBackground)
+            HeraldMark(size: 340, color: tint.opacity(0.04))
+                .offset(x: 120, y: -40)
+            RadialGradient(
+                colors: [tint.opacity(0.06), .clear],
+                center: .center,
+                startRadius: 0,
+                endRadius: 500
+            )
+        }
     }
 
     @ViewBuilder

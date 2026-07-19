@@ -269,14 +269,19 @@ private struct WelcomeStepView: View {
     let onAdvance: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Brand row
-            HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                HeraldMark(size: 22, color: Design.Colors.foreground)
-                Text("HERMES · iOS")
-                    .brandEyebrow(Design.Colors.foreground)
+        ZStack {
+            // Background silhouette
+            HeraldMark(size: 340, color: Design.Colors.foreground.opacity(0.04))
+                .offset(x: 120, y: -40)
+
+            VStack(alignment: .leading, spacing: 0) {
+                // Brand row
+                HStack(alignment: .center, spacing: Design.Spacing.xs) {
+                    HeraldMark(size: 22, color: Design.Colors.foreground)
+                    Text("HERMES · iOS")
+                        .brandEyebrow(Design.Colors.foreground)
                 Spacer()
-                Text("v0.1")
+                Text("v1.0.0")
                     .brandEyebrow()
             }
             .padding(.horizontal, Design.Spacing.md)
@@ -327,6 +332,7 @@ private struct WelcomeStepView: View {
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)
+            }
         }
     }
 }
