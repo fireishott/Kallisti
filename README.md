@@ -42,6 +42,165 @@ HERALD is a **native iOS client** for self-hosted AI runtimes. It connects to yo
 
 ---
 
+## 🍎 iOS Platform Integrations
+
+HERALD isn't a web wrapper — it's a **deeply native** iOS app that uses the platform the way Apple intended. Every integration is real, not simulated.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### ❤️ HealthKit
+Your AI has a pulse. HERALD syncs real-time health data from Apple Health so your agent can reason about your body, not just your words.
+
+- Heart rate, resting heart rate, HRV
+- Step count, distance, flights climbed
+- Sleep analysis (time in bed, time asleep)
+- Active energy, exercise minutes
+- Mindful session data
+- Background delivery — data pushes to your AI even when the app is closed
+
+</td>
+<td width="50%" valign="top">
+
+### 📍 CoreLocation
+Location-aware AI. HERALD tracks your position so your agent knows where you are, where you've been, and where you're going.
+
+- Continuous background location updates
+- Significant location change monitoring
+- Visit detection (arrival/departure)
+- Geofence awareness
+- Location data piped to your AI in real-time
+- Privacy-first: all data stays on your relay
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🏃 CoreMotion
+Your AI can feel you move. HERALD reads accelerometer, gyroscope, and activity data so your agent knows if you're walking, running, driving, or still.
+
+- CMMotionActivity (walking, running, cycling, driving, stationary)
+- Step counting via CMPedometer
+- Cadence, pace, distance
+- Altitude changes via barometric altimeter
+- Fall detection awareness
+- Motion data synced to your AI context
+
+</td>
+<td valign="top">
+
+### 🚗 CarPlay
+Hands-free AI from your dashboard. HERALD ships a full CarPlay interface so you can talk to your AI without touching your phone.
+
+- Voice-driven conversation UI
+- Siri integration for hands-free activation
+- Session list browsing on the head unit
+- Message dictation and read-back
+- Navigation-aware context (your AI knows you're driving)
+- Audio session management for in-car speakers
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🏠 Widgets & Live Activities
+Your AI on your Lock Screen and Home Screen. HERALD ships widget extensions that keep your AI connection visible at a glance.
+
+- **HeraldHealthWidget** — latest heart rate, step count, sleep summary
+- **HeraldStatusWidget** — host online/offline, connection state, model name
+- **Live Activities** — real-time streaming status on the Lock Screen during active conversations
+- Dynamic Island integration for voice sessions
+- Widget data refreshed via App Group container
+- Timeline provider with relevance-based updates
+
+</td>
+<td valign="top">
+
+### 📸 Camera & Photos
+Your AI can see. HERALD lets you attach images from your camera or photo library, and voice mode can stream live camera context to your agent.
+
+- Camera capture via UIImagePickerController
+- Photo library picker with PHPickerViewController
+- Image compression and base64 encoding for relay transport
+- Live camera feed during voice mode sessions
+- Image preview with fullscreen viewer
+- Save-to-Photos for AI-generated images
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔔 Push Notifications
+Your AI can reach you. HERALD uses APNs with silent push to wake the app when your agent has something to say, even in the background.
+
+- APNs device token registration via relay
+- Silent push for background conversation sync
+- Rich notifications with message previews
+- Notification actions (reply, dismiss)
+- Push broker architecture for token relay
+- Per-device registration with Keychain storage
+
+</td>
+<td valign="top">
+
+### 🎤 AVFoundation & Speech
+Your AI can hear. Voice mode uses OpenAI's Realtime API over WebSockets with full-duplex audio — you talk, your AI talks back, simultaneously.
+
+- OpenAI Realtime voice via WebSocket
+- Full-duplex audio streaming
+- Voice Activity Detection (VAD)
+- Push-to-talk mode
+- Audio session management (speaker, receiver, Bluetooth)
+- Voice transcript display with live streaming
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 📲 Share Extension & Siri
+Your AI is everywhere. Share content directly to HERALD from any app, and use Siri Shortcuts to trigger your AI hands-free.
+
+- Share sheet integration for text and images
+- Siri Shortcuts support
+- NSUserActivity for Spotlight search
+- Universal links for deep linking
+- URL scheme for inter-app communication
+- Pasteboard awareness for quick context
+
+</td>
+<td valign="top">
+
+### 🎨 UIKit & SwiftUI Hybrid
+Built the right way. HERALD uses SwiftUI for the interface with UIKit where it matters — haptics, pasteboard, activity view controllers, and precise gesture handling.
+
+- SwiftUI `NavigationSplitView` for iPad
+- UIKit haptics via `UIImpactFeedbackGenerator`
+- `UIPasteboard` for copy/paste
+- `UIActivityViewController` for share sheets
+- `UIDevice` orientation and model detection
+- Scene-based lifecycle (`UISceneDelegate`)
+
+</td>
+</tr>
+</table>
+
+### 🔐 Keychain & Security
+
+All sensitive data lives in the Keychain, not UserDefaults.
+
+- APNs device token stored as `ThisDeviceOnly`
+- Session access tokens with `AfterFirstUnlock` protection
+- Biometric-protected secure storage
+- App Attest for push broker authentication
+- No data leaves your infrastructure — ever
+
+---
+
 ## Features
 
 <table>
@@ -61,55 +220,15 @@ HERALD is a **native iOS client** for self-hosted AI runtimes. It connects to yo
 </td>
 <td width="50%">
 
-### 🎙️ Voice Mode
-- OpenAI Realtime voice integration
-- Live camera context during conversations
-- Tool delegation — your AI can act while you talk
-- Voice transcript display with mode indicators
-- Push-to-talk and hands-free CarPlay support
-
-</td>
-</tr>
-<tr>
-<td>
-
-### 📱 iPad Native
-- Full `NavigationSplitView` layout
-- Session browser sidebar
-- Right panel: logs, terminal, tools, canvas
-- Split-view multitasking support
-- Keyboard shortcuts
-
-</td>
-<td>
-
 ### 🔧 Session Management
 - Pin, archive, rename, search sessions
 - Device-scoped session isolation
 - Context window usage ring
 - Model switching via direct RPC
 - Slash command autocomplete
-
-</td>
-</tr>
-<tr>
-<td>
-
-### 📡 Sensors
-- HealthKit data sync (heart rate, steps, sleep)
-- Real-time location tracking
-- CoreMotion activity data
-- Sensor data piped to your AI agent
-
-</td>
-<td>
-
-### 🎨 Themes & Customization
-- 6 built-in theme presets
-- Custom chat wallpapers
-- Dark-first design language
-- Herald brand palette (molten orange + deep ink)
-- Haptic feedback controls
+- Context compaction with budget warnings
+- Cron job scheduling from your phone
+- Skills browser and profile switching
 
 </td>
 </tr>
@@ -152,7 +271,7 @@ See [docs/BUILDING.md](docs/BUILDING.md) for detailed signing and entitlements i
 
 | Layer | Technology |
 |-------|-----------|
-| **iOS App** | Swift 6.2, SwiftUI, iOS 26+ |
+| **iOS App** | Swift 6.2, SwiftUI, UIKit, iOS 26+ |
 | **Relay** | Python, FastAPI, WebSockets, SSE |
 | **Connector** | Python, MCP protocol |
 | **Project Config** | XcodeGen (`project.yml`) |
@@ -176,7 +295,8 @@ Herald/
 │   └── Settings/           # App settings
 ├── Models/                 # Data models (Message, Artifact, etc.)
 ├── Stores/                 # State management (ChatStore, etc.)
-├── Services/               # API clients, push notifications
+├── Services/               # API clients, push notifications, sensors
+├── Widgets/                # Home Screen widgets + Live Activities
 └── Resources/              # Assets, entitlements, Info.plist
 relay/                      # Python relay server
 connector/                  # Python MCP connector
