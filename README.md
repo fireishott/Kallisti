@@ -1,223 +1,123 @@
-# Hermes iOS <img width="32" height="32" alt="image" src="https://github.com/user-attachments/assets/f9aa29c4-f08d-483e-97b5-3fab985ad4a2" />
+<!-- HERALD -->
+<p align="center">
+  <img src="docs/assets/brand-mark.svg" alt="HERALD" height="80"/>
+  <br/>
+  <sub>Self-hosted AI companion for iPhone and iPad</sub>
+</p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.0.0-FF6B00" alt="version"/>
+  <img src="https://img.shields.io/badge/license-MIT-F5F0E8" alt="license"/>
+  <img src="https://img.shields.io/badge/platform-iOS%2026+-0A0A0A?labelColor=0A0A0A&color=FF6B00" alt="platform"/>
+  <img src="https://img.shields.io/badge/self--hosted-yes-FF3D00" alt="self-hosted"/>
+  <img src="https://img.shields.io/badge/relay-active-FF6B00" alt="relay"/>
+</p>
 
-> [!NOTE]
-> Hermes iOS is an independent community project. It is not affiliated with, endorsed by, or part of [Nous Research](https://nousresearch.com/) or the official [Hermes Agent](https://github.com/NousResearch/hermes-agent) project.
+<p align="center">
+  <img src="docs/assets/app-icon.svg" alt="HERALD icon" width="96" style="border-radius:20px"/>
+  &nbsp;&nbsp;&nbsp;
+  <span>HERALD is a native iOS companion for self-hosted AI runtimes. It adds voice mode, sensors, CarPlay, session management, and a relay so your AI moves between your phone, tablet, and desktop without becoming a hosted service.</span>
+</p>
 
-Hermes iOS is a self-hosted-first iPhone companion for a user-owned Hermes runtime. It adds a native iOS app, a public relay, and a host-side connector so Hermes can move between desktop, phone, sensors, widgets, and voice without turning your runtime into a hosted service.
+---
 
-<img width="3168" height="1344" alt="Gemini_Generated_Image_nsyz1ynsyz1ynsyz" src="https://github.com/user-attachments/assets/4ff03aec-e2d8-4174-a194-5aa2839a1f1f" />
+<p align="center">
+  <img src="docs/screenshots/iphone-chat.png" alt="iPhone chat" width="30%" style="border-radius:12px;border:1px solid #1A1D23"/>
+  &nbsp;
+  <img src="docs/screenshots/ipad-sidebar.png" alt="iPad sidebar" width="30%" style="border-radius:12px;border:1px solid #1A1D23"/>
+  &nbsp;
+  <img src="docs/screenshots/voice-mode.png" alt="Voice mode" width="30%" style="border-radius:12px;border:1px solid #1A1D23"/>
+</p>
 
+---
 
-## Why use it
+## Features
 
-- **Self-hosted first**: the relay is yours, the connector runs next to your Hermes install, and the iPhone app can point to any compatible relay.
-- **Native iPhone + iPad experience**: chat, voice mode, camera attachments, widgets, Live Activities, sensor-aware context. iPad gets a native sidebar layout with NavigationSplitView.
-- **Hermes-aware**: slash commands, installed skills, personalities, quick commands, MCP-backed context, and agent-side coding workflows.
-- **Optional platform extras**: APNs and CarPlay are supported, but not required to get a working setup.
+| Feature | Description |
+|---------|-------------|
+| **Streaming Chat** | Real-time streaming with markdown, code blocks, inline diffs, and attachments |
+| **Voice Mode** | OpenAI Realtime voice with live camera context and tool delegation |
+| **iPad Native** | Full NavigationSplitView layout with session browser sidebar |
+| **Session Management** | Pin, archive, rename, search. Device-scoped sessions. |
+| **Model Switching** | Switch models on the fly via direct RPC |
+| **Sensors** | Health, location, motion data piped to your AI in real-time |
+| **CarPlay** | Hands-free AI from your dashboard |
+| **Themes** | 6 built-in presets with custom wallpaper support |
+| **Cron Jobs** | Schedule recurring AI tasks from your phone |
+| **Skills Browser** | Browse and manage installed agent skills |
 
-## What works today
-
-- Streaming chat with retries, attachments, inline diffs, markdown/code blocks, and inline returned images
-- Voice mode with OpenAI Realtime, live camera context, and Hermes tool delegation
-- Dynamic slash-command catalog sourced from Hermes built-ins, installed skills, personalities, and quick-command metadata
-- Health, location, motion, and sensor storage through the connector SQLite pipeline
-- Home Screen widgets, Live Activities, and host/model/context status in the chat UI
-- Self-hosted relay + connector pairing flow with background service support
-
-## Sensor Pipeline & MCP Tools
-
-The connector continuously receives sensor data from your iPhone and stores it locally in SQLite on your Hermes machine. Hermes accesses this data through MCP tools — meaning your agent can answer questions about you, build on top of your personal data, and use it as context in any conversation.
-
-**What flows from your phone:**
-- Real-time GPS location with reverse-geocoded addresses
-- 11 HealthKit metrics (steps, heart rate, sleep, calories, blood oxygen, and more)
-- CoreMotion activity detection (walking, running, driving, cycling, stationary)
-
-**What your agent can do with it:**
-
-```
-You:    "Find me a good dinner spot tonight"
-Hermes: Looks like you've been around the West Village today. Carbone, Via
-        Carota, and L'Artusi are all nearby and well-reviewed. Carbone usually
-        needs a reservation — want me to look into availability?
-
-You:    "Am I on track for my fitness goals this week?"
-Hermes: You've hit 42,000 steps so far this week (avg 8,400/day), burned
-        2,100 active calories, and averaged 7.1 hours of sleep. Your
-        resting heart rate has been steady at 62 bpm. You're ahead on
-        steps but slightly behind on sleep — you lost about an hour
-        last night compared to your weekly average.
-
-You:    "Build me a personal health dashboard"
-Hermes: I'll query your sensor database and create an interactive dashboard
-        with your steps, sleep trends, heart rate, and location history
-        over the past 30 days. Give me a minute.
-```
-
-The data never leaves your machine. The sensor SQLite database lives at `~/.hermes-mobile/sensors.db` and is queryable through the `hermes_mobile` MCP server with 8 tools:
-
-| Tool | What it does |
-|------|-------------|
-| `get_user_location` | Current location with address |
-| `get_location_history` | Where you've been (time-series) |
-| `get_health_summary` | All latest health metrics at once |
-| `get_health_metric` | Time-series for one metric |
-| `get_health_metrics_list` | Available metrics + latest values |
-| `get_user_activity` | Current physical activity |
-| `get_sensor_schema` | Database table definitions |
-| `query_sensor_data` | Custom read-only SQL queries |
-
-The `query_sensor_data` tool is particularly powerful — your agent can write arbitrary SELECT queries against your health and location data to find correlations, build charts, generate reports, or power any project that benefits from personal sensor data.
-
-> [!TIP]
-> Install the bundled `hermes-ios` skill (see step 5 below) to teach Hermes when and how to use these tools effectively.
+---
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    A["iOS app"] -->|"HTTP / SSE"| B["Relay"]
-    B -->|"WebSocket jobs / RPC"| C["Connector"]
-    C -->|"CLI / API runtime"| D["Hermes Agent"]
-    A -->|"sensor uploads"| B
-    C -->|"SQLite + MCP tools"| D
-```
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="HERALD architecture" width="100%"/>
+</p>
 
-The relay is the control plane. In connector mode, Hermes execution stays on the user-owned machine where the connector is installed.
+---
 
-> [!IMPORTANT]
-> If you test on a physical iPhone against a local relay, use your Mac's LAN IP or a public URL. Do **not** use `127.0.0.1` or `localhost`; on a phone those point back to the phone itself.
+## Quick Start
 
-## Quick start
+1. **Deploy the relay**
+   ```bash
+   cd relay
+   docker compose up -d
+   ```
 
-### 1. Run the relay
+2. **Install the connector**
+   ```bash
+   pip install herald-connector
+   herald start
+   ```
 
-```bash
-cd relay
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-cp .env.example .env
-uvicorn app.main:app --reload
-```
+3. **Install HERALD on your iPhone**
+   - Build from source (see [Building from Source](#building-from-source)) or download the latest release
+   - Open the app, scan the pairing QR code
+   - Start chatting with your AI
 
-For a production-style setup, see [relay/README.md](relay/README.md) and [relay/docs/fly-io.md](relay/docs/fly-io.md).
+---
 
-### 2. Install and set up the connector
+## Building from Source
 
-```bash
-cd connector
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-
-export HERMES_COMMAND=/absolute/path/to/hermes
-export HERMES_MOBILE_RELAY_URL=https://your-relay.example.com/v1
-
-hermes-mobile setup
-```
-
-The setup wizard can:
-
-- use an existing relay URL
-- guide you through a Fly.io relay deployment
-- register the local `hermes_mobile` MCP server
-- configure OpenAI Realtime talk mode
-- install the connector background service
-
-See [connector/README.md](connector/README.md) for the full flow.
-
-### 3. Build and open the iPhone app
-
-1. Open the project in Xcode.
-2. Set your signing team and local bundle/App Group overrides if needed.
-3. Launch the app on your phone or simulator.
-4. Enter the same relay URL used by the connector.
-
-<insert image> Connect Hermes screen with a custom relay URL entered and the phone pairing code ready to scan.
-
-### 4. Pair the phone
-
-On the connector host:
+**Prerequisites:** Xcode 26+, macOS 26+, Apple Developer account
 
 ```bash
-hermes-mobile pair-phone
+git clone https://github.com/fireishott/Herald.git
+cd Herald
+xcodegen generate
+open Herald.xcodeproj
 ```
 
-Then scan the QR code or enter the manual code in the iPhone app.
+See [docs/BUILDING.md](docs/BUILDING.md) for signing, entitlements, and device install instructions.
 
-### 5. Recommended: install the Hermes iOS skill in Hermes
+---
 
-The connector exposes the `hermes_mobile` MCP tools, but the bundled `hermes-ios` skill teaches Hermes when and how to use them well for location, health, activity, and sensor-aware responses.
+## Relay Configuration
 
-From the repo root:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RELAY_ENVIRONMENT` | `development` | `production` or `development` |
+| `PUBLIC_BASE_URL` | `http://localhost:8000/v1` | Public relay URL |
+| `APNS_KEY_ID` | — | APNs key ID for push notifications |
+| `APNS_TEAM_ID` | — | Apple Developer team ID |
+| `APNS_BUNDLE_ID` | `net.fihonline.herald` | App bundle ID |
 
-```bash
-mkdir -p ~/.hermes/skills
-cp -R skills/hermes-ios ~/.hermes/skills/
-```
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
-If you are updating an older local copy of the skill, replace it explicitly:
+---
 
-```bash
-rm -rf ~/.hermes/skills/hermes-ios
-cp -R skills/hermes-ios ~/.hermes/skills/
-```
+## Contributing
 
-Then reload Hermes:
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```text
-/reload-mcp
-```
+---
 
-Or start a fresh Hermes chat/session if you prefer.
+## Acknowledgements
 
-## Optional features
+Built on the foundation of [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS) by [Dylan Buck](https://github.com/dylan-buck) and the [Nous Research](https://nousresearch.com/) community. Original work licensed under MIT.
 
-> [!TIP]
-> You do not need APNs or CarPlay to get a working setup. They are additive features.
+---
 
-- **APNs**: lets the relay deliver Hermes replies while the app is backgrounded. Setup lives in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-- **CarPlay**: requires Apple approval for the voice-based conversational entitlement. It is optional and inert when not configured.
+## License
 
-
-## iPad Support
-
-Hermes iOS adapts to iPad with a native sidebar layout:
-
-- **NavigationSplitView** with a persistent sidebar on the left
-- **Session browser**: search, pinned, recent, and platform-grouped sessions with swipe actions (pin, archive) and context menus (rename, delete)
-- **Right-side inspector panel**: three tabs — Logs (scrollable feed with level filters), Terminal (console output), Tools (token usage breakdown). Toggle via `sidebar.right` button in sidebar or detail toolbar
-- Sections: Chat, Inbox, Talk, Settings
-- Offline indicator (orange dot) in sidebar
-- iPhone gets a **slide-out session drawer** with drag-from-edge gesture and hamburger toggle — same session browser, mobile-optimized
-
-The root view auto-detects the device class and renders the appropriate layout. No configuration needed.
-
-### Building for iPad
-
-The branch `feat/ipad-layout` contains the iPad layout work:
-
-1. Clone the repo and check out `feat/ipad-layout`
-2. Open `HermesMobile.xcodeproj` in Xcode
-3. Build and run on an iPad simulator or device
-4. For sideloading: build for device, package as .ipa, install via SideStore
-
-No API keys or signing certificates required for development builds.
-
-
-## Documentation map
-
-- [connector/README.md](connector/README.md): connector install, wizard flow, pairing, service management, and troubleshooting
-- [relay/README.md](relay/README.md): relay setup, production checklist, API surface, and deployment notes
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): environment variables, iOS build settings, APNs, CarPlay, and private overrides
-- [relay/docs/fly-io.md](relay/docs/fly-io.md): manual Fly.io deployment steps
-- [relay/docs/local-dev.md](relay/docs/local-dev.md): local development and same-network testing notes
-- [connector/SENSOR_SCHEMA.md](connector/SENSOR_SCHEMA.md): connector SQLite schema and MCP query surface
-- [docs/IOS_CAPABILITIES.md](docs/IOS_CAPABILITIES.md): technical iOS capability ledger for maintainers
-- [MAINTAINER_NOTES.md](MAINTAINER_NOTES.md): maintainer-facing implementation snapshot, not onboarding
-
-## Project status
-
-Hermes iOS is already usable as a self-hosted project, but it is still actively evolving. The public docs are optimized for getting a new user from clone to first paired chat as quickly as possible; the maintainer docs track deeper capability and architecture details.
+[MIT](LICENSE)
