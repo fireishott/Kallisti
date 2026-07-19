@@ -269,20 +269,22 @@ private struct WelcomeStepView: View {
     let onAdvance: () -> Void
 
     var body: some View {
-        ZStack {
-            // Background silhouette
-            Image("AppIconImage")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 500, height: 500)
-                .opacity(0.06)
-                .offset(x: 120, y: -40)
+        GeometryReader { geo in
+            ZStack {
+                // Background silhouette
+                let markSize = min(geo.size.width * 1.2, 500)
+                Image("AppIconImage")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: markSize, height: markSize)
+                    .opacity(0.06)
+                    .offset(x: geo.size.width * 0.2, y: -40)
 
-            VStack(alignment: .leading, spacing: 0) {
-                // Brand row
-                HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                    HeraldMark(size: 22, color: Design.Colors.foreground)
-                    Text("HERALD · iOS")
+                VStack(alignment: .leading, spacing: 0) {
+                    // Brand row
+                    HStack(alignment: .center, spacing: Design.Spacing.xs) {
+                        HeraldMark(size: 22, color: Design.Colors.foreground)
+                        Text("HERALD · iOS")
                         .brandEyebrow(Design.Colors.foreground)
                 Spacer()
                 Text("v1.0.0")
@@ -337,6 +339,7 @@ private struct WelcomeStepView: View {
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)
             }
+        }
         }
     }
 }
@@ -833,14 +836,16 @@ private struct ReadyStepView: View {
     let onOpen: () -> Void
 
     var body: some View {
-        ZStack {
-            // Background glyph
-            Image("AppIconImage")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 500, height: 500)
-                .opacity(0.06)
-                .offset(x: 120, y: -40)
+        GeometryReader { geo in
+            ZStack {
+                // Background glyph
+                let markSize = min(geo.size.width * 1.2, 500)
+                Image("AppIconImage")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: markSize, height: markSize)
+                    .opacity(0.06)
+                    .offset(x: geo.size.width * 0.2, y: -40)
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Design.Spacing.md) {
@@ -878,6 +883,7 @@ private struct ReadyStepView: View {
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)
+        }
         }
     }
 }

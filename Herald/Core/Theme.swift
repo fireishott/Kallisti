@@ -202,13 +202,16 @@ struct ChatWallpaperBackground: View {
         ZStack {
             Color(.systemBackground)
             // App icon as a faint silhouette watermark
-            Image("AppIconImage")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 500, height: 500)
-                .opacity(0.06)
-                .offset(x: 120, y: -40)
-                .blendMode(.multiply)
+            GeometryReader { geo in
+                let markSize = min(geo.size.width * 1.2, 500)
+                Image("AppIconImage")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: markSize, height: markSize)
+                    .opacity(0.06)
+                    .offset(x: geo.size.width * 0.2, y: -40)
+                    .blendMode(.multiply)
+            }
             RadialGradient(
                 colors: [tint.opacity(0.04), .clear],
                 center: .center,
