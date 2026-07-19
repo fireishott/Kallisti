@@ -104,8 +104,8 @@ struct ChatInputBar: View {
                             handlePrimaryAction()
                         }
                     }
-                    .onKeyPress(.return) { press in
-                        if press.modifiers.contains(.shift) {
+                    .onKeyPress { press in
+                        guard press.key == .return, !press.modifiers.contains(.shift) else {
                             return .ignored
                         }
                         if canSend {
