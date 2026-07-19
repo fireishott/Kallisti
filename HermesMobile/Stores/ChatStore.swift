@@ -7,6 +7,8 @@ final class ChatStore {
     var isLoading = false
     var pendingMessageSentAt: Date?
     var lastTokenUsage: TokenUsage?
+    /// Live log entries for the iPad inspector panel's Logs tab.
+    var logEntries: [LogEntry] = []
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
@@ -201,10 +203,12 @@ final class ChatStore {
 
         let consumerTask = Task { [weak self] in
             guard let self else { return }
+            self.appendLog(level: .info, "Streaming started")
             for await update in stream {
                 if Task.isCancelled { break }
                 switch update {
                 case .messageSent(let jobID):
+                    self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
 
                 case .textDelta(let delta):
@@ -528,6 +532,13 @@ final class ChatStore {
         contextWindow = nil
     }
 
+    /// Append a log entry to the live log buffer shown in the iPad
+    /// inspector panel's Logs tab. Capped at 500 entries.
+    func appendLog(level: LogLevel, _ message: String) {
+        logEntries.append(LogEntry(level: level, message: message))
+        if logEntries.count > 500 { logEntries.removeFirst(100) }
+    }
+
     func reset() {
         pollingTask?.cancel()
         pollingTask = nil
@@ -535,6 +546,7 @@ final class ChatStore {
         streamingTask = nil
         streamingMessageID = nil
         stallRetryCounts.removeAll()
+        logEntries = []
         isPollingEnabled = false
         resetCommandCatalog()
         conversation = nil

@@ -9,8 +9,6 @@ struct iPadRightPanelView: View {
     @Binding var isOpen: Bool
     @Binding var selectedTab: RightPanelTab
 
-    @State private var logEntries: [LogEntry] = []
-
     var body: some View {
         if !isOpen { return AnyView(EmptyView()) }
 
@@ -72,13 +70,13 @@ struct iPadRightPanelView: View {
         VStack(spacing: 0) {
             logFilterBar
 
-            if logEntries.isEmpty {
+            if chatStore.logEntries.isEmpty {
                 emptyState(icon: "terminal", message: "No log entries yet",
                            detail: "Logs appear here when Hermes processes messages, runs tools, or executes commands.")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(logEntries) { entry in
+                        ForEach(chatStore.logEntries) { entry in
                             logEntryRow(entry)
                         }
                     }
@@ -98,7 +96,7 @@ struct iPadRightPanelView: View {
                     .clipShape(Capsule())
             }
             Spacer()
-            Button { logEntries.removeAll() } label: {
+            Button { chatStore.logEntries.removeAll() } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 11))
                     .foregroundStyle(Design.Colors.secondaryForeground)
@@ -125,7 +123,7 @@ struct iPadRightPanelView: View {
         }
         .padding(.horizontal, Design.Spacing.sm)
         .padding(.vertical, 3)
-        .background(entry.id == logEntries.last?.id ? Design.Brand.accent.opacity(0.06) : Color.clear)
+        .background(entry.id == chatStore.logEntries.last?.id ? Design.Brand.accent.opacity(0.06) : Color.clear)
     }
 
     // MARK: - Terminal
