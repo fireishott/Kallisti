@@ -198,13 +198,13 @@ struct ChatScreen: View {
 
     private var profileChip: some View {
         Group {
-            if profileStore.activeProfile != nil {
+            if !profileStore.profiles.isEmpty {
                 Button {
                     showProfileSelector = true
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "brain.head.profile")
-                        Text(profileStore.activeProfileName ?? "Profile")
+                        Text(profileStore.activeProfileName ?? "Select Profile")
                             .font(.caption)
                     }
                     .padding(.horizontal, 8)
