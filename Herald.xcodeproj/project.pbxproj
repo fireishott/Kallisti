@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA000000000000006A5D3D38 /* MimoTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000006A5D3D38 /* MimoTTSService.swift */; };
+		CC000000000000006A5D3D38 /* TTSServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD000000000000006A5D3D38 /* TTSServiceProtocol.swift */; };
 		0023F2ECEDF63941D7A8CC56 /* HostEnrollmentCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C47B0EEFCF9E67C01A57B76 /* HostEnrollmentCode.swift */; };
 		01AF85BEBB4B79B018739965 /* HapticEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B2214FE4DA26E9F49BFBFE /* HapticEngine.swift */; };
 		023EA4E5F7BC1F1895CF7C05 /* PermissionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD8EEEBDB677897D4489894 /* PermissionCard.swift */; };
@@ -504,6 +506,7 @@
 				A65EB193F422B75698743CB5 /* LiveSessionBootstrapService.swift */,
 				D193D6C5016421C76DF5D154 /* LiveSpeechService.swift */,
 				947D3C677DF7F518441E2917 /* LiveVoiceSessionService.swift */,
+				BB000000000000006A5D3D38 /* MimoTTSService.swift */,
 				E321CDD5420E0CF8EA5DD4D6 /* SensorUploadService.swift */,
 			);
 			path = Live;
@@ -838,6 +841,7 @@
 				43D32A538E6F815C92B06203 /* SecureStoreProtocol.swift */,
 				A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */,
 				AF23852C2769061F9AF9939A /* SyncCoordinatorProtocol.swift */,
+				DD000000000000006A5D3D38 /* TTSServiceProtocol.swift */,
 				FC4E70C23E1F85B7058B2E1D /* VoiceSessionServiceProtocol.swift */,
 			);
 			path = Protocols;

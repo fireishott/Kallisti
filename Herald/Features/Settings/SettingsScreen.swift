@@ -540,6 +540,7 @@ struct SettingsScreen: View {
                 .frame(minHeight: Design.Size.minTapTarget)
             }
         }
+    }
 
     // MARK: - About
 

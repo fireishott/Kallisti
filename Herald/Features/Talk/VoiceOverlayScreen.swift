@@ -137,7 +137,7 @@ struct VoiceOverlayScreen: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .opacity(item.isPartial ? 0.6 : 1)
 
-                if !item.isPartial and !item.text.isEmpty {
+                if !item.isPartial && !item.text.isEmpty {
                     Button {
                         Task { await talkStore.speakText(item.text) }
                     } label: {
