@@ -28,7 +28,7 @@ def register_device(client: TestClient):
                 "deviceName": "Test iPhone",
                 "appVersion": "1.0.0",
                 "buildNumber": "1",
-                "bundleId": "io.hermesmobile.HermesMobile",
+                "bundleId": "net.fihonline.herald",
                 "installationId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                 "deviceModel": "iPhone17,2",
                 "systemVersion": "26.4",
@@ -77,7 +77,7 @@ def test_push_and_inbox_roundtrip(tmp_path):
                 "deviceId": device_id,
                 "apnsToken": "deadbeef",
                 "pushEnvironment": "sandbox",
-                "bundleId": "io.hermesmobile.HermesMobile",
+                "bundleId": "net.fihonline.herald",
             },
         )
         assert push_response.status_code == 200
@@ -132,7 +132,7 @@ def test_push_register_accepts_relay_transport_metadata(tmp_path):
             json={
                 "deviceId": device_id,
                 "pushEnvironment": "production",
-                "bundleId": "io.hermesmobile.HermesMobile",
+                "bundleId": "net.fihonline.herald",
                 "transport": "relay",
                 "relayHandle": "relay-handle-123",
                 "sendGrant": "relay-send-grant-123",
@@ -196,7 +196,7 @@ def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
                 "deviceId": device_id,
                 "apnsToken": "deadbeef",
                 "pushEnvironment": "sandbox",
-                "bundleId": "io.hermesmobile.HermesMobile",
+                "bundleId": "net.fihonline.herald",
             },
         )
         assert push_response.status_code == 200
@@ -262,7 +262,7 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
             json={
                 "deviceId": device_id,
                 "pushEnvironment": "production",
-                "bundleId": "io.hermesmobile.HermesMobile",
+                "bundleId": "net.fihonline.herald",
                 "transport": "relay",
                 "relayHandle": "relay-handle-123",
                 "sendGrant": "relay-send-grant-123",

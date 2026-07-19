@@ -19,7 +19,7 @@ def normalize_database_url(database_url: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    service_name: str = "hermes-mobile-relay"
+    service_name: str = "herald-relay"
     version: str = "0.1.0"
     environment: str = "development"
     public_base_url: str = "http://127.0.0.1:8000/v1"
@@ -33,7 +33,7 @@ class Settings:
     phone_pairing_max_attempts_per_ip: int = 5
     phone_pairing_rate_limit_window_seconds: int = 300
     host_enrollment_code_ttl_seconds: int = 900
-    default_user_display_name: str = "Hermes User"
+    default_user_display_name: str = "Herald User"
     hermes_adapter: str = "mock"
     hermes_command: str = "hermes"
     hermes_workdir: str | None = None
@@ -56,7 +56,7 @@ class Settings:
     apns_key_id: str | None = None
     apns_team_id: str | None = None
     push_broker_base_url: str | None = None
-    apns_bundle_id: str = "io.hermesmobile.HermesMobile"
+    apns_bundle_id: str = "net.fihonline.herald"
     apns_environment: str = "development"
     app_presence_stale_seconds: int = 120
     push_broker_challenge_ttl_seconds: int = 300
@@ -77,7 +77,7 @@ class Settings:
             phone_pairing_max_attempts_per_ip=int(os.getenv("PHONE_PAIRING_MAX_ATTEMPTS_PER_IP", "5")),
             phone_pairing_rate_limit_window_seconds=int(os.getenv("PHONE_PAIRING_RATE_LIMIT_WINDOW_SECONDS", "300")),
             host_enrollment_code_ttl_seconds=int(os.getenv("HOST_ENROLLMENT_CODE_TTL_SECONDS", "900")),
-            default_user_display_name=os.getenv("DEFAULT_USER_DISPLAY_NAME", "Hermes User"),
+            default_user_display_name=os.getenv("DEFAULT_USER_DISPLAY_NAME", "Herald User"),
             hermes_adapter=os.getenv("HERMES_ADAPTER", "mock"),
             hermes_command=os.getenv("HERMES_COMMAND", "hermes"),
             hermes_workdir=os.getenv("HERMES_WORKDIR") or None,
@@ -99,7 +99,7 @@ class Settings:
             apns_key_id=os.getenv("APNS_KEY_ID") or None,
             apns_team_id=os.getenv("APNS_TEAM_ID") or None,
             push_broker_base_url=os.getenv("PUSH_BROKER_BASE_URL") or None,
-            apns_bundle_id=os.getenv("APNS_BUNDLE_ID", "io.hermesmobile.HermesMobile"),
+            apns_bundle_id=os.getenv("APNS_BUNDLE_ID", "net.fihonline.herald"),
             apns_environment=os.getenv("APNS_ENVIRONMENT", "development"),
             app_presence_stale_seconds=int(os.getenv("APP_PRESENCE_STALE_SECONDS", "120")),
             push_broker_challenge_ttl_seconds=int(os.getenv("PUSH_BROKER_CHALLENGE_TTL_SECONDS", "300")),

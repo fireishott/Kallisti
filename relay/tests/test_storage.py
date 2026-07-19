@@ -67,7 +67,7 @@ def test_device_upsert_token_rotation_and_audit(tmp_path):
             system_version="26.4",
             app_version="1.0.0",
             build_number="1",
-            bundle_id="io.hermesmobile.HermesMobile",
+            bundle_id="net.fihonline.herald",
             environment="development",
         )
         auth_session, access_token, refresh_token = rotate_auth_session(db, settings=settings, user=user, device=device)
@@ -104,7 +104,7 @@ def test_push_registration_and_inbox_state_transition(tmp_path):
             system_version="26.4",
             app_version="1.0.0",
             build_number="1",
-            bundle_id="io.hermesmobile.HermesMobile",
+            bundle_id="net.fihonline.herald",
             environment="development",
         )
         registration = upsert_push_registration(
@@ -112,7 +112,7 @@ def test_push_registration_and_inbox_state_transition(tmp_path):
             device=device,
             apns_token="deadbeef",
             push_environment="sandbox",
-            bundle_id="io.hermesmobile.HermesMobile",
+            bundle_id="net.fihonline.herald",
         )
         item = create_inbox_item(
             db,

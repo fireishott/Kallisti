@@ -125,7 +125,7 @@ def test_push_broker_registration_consumes_challenge_and_returns_opaque_grant(tm
                 relay_id=relay_identity.id,
                 relay_public_key=relay_identity.public_key,
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",
@@ -148,7 +148,7 @@ def test_push_broker_registration_consumes_challenge_and_returns_opaque_grant(tm
             assert registration.relay_id == relay_identity.id
             assert registration.relay_public_key == relay_identity.public_key
             assert registration.installation_id == "install-123"
-            assert registration.bundle_id == "io.hermesmobile.HermesMobile"
+            assert registration.bundle_id == "net.fihonline.herald"
             assert registration.apns_environment == "production"
             assert registration.apns_token == "abcd1234efef5678"
             assert registration.apns_token_hash == hash_token("abcd1234efef5678")
@@ -162,7 +162,7 @@ def test_push_broker_registration_consumes_challenge_and_returns_opaque_grant(tm
                 "relayId": relay_identity.id,
                 "relayPublicKey": relay_identity.public_key,
                 "installationId": "install-123",
-                "topic": "io.hermesmobile.HermesMobile",
+                "topic": "net.fihonline.herald",
                 "environment": "production",
                 "tokenDebugSuffix": "efef5678",
             }
@@ -189,7 +189,7 @@ def test_push_broker_registration_rejects_replayed_challenge(tmp_path):
                 relay_id=relay_identity.id,
                 relay_public_key=relay_identity.public_key,
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",
@@ -205,7 +205,7 @@ def test_push_broker_registration_rejects_replayed_challenge(tmp_path):
                     relay_id=relay_identity.id,
                     relay_public_key=relay_identity.public_key,
                     installation_id="install-123",
-                    bundle_id="io.hermesmobile.HermesMobile",
+                    bundle_id="net.fihonline.herald",
                     app_version="1.1.0",
                     apns_environment="production",
                     apns_token="abcd1234efef5678",
@@ -230,7 +230,7 @@ def test_push_broker_registration_can_bind_external_self_hosted_relay_identity(t
                 relay_id="self-hosted-relay-123",
                 relay_public_key="self-hosted-relay-public-key",
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",
@@ -283,7 +283,7 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
                 relay_id=relay_identity.id,
                 relay_public_key=relay_identity.public_key,
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",
@@ -321,7 +321,7 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
             "title": "Hermes",
             "body": "Ready.",
             "category": None,
-            "bundle_id": "io.hermesmobile.HermesMobile",
+            "bundle_id": "net.fihonline.herald",
             "environment": "production",
         }]
 
@@ -346,7 +346,7 @@ def test_push_broker_send_endpoint_rejects_invalid_signature(tmp_path):
                 relay_id=relay_identity.id,
                 relay_public_key=relay_identity.public_key,
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",
@@ -399,7 +399,7 @@ def test_push_broker_send_endpoint_rejects_expired_registration(tmp_path):
                 relay_id=relay_identity.id,
                 relay_public_key=relay_identity.public_key,
                 installation_id="install-123",
-                bundle_id="io.hermesmobile.HermesMobile",
+                bundle_id="net.fihonline.herald",
                 app_version="1.1.0",
                 apns_environment="production",
                 apns_token="abcd1234efef5678",

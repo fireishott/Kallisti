@@ -79,7 +79,7 @@ def phone_pairing_payload(code, installation_id):
             "deviceName": "Taylor's iPhone",
             "appVersion": "1.0.0",
             "buildNumber": "1",
-            "bundleId": "io.hermesmobile.HermesMobile",
+            "bundleId": "net.fihonline.herald",
             "installationId": installation_id,
             "deviceModel": "iPhone17,2",
             "systemVersion": "26.2",

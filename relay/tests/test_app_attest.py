@@ -24,7 +24,7 @@ from app.relay_identity import _b64url_encode
 
 
 TEAM_ID = "TEAMID1234"
-BUNDLE_ID = "io.hermesmobile.HermesMobile"
+BUNDLE_ID = "net.fihonline.herald"
 APP_ID = f"{TEAM_ID}.{BUNDLE_ID}"
 NONCE_OID = ObjectIdentifier("1.2.840.113635.100.8.2")
 
