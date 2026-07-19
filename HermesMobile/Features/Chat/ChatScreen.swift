@@ -582,6 +582,7 @@ struct ChatScreen: View {
         guard !content.isEmpty || !attachments.isEmpty else { return }
         messageText = ""
         pendingAttachments = []
+        isComposerFocused = false
 
         if settingsStore.settings.hapticFeedbackEnabled {
             HapticEngine.messageSent()
