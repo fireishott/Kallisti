@@ -12,6 +12,16 @@ final class ChatStore {
     private var streamingTask: Task<Void, Never>?
     private(set) var streamingMessageID: UUID?
 
+    /// If no progress event (text/reasoning delta, tool activity, or finish)
+    /// arrives within this window of job submission, the job is treated as
+    /// silently stalled/dropped — see `runStreamingAttempt`.
+    private static let watchdogTimeout: Duration = .seconds(30)
+    private static let maxAutoRetries = 1
+    /// Tracks how many times a stalled job has been auto-retried, keyed by
+    /// the user message's clientMessageID. Cleared once the send completes
+    /// (success or final failure).
+    private var stallRetryCounts: [UUID: Int] = [:]
+
     var isStreaming: Bool { streamingMessageID != nil }
 
     /// Dynamic slash command catalog fetched from the connected Hermes host.
@@ -111,12 +121,85 @@ final class ChatStore {
         streamingMessageID = placeholderID
         restartPendingPollingIfNeeded()
 
-        let stream = hermesClient.sendStreaming(message: trimmedContent, attachments: attachments, clientMessageID: clientMessageID)
+        stallRetryCounts[clientMessageID] = 0
+        await runAttemptLoop(
+            content: trimmedContent,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            placeholderID: placeholderID
+        )
+        stallRetryCounts.removeValue(forKey: clientMessageID)
+
+        if !hasPendingMessages {
+            pendingMessageSentAt = nil
+        }
+
+        if let conversation {
+            persistence.saveConversationCache(conversation)
+            onConversationChanged?()
+        }
+    }
+
+    /// Drives one or more streaming attempts for a single outgoing message.
+    ///
+    /// A ~30s watchdog guards each attempt (see `runStreamingAttempt`): if no
+    /// progress event arrives in that window, the job is treated as silently
+    /// dropped — the exact failure mode confirmed via device testing, where a
+    /// job was claimed by the relay but never dispatched by the connector, with
+    /// no server error at all. The first stall triggers one automatic retry that
+    /// reuses the same message bubble (same clientMessageID/placeholderID, so no
+    /// duplicate appears); a second stall gives up with real error text and
+    /// leaves the existing manual "tap to retry" affordance for the user.
+    private func runAttemptLoop(
+        content: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        placeholderID: UUID
+    ) async {
+        while true {
+            let stalled = await runStreamingAttempt(
+                content: content,
+                attachments: attachments,
+                clientMessageID: clientMessageID,
+                placeholderID: placeholderID
+            )
+            guard stalled else { return }
+
+            let attempt = stallRetryCounts[clientMessageID] ?? 0
+            if attempt < Self.maxAutoRetries {
+                stallRetryCounts[clientMessageID] = attempt + 1
+                continue // re-send with the same bubble/IDs, restart the watchdog
+            }
+
+            failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
+            return
+        }
+    }
+
+    /// Runs a single streaming attempt, racing the update stream against a
+    /// ~30s watchdog. Returns `true` if the watchdog fired before any progress
+    /// event (`.textDelta`, `.reasoningDelta`, `.toolActivity`, `.finished`)
+    /// arrived — i.e. the job appears to have stalled/been silently dropped.
+    /// `.messageSent` (the relay merely accepting the job) does NOT count as
+    /// progress, since that's precisely the point where the observed bug drops
+    /// the job with zero further activity.
+    private func runStreamingAttempt(
+        content: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        placeholderID: UUID
+    ) async -> Bool {
+        let stream = hermesClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID)
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
 
-        streamingTask = Task { [weak self] in
+        var progressContinuation: AsyncStream<Void>.Continuation?
+        let progressSignal = AsyncStream<Void> { continuation in
+            progressContinuation = continuation
+        }
+
+        let consumerTask = Task { [weak self] in
             guard let self else { return }
             for await update in stream {
                 if Task.isCancelled { break }
@@ -125,6 +208,7 @@ final class ChatStore {
                     acceptedJobID = jobID
 
                 case .textDelta(let delta):
+                    progressContinuation?.yield(())
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         conv.messages[idx].content += delta
@@ -136,6 +220,7 @@ final class ChatStore {
                     }
 
                 case .reasoningDelta(let delta):
+                    progressContinuation?.yield(())
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
@@ -144,6 +229,7 @@ final class ChatStore {
                     }
 
                 case .toolActivity(let label):
+                    progressContinuation?.yield(())
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         for i in conv.messages[idx].toolActivities.indices {
@@ -159,6 +245,7 @@ final class ChatStore {
                     self.chatLiveActivity.updateToolProgress(label)
 
                 case .finished(let finalMessage, let usage, let diff):
+                    progressContinuation?.yield(())
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
@@ -198,6 +285,10 @@ final class ChatStore {
                     self.chatLiveActivity.endActivity()
 
                 case .failed(let errorMessage):
+                    // An explicit failure is a real signal, not silence — let it
+                    // resolve the watchdog race immediately rather than waiting
+                    // out the timeout, and handle it exactly as before.
+                    progressContinuation?.yield(())
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         if acceptedJobID == nil {
                             self.conversation?.messages[idx] = Message(
@@ -221,8 +312,35 @@ final class ChatStore {
                     }
                 }
             }
+            progressContinuation?.finish()
         }
-        await streamingTask?.value
+        streamingTask = consumerTask
+
+        let watchdogFired = await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask {
+                for await _ in progressSignal { return false }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(for: Self.watchdogTimeout)
+                return true
+            }
+            let outcome = await group.next() ?? false
+            group.cancelAll()
+            return outcome
+        }
+
+        if watchdogFired {
+            // No progress at all — cancel this attempt's stream so any events
+            // that trickle in late can't clobber the retry's state (the loop
+            // above checks Task.isCancelled before every write).
+            consumerTask.cancel()
+            streamingTask = nil
+            chatLiveActivity.endActivity()
+            return true
+        }
+
+        await consumerTask.value
         streamingTask = nil
 
         // If streaming failed after the job was accepted, immediately refresh once
@@ -237,20 +355,37 @@ final class ChatStore {
             restartPendingPollingIfNeeded()
         }
 
-        if !hasPendingMessages {
-            pendingMessageSentAt = nil
-        }
+        return false
+    }
 
-        if let conversation {
-            persistence.saveConversationCache(conversation)
-            onConversationChanged?()
+    /// Marks a message as failed with real, actionable error text after both
+    /// the initial attempt and the automatic retry have stalled with zero
+    /// progress. Mirrors the shape of the existing `.failed` stream-event
+    /// handling above (Hermes placeholder becomes a system error message, user
+    /// message flips to `.failed`) so the existing manual "tap to retry" flow
+    /// (`retryMessage(_:)`, wired up in `MessageBubble`) keeps working unchanged.
+    private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
+        let errorText = "Hermes didn't respond — tap to retry"
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+            conversation?.messages[idx] = Message(
+                sender: .system,
+                content: errorText,
+                status: .failed
+            )
         }
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+            conversation?.messages[idx].status = .failed
+        }
+        streamingMessageID = nil
+        pendingMessageSentAt = nil
+        chatLiveActivity.endActivity()
     }
 
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil
         streamingMessageID = nil
+        stallRetryCounts.removeAll()
         chatLiveActivity.endActivity()
         let fresh = try await hermesClient.clearConversation()
         conversation = fresh
@@ -396,6 +531,10 @@ final class ChatStore {
     func reset() {
         pollingTask?.cancel()
         pollingTask = nil
+        streamingTask?.cancel()
+        streamingTask = nil
+        streamingMessageID = nil
+        stallRetryCounts.removeAll()
         isPollingEnabled = false
         resetCommandCatalog()
         conversation = nil
