@@ -27,10 +27,13 @@ final class TalkStore {
 
     /// Called when voice session state changes (start/end/state transition).
     var onSessionStateChanged: (@MainActor () -> Void)?
+    var ttsService: (any TTSServiceProtocol)?
+    var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool))?
 
     private let voiceService: any VoiceSessionServiceProtocol
     private let liveActivity = LiveActivityService()
     private var eventTask: Task<Void, Never>?
+    private var lastSpokenItemID: UUID?
 
     init(voiceService: any VoiceSessionServiceProtocol) {
         self.voiceService = voiceService
@@ -115,6 +118,19 @@ final class TalkStore {
         await endSession()
     }
 
+    func speakText(_ text: String) async {
+        guard let ttsService, let settings = ttsSettingsProvider?(), settings.enabled else { return }
+        do {
+            try await ttsService.speak(text, voice: settings.voice, context: nil)
+        } catch {
+            statusMessage = "TTS failed: \(error.localizedDescription)"
+        }
+    }
+
+    func stopTTS() {
+        ttsService?.stop()
+    }
+
     func clearLastCompletedSession() {
         lastCompletedSession = nil
     }
@@ -177,5 +193,19 @@ final class TalkStore {
         }
 
         onSessionStateChanged?()
+        autoSpeakLatestHermesResponse()
+    }
+
+    private func autoSpeakLatestHermesResponse() {
+        guard let settings = ttsSettingsProvider?(), settings.enabled, settings.autoSpeak else { return }
+        guard let ttsService else { return }
+        guard let latestHermes = transcriptItems.last(where: { $0.speaker == .hermes && !$0.isPartial }) else { return }
+        guard latestHermes.id != lastSpokenItemID else { return }
+        guard !latestHermes.text.isEmpty else { return }
+        guard !ttsService.isPlaying else { return }
+        lastSpokenItemID = latestHermes.id
+        Task {
+            try? await ttsService.speak(latestHermes.text, voice: settings.voice, context: nil)
+        }
     }
 }

@@ -4,6 +4,7 @@ import UIKit
 struct MessageBubble: View, Equatable {
     let message: Message
     var onRetry: ((Message) -> Void)? = nil
+    @Environment(TalkStore.self) private var talkStore
     var onDelete: ((Message) -> Void)? = nil
     var onOpenCanvas: ((Message) -> Void)? = nil
 

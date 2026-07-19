@@ -572,6 +572,9 @@ struct UserSettings: Codable, Hashable, Sendable {
     var colorSchemePreference: ColorSchemePreference
     var chatWallpaper: ChatWallpaper
     var showAllDevices: Bool
+    var ttsEnabled: Bool
+    var ttsVoice: String
+    var ttsAutoSpeak: Bool
 
     init(
         userName: String = "User",
@@ -585,7 +588,10 @@ struct UserSettings: Codable, Hashable, Sendable {
         themePreset: ThemePreset = .herald,
         colorSchemePreference: ColorSchemePreference = .system,
         chatWallpaper: ChatWallpaper = .default,
-        showAllDevices: Bool = false
+        showAllDevices: Bool = false,
+        ttsEnabled: Bool = false,
+        ttsVoice: String = "Mia",
+        ttsAutoSpeak: Bool = false
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -599,6 +605,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.colorSchemePreference = colorSchemePreference
         self.chatWallpaper = chatWallpaper
         self.showAllDevices = showAllDevices
+        self.ttsEnabled = ttsEnabled
+        self.ttsVoice = ttsVoice
+        self.ttsAutoSpeak = ttsAutoSpeak
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -614,6 +623,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         case colorSchemePreference
         case chatWallpaper
         case showAllDevices
+        case ttsEnabled
+        case ttsVoice
+        case ttsAutoSpeak
     }
 
     init(from decoder: Decoder) throws {
@@ -638,6 +650,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         colorSchemePreference = try container.decodeIfPresent(ColorSchemePreference.self, forKey: .colorSchemePreference) ?? .system
         chatWallpaper = try container.decodeIfPresent(ChatWallpaper.self, forKey: .chatWallpaper) ?? .default
         showAllDevices = try container.decodeIfPresent(Bool.self, forKey: .showAllDevices) ?? false
+        ttsEnabled = try container.decodeIfPresent(Bool.self, forKey: .ttsEnabled) ?? false
+        ttsVoice = try container.decodeIfPresent(String.self, forKey: .ttsVoice) ?? "Mia"
+        ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -654,6 +669,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(colorSchemePreference, forKey: .colorSchemePreference)
         try container.encode(chatWallpaper, forKey: .chatWallpaper)
         try container.encode(showAllDevices, forKey: .showAllDevices)
+        try container.encode(ttsEnabled, forKey: .ttsEnabled)
+        try container.encode(ttsVoice, forKey: .ttsVoice)
+        try container.encode(ttsAutoSpeak, forKey: .ttsAutoSpeak)
     }
 
     func applyingEnvironmentPolicy(

@@ -285,7 +285,13 @@ final class AppContainer {
                 motionService: liveMotionService
             ),
             settingsStore: settingsStore,
-            talkStore: TalkStore(voiceService: voiceService),
+            talkStore: {
+                let ts = TalkStore(voiceService: voiceService)
+                let tts = MimoTTSService(apiKeyProvider: { resolvedDefaults.string(forKey: "mimo.apiKey")?.trimmingCharacters(in: .whitespacesAndNewlines) })
+                ts.ttsService = tts
+                ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak) }
+                return ts
+            }(),
             sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore),
             sensorUploadService: sensorUploadService,
             apiClient: apiClient,

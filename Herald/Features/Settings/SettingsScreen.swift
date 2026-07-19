@@ -9,6 +9,8 @@ struct SettingsScreen: View {
     @Environment(PermissionsStore.self) private var permissionsStore
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
+    @State private var mimoAPIKey: String = ""
+    @State private var showAPIKey: Bool = false
     @Environment(ThemeManager.self) private var themeManager
 
     var body: some View {
@@ -25,6 +27,7 @@ struct SettingsScreen: View {
                     }
                     appearanceSection
                     preferencesSection
+                    voiceSection
                     locationSection
                     privacySection
                     aboutSection
@@ -377,6 +380,106 @@ struct SettingsScreen: View {
         }
     }
 
+
+    // MARK: - Voice (Mimo TTS)
+
+    private var voiceSection: some View {
+        SettingsSectionView(title: "Voice (Mimo TTS)") {
+            VStack(spacing: 0) {
+                settingsToggle(
+                    icon: "speaker.wave.2.fill",
+                    iconColor: Design.Brand.accent,
+                    title: "Text-to-Speech",
+                    isOn: ttsEnabledBinding
+                )
+
+                if settingsStore.settings.ttsEnabled {
+                    sectionDivider
+
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.orange)
+                                .frame(width: 20, alignment: .center)
+
+                            if showAPIKey {
+                                TextField("Mimo API Key", text: $mimoAPIKey)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .font(Design.Typography.callout.monospaced())
+                                    .foregroundStyle(Design.Colors.foreground)
+                                    .onChange(of: mimoAPIKey) { _, newValue in
+                                        UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "mimo.apiKey")
+                                    }
+                            } else {
+                                SecureField("Mimo API Key", text: $mimoAPIKey)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .font(Design.Typography.callout.monospaced())
+                                    .foregroundStyle(Design.Colors.foreground)
+                                    .onChange(of: mimoAPIKey) { _, newValue in
+                                        UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "mimo.apiKey")
+                                    }
+                            }
+
+                            Button { showAPIKey.toggle() } label: {
+                                Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                        }
+
+                        Text("Get your key from mimo.mi.com")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.vertical, Design.Spacing.xs)
+
+                    sectionDivider
+
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "person.wave.2.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.purple)
+                                .frame(width: 20, alignment: .center)
+
+                            Text("Voice")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+
+                            Picker("Voice", selection: ttsVoiceBinding) {
+                                ForEach(["Mia", "Chloe", "Milo", "Dean", "\u{51B0}\u{7CD6}", "\u{8309}\u{8389}", "\u{82CF}\u{6253}", "\u{767D}\u{6866}"], id: \.self) { v in
+                                    Text(v).tag(v)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .tint(Design.Brand.accent)
+                        }
+
+                        Text("English: Mia, Chloe, Milo, Dean")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
+                    settingsToggle(
+                        icon: "waveform",
+                        iconColor: .blue,
+                        title: "Auto-Speak in Talk",
+                        isOn: ttsAutoSpeakBinding
+                    )
+                }
+            }
+        }
+        .task { mimoAPIKey = UserDefaults.standard.string(forKey: "mimo.apiKey") ?? "" }
+    }
+
     // MARK: - Location
 
     private var locationSection: some View {
@@ -418,19 +521,25 @@ struct SettingsScreen: View {
 
     private var privacySection: some View {
         SettingsSectionView(title: "Privacy") {
-            settingsNavRow(
-                icon: "lock.shield.fill",
-                iconColor: Design.Colors.success,
-                title: "Permissions"
-            ) {
-                dismiss()
-                Task {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    router.navigate(to: .permissions)
+            NavigationLink {
+                PermissionsScreen()
+            } label: {
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Design.Colors.success)
+                        .frame(width: 20, alignment: .center)
+                    Text("Permissions")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
                 }
+                .frame(minHeight: Design.Size.minTapTarget)
             }
         }
-    }
 
     // MARK: - About
 
@@ -480,6 +589,16 @@ struct SettingsScreen: View {
     }
 
     // MARK: - Bindings
+
+    private var ttsEnabledBinding: Binding<Bool> {
+        Binding(get: { settingsStore.settings.ttsEnabled }, set: { settingsStore.settings.ttsEnabled = $0 })
+    }
+    private var ttsVoiceBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.ttsVoice }, set: { settingsStore.settings.ttsVoice = $0 })
+    }
+    private var ttsAutoSpeakBinding: Binding<Bool> {
+        Binding(get: { settingsStore.settings.ttsAutoSpeak }, set: { settingsStore.settings.ttsAutoSpeak = $0 })
+    }
 
     private var autoConnectBinding: Binding<Bool> {
         Binding(

@@ -131,11 +131,24 @@ struct VoiceOverlayScreen: View {
                 }
             }
         case .herald:
-            HStack {
+            HStack(alignment: .bottom, spacing: Design.Spacing.xs) {
                 Text(item.text)
                     .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.foreground)
                     .opacity(item.isPartial ? 0.6 : 1)
+
+                if !item.isPartial and !item.text.isEmpty {
+                    Button {
+                        Task { await talkStore.speakText(item.text) }
+                    } label: {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.accent)
+                            .padding(4)
+                    }
+                    .accessibilityLabel("Read aloud")
+                }
+
                 Spacer()
             }
         case .system:
