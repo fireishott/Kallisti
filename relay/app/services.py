@@ -1016,6 +1016,18 @@ def conversation_history_before_message(db: Session, *, conversation_id: str, me
     return history
 
 
+def derive_title_from_message(text: str, max_length: int = 40) -> str:
+    """Derive a short conversation title from a message's text.
+
+    Collapses whitespace/newlines into single spaces and truncates with an
+    ellipsis if the result exceeds max_length.
+    """
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= max_length:
+        return cleaned
+    return cleaned[:max_length].rstrip() + "…"
+
+
 def append_message(
     db: Session,
     *,
@@ -1041,6 +1053,10 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
+    if role == "user" and conversation.title == "Hermes":
+        derived_title = derive_title_from_message(text)
+        if derived_title:
+            conversation.title = derived_title
     conversation.last_message_at = utcnow()
     conversation.updated_at = utcnow()
     db.add(message)
