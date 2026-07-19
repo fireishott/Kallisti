@@ -125,12 +125,20 @@ def _extract_media_from_response(text: str) -> tuple[list[dict], str]:
     return attachments, cleaned
 
 
-def _context_window_for(model_name: str, hermes_home: Path | None = None) -> int:
+def _context_window_for(
+    model_name: str,
+    hermes_home: Path | None = None,
+    base_url: str | None = None,
+    provider: str | None = None,
+) -> int:
     """Resolve context window size using Hermes's own model_metadata.
 
     Calls the Hermes agent's Python environment directly to use
     get_model_context_length() — the same resolver the TUI status bar
-    uses. Falls back to 128K if the subprocess fails.
+    uses. base_url/provider are threaded through so local/custom model
+    probing works the same way it does inside hermes-agent itself.
+    Falls back to 256K (hermes-agent's documented final fallback) if the
+    subprocess fails.
     """
     if hermes_home is None:
         hermes_home = Path.home() / ".hermes"
@@ -138,20 +146,21 @@ def _context_window_for(model_name: str, hermes_home: Path | None = None) -> int
     agent_dir = hermes_home / "hermes-agent"
 
     if not agent_venv_python.exists():
-        return 128_000
+        return 256_000
 
     try:
+        script = (
+            "from agent.model_metadata import get_model_context_length; "
+            f"print(get_model_context_length({model_name!r}, base_url={base_url!r}, provider={provider!r}))"
+        )
         result = subprocess.run(
-            [
-                str(agent_venv_python), "-c",
-                f"from agent.model_metadata import get_model_context_length; print(get_model_context_length('{model_name}'))",
-            ],
+            [str(agent_venv_python), "-c", script],
             cwd=str(agent_dir),
             capture_output=True, text=True, check=True, timeout=10,
         )
         return int(result.stdout.strip())
     except Exception:
-        return 128_000
+        return 256_000
 
 
 def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | None) -> int | None:
@@ -234,16 +243,53 @@ def _context_length_from_config(config: dict, model_name: str, provider: str | N
         if not isinstance(section, dict):
             continue
         models = section.get("models")
-        if not isinstance(models, dict):
-            continue
-        entry = models.get(model_name)
-        if isinstance(entry, dict):
-            try:
-                raw = entry.get("context_length")
-                if raw is not None:
-                    return int(raw)
-            except (TypeError, ValueError):
-                pass
+        if isinstance(models, dict):
+            entry = models.get(model_name)
+            if isinstance(entry, dict):
+                try:
+                    raw = entry.get("context_length")
+                    if raw is not None:
+                        return int(raw)
+                except (TypeError, ValueError):
+                    pass
+        elif isinstance(models, list):
+            # List form: bare model name strings. context_length, if present,
+            # is a provider-level sibling key applying to every model in the list.
+            if model_name in models:
+                try:
+                    raw = section.get("context_length")
+                    if raw is not None:
+                        return int(raw)
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
+def _provider_base_url(config: dict, provider: str | None) -> str | None:
+    """Look up the provider-specific base_url for *provider* from config.
+
+    Checks both the ``providers`` dict (keyed by provider id) and the
+    legacy ``custom_providers`` list (matched by ``name``). Falls back to
+    the top-level ``model.base_url`` if no provider-specific value is set,
+    matching how the rest of the config-reading code treats that key as
+    the connector-wide default.
+    """
+    if provider:
+        providers = config.get("providers")
+        if isinstance(providers, dict):
+            entry = providers.get(provider)
+            if isinstance(entry, dict) and entry.get("base_url"):
+                return entry["base_url"]
+
+        custom_providers = config.get("custom_providers")
+        if isinstance(custom_providers, list):
+            for section in custom_providers:
+                if isinstance(section, dict) and section.get("name") == provider and section.get("base_url"):
+                    return section["base_url"]
+
+    model_section = config.get("model")
+    if isinstance(model_section, dict) and model_section.get("base_url"):
+        return model_section["base_url"]
     return None
 
 
@@ -1221,27 +1267,46 @@ class HermesMobileConnector:
 
         def _collect(provider_key: str, provider: dict) -> None:
             provider_models = provider.get("models")
-            if not isinstance(provider_models, dict):
-                return
             provider_name = provider.get("name") or str(provider_key)
             default_model = provider.get("default_model") or provider.get("model")
-            for model_name, model_config in provider_models.items():
-                context_length = None
-                if isinstance(model_config, dict):
-                    try:
-                        raw_length = model_config.get("context_length")
-                        context_length = int(raw_length) if raw_length is not None else None
-                    except (TypeError, ValueError):
-                        context_length = None
-                models.append(
-                    {
-                        "name": str(model_name),
-                        "provider": str(provider_key),
-                        "providerName": str(provider_name),
-                        "contextWindow": context_length,
-                        "isProviderDefault": model_name == default_model,
-                    }
-                )
+
+            if isinstance(provider_models, dict):
+                for model_name, model_config in provider_models.items():
+                    context_length = None
+                    if isinstance(model_config, dict):
+                        try:
+                            raw_length = model_config.get("context_length")
+                            context_length = int(raw_length) if raw_length is not None else None
+                        except (TypeError, ValueError):
+                            context_length = None
+                    models.append(
+                        {
+                            "name": str(model_name),
+                            "provider": str(provider_key),
+                            "providerName": str(provider_name),
+                            "contextWindow": context_length,
+                            "isProviderDefault": model_name == default_model,
+                        }
+                    )
+            elif isinstance(provider_models, list):
+                # List form: bare model name strings. Context length, if present,
+                # is a provider-level sibling key applying to every model in the list.
+                provider_context_length = None
+                try:
+                    raw_length = provider.get("context_length")
+                    provider_context_length = int(raw_length) if raw_length is not None else None
+                except (TypeError, ValueError):
+                    provider_context_length = None
+                for model_name in provider_models:
+                    models.append(
+                        {
+                            "name": str(model_name),
+                            "provider": str(provider_key),
+                            "providerName": str(provider_name),
+                            "contextWindow": provider_context_length,
+                            "isProviderDefault": model_name == default_model,
+                        }
+                    )
 
         # Main providers dict
         providers = config.get("providers")
@@ -1528,10 +1593,15 @@ class HermesMobileConnector:
         model_section = config.get("model", {})
         model_name = model_section.get("default")
         provider = model_section.get("provider")
-        base_url = model_section.get("base_url")
 
         if not model_name:
             return None
+
+        # Resolve the provider-specific base_url (falls back to the
+        # top-level model.base_url if the provider doesn't declare one) so
+        # cache lookups and context-window resolution key on the same
+        # base_url the model actually runs against.
+        base_url = _provider_base_url(config, provider)
 
         # Look up context_length from the provider's model list in config
         context_length = _context_length_from_config(config, model_name, provider)
@@ -1540,7 +1610,7 @@ class HermesMobileConnector:
         if context_length is None:
             context_length = (
                 _cached_context_window(hermes_home, model_name, base_url)
-                or _context_window_for(model_name, hermes_home=hermes_home)
+                or _context_window_for(model_name, hermes_home=hermes_home, base_url=base_url, provider=provider)
             )
 
         return {"name": model_name, "provider": provider, "contextWindow": context_length}

@@ -394,7 +394,7 @@ model:
     assert catalog["activeModel"] == {
         "name": "gpt-5.4-mini",
         "provider": "openai-codex",
-        "contextWindow": 128000,
+        "contextWindow": 256000,
     }
 
 
