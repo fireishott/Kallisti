@@ -4,6 +4,7 @@ struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(AppSessionStore.self) private var sessionStore
+    @Environment(ChatStore.self) private var chatStore
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(PermissionsStore.self) private var permissionsStore
@@ -55,14 +56,28 @@ struct SettingsScreen: View {
 
     // MARK: - Connection
 
+    /// The effective connection status shown in the settings screen.
+    ///
+    /// Uses the actual relay connection status from `ChatStore` (which tracks
+    /// `LiveHeraldClient.connectionStatus`) when it reflects an error, falling
+    /// back to the bootstrap session status. This prevents the settings screen
+    /// from showing "Connected" while the chat screen shows a relay error.
+    private var effectiveConnectionStatus: ConnectionStatus {
+        let relayStatus = chatStore.connectionStatus
+        if relayStatus == .error || relayStatus == .connecting {
+            return relayStatus
+        }
+        return sessionStore.state.connectionStatus
+    }
+
     private var connectionSection: some View {
         SettingsSectionView(title: "Connection") {
             VStack(spacing: 0) {
                 settingsRow(
-                    icon: sessionStore.state.connectionStatus.displayIcon,
-                    iconColor: sessionStore.state.connectionStatus.displayColor,
+                    icon: effectiveConnectionStatus.displayIcon,
+                    iconColor: effectiveConnectionStatus.displayColor,
                     title: "Status",
-                    value: sessionStore.state.connectionStatus.displayLabel
+                    value: effectiveConnectionStatus.displayLabel
                 )
 
                 sectionDivider

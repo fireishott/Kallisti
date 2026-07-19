@@ -35,6 +35,7 @@ final class ChatStore {
     private static let deltaFlushByteThreshold = 4_096
 
     var isStreaming: Bool { streamingMessageID != nil }
+    var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
 
     /// Dynamic slash command catalog fetched from the connected Hermes host.
     /// Includes gateway commands, installed skills, custom personalities,

@@ -201,10 +201,16 @@ struct ChatWallpaperBackground: View {
     private var defaultBackground: some View {
         ZStack {
             Color(.systemBackground)
-            HeraldMark(size: 340, color: tint.opacity(0.04))
+            // App icon as a faint silhouette watermark
+            Image("AppIconImage")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 500, height: 500)
+                .opacity(0.06)
                 .offset(x: 120, y: -40)
+                .blendMode(.multiply)
             RadialGradient(
-                colors: [tint.opacity(0.06), .clear],
+                colors: [tint.opacity(0.04), .clear],
                 center: .center,
                 startRadius: 0,
                 endRadius: 500
