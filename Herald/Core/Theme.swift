@@ -22,12 +22,12 @@ struct ThemePalette {
 }
 
 enum ThemePreset: String, Codable, CaseIterable, Identifiable {
-    case nous, midnight, ember, mono, cyberpunk, slate
+    case herald, midnight, ember, mono, cyberpunk, slate
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .nous: "Nous"
+        case .herald: "Herald"
         case .midnight: "Midnight"
         case .ember: "Ember"
         case .mono: "Mono"
@@ -38,7 +38,7 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var accent: Color {
         switch self {
-        case .nous: Color(hex: 0x4A9EFF)
+        case .herald: Color(hex: 0xFF6B00)
         case .midnight: Color(hex: 0x8B5CF6)
         case .ember: Color(hex: 0xEF4444)
         case .mono: Color(hex: 0xA1A1AA)
@@ -49,7 +49,7 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var darkColors: ThemePalette {
         switch self {
-        case .nous:
+        case .herald:
             return ThemePalette(
                 background: Color(hex: 0x1A1D23),
                 foreground: Color(hex: 0xF0F2F5),
@@ -102,7 +102,7 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var lightColors: ThemePalette {
         switch self {
-        case .nous:
+        case .herald:
             return ThemePalette(
                 background: Color(hex: 0xF8FAFC),
                 foreground: Color(hex: 0x1E293B),

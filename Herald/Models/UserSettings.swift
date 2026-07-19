@@ -582,7 +582,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         relayConfiguration: RelayConfiguration = RelayConfiguration.defaultValue(),
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
-        themePreset: ThemePreset = .nous,
+        themePreset: ThemePreset = .herald,
         colorSchemePreference: ColorSchemePreference = .system,
         chatWallpaper: ChatWallpaper = .default,
         showAllDevices: Bool = false
@@ -627,7 +627,14 @@ struct UserSettings: Codable, Hashable, Sendable {
             ?? RelayConfiguration.migratedLegacyValue(environment: environment)
         autoConnectOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoConnectOnLaunch) ?? true
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
-        themePreset = try container.decodeIfPresent(ThemePreset.self, forKey: .themePreset) ?? .nous
+        // Migration: ThemePreset.nous was renamed to .herald in HERALD 1.0.0.
+        // Devices that stored "nous" in UserDefaults will decode it as .herald.
+        if var storedRawValue = try container.decodeIfPresent(String.self, forKey: .themePreset) {
+            if storedRawValue == "nous" { storedRawValue = "herald" }
+            themePreset = ThemePreset(rawValue: storedRawValue) ?? .herald
+        } else {
+            themePreset = .herald
+        }
         colorSchemePreference = try container.decodeIfPresent(ColorSchemePreference.self, forKey: .colorSchemePreference) ?? .system
         chatWallpaper = try container.decodeIfPresent(ChatWallpaper.self, forKey: .chatWallpaper) ?? .default
         showAllDevices = try container.decodeIfPresent(Bool.self, forKey: .showAllDevices) ?? false

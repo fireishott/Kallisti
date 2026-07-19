@@ -5,7 +5,7 @@ import SwiftUI
 final class ThemeManager {
     static let shared = ThemeManager()
 
-    var preset: ThemePreset = .nous
+    var preset: ThemePreset = .herald
     var colorSchemePreference: ColorSchemePreference = .system
     var currentScheme: ColorScheme = .dark
 
