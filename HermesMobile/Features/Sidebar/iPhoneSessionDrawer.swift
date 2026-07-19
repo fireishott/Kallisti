@@ -39,37 +39,49 @@ struct iPhoneSessionDrawer: View {
                 Spacer()
             }
             .offset(x: isOpen ? min(0, dragOffset) : -drawerWidth + dragOffset)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        if isOpen {
-                            // Only allow dragging closed (negative)
-                            dragOffset = min(0, value.translation.width)
-                        } else if value.translation.width > 10 {
-                            // Allow peeking open from edge
-                            dragOffset = value.translation.width
-                        }
-                    }
-                    .onEnded { value in
-                        let threshold = drawerWidth * 0.3
-                        if isOpen {
-                            if value.translation.width < -threshold {
-                                close()
-                            } else {
-                                snapOpen()
-                            }
-                        } else {
-                            if value.translation.width > threshold {
-                                open()
-                            } else {
-                                snapClosed()
-                            }
-                        }
-                    }
-            )
             .animation(Design.Motion.standard, value: isOpen)
             .animation(.interactiveSpring, value: dragOffset)
+
+            // Always-on-screen edge-catcher: the drawer HStack above is offset
+            // off-screen when closed, so its own gesture is unreachable by touch.
+            // This invisible strip along the leading edge stays in place and
+            // carries the same drag gesture so swipe-to-open actually works.
+            if !isOpen {
+                Color.clear
+                    .frame(width: 24)
+                    .contentShape(Rectangle())
+                    .frame(maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if isOpen {
+                        // Only allow dragging closed (negative)
+                        dragOffset = min(0, value.translation.width)
+                    } else if value.translation.width > 10 {
+                        // Allow peeking open from edge
+                        dragOffset = value.translation.width
+                    }
+                }
+                .onEnded { value in
+                    let threshold = drawerWidth * 0.3
+                    if isOpen {
+                        if value.translation.width < -threshold {
+                            close()
+                        } else {
+                            snapOpen()
+                        }
+                    } else {
+                        if value.translation.width > threshold {
+                            open()
+                        } else {
+                            snapClosed()
+                        }
+                    }
+                }
+        )
         .task {
             await sessionStore.loadSessions()
         }
