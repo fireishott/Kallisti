@@ -398,7 +398,7 @@ class HeraldConnector:
             platform=platform_module.system().lower(),
             hostname=socket.gethostname(),
             connector_version=__version__,
-            hermes_command=effective_settings.hermes_command,
+            hermes_command=effective_settings.herald_command,
             hermes_version=version_executor.detect_version(),
             hermes_model=model_info["name"] if model_info else None,
             display_name=display_name,
@@ -416,7 +416,7 @@ class HeraldConnector:
         metadata = self.metadata()
         if metadata.hermes_version is None:
             raise RuntimeError(
-                f"Hermes command not found or not runnable: {self.executor.settings.hermes_command}"
+                f"Hermes command not found or not runnable: {self.executor.settings.herald_command}"
             )
 
         resolved_relay_url = (relay_url or self.default_relay_url()).rstrip("/")
@@ -605,12 +605,12 @@ class HeraldConnector:
         state = state or self.state_store.load()
         self.apply_runtime_environment(state)
         settings = self.settings_for_state(state)
-        readiness_summary = native_mcp_readiness_message(hermes_command=settings.hermes_command)
+        readiness_summary = native_mcp_readiness_message(hermes_command=settings.herald_command)
         if state.mcp_last_test_error:
             readiness_summary = f"{readiness_summary} ({state.mcp_last_test_error})"
         state.voice_context_snapshot = build_voice_context_snapshot(
             sensor_store=self.sensor_store,
-            hermes_command=settings.hermes_command,
+            hermes_command=settings.herald_command,
             hermes_home=state.runtime_config.hermes_home if state.runtime_config else os.getenv("HERMES_HOME"),
             readiness_summary=readiness_summary,
         )
@@ -1530,7 +1530,7 @@ class HeraldConnector:
                 return state.runtime_config.hermes_command
         except Exception:
             pass
-        return self.executor.settings.hermes_command
+        return self.executor.settings.herald_command
 
     async def _rpc_cron_list(self) -> dict:
         """List scheduled cron jobs from Hermes."""
@@ -1749,7 +1749,7 @@ class HeraldConnector:
         env["TERM"] = "dumb"
 
         # Resolve the hermes command path: try executor, then state, then bare name
-        hermes_cmd = self.executor.resolved_command_path() or self.executor.settings.hermes_command
+        hermes_cmd = self.executor.resolved_command_path() or self.executor.settings.herald_command
         if hermes_cmd == "hermes":
             try:
                 state = self.state_store.load()
@@ -1761,7 +1761,7 @@ class HeraldConnector:
         try:
             completed = subprocess.run(
                 [hermes_cmd, "skills", "list"],
-                cwd=self.executor.settings.hermes_workdir or None,
+                cwd=self.executor.settings.herald_workdir or None,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -2242,19 +2242,19 @@ class HeraldConnector:
         settings = self.executor.settings
         resolved_command = self.executor.resolved_command_path()
         if resolved_command is None:
-            raise RuntimeError(f"Hermes command not found or not runnable: {settings.hermes_command}")
+            raise RuntimeError(f"Hermes command not found or not runnable: {settings.herald_command}")
 
         return ConnectorRuntimeConfig(
             python_executable=str(sys.executable),
             state_dir=str(self.state_store.state_dir),
             relay_url=relay_url.rstrip("/"),
             hermes_command=resolved_command,
-            hermes_workdir=settings.hermes_workdir,
-            hermes_provider=settings.hermes_provider,
-            hermes_model=settings.hermes_model,
-            hermes_toolsets=settings.hermes_toolsets,
-            hermes_source=settings.hermes_source,
-            hermes_history_limit=settings.hermes_history_limit,
+            hermes_workdir=settings.herald_workdir,
+            hermes_provider=settings.herald_provider,
+            hermes_model=settings.herald_model,
+            hermes_toolsets=settings.herald_toolsets,
+            hermes_source=settings.herald_source,
+            hermes_history_limit=settings.herald_history_limit,
             hermes_home=os.getenv("HERMES_HOME") or None,
             api_server_url=os.getenv("HERMES_API_SERVER_URL") or None,
             api_server_key=os.getenv("HERMES_API_SERVER_KEY") or None,
