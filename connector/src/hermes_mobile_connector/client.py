@@ -993,6 +993,8 @@ class HermesMobileConnector:
                 result = self._rpc_commands_catalog()
             elif method == "models.list":
                 result = self._rpc_models_list()
+            elif method == "model.set":
+                result = await self._rpc_model_set(params)
             elif method == "profiles.list":
                 result = await self._rpc_profiles_list()
             elif method == "skills.list":
@@ -1131,6 +1133,65 @@ class HermesMobileConnector:
             "models": models,
         }
 
+    async def _rpc_model_set(self, params: dict) -> dict:
+        """Set the global default model in ~/.hermes/config.yaml.
+
+        This is equivalent to running `/model <name> --global` in the TUI —
+        it edits the persistent default, not a session-scoped override.
+
+        Unlike the read-only RPCs above, this performs a read-modify-write
+        on config.yaml. ruamel.yaml (round-trip mode) is preferred so the
+        user's existing structure/comments survive the edit; plain
+        ``yaml.safe_dump`` is only used as a fallback if ruamel isn't
+        installed, and that fallback WILL discard comments/formatting.
+        """
+        hermes_home = self._resolve_hermes_home()
+        config_path = hermes_home / "config.yaml"
+        name = params.get("name")
+        provider = params.get("provider")
+        if not name or not provider:
+            raise RuntimeError("model.set requires 'name' and 'provider'")
+
+        if not config_path.is_file():
+            raise RuntimeError("config.yaml not found")
+
+        try:
+            from ruamel.yaml import YAML
+
+            yaml_engine = YAML()
+            yaml_engine.preserve_quotes = True
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml_engine.load(f) or {}
+            round_trip = True
+        except ImportError:
+            import yaml as yaml_engine
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml_engine.safe_load(f) or {}
+            round_trip = False
+
+        if "model" not in config or not isinstance(config.get("model"), dict):
+            config["model"] = {}
+
+        config["model"]["default"] = name
+        config["model"]["provider"] = provider
+
+        # If the target provider declares a base_url, mirror it onto the
+        # top-level model.base_url so context-window resolution and other
+        # base_url-dependent lookups stay consistent with the new default.
+        providers = config.get("providers")
+        if isinstance(providers, dict) and provider in providers:
+            provider_entry = providers[provider]
+            if isinstance(provider_entry, dict) and provider_entry.get("base_url"):
+                config["model"]["base_url"] = provider_entry["base_url"]
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            if round_trip:
+                yaml_engine.dump(config, f)
+            else:
+                yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+
+        return {"activeModel": self._read_active_model(hermes_home)}
 
     @staticmethod
     def _read_available_models(hermes_home: Path) -> list[dict]:
