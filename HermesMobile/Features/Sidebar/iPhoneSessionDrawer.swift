@@ -85,6 +85,14 @@ struct iPhoneSessionDrawer: View {
         .task {
             await sessionStore.loadSessions()
         }
+        .alert("Error", isPresented: Binding(
+            get: { sessionStore.errorMessage != nil },
+            set: { if !$0 { sessionStore.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { sessionStore.errorMessage = nil }
+        } message: {
+            Text(sessionStore.errorMessage ?? "")
+        }
     }
 
     // MARK: - Header

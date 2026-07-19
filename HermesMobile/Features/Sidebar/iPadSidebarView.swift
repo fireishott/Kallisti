@@ -103,6 +103,14 @@ struct iPadSidebarView: View {
             }
             Button("Cancel", role: .cancel) { renamingSession = nil }
         }
+        .alert("Error", isPresented: Binding(
+            get: { sessionStore.errorMessage != nil },
+            set: { if !$0 { sessionStore.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { sessionStore.errorMessage = nil }
+        } message: {
+            Text(sessionStore.errorMessage ?? "")
+        }
     }
 
     // MARK: - Header
@@ -114,7 +122,10 @@ struct iPadSidebarView: View {
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()
             Button {
-                Task { await sessionStore.createNewSession() }
+                Task {
+                    await sessionStore.createNewSession()
+                    selectedSection = .chat
+                }
             } label: {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: Design.Size.iconSmall))
