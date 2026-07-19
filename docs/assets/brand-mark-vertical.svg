@@ -1,17 +1,62 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" width="200" height="240">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 260" width="200" height="260">
+  <defs>
+    <linearGradient id="flameGrad" x1="0" y1="1" x2="0.3" y2="0">
+      <stop offset="0%" stop-color="#FF3D00"/>
+      <stop offset="40%" stop-color="#FF6B00"/>
+      <stop offset="100%" stop-color="#FF9500"/>
+    </linearGradient>
+    <linearGradient id="hotCore" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#FF6B00"/>
+      <stop offset="50%" stop-color="#FFCC00"/>
+      <stop offset="100%" stop-color="#FFF5E0"/>
+    </linearGradient>
+    <filter id="flameShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="0" dy="2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="textGlow" x="-5%" y="-10%" width="110%" height="120%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur"/>
+      <feComponentTransfer in="blur"><feFuncA type="linear" slope="0.12"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
   <!-- Flame centered -->
-  <g transform="translate(75, 10) scale(1.0)">
+  <g transform="translate(75, 10)" filter="url(#flameShadow)">
     <path d="M32 100 C10 80 0 55 12 35 C18 25 24 38 26 45 C28 30 35 10 50 0 C45 20 48 30 52 38 C56 20 60 28 62 40 C68 28 72 40 70 58 C68 75 60 88 50 100 Z"
-          fill="#FF6B00"/>
+          fill="url(#flameGrad)"/>
     <path d="M50 100 C38 85 32 68 38 52 C42 42 46 50 48 58 C50 48 54 38 58 48 C62 60 60 78 50 100 Z"
-          fill="#FFF5E0"/>
+          fill="url(#hotCore)"/>
   </g>
+
   <!-- HERALD text centered -->
-  <text x="100" y="200"
-        font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+  <text x="100" y="210"
+        font-family="'SF Pro Display', -apple-system, 'Helvetica Neue', Arial, sans-serif"
         font-size="28"
         font-weight="700"
         letter-spacing="6"
         text-anchor="middle"
-        fill="#F5F0E8">HERALD</text>
+        fill="#F5F0E8"
+        filter="url(#textGlow)">HERALD</text>
+
+  <!-- Subtle accent line -->
+  <line x1="50" y1="222" x2="150" y2="222" stroke="#FF6B00" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+
+  <!-- Tagline -->
+  <text x="100" y="245"
+        font-family="'SF Pro Text', -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="11"
+        font-weight="500"
+        text-anchor="middle"
+        fill="#F5F0E8"
+        opacity="0.5"
+        letter-spacing="2">SELF-HOSTED AI</text>
 </svg>

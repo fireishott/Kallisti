@@ -1,9 +1,58 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" fill="#0A0A0A"/>
-  <g transform="translate(152, 60) scale(4.1)">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A0A0A"/>
+      <stop offset="100%" stop-color="#121416"/>
+    </linearGradient>
+    <linearGradient id="flameGrad" x1="0" y1="1" x2="0.3" y2="0">
+      <stop offset="0%" stop-color="#FF3D00"/>
+      <stop offset="40%" stop-color="#FF6B00"/>
+      <stop offset="100%" stop-color="#FF9500"/>
+    </linearGradient>
+    <linearGradient id="hotCore" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#FF6B00"/>
+      <stop offset="50%" stop-color="#FFCC00"/>
+      <stop offset="100%" stop-color="#FFF5E0"/>
+    </linearGradient>
+    <radialGradient id="glowBg" cx="50%" cy="45%" r="35%">
+      <stop offset="0%" stop-color="#FF6B00" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#FF6B00" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="flameGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="glow"/>
+      <feComponentTransfer in="glow"><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="innerShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="12"/>
+      <feOffset dx="0" dy="4"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.2"/></feComponentTransfer>
+      <feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feFlood flood-color="#000" flood-opacity="0.3"/>
+      <feComposite in2="SourceAlpha" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="108" fill="url(#bgGrad)"/>
+  <!-- Subtle radial glow -->
+  <rect width="512" height="512" rx="108" fill="url(#glowBg)"/>
+
+  <!-- Flame centered with glow -->
+  <g transform="translate(152, 60) scale(4.1)" filter="url(#flameGlow)">
     <path d="M32 100 C10 80 0 55 12 35 C18 25 24 38 26 45 C28 30 35 10 50 0 C45 20 48 30 52 38 C56 20 60 28 62 40 C68 28 72 40 70 58 C68 75 60 88 50 100 Z"
-          fill="#FF6B00"/>
+          fill="url(#flameGrad)"/>
     <path d="M50 100 C38 85 32 68 38 52 C42 42 46 50 48 58 C50 48 54 38 58 48 C62 60 60 78 50 100 Z"
-          fill="#FFF5E0"/>
+          fill="url(#hotCore)"/>
   </g>
+
+  <!-- Top edge highlight -->
+  <rect x="0" y="0" width="512" height="1" rx="0" fill="#F5F0E8" opacity="0.06"/>
 </svg>
