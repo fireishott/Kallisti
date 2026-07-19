@@ -199,22 +199,12 @@ struct ChatWallpaperBackground: View {
 
     @ViewBuilder
     private var defaultBackground: some View {
-        // NOTE(design): The Electron app's default wallpaper is a centered Hermes
-        // logo silhouette at ~15% opacity. On iOS, the app icon lives in
-        // Resources/Assets.xcassets/AppIcon.appiconset, which uses Apple's
-        // dedicated "App Icon" asset catalog type — that type is not loadable
-        // via `Image(_:)`/`Image(uiImage:)` at runtime. Until a human designer
-        // drops a standalone low-opacity silhouette image into the asset catalog
-        // (e.g. an image set named "wallpaper-hermes-mark"), fall back to an SF
-        // Symbol placeholder so `.default` still renders something reasonable.
-        ZStack {
-            Color(.systemBackground)
-            Image(systemName: "hexagon.fill")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 220, height: 220)
-                .foregroundStyle(tint.opacity(0.15))
-        }
+        RadialGradient(
+            colors: [tint.opacity(0.06), Color(.systemBackground)],
+            center: .center,
+            startRadius: 0,
+            endRadius: 500
+        )
     }
 
     @ViewBuilder
