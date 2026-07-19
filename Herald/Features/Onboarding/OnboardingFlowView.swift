@@ -298,7 +298,7 @@ private struct WelcomeStepView: View {
                 .foregroundStyle(Design.Colors.foreground)
                 .lineSpacing(-6)
 
-                Text("An iPhone client for the\nHermes Agent framework.")
+                Text("An iPhone client for the\nHerald Agent framework.")
                     .font(Design.Typography.editorialItalic)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
