@@ -437,7 +437,7 @@ struct iPadSidebarView: View {
 
     private var bottomSections: some View {
         Section {
-            ForEach([SidebarSection.inbox, .talk, .settings], id: \.self) { section in
+            ForEach([SidebarSection.chat, .inbox, .talk, .settings], id: \.self) { section in
                 Button {
                     selectedSection = section
                     sessionStore.searchQuery = ""
