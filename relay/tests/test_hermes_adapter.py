@@ -76,4 +76,4 @@ def test_send_message_replays_when_resumed_session_is_missing(monkeypatch):
     assert len(calls) == 2
     assert "--resume" in calls[0]
     assert "--resume" not in calls[1]
-    assert calls[1][calls[1].index("-q") + 1].startswith("You are Hermes responding inside Hermes Mobile.")
+    assert calls[1][calls[1].index("-q") + 1].startswith("You are Herald responding inside Herald.")

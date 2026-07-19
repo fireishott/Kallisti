@@ -47,7 +47,7 @@ class MockHermesAdapter:
         history: list[HermesConversationMessage],
         session_id: str | None = None,
     ) -> HermesChatResult:
-        return HermesChatResult(text=f"Mock Hermes reply: {latest_user_message}")
+        return HermesChatResult(text=f"Mock Herald reply: {latest_user_message}")
 
 
 class CLIHermesAdapter:
@@ -64,7 +64,7 @@ class CLIHermesAdapter:
         session_id: str | None = None,
     ) -> HermesChatResult:
         if shutil.which(self.settings.hermes_command) is None:
-            raise RuntimeError(f"Hermes command not found: {self.settings.hermes_command}")
+            raise RuntimeError(f"Herald command not found: {self.settings.hermes_command}")
 
         response = self._send_with_resume(
             latest_user_message=latest_user_message,
@@ -76,7 +76,7 @@ class CLIHermesAdapter:
             response = self._send_with_replay(latest_user_message=latest_user_message, history=history)
 
         if not response.text:
-            raise RuntimeError("Hermes CLI returned an empty response.")
+            raise RuntimeError("Herald CLI returned an empty response.")
 
         return HermesChatResult(text=response.text, session_id=response.session_id or session_id)
 
@@ -127,7 +127,7 @@ class CLIHermesAdapter:
         )
 
         if completed.returncode != 0:
-            error_text = completed.stderr.strip() or completed.stdout.strip() or "Hermes CLI request failed."
+            error_text = completed.stderr.strip() or completed.stdout.strip() or "Herald CLI request failed."
             raise RuntimeError(error_text)
 
         return self._parse_cli_output(completed.stdout)
@@ -159,13 +159,13 @@ class CLIHermesAdapter:
     def _build_prompt(self, *, latest_user_message: str, history: list[HermesConversationMessage]) -> str:
         history_lines = []
         for message in history[-self.settings.hermes_history_limit :]:
-            prefix = "User" if message.role == "user" else "Hermes"
+            prefix = "User" if message.role == "user" else "Herald"
             history_lines.append(f"{prefix}: {message.text}")
 
         transcript = "\n".join(history_lines) if history_lines else "(no prior messages)"
 
         return (
-            "You are Hermes responding inside Hermes Mobile.\n"
+            "You are Herald responding inside Herald.\n"
             "Continue the conversation naturally using the history below.\n"
             "Return only the next assistant reply.\n\n"
             f"Conversation history:\n{transcript}\n\n"
