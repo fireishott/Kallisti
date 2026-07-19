@@ -38,6 +38,7 @@ from .schemas import (
     InboxActionRequest,
     InternalInboxCreateRequest,
     MessageCreateRequest,
+    ModelSetRequest,
     PairingRedeemRequest,
     PhonePairingRedeemRequest,
     SensorHealthRequest,
@@ -935,8 +936,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         """Return the models configured on the connected Hermes host.
 
-        The iOS model selector shows this list grouped by provider; switching
-        is dispatched through the chat path as a `/model <name>` command.
+        The iOS model selector shows this list grouped by provider. Switching
+        is done via POST /v1/model, which edits the host's global default
+        model directly (not dispatched through chat).
         """
         try:
             result = await send_connector_rpc(
@@ -951,6 +953,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:
             logger.warning("models.list RPC failed: %s", exc)
             return success({"models": [], "activeModel": None})
+
+    @app.post("/v1/model")
+    async def set_active_model(
+        body: ModelSetRequest,
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Set the global default model on the connected Hermes host.
+
+        This edits the host's config.yaml directly via the connector's
+        model.set RPC — equivalent to `/model <name> --global` in the TUI.
+        There is no session-scoped override available through this path.
+        """
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="model.set",
+                params=body.model_dump(),
+                timeout_seconds=10.0,
+            )
+            return success(result)
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     @app.get("/v1/profiles")
     async def profile_catalog(

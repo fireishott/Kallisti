@@ -164,6 +164,11 @@ class InternalInboxCreateRequest(BaseModel):
     expiresAt: datetime | None = None
 
 
+class ModelSetRequest(BaseModel):
+    name: str
+    provider: str
+
+
 class CronCreateRequest(BaseModel):
     name: str
     schedule: str
