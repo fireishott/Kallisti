@@ -119,9 +119,9 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .managedRelay:
             return "Hosted reachability, queueing, and official push delivery."
         case .tailscale:
-            return "Private tailnet reachability for a local Hermes relay."
+            return "Private tailnet reachability for a local Herald relay."
         case .selfHostedRelay:
-            return "Bring your own public Hermes relay URL."
+            return "Bring your own public Herald relay URL."
         }
     }
 
@@ -146,9 +146,9 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var defaultOfflineMessage: String {
         switch self {
         case .managedRelay:
-            return "Hermes relay is unavailable right now."
+            return "Herald relay is unavailable right now."
         case .tailscale:
-            return "Open Tailscale or reconnect to your tailnet to reach Hermes."
+            return "Open Tailscale or reconnect to your tailnet to reach Herald."
         case .selfHostedRelay:
             return "Your self-hosted relay URL is not reachable."
         }
@@ -157,7 +157,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var hostOfflineMessage: String {
         switch self {
         case .managedRelay:
-            return "Messages can queue while your Hermes host reconnects."
+            return "Messages can queue while your Herald host reconnects."
         case .tailscale:
             return "The relay is reachable, but the connector is offline. Keep the Mac relay running to queue messages."
         case .selfHostedRelay:
@@ -168,11 +168,11 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var notConnectedMessage: String {
         switch self {
         case .managedRelay:
-            return "Pair a Hermes host with the managed relay before sending messages."
+            return "Pair a Herald host with the managed relay before sending messages."
         case .tailscale:
-            return "Pair a Hermes host on your tailnet before sending messages."
+            return "Pair a Herald host on your tailnet before sending messages."
         case .selfHostedRelay:
-            return "Pair a Hermes host with this self-hosted relay before sending messages."
+            return "Pair a Herald host with this self-hosted relay before sending messages."
         }
     }
 
@@ -183,7 +183,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var unreachableSendBlockedMessage: String {
         switch self {
         case .managedRelay:
-            return "Hermes relay is unreachable. Check your connection and try again."
+            return "Herald relay is unreachable. Check your connection and try again."
         case .tailscale:
             return "Can't reach your tailnet relay. Open Tailscale to reconnect, then send again."
         case .selfHostedRelay:
@@ -223,7 +223,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Use your tailnet URL — e.g. https://my-mac.tail-scale.ts.net/v1 — or run `tailscale serve` to proxy a local relay."
         case .selfHostedRelay:
-            return "Point this at your public Hermes relay — e.g. https://relay.example.com/v1."
+            return "Point this at your public Herald relay — e.g. https://relay.example.com/v1."
         }
     }
 
@@ -233,7 +233,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var backgroundDeliveryNote: String {
         switch self {
         case .managedRelay:
-            return "Managed relay can wake Hermes via official push while the app is backgrounded."
+            return "Managed relay can wake Herald via official push while the app is backgrounded."
         case .tailscale:
             return "Tailscale mode stays honest: messages arrive while the app is in the foreground or reconnected on your tailnet. No official background push."
         case .selfHostedRelay:

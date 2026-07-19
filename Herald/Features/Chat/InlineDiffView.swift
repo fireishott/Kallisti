@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Inline diff view that renders file changes made by Hermes during a coding task.
+/// Inline diff view that renders file changes made by Herald during a coding task.
 ///
 /// Shows a compact summary header ("2 files changed, +15 -3") that expands
 /// to show individual file diffs with syntax-colored additions/deletions.

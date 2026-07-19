@@ -355,7 +355,7 @@ private struct RelayStepView: View {
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("where your Hermes is reachable.")
+                Text("where your Herald is reachable.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }
@@ -587,7 +587,7 @@ private struct PairingStepView: View {
                             ProgressView().tint(Design.Colors.background)
                         } else {
                             HStack(spacing: Design.Spacing.xs) {
-                                Text("Connect Hermes")
+                                Text("Connect Herald")
                                 Text("→").accessibilityHidden(true)
                             }
                             .font(Design.Typography.headline)
@@ -603,7 +603,7 @@ private struct PairingStepView: View {
                 .clipShape(Capsule())
                 .disabled(isWorking || !isValid)
                 .opacity(isWorking || !isValid ? 0.5 : 1)
-                .accessibilityLabel("Connect Hermes")
+                .accessibilityLabel("Connect Herald")
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)
@@ -940,7 +940,7 @@ struct OnboardingGhostCta: View {
     }
 }
 
-// MARK: - Hermes Mark
+// MARK: - Herald Mark
 
 struct HeraldMark: View {
     let size: CGFloat

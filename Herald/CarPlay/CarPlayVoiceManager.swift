@@ -73,14 +73,14 @@ final class CarPlayVoiceManager {
     private func buildVoiceControlTemplate(speakingTitle: String?) -> CPVoiceControlTemplate {
         let idle = CPVoiceControlState(
             identifier: StateID.idle,
-            titleVariants: ["Tap Start to talk to Hermes", "Talk to Hermes"],
+            titleVariants: ["Tap Start to talk to Herald", "Talk to Herald"],
             image: UIImage(systemName: "brain.head.profile")!,
             repeats: false
         )
 
         let connecting = CPVoiceControlState(
             identifier: StateID.connecting,
-            titleVariants: ["Connecting to Hermes...", "Connecting..."],
+            titleVariants: ["Connecting to Herald...", "Connecting..."],
             image: UIImage(systemName: "antenna.radiowaves.left.and.right")!,
             repeats: true
         )
@@ -101,7 +101,7 @@ final class CarPlayVoiceManager {
 
         let speaking = CPVoiceControlState(
             identifier: StateID.speaking,
-            titleVariants: [speakingTitle ?? "Hermes is speaking", "Hermes is speaking"],
+            titleVariants: [speakingTitle ?? "Herald is speaking", "Herald is speaking"],
             image: UIImage(systemName: "speaker.wave.2.fill")!,
             repeats: false
         )
@@ -159,7 +159,7 @@ final class CarPlayVoiceManager {
     private func lastAssistantText() -> String {
         let lastAssistant = talkStore.transcriptItems.reversed().first(where: { $0.speaker == .hermes })
         let trimmed = lastAssistant?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty else { return "Hermes is speaking" }
+        guard !trimmed.isEmpty else { return "Herald is speaking" }
         return String(trimmed.prefix(Self.maxTranscriptTitleLength))
     }
 }

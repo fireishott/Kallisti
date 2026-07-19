@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Right-side inspector panel for iPad.
-/// Shows Hermes engine logs, terminal output, and tool activity —
-/// similar to the right panel in Hermes Desktop.
+/// Shows Herald engine logs, terminal output, and tool activity —
+/// similar to the right panel in Herald Desktop.
 struct iPadRightPanelView: View {
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(ChatStore.self) private var chatStore
@@ -72,7 +72,7 @@ struct iPadRightPanelView: View {
 
             if chatStore.logEntries.isEmpty {
                 emptyState(icon: "terminal", message: "No log entries yet",
-                           detail: "Logs appear here when Hermes processes messages, runs tools, or executes commands.")
+                           detail: "Logs appear here when Herald processes messages, runs tools, or executes commands.")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -147,7 +147,7 @@ struct iPadRightPanelView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("$ hermes agent --version")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
-                    Text("Hermes Agent v2.1.0 — Nous Research")
+                    Text("Herald Agent v2.1.0 — Nous Research")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)
                     Text("")
                     Text("$ tail -f ~/.hermes/logs/agent.log")
@@ -180,7 +180,7 @@ struct iPadRightPanelView: View {
 
             if chatStore.conversation?.latestUsage == nil {
                 emptyState(icon: "hammer", message: "No tool activity yet",
-                           detail: "Tool calls and execution results from the Hermes agent appear here.")
+                           detail: "Tool calls and execution results from the Herald agent appear here.")
             } else if let usage = chatStore.conversation?.latestUsage {
                 VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                     usageRow("Prompt tokens", value: usage.promptTokens)

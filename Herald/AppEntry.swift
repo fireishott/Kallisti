@@ -7,7 +7,7 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         // If the app was previously killed while a Live Activity was active,
-        // the OS can still show that stale activity. Clear any orphaned Hermes
+        // the OS can still show that stale activity. Clear any orphaned Herald
         // activities immediately on launch; real active sessions will recreate
         // or adopt an activity once state is restored.
         LiveActivityService.endAllActivities()

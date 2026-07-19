@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Commands fall into two categories:
 /// - **Local**: Handled by the iOS app directly (new, undo, retry, etc.)
-/// - **Pass-through**: Sent as a chat message to the Hermes agent, which
+/// - **Pass-through**: Sent as a chat message to the Herald agent, which
 ///   processes them natively (model, compress, background, skills, etc.)
 ///
 /// The built-in list provides offline fallback. The full catalog (including
@@ -84,7 +84,7 @@ extension SlashCommand {
         SlashCommand(name: "history", description: "Show conversation history", category: "Session", acceptsArgument: false, isDestructive: false, isLocal: true),
     ]
 
-    // Commands passed through to the Hermes agent — matches the gateway-available
+    // Commands passed through to the Herald agent — matches the gateway-available
     // surface from COMMAND_REGISTRY (cli_only=False commands)
     static let gatewayCommands: [SlashCommand] = [
         // Session
@@ -116,7 +116,7 @@ extension SlashCommand {
         SlashCommand(name: "help", description: "Show available commands", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
         SlashCommand(name: "usage", description: "Show token usage", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
         SlashCommand(name: "insights", description: "Show usage insights", category: "Info", acceptsArgument: true, isDestructive: false, isLocal: false),
-        SlashCommand(name: "update", description: "Update Hermes Agent", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
+        SlashCommand(name: "update", description: "Update Herald Agent", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
     ]
 
     /// Creates a pass-through command from a remote catalog entry.
@@ -156,7 +156,7 @@ extension SlashCommand {
         )
     }
 
-    /// Quick commands are valid Hermes slash commands, but Hermes docs state
+    /// Quick commands are valid Herald slash commands, but Herald docs state
     /// they are resolved at dispatch time and omitted from built-in autocomplete.
     static func fromQuickCommand(name: String, description: String) -> SlashCommand {
         SlashCommand(

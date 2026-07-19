@@ -38,7 +38,7 @@ struct ChatInputBar: View {
         return (cmd, arg)
     }
 
-    /// Uses the dynamic catalog from ChatStore (fetched from the Hermes host).
+    /// Uses the dynamic catalog from ChatStore (fetched from the Herald host).
     /// Falls back to the built-in list if the catalog hasn't loaded yet.
     private var filteredCommands: [SlashCommand] {
         let query = parsedSlashInput.command.lowercased()
@@ -90,12 +90,12 @@ struct ChatInputBar: View {
 
                 // Text input area
                 TextField(
-                    speechService.isListening ? "Listening..." : "Reply to Hermes",
+                    speechService.isListening ? "Listening..." : "Reply to Herald",
                     text: $text,
                     axis: .vertical
                 )
                     .accessibilityIdentifier("chat.composer")
-                    .accessibilityLabel("Reply to Hermes")
+                    .accessibilityLabel("Reply to Herald")
                     .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.foreground)
                     .lineLimit(1...5)

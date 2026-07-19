@@ -36,12 +36,12 @@ final class ChatStore {
 
     var isStreaming: Bool { streamingMessageID != nil }
 
-    /// Dynamic slash command catalog fetched from the connected Hermes host.
+    /// Dynamic slash command catalog fetched from the connected Herald host.
     /// Includes gateway commands, installed skills, custom personalities,
     /// and hidden quick-command metadata for manual slash dispatch.
     private(set) var commandCatalog: [SlashCommand] = SlashCommand.allBuiltIn
 
-    /// Active model name from the Hermes agent config (e.g., "gpt-5.4-mini").
+    /// Active model name from the Herald agent config (e.g., "gpt-5.4-mini").
     private(set) var activeModelName: String?
     /// Context window size for the active model (e.g., 400000).
     private(set) var contextWindow: Int?
@@ -120,7 +120,7 @@ final class ChatStore {
         conversation?.lastActivity = optimistic.timestamp
         pendingMessageSentAt = optimistic.timestamp
 
-        // Append a placeholder Hermes message for streaming content
+        // Append a placeholder Herald message for streaming content
         let placeholderID = UUID()
         let placeholder = Message(
             id: placeholderID,
@@ -370,11 +370,11 @@ final class ChatStore {
     /// Marks a message as failed with real, actionable error text after both
     /// the initial attempt and the automatic retry have stalled with zero
     /// progress. Mirrors the shape of the existing `.failed` stream-event
-    /// handling above (Hermes placeholder becomes a system error message, user
+    /// handling above (Herald placeholder becomes a system error message, user
     /// message flips to `.failed`) so the existing manual "tap to retry" flow
     /// (`retryMessage(_:)`, wired up in `MessageBubble`) keeps working unchanged.
     private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
-        let errorText = "Hermes didn't respond — tap to retry"
+        let errorText = "Herald didn't respond — tap to retry"
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx] = Message(
                 sender: .system,
@@ -743,7 +743,7 @@ final class ChatStore {
             } else if let remoteJobID = remote.jobID {
                 // Fallback: the streaming placeholder had a client-generated UUID that
                 // differs from the server-assigned message ID.  Match on jobID + sender
-                // instead, but only for Hermes messages that actually carry artifacts.
+                // instead, but only for Herald messages that actually carry artifacts.
                 local = localConversation.messages.first(where: {
                     $0.jobID == remoteJobID
                         && $0.sender == remote.sender

@@ -54,19 +54,19 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     var explanation: String {
         switch self {
         case .location:
-            "Hermes uses your location to provide contextual recommendations, weather updates, and nearby suggestions."
+            "Herald uses your location to provide contextual recommendations, weather updates, and nearby suggestions."
         case .health:
             "Access your health data to offer personalized wellness insights, activity tracking, and sleep recommendations."
         case .notifications:
-            "Receive timely reminders, task updates, and important alerts from Hermes."
+            "Receive timely reminders, task updates, and important alerts from Herald."
         case .microphone:
-            "Voice conversations with Hermes in Talk Mode."
+            "Voice conversations with Herald in Talk Mode."
         case .camera:
-            "Capture photos and documents for Hermes to analyze, annotate, or organize."
+            "Capture photos and documents for Herald to analyze, annotate, or organize."
         case .photos:
             "Access your photo library to help organize, search, and create albums based on your preferences."
         case .motion:
-            "Hermes uses motion data to understand your current activity for contextual awareness."
+            "Herald uses motion data to understand your current activity for contextual awareness."
         case .speechRecognition:
             "On-device speech recognition for dictation in the chat composer."
         }

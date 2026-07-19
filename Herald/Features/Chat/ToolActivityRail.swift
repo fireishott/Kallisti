@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A compact, live-rotating view showing what tools Hermes is using in real time.
+/// A compact, live-rotating view showing what tools Herald is using in real time.
 ///
 /// **Streaming**: cycles through tool labels one at a time with animated transitions.
 /// **Finished**: shows a collapsed summary that expands to the full timeline on tap.

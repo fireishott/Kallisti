@@ -1,9 +1,9 @@
 import Foundation
 
-/// Represents file changes detected by git after Hermes completes a coding task.
+/// Represents file changes detected by git after Herald completes a coding task.
 ///
 /// The connector captures `git diff` before and after each job to isolate
-/// exactly what Hermes modified — no Hermes framework changes required.
+/// exactly what Herald modified — no Herald framework changes required.
 struct CodeDiff: Codable, Hashable, Sendable {
     let files: [FileDiff]
     let summary: String

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Sheet listing every model configured on the Hermes host, grouped by
+/// Sheet listing every model configured on the Herald host, grouped by
 /// provider. Selecting a model switches it directly via
 /// `ModelStore.switchModel(to:provider:)` (`POST /v1/model`).
 struct ModelSelectorSheet: View {
@@ -160,7 +160,7 @@ struct ModelSelectorSheet: View {
                 .font(Design.Typography.callout)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .multilineTextAlignment(.center)
-            Text("Model list comes from the Hermes host — make sure it's online.")
+            Text("Model list comes from the Herald host — make sure it's online.")
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .multilineTextAlignment(.center)

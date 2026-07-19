@@ -569,7 +569,7 @@ final class AppContainer {
         return legacyToken
     }
 
-    /// Fetches the dynamic slash command catalog from the connected Hermes host.
+    /// Fetches the dynamic slash command catalog from the connected Herald host.
     /// Merges built-in commands, gateway commands, skills, and personality options.
     func refreshCommandCatalog(force: Bool = false) async {
         if !force,
@@ -659,7 +659,7 @@ final class AppContainer {
                 }
             }
 
-            // Hermes docs say quick commands resolve at dispatch time and are not
+            // Herald docs say quick commands resolve at dispatch time and are not
             // included in built-in autocomplete tables, but we still track them so
             // typed commands can be considered part of the known catalog.
             for quickCommand in quickCommands {

@@ -104,7 +104,7 @@ struct MessageBubble: View, Equatable {
         .accessibilityLabel("\(message.isVoiceTranscript ? "Voice" : "You"): \(message.content). \(message.status.rawValue)")
     }
 
-    // MARK: - Hermes Message
+    // MARK: - Herald Message
 
     private var hermesMessage: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
@@ -162,7 +162,7 @@ struct MessageBubble: View, Equatable {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Hermes: \(message.content)")
+        .accessibilityLabel("Herald: \(message.content)")
         .accessibilityAddTraits(message.isStreaming ? .updatesFrequently : [])
     }
 
@@ -233,7 +233,7 @@ struct MessageBubble: View, Equatable {
 
     // MARK: - Budget Warning Stripping
 
-    /// Strips `[BUDGET WARNING: ...]` lines injected by the Hermes agent into
+    /// Strips `[BUDGET WARNING: ...]` lines injected by the Herald agent into
     /// tool result messages.  These are internal agent housekeeping and should
     /// not be shown to the user verbatim.
     static func strippingBudgetWarnings(from text: String) -> String {

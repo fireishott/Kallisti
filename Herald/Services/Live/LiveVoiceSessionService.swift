@@ -167,7 +167,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             }
             blockedReason = response.blockedReason
             canStartSession = response.ready
-            statusMessage = response.ready ? "Hermes talk is ready." : (response.blockedReason ?? "Talk is unavailable.")
+            statusMessage = response.ready ? "Herald talk is ready." : (response.blockedReason ?? "Talk is unavailable.")
             connectionState = response.ready ? .ready : .blocked
             if !response.ready {
                 voiceState = .disconnected
@@ -398,7 +398,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     private func friendlyStatusMessage(for error: Error) -> String {
         if case RelayAPIClient.ClientError.unauthorized = error {
-            return "Your Hermes session expired. Reconnect or try again."
+            return "Your Herald session expired. Reconnect or try again."
         }
         return "Could not reach the relay."
     }
@@ -663,7 +663,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         case "output_audio_buffer.started":
             startAssistantAudioPlaybackTracking()
             voiceState = .speaking
-            statusMessage = "Hermes is speaking."
+            statusMessage = "Herald is speaking."
         case "output_audio_buffer.stopped":
             stopAssistantAudioPlaybackTracking()
             currentRealtimeResponseID = nil
@@ -678,7 +678,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             currentRealtimeResponseID = ((payload["response"] as? [String: Any])?["id"] as? String)
             ignoreCurrentAssistantFinalization = false
             voiceState = .thinking
-            statusMessage = "Hermes is thinking."
+            statusMessage = "Herald is thinking."
         case "response.function_call_arguments.delta",
              "response.function_call_arguments.done",
              "response.mcp_call_arguments.delta",
@@ -688,7 +688,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             if voiceState != .thinking {
                 voiceState = .thinking
             }
-            statusMessage = "Hermes is working on that\u{2026}"
+            statusMessage = "Herald is working on that\u{2026}"
         case "response.mcp_call.completed":
             // MCP tool call finished — trigger a new response so the model speaks the result.
             // The response lifecycle completes BEFORE the MCP call executes, so no automatic
@@ -699,10 +699,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                     "event_id": UUID().uuidString,
                 ])
                 voiceState = .thinking
-                statusMessage = "Hermes has the answer\u{2026}"
+                statusMessage = "Herald has the answer\u{2026}"
             }
         case "response.mcp_call.failed":
-            statusMessage = "A tool call failed — Hermes will try another way."
+            statusMessage = "A tool call failed — Herald will try another way."
         case "response.done":
             let doneResponse = payload["response"] as? [String: Any]
             let status = doneResponse?["status"] as? String
@@ -990,7 +990,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         }
         persistFinalTurn(clientTurnID: turnID, speaker: .user, text: text)
         voiceState = .thinking
-        statusMessage = "Hermes is thinking."
+        statusMessage = "Herald is thinking."
     }
 
     private func startAssistantAudioPlaybackTracking() {

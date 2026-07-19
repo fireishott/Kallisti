@@ -68,7 +68,7 @@ struct SettingsScreen: View {
                     settingsNavRow(
                         icon: hostStatusRowIcon,
                         iconColor: hostStatusRowColor,
-                        title: "Hermes Host",
+                        title: "Herald Host",
                         value: hostStatusRowValue,
                         accessibilityIdentifier: "settings.hermesHost"
                     ) {
@@ -111,7 +111,7 @@ struct SettingsScreen: View {
                         title: "Base URL",
                         value: pairingStore.pairedRelayConfiguration?.baseURLString ?? relayConfiguration.activeBaseURLString ?? "Not configured"
                     )
-                    Text("Disconnect Hermes before changing the relay configuration.")
+                    Text("Disconnect Herald before changing the relay configuration.")
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                         .padding(.top, Design.Spacing.xs)
@@ -207,7 +207,7 @@ struct SettingsScreen: View {
     private var hostStatusRowValue: String {
         switch hostStore.connectionState {
         case .online, .offline:
-            return hostStore.currentHost?.resolvedDisplayName ?? "Hermes Host"
+            return hostStore.currentHost?.resolvedDisplayName ?? "Herald Host"
         case .unreachable:
             return "Status unavailable"
         case .notConnected:
@@ -565,13 +565,13 @@ struct SettingsScreen: View {
         if settingsStore.settings.locationSyncPreference == .backgroundAllowed {
             switch permissionsStore.locationAuthorizationLevel {
             case .always:
-                return "Hermes receives location updates in the background without the blue indicator."
+                return "Herald receives location updates in the background without the blue indicator."
             case .whenInUse:
-                return "Hermes receives background location updates. A blue indicator appears at the top of the screen when active."
+                return "Herald receives background location updates. A blue indicator appears at the top of the screen when active."
             case .notDetermined:
-                return "Enabling this will request location access so Hermes can sync while backgrounded."
+                return "Enabling this will request location access so Herald can sync while backgrounded."
             case .denied, .restricted:
-                return "Location is blocked at the system level. Open Settings to allow Hermes to request background updates."
+                return "Location is blocked at the system level. Open Settings to allow Herald to request background updates."
             }
         }
 

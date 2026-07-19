@@ -2,7 +2,7 @@ import CarPlay
 import UIKit
 
 /// Manages the CarPlay scene lifecycle. When the vehicle connects,
-/// we set up a `CPVoiceControlTemplate` as the root — Hermes is a
+/// we set up a `CPVoiceControlTemplate` as the root — Herald is a
 /// voice-first AI agent, so the CarPlay experience is just Voice Mode.
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?

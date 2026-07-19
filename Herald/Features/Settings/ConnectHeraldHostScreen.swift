@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ConnectHermesHostScreen: View {
+struct ConnectHeraldHostScreen: View {
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(\.dismiss) private var dismiss
@@ -259,13 +259,13 @@ struct ConnectHermesHostScreen: View {
     private var statusSubtitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes agent is ready"
+            return "Your Herald agent is ready"
         case .offline:
             return "Waiting for the connector to come online"
         case .unreachable:
             return hostStore.lastErrorMessage ?? "We couldn't refresh host status from the relay."
         case .notConnected:
-            return "Set up from your Hermes machine"
+            return "Set up from your Herald machine"
         }
     }
 }

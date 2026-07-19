@@ -3,7 +3,7 @@ import Foundation
 /// A single tool invocation event captured during streaming.
 ///
 /// Tool activities are accumulated on the ``Message`` during streaming so the UI
-/// can show a compact, expandable timeline of what Hermes did.
+/// can show a compact, expandable timeline of what Herald did.
 struct ToolActivity: Identifiable, Hashable, Sendable {
     let id: UUID
     let label: String

@@ -1,7 +1,7 @@
 import ActivityKit
 import Foundation
 
-/// Manages Hermes Live Activities on the Lock Screen and Dynamic Island.
+/// Manages Herald Live Activities on the Lock Screen and Dynamic Island.
 @MainActor
 @Observable
 final class LiveActivityService {

@@ -29,7 +29,7 @@ final class MockHeraldClient: HeraldClientProtocol {
 
         currentConversation?.messages.append(userMessage)
 
-        // Simulate Hermes thinking and responding
+        // Simulate Herald thinking and responding
         try? await Task.sleep(for: .seconds(responseDelay))
 
         let response = generateResponse(for: content)

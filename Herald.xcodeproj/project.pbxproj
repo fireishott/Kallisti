@@ -30,7 +30,7 @@
 		280FF96CB810E4CF57FD560A /* PushBrokerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00DF4324FE1308E6E31A907 /* PushBrokerClient.swift */; };
 		2BCB93CBF9F0930869C0977E /* LiveSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D193D6C5016421C76DF5D154 /* LiveSpeechService.swift */; };
 		2C9D9CF54FE6D558EBD047D2 /* AttachmentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75AD9EC37C321E0AACBD9D2 /* AttachmentService.swift */; };
-		2D106579E378B52E16C9C32A /* ConnectHermesHostScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39A4B94EE9CD4CD8C003B528 /* ConnectHermesHostScreen.swift */; };
+		2D106579E378B52E16C9C32A /* ConnectHeraldHostScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39A4B94EE9CD4CD8C003B528 /* ConnectHeraldHostScreen.swift */; };
 		321E3B963DF471D7BB681995 /* LocationServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 291B25B2C82AB794287CA743 /* LocationServiceProtocol.swift */; };
 		33C44C17482BE7C07DB7F594 /* ReasoningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */; };
 		3558A0A28EAED5843205C5A9 /* HermesClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E11A1E299A59928D6079989 /* HermesClientProtocol.swift */; };
@@ -265,7 +265,7 @@
 		3510BF7F4B45473ACAA4AB0D /* LivePairingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePairingService.swift; sourceTree = "<group>"; };
 		35B7D51CD4AD9A91B4DCA6BA /* InboxItemPriority.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemPriority.swift; sourceTree = "<group>"; };
 		37389B76F1FF8F2CBFA004C4 /* HeraldTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HeraldTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		39A4B94EE9CD4CD8C003B528 /* ConnectHermesHostScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectHermesHostScreen.swift; sourceTree = "<group>"; };
+		39A4B94EE9CD4CD8C003B528 /* ConnectHeraldHostScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectHeraldHostScreen.swift; sourceTree = "<group>"; };
 		3D99376DDC0D4ED57FE6DD78 /* HermesWidgetData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesWidgetData.swift; sourceTree = "<group>"; };
 		4036FEA694D563E58E6E3E11 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
 		40A3575730BD9D3C7D9FFF05 /* InboxItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItem.swift; sourceTree = "<group>"; };
@@ -565,7 +565,7 @@
 		324B9C9BCCC3B1343936631F /* Settings */ = {
 			isa = PBXGroup;
 			children = (
-				39A4B94EE9CD4CD8C003B528 /* ConnectHermesHostScreen.swift */,
+				39A4B94EE9CD4CD8C003B528 /* ConnectHeraldHostScreen.swift */,
 				A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */,
 				DC710002D88B4B50511DE76E /* SettingsSectionView.swift */,
 				CF4387FB83B93C3A5563A93D /* WallpaperPickerSheet.swift */,
@@ -1018,7 +1018,7 @@
 				712546D8F2CA69435AECD156 /* ChatStore.swift in Sources */,
 				9ACA459C3AE47D462A1877D8 /* CodeBlockView.swift in Sources */,
 				D3183AA2EA686C4E46656A52 /* CodeDiff.swift in Sources */,
-				2D106579E378B52E16C9C32A /* ConnectHermesHostScreen.swift in Sources */,
+				2D106579E378B52E16C9C32A /* ConnectHeraldHostScreen.swift in Sources */,
 				A37EE6986A0F8E324B30EFB2 /* ConnectionStatus.swift in Sources */,
 				6192D1719C751676B586BC04 /* ContentView.swift in Sources */,
 				6D3C39EAC3E337D98ABFB574 /* Conversation.swift in Sources */,

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Displays a Hermes message's streamed reasoning / chain-of-thought.
+/// Displays a Herald message's streamed reasoning / chain-of-thought.
 ///
 /// While the answer is still streaming, the reasoning shows live in dimmed,
 /// italic text under a pulsing "Thinking…" header — kept visually quieter than

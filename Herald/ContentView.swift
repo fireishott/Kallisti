@@ -76,7 +76,7 @@ struct MainTabView: View {
         case .capture:
             CaptureScreen()
         case .connectHost:
-            ConnectHermesHostScreen()
+            ConnectHeraldHostScreen()
         }
     }
 

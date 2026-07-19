@@ -52,7 +52,7 @@ struct InboxScreen: View {
         ContentUnavailableView(
             "All Caught Up",
             systemImage: "tray",
-            description: Text("No new items from Hermes. Check back later.")
+            description: Text("No new items from Herald. Check back later.")
                 .foregroundStyle(Design.Colors.secondaryForeground)
         )
     }

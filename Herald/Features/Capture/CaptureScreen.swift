@@ -16,7 +16,7 @@ struct CaptureScreen: View {
                     .font(Design.Typography.editorialItalic)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("Camera and canvas features are in development. This surface will host future Hermes visual capabilities.")
+                Text("Camera and canvas features are in development. This surface will host future Herald visual capabilities.")
                     .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .multilineTextAlignment(.center)

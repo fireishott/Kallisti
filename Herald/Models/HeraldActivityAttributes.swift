@@ -1,7 +1,7 @@
 import ActivityKit
 import Foundation
 
-/// Shared attributes for Hermes Live Activities.
+/// Shared attributes for Herald Live Activities.
 /// Used by both the main app (to start/update activities) and the widget extension (to render them).
 struct HeraldActivityAttributes: ActivityAttributes, Sendable {
     /// Dynamic data — updated throughout the activity's lifetime.

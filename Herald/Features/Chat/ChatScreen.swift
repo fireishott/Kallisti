@@ -31,7 +31,7 @@ struct ChatScreen: View {
             )
             .ignoresSafeArea()
 
-            // Scrim: Hermes messages render as plain text with no bubble background,
+            // Scrim: Herald messages render as plain text with no bubble background,
             // and user bubbles use a near-transparent surface tint (Design.Colors.surface),
             // so busy wallpapers (gradients/textures/photos) need dimming here to keep
             // text legible. `.default` is already a near-flat system background, so it's
@@ -355,7 +355,7 @@ struct ChatScreen: View {
                             .font(.system(size: 24, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Design.Colors.foreground)
 
-                        Text("Total window available now. Usage appears after the first Hermes response.")
+                        Text("Total window available now. Usage appears after the first Herald response.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
@@ -539,9 +539,9 @@ struct ChatScreen: View {
     private var connectionBannerTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Hermes host online"
+            return "Herald host online"
         case .offline:
-            return "Hermes host offline"
+            return "Herald host offline"
         case .unreachable:
             switch settingsStore.settings.relayConfiguration.connectionMode {
             case .managedRelay:
@@ -552,14 +552,14 @@ struct ChatScreen: View {
                 return "Relay URL unreachable"
             }
         case .notConnected:
-            return "No Hermes host connected"
+            return "No Herald host connected"
         }
     }
 
     private var connectionBannerMessage: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes host is connected."
+            return "Your Herald host is connected."
         case .offline:
             return settingsStore.settings.relayConfiguration.connectionMode.hostOfflineMessage
         case .unreachable:
@@ -650,7 +650,7 @@ struct ChatScreen: View {
 
     private func handleSlashCommand(_ command: SlashCommand, _ argument: String?) {
         // Agent pass-through: send the raw slash command text as a chat message.
-        // The Hermes agent processes it natively — same as Discord/Telegram.
+        // The Herald agent processes it natively — same as Discord/Telegram.
         guard command.isLocal else {
             let outgoing: String
             if let arg = argument?.trimmingCharacters(in: .whitespacesAndNewlines), !arg.isEmpty {
@@ -698,7 +698,7 @@ struct ChatScreen: View {
         }
     }
 
-    /// Sends a slash command as a regular chat message to the Hermes agent.
+    /// Sends a slash command as a regular chat message to the Herald agent.
     /// Clears the composer only after the send is accepted, so a draft refused
     /// for unreachability stays editable for retry.
     private func sendSlashAsMessage(_ text: String) async {

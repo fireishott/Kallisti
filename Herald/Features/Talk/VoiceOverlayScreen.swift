@@ -188,17 +188,17 @@ struct VoiceOverlayScreen: View {
             }
 
         case (.connected, .listening):
-            orbStatus(dot: Design.Colors.success, label: "Hermes · Listening")
+            orbStatus(dot: Design.Colors.success, label: "Herald · Listening")
 
         case (.connected, .thinking):
             if let status = talkStore.statusMessage, !status.isEmpty {
                 orbStatus(dot: Design.Brand.primary, label: status)
             } else {
-                orbStatus(dot: Design.Brand.primary, label: "Hermes · Thinking")
+                orbStatus(dot: Design.Brand.primary, label: "Herald · Thinking")
             }
 
         case (.connected, .speaking):
-            orbStatus(dot: Design.Brand.accent, label: "Hermes · Speaking")
+            orbStatus(dot: Design.Brand.accent, label: "Herald · Speaking")
 
         case (_, .disconnected):
             orbStatus(dot: Design.Colors.warning, label: "Disconnected")

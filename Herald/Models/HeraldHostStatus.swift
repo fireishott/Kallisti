@@ -14,6 +14,6 @@ struct HeraldHostStatus: Codable, Hashable, Sendable {
     let isOnline: Bool
 
     var resolvedDisplayName: String {
-        displayName ?? hostname ?? "Hermes Host"
+        displayName ?? hostname ?? "Herald Host"
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Loads the skill catalog from the connected Hermes host via the relay.
+/// Loads the skill catalog from the connected Herald host via the relay.
 ///
 /// Listing comes from `GET /skills` (the skill tree on the host).
 /// This store is read-only — skills are defined on the host and surfaced here

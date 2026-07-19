@@ -13,7 +13,7 @@ struct ProfileSelectorSheet: View {
                     ContentUnavailableView(
                         "No Profiles",
                         systemImage: "brain.head.profile",
-                        description: Text("No Hermes profiles are available.")
+                        description: Text("No Herald profiles are available.")
                     )
                 } else {
                     ForEach(profiles) { profile in

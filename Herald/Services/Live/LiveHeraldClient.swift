@@ -138,7 +138,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             if let userMessage = response.userMessage {
                 return mapMessage(userMessage)
             }
-            return Message(sender: .system, content: "Hermes did not return a message.", status: .failed)
+            return Message(sender: .system, content: "Herald did not return a message.", status: .failed)
         } catch {
             connectionStatus = .error
             return Message(sender: .system, content: failureMessage(for: error), status: .failed)
@@ -177,7 +177,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             continuation.yield(.finished(self.mapMessage(msg), response.usage, response.diff))
                         } else {
                             continuation.yield(.finished(
-                                Message(sender: .system, content: "Hermes did not return a message.", status: .failed),
+                                Message(sender: .system, content: "Herald did not return a message.", status: .failed),
                                 nil, nil
                             ))
                         }
@@ -462,16 +462,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
             let rawError = donePayload?.error ?? ""
             let text: String
             if rawError.contains("413") || rawError.lowercased().contains("too large") {
-                text = "The attachment was too large for Hermes to process. Try a smaller image."
+                text = "The attachment was too large for Herald to process. Try a smaller image."
             } else if rawError.isEmpty {
-                text = "Hermes could not process this message."
+                text = "Herald could not process this message."
             } else {
                 // Strip URLs and technical details for a cleaner message
                 let cleaned = rawError
                     .replacingOccurrences(of: #"For more information check: \S+"#, with: "", options: .regularExpression)
                     .replacingOccurrences(of: #"for url '\S+'"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                text = "Hermes could not process this message: \(cleaned)"
+                text = "Herald could not process this message: \(cleaned)"
             }
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
@@ -483,7 +483,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let encoded = try RelayCoders.makeEncoder().encode(body)
         guard encoded.count <= Self.maxRequestBodyBytes else {
             throw RelayAPIClient.ClientError.requestFailed(
-                "The attachment was too large for Hermes to process. Try a smaller image."
+                "The attachment was too large for Herald to process. Try a smaller image."
             )
         }
     }
@@ -497,10 +497,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
         }
 
         if rawError.contains("413") || rawError.lowercased().contains("too large") {
-            return "The attachment was too large for Hermes to process. Try a smaller image."
+            return "The attachment was too large for Herald to process. Try a smaller image."
         }
         if rawError.isEmpty {
-            return "Hermes relay is unavailable right now."
+            return "Herald relay is unavailable right now."
         }
         return rawError
     }

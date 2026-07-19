@@ -7,7 +7,7 @@ import QuickLook
 /// without a thumbnail are lazily fetched from the relay.
 struct MessageAttachmentsView: View {
     let attachments: [MessageAttachment]
-    /// User attachments hug the trailing edge; Hermes attachments the leading.
+    /// User attachments hug the trailing edge; Herald attachments the leading.
     var alignment: HorizontalAlignment = .leading
 
     @Environment(AttachmentService.self) private var attachmentService

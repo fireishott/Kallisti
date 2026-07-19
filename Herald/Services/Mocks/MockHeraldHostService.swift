@@ -4,7 +4,7 @@ import Foundation
 final class MockHeraldHostService: HeraldHostServiceProtocol {
     var currentHost: HeraldHostStatus? = HeraldHostStatus(
         id: UUID(),
-        displayName: "Mock Hermes Host",
+        displayName: "Mock Herald Host",
         hostname: "mock-hermes.local",
         platform: "macos",
         connectorVersion: "0.1.0",
