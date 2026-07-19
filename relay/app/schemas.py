@@ -234,6 +234,14 @@ class ModelSetRequest(BaseModel):
     provider: str
 
 
+class CreateSessionBody(BaseModel):
+    title: str = "New Chat"
+
+
+class RenameSessionBody(BaseModel):
+    title: str
+
+
 class CronCreateRequest(BaseModel):
     name: str
     schedule: str

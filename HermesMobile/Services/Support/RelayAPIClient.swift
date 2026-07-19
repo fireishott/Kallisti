@@ -74,6 +74,24 @@ final class RelayAPIClient {
 
     private struct FastAPIErrorEnvelope: Decodable {
         let detail: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // FastAPI's default 422 handler sends `detail` as a list of
+            // validation-error objects rather than a plain string.
+            if let text = try? container.decode(String.self, forKey: .detail) {
+                detail = text
+            } else {
+                let items = try container.decode([FastAPIValidationItem].self, forKey: .detail)
+                detail = items.map(\.msg).joined(separator: "; ")
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey { case detail }
+    }
+
+    private struct FastAPIValidationItem: Decodable {
+        let msg: String
     }
 
     enum ClientError: LocalizedError {

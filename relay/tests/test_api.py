@@ -429,3 +429,94 @@ def test_chat_create_message_is_idempotent_for_client_message_id(tmp_path):
         )
         assert updated_conversation.status_code == 200
         assert len(updated_conversation.json()["data"]["conversation"]["messages"]) == 2
+
+
+def test_create_session_accepts_json_body(tmp_path):
+    # Regression test: CreateSessionBody was previously declared as a class
+    # nested inside create_app(), which — combined with this module's
+    # `from __future__ import annotations` — broke FastAPI's body detection
+    # and made it treat the body as a required query parameter, always 422ing.
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+
+        response = client.post(
+            "/v1/sessions",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"title": "New Chat"},
+        )
+        assert response.status_code == 201
+        assert response.json()["data"]["session"]["title"] == "New Chat"
+
+        default_response = client.post(
+            "/v1/sessions",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={},
+        )
+        assert default_response.status_code == 201
+        assert default_response.json()["data"]["session"]["title"] == "New Chat"
+
+
+def test_rename_session_accepts_json_body(tmp_path):
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+
+        created = client.post(
+            "/v1/sessions",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"title": "New Chat"},
+        )
+        session_id = created.json()["data"]["session"]["id"]
+
+        response = client.patch(
+            f"/v1/sessions/{session_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"title": "Renamed"},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["session"]["title"] == "Renamed"
+
+
+def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):
+    # Regression test: POST /v1/messages previously ignored payload.conversationId
+    # entirely and always resolved an arbitrary non-archived conversation via
+    # get_or_create_current_conversation. That silently misrouted messages sent
+    # from a newly-created session into a different (often much older) session,
+    # which looked like "new session shows old messages" / "no response" on iOS.
+    class StubHermesAdapter:
+        def send_message(self, *, latest_user_message, history, session_id=None):
+            return HermesChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
+
+    with build_client(tmp_path) as client:
+        client.app.state.hermes_adapter = StubHermesAdapter()
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # The device's original "current" conversation, seeded with a message
+        # so get_or_create_current_conversation has something arbitrary to return.
+        first_send = client.post("/v1/messages", headers=headers, json={"text": "first conversation"})
+        assert first_send.status_code == 200
+        original_conversation_id = first_send.json()["data"]["conversation"]["id"]
+
+        # A brand-new session, created explicitly via the sidebar "New Session" flow.
+        created = client.post("/v1/sessions", headers=headers, json={"title": "New Chat"})
+        new_session_id = created.json()["data"]["session"]["id"]
+
+        response = client.post(
+            "/v1/messages",
+            headers=headers,
+            json={"text": "hello from the new session", "conversationId": new_session_id},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["conversation"]["id"] == new_session_id
+        assert response.json()["data"]["conversation"]["id"] != original_conversation_id
+
+        new_session_conversation = client.get(
+            f"/v1/sessions/{new_session_id}/conversation",
+            headers=headers,
+        )
+        messages = new_session_conversation.json()["data"]["conversation"]["messages"]
+        assert any(m["text"] == "hello from the new session" for m in messages)
+        assert not any(m["text"] == "first conversation" for m in messages)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import inspect
 import logging
+import time
 import uuid
 
 logger = logging.getLogger("hermes.relay")
@@ -16,6 +17,7 @@ import json
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -41,6 +43,7 @@ from .rate_limit import PhonePairingRateLimiter
 from .relay_identity import _b64url_decode, ensure_relay_identity, serialize_relay_identity, sign_relay_payload
 from .schemas import (
     ConnectorSetupRequest,
+    CreateSessionBody,
     CronCreateRequest,
     CronUpdateRequest,
     DeviceRegisterRequest,
@@ -53,6 +56,7 @@ from .schemas import (
     ModelSetRequest,
     PairingRedeemRequest,
     PhonePairingRedeemRequest,
+    RenameSessionBody,
     SensorHealthRequest,
     SensorLocationRequest,
     PushRegisterRequest,
@@ -241,6 +245,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         await close_result
 
     app = FastAPI(title=settings.service_name, version=settings.version, lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def _log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
+        logging.getLogger("hermes.relay").warning(
+            "422 validation error on %s %s: %s", request.method, request.url.path, exc.errors()
+        )
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
     app.state.settings = settings
     app.state.database = database
     app.state.hermes_adapter = build_hermes_adapter(settings)
@@ -1897,12 +1909,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── Session Management ──────────────────────────────────────────
 
-    class CreateSessionBody(BaseModel):
-        title: str = "New Chat"
-
-    class RenameSessionBody(BaseModel):
-        title: str
-
     @app.get("/v1/sessions")
     def list_user_sessions(
         limit: int = 50,
@@ -2122,7 +2128,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     db.commit()
                     return success_response(payload_data, status_code=status_code)
 
-        conversation = get_or_create_current_conversation(db, user_id=auth.user.id, device_id=auth.device.id)
+        if payload.conversationId is not None:
+            conversation = get_session(db, session_id=str(payload.conversationId))
+            if conversation is None or conversation.user_id != auth.user.id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
+        else:
+            conversation = get_or_create_current_conversation(db, user_id=auth.user.id, device_id=auth.device.id)
         initial_delivery_status = "pending" if request_settings.hermes_adapter == "connector" else "sent"
         attachments_raw = (
             [att.model_dump() for att in payload.attachments]
@@ -2500,16 +2511,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                     in_flight_job_id = claimed_job.id
 
+                    def fail_stuck_job(reason: str) -> None:
+                        with database.session() as db:
+                            fail_message_job(
+                                db,
+                                job_id=claimed_job.id,
+                                connection_nonce=connection_nonce,
+                                error_text=reason,
+                                retryable=True,
+                            )
+                        publish_job_event(claimed_job.id, {
+                            "event": "done",
+                            "data": {
+                                "jobId": claimed_job.id,
+                                "status": "failed",
+                                "error": reason,
+                                "message": None,
+                            },
+                        })
+
                     try:
                         await websocket.send_json(job_payload)
 
+                        # An absolute deadline for THIS claimed job, independent of any
+                        # other traffic on the connection. Without this, unrelated
+                        # heartbeats/RPC responses (e.g. iOS polling commands.catalog)
+                        # reset the receive-level timeout below on every iteration, so a
+                        # connector task that hangs mid-job and never sends job.result/
+                        # job.failed can wedge this connection indefinitely — silently
+                        # blocking every subsequent job from ever being claimed, since
+                        # claim_next_message_job() only runs from this same loop. This
+                        # deadline is checked every iteration (which happens at least as
+                        # often as connector_heartbeat_timeout_seconds) regardless of
+                        # what kind of message just arrived.
+                        job_deadline = time.monotonic() + settings.connector_job_lease_seconds
+
                         while True:
+                            if time.monotonic() >= job_deadline:
+                                fail_stuck_job("Hermes host stopped responding.")
+                                await websocket.close(code=1011)
+                                return
+
                             try:
                                 incoming = await asyncio.wait_for(
                                     websocket.receive_json(),
                                     timeout=settings.connector_heartbeat_timeout_seconds,
                                 )
                             except asyncio.TimeoutError:
+                                fail_stuck_job("Hermes host stopped responding.")
                                 await websocket.close(code=1011)
                                 return
 

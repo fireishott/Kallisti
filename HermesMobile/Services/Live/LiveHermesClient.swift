@@ -429,17 +429,15 @@ final class LiveHermesClient: HermesClientProtocol {
     }
 
     private func reloadConversationForStreaming() async -> Conversation? {
+        // Reload the specific conversation the message was just sent to — never
+        // the device's arbitrary "current" conversation, which (now that a
+        // device can have many sessions) may resolve to an unrelated session
+        // and silently swap out the one actually on screen.
+        guard let activeID = currentConversation?.id else {
+            return await loadConversation()
+        }
         do {
-            let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
-                try await self.apiClient.get(
-                    path: "conversations/current",
-                    accessToken: token
-                )
-            }
-            let conversation = mapConversation(response.conversation)
-            currentConversation = conversation
-            connectionStatus = .connected
-            return conversation
+            return try await loadConversation(id: activeID)
         } catch {
             Self.logger.warning("Failed to refresh conversation after streaming: \(error.localizedDescription)")
             return currentConversation

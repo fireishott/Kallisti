@@ -355,7 +355,7 @@ final class ChatStore {
         // If streaming failed after the job was accepted, immediately refresh once
         // and then fall back to polling only if the server still hasn't delivered.
         if needsPollingFallback {
-            let refreshed = await hermesClient.loadConversation()
+            let refreshed = await refreshActiveConversation()
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
             if let latestUsage = conversation?.latestUsage {
                 lastTokenUsage = latestUsage
@@ -666,8 +666,7 @@ final class ChatStore {
             for (attempt, delay) in Self.pollingBackoffSeconds.enumerated() {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
-
-                let fresh = await self.hermesClient.loadConversation()
+                let fresh = await self.refreshActiveConversation()
                 self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
                 if let latestUsage = self.conversation?.latestUsage {
                     self.lastTokenUsage = latestUsage
@@ -707,6 +706,18 @@ final class ChatStore {
     /// Re-attaches transient streaming artifacts (tool timeline, code diff) onto the
     /// canonical conversation that the relay returned, since the relay knows nothing
     /// about those client-only fields.
+    /// Refreshes `conversation` from the relay. When a specific conversation/session
+    /// is already active, refreshes THAT conversation by id — never the device's
+    /// arbitrary "current" conversation, which (now that a device can have many
+    /// sessions) may silently resolve to an unrelated session and clobber the one
+    /// actually on screen.
+    private func refreshActiveConversation() async -> Conversation? {
+        if let activeID = conversation?.id {
+            return try? await hermesClient.loadConversation(id: activeID)
+        }
+        return await hermesClient.loadConversation()
+    }
+
     private func mergeConversationMetadata(
         from localConversation: Conversation?,
         into refreshedConversation: Conversation?
