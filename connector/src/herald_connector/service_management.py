@@ -12,8 +12,8 @@ import sys
 from .state import ConnectorRuntimeConfig, ConnectorStateStore
 
 
-MACOS_LABEL = "ai.hermes.mobile.connector"
-WINDOWS_TASK_NAME = "HermesMobileConnector"
+MACOS_LABEL = "ai.herald.connector"
+WINDOWS_TASK_NAME = "HeraldConnector"
 
 
 @dataclass(frozen=True)
@@ -165,7 +165,7 @@ class BaseServiceManager:
     def render_runner(self, *, runtime_config: ConnectorRuntimeConfig, runner_path: Path) -> str:
         return (
             f"#!{runtime_config.python_executable}\n"
-            "from hermes_mobile_connector.service_runner import run_from_state_dir\n"
+            "from herald_connector.service_runner import run_from_state_dir\n"
             "\n"
             "if __name__ == \"__main__\":\n"
             f"    raise SystemExit(run_from_state_dir({runtime_config.state_dir!r}))\n"
@@ -189,8 +189,8 @@ class BaseServiceManager:
             state_dir=state_dir,
             bin_dir=bin_dir,
             logs_dir=logs_dir,
-            runner_path=bin_dir / "hermes-mobile-service.py",
-            launcher_path=bin_dir / "hermes-mobile-service.sh",
+            runner_path=bin_dir / "herald-service.py",
+            launcher_path=bin_dir / "herald-service.sh",
             stdout_log=logs_dir / "connector.stdout.log",
             stderr_log=logs_dir / "connector.stderr.log",
             plist_path=None,
@@ -200,8 +200,8 @@ class BaseServiceManager:
         state = self.state_store.load()
         if state.runtime_config is None:
             raise RuntimeError(
-                "Connector runtime config is missing. Re-run `hermes-mobile setup` "
-                "or `hermes-mobile service install --force` from the configured environment."
+                "Connector runtime config is missing. Re-run `herald setup` "
+                "or `herald service install --force` from the configured environment."
             )
         return state.runtime_config
 
@@ -272,7 +272,7 @@ class MacOSLaunchAgentManager(BaseServiceManager):
         artifacts = self.ensure_artifacts(runtime_config, force=force)
         assert artifacts.plist_path is not None
         if artifacts.plist_path.exists() and not force:
-            raise RuntimeError("LaunchAgent already exists. Use `hermes-mobile service install --force` to rewrite it.")
+            raise RuntimeError("LaunchAgent already exists. Use `herald service install --force` to rewrite it.")
 
         artifacts.plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_payload = {
@@ -292,7 +292,7 @@ class MacOSLaunchAgentManager(BaseServiceManager):
         artifacts = self.service_artifacts()
         assert artifacts.plist_path is not None
         if not artifacts.plist_path.exists():
-            raise RuntimeError("LaunchAgent is not installed. Run `hermes-mobile service install` first.")
+            raise RuntimeError("LaunchAgent is not installed. Run `herald service install` first.")
 
         loaded, _, _ = self._query_launch_agent(installed=True)
         target = self._launchctl_target()
@@ -372,7 +372,7 @@ class WindowsWSLServiceManager(BaseServiceManager):
     def install(self, *, force: bool = False) -> str:
         runtime_config = self._require_runtime_config()
         if not force and self.status().installed:
-            raise RuntimeError("Scheduled Task already exists. Use `hermes-mobile service install --force` to rewrite it.")
+            raise RuntimeError("Scheduled Task already exists. Use `herald service install --force` to rewrite it.")
 
         artifacts = self.ensure_artifacts(runtime_config, force=force)
         command = [

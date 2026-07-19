@@ -6,16 +6,16 @@ import sys
 
 import pytest
 
-from hermes_mobile_connector.client import HermesMobileConnector
-from hermes_mobile_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
-from hermes_mobile_connector.service_management import (
+from herald_connector.client import HermesMobileConnector
+from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from herald_connector.service_management import (
     MacOSLaunchAgentManager,
     UnsupportedServiceManager,
     WINDOWS_TASK_NAME,
     WindowsWSLServiceManager,
     build_service_manager,
 )
-from hermes_mobile_connector.state import ConnectorRuntimeConfig, ConnectorState, ConnectorStateStore
+from herald_connector.state import ConnectorRuntimeConfig, ConnectorState, ConnectorStateStore
 
 
 def make_executor(command: str = "env-hermes") -> HermesCLIExecutor:
@@ -107,7 +107,7 @@ def test_macos_install_writes_launchagent_plist_and_runner(monkeypatch, tmp_path
 
     plist_data = artifacts.plist_path.read_bytes()
     payload = __import__("plistlib").loads(plist_data)
-    assert payload["Label"] == "ai.hermes.mobile.connector"
+    assert payload["Label"] == "ai.herald.connector"
     assert payload["ProgramArguments"] == [str(artifacts.runner_path)]
     assert payload["KeepAlive"] is True
     assert payload["RunAtLoad"] is True

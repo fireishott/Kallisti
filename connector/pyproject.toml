@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-mobile-connector"
+name = "herald-connector"
 version = "0.1.0"
-description = "Connector process that bridges a local Hermes CLI to Hermes Mobile relay."
+description = "Connector process that bridges a local Herald CLI to Herald relay."
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.28.0,<1.0.0",
@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-hermes-mobile = "hermes_mobile_connector.cli:main"
-hermes-mobile-mcp = "hermes_mobile_connector.mcp_server:main"
+herald = "herald_connector.cli:main"
+herald-mcp = "herald_connector.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -30,4 +30,4 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["hermes_mobile_connector*"]
+include = ["herald_connector*"]

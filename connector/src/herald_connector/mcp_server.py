@@ -1,10 +1,10 @@
-"""MCP server exposing location and health sensor data to Hermes agents.
+"""MCP server exposing location and health sensor data to Herald agents.
 
-Run as:  hermes-mobile-mcp
+Run as:  herald-mcp
 Configure in ~/.hermes/config.yaml:
     mcp_servers:
-      hermes_mobile:
-        command: "/path/to/.venv/bin/hermes-mobile-mcp"
+      herald_mobile:
+        command: "/path/to/.venv/bin/herald-mcp"
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .sensor_store import (
 )
 from .state import ConnectorStateStore
 
-mcp = FastMCP("hermes-mobile", instructions="Provides real-time location and health data from the user's phone.")
+mcp = FastMCP("herald", instructions="Provides real-time location and health data from the user's phone.")
 
 
 def _get_store() -> SensorStore:

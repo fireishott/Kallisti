@@ -2233,7 +2233,7 @@ class HermesMobileConnector:
         if state.mcp_last_test_error:
             return state.mcp_last_test_error
         if not state.mcp_configured:
-            return "not configured (run `hermes-mobile configure-mcp` when ready)"
+            return "not configured (run `herald configure-mcp` when ready)"
         if not mcp_status.registered:
             return "configured in connector state, but Hermes config is currently missing"
         return "ok"

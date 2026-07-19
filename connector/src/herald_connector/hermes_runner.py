@@ -226,7 +226,7 @@ class HermesCLIExecutor:
     def _build_prompt(self, *, latest_user_message: str, history: list[HermesConversationMessage]) -> str:
         history_lines = []
         for message in history[-self.settings.hermes_history_limit :]:
-            prefix = "User" if message.role in ("user", "voice_user") else "Hermes"
+            prefix = "User" if message.role in ("user", "voice_user") else "Herald"
             history_lines.append(f"{prefix}: {message.text}")
 
         transcript = "\n".join(history_lines) if history_lines else "(no prior messages)"

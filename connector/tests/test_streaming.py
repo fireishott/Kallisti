@@ -19,17 +19,17 @@ import json
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from hermes_mobile_connector.client import HermesMobileConnector
-from hermes_mobile_connector.hermes_api_executor import (
+from herald_connector.client import HermesMobileConnector
+from herald_connector.hermes_api_executor import (
     TOOL_PROGRESS_RE,
     StreamEvent,
 )
-from hermes_mobile_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
-from hermes_mobile_connector.runtime_adapter import (
+from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from herald_connector.runtime_adapter import (
     HermesAPIRuntimeAdapter,
     RuntimeConversationMessage,
 )
-from hermes_mobile_connector.state import (
+from herald_connector.state import (
     ConnectorState,
     ConnectorStateStore,
 )
@@ -470,8 +470,8 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
 
 def test_messages_payload_builds_openai_format():
     """The executor should build messages with 'assistant' role for 'hermes' entries."""
-    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
-    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+    from herald_connector.hermes_api_executor import HermesAPIExecutor
+    from herald_connector.hermes_runner import HermesConversationMessage
 
     executor = HermesAPIExecutor()
     history = [
@@ -494,8 +494,8 @@ def test_messages_payload_builds_openai_format():
 
 def test_messages_payload_skips_empty_history_entries():
     """Empty/whitespace-only history entries should be filtered out."""
-    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
-    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+    from herald_connector.hermes_api_executor import HermesAPIExecutor
+    from herald_connector.hermes_runner import HermesConversationMessage
 
     executor = HermesAPIExecutor()
     history = [

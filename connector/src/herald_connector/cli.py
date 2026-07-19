@@ -65,7 +65,7 @@ def validate_relay_health(relay_url: str) -> bool:
 
 def _find_relay_source_dir() -> Path | None:
     """Locate the relay/ directory relative to the connector package."""
-    # connector/src/hermes_mobile_connector/cli.py → repo/relay/
+    # connector/src/herald_connector/cli.py → repo/relay/
     candidate = Path(__file__).resolve().parent.parent.parent.parent / "relay"
     if (candidate / "app" / "main.py").exists():
         return candidate
@@ -375,7 +375,7 @@ def print_header(text: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="hermes-mobile",
+        prog="herald",
         description="Connect your Hermes CLI to Hermes Mobile.",
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -385,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--skip-mcp",
         action="store_true",
-        help="Register the host without editing ~/.hermes/config.yaml. You can run `hermes-mobile configure-mcp` later.",
+        help="Register the host without editing ~/.hermes/config.yaml. You can run `herald configure-mcp` later.",
     )
 
     enroll = subparsers.add_parser("enroll", help="(Legacy) Redeem an HC1 host setup code.")
@@ -394,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     enroll.add_argument(
         "--skip-mcp",
         action="store_true",
-        help="Redeem the host without editing ~/.hermes/config.yaml. You can run `hermes-mobile configure-mcp` later.",
+        help="Redeem the host without editing ~/.hermes/config.yaml. You can run `herald configure-mcp` later.",
     )
 
     subparsers.add_parser(
@@ -497,7 +497,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
             print(f"Native MCP check: warning — {e}")
     else:
         print("Skipped native MCP config.")
-        print("You can enable it later with: hermes-mobile configure-mcp")
+        print("You can enable it later with: herald configure-mcp")
 
     should_configure_realtime = confirm(
         "Configure OpenAI Realtime talk mode now?",
@@ -514,7 +514,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
             print(f"Realtime talk check: warning — {e}")
     else:
         print("Skipped OpenAI Realtime talk setup.")
-        print("You can enable it later with: hermes-mobile configure-realtime")
+        print("You can enable it later with: herald configure-realtime")
 
     return _wizard_post_setup(connector)
 
@@ -525,8 +525,8 @@ def _wizard_post_setup(connector: HermesMobileConnector) -> int:
     print("Generate a one-time code for the Hermes Mobile app.\n")
 
     if not confirm("Generate a phone pairing code now?"):
-        print("\nYou can generate one later with: hermes-mobile pair-phone")
-        print("Then start the connector with: hermes-mobile run")
+        print("\nYou can generate one later with: herald pair-phone")
+        print("Then start the connector with: herald run")
         return 0
 
     try:
@@ -578,12 +578,12 @@ def _wizard_post_setup(connector: HermesMobileConnector) -> int:
                 return 0
             if selection == "2":
                 print(service_manager.install(force=service_status.installed))
-                print("Background service installed. Start it later with: hermes-mobile service start")
+                print("Background service installed. Start it later with: herald service start")
                 return 0
             if selection == "3":
                 return _run_foreground(connector)
-            print("You can manage the background service later with: hermes-mobile service <install|start|stop|restart|status>")
-            print("Or run the connector in the foreground with: hermes-mobile run")
+            print("You can manage the background service later with: herald service <install|start|stop|restart|status>")
+            print("Or run the connector in the foreground with: herald run")
             return 0
         except Exception as error:  # noqa: BLE001
             print(f"Background service setup failed: {error}")
@@ -592,7 +592,7 @@ def _wizard_post_setup(connector: HermesMobileConnector) -> int:
     if confirm("Start the connector now in the foreground?"):
         return _run_foreground(connector)
 
-    print("\nStart the connector later with: hermes-mobile run")
+    print("\nStart the connector later with: herald run")
     return 0
 
 
@@ -602,7 +602,7 @@ def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int
     try:
         existing = connector.state_store.load()
         print(f"Already set up for {existing.relay_url}.")
-        print("Run `hermes-mobile reset` to start over.")
+        print("Run `herald reset` to start over.")
         return 1
     except RuntimeError:
         pass
@@ -611,15 +611,15 @@ def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int
     print(f"Registered. Host: {state.host_id}")
     if args.skip_mcp:
         print("Native MCP config skipped.")
-        print("Run `hermes-mobile configure-mcp` when you want to add Hermes Mobile tools to ~/.hermes/config.yaml.")
+        print("Run `herald configure-mcp` when you want to add Hermes Mobile tools to ~/.hermes/config.yaml.")
     elif state.mcp_last_test_error:
         print(f"Native MCP check: warning — {state.mcp_last_test_error}")
     else:
         print("Native MCP check: ok")
     if not args.skip_mcp:
         print(connector.validate_mcp()[-1])
-    print("Talk mode stays optional. Run `hermes-mobile configure-realtime` when you want to enable OpenAI Realtime talk mode.")
-    print("\nNext: hermes-mobile pair-phone")
+    print("Talk mode stays optional. Run `herald configure-realtime` when you want to enable OpenAI Realtime talk mode.")
+    print("\nNext: herald pair-phone")
     return 0
 
 
@@ -657,8 +657,8 @@ def cmd_enroll(args: argparse.Namespace, connector: HermesMobileConnector) -> in
     )
     print(f"Enrolled host {state.host_id} against {state.relay_url}")
     if args.skip_mcp:
-        print("Native MCP config skipped. Run `hermes-mobile configure-mcp` later if you want Hermes Mobile tools in Hermes.")
-    print("Run `hermes-mobile configure-realtime` when you want to enable OpenAI Realtime talk mode.")
+        print("Native MCP config skipped. Run `herald configure-mcp` later if you want Hermes Mobile tools in Hermes.")
+    print("Run `herald configure-realtime` when you want to enable OpenAI Realtime talk mode.")
     return 0
 
 
@@ -711,7 +711,7 @@ def cmd_reset(connector: HermesMobileConnector) -> int:
         return 0
 
     connector.state_store.clear()
-    print("Connector state removed. Run `hermes-mobile` to set up again.")
+    print("Connector state removed. Run `herald` to set up again.")
     return 0
 
 

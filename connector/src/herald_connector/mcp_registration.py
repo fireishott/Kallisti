@@ -46,9 +46,9 @@ def resolve_hermes_home() -> Path:
 
 def resolve_mcp_command_path() -> Path:
     candidates = [
-        Path(sys.executable).resolve().with_name("hermes-mobile-mcp"),
+        Path(sys.executable).resolve().with_name("herald-mcp"),
     ]
-    which_match = shutil.which("hermes-mobile-mcp")
+    which_match = shutil.which("herald-mcp")
     if which_match:
         candidates.insert(0, Path(which_match).resolve())
 
@@ -57,7 +57,7 @@ def resolve_mcp_command_path() -> Path:
             return candidate
 
     raise RuntimeError(
-        "Could not find `hermes-mobile-mcp` in the connector environment. "
+        "Could not find `herald-mcp` in the connector environment. "
         "Reinstall the connector and try again."
     )
 

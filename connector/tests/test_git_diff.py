@@ -17,7 +17,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-from hermes_mobile_connector.git_diff import (
+from herald_connector.git_diff import (
     _classify_status,
     _count_diff_lines,
     capture_diff,

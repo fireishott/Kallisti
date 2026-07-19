@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hermes_mobile_connector.sensor_store import (
+from herald_connector.sensor_store import (
     HealthSample,
     LocationReading,
     SensorStore,

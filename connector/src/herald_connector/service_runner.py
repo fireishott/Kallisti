@@ -25,7 +25,7 @@ def run_from_state_dir(state_dir: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if len(args) != 1:
-        raise SystemExit("Usage: hermes-mobile-service-runner <connector-state-dir>")
+        raise SystemExit("Usage: herald-service-runner <connector-state-dir>")
     return run_from_state_dir(args[0])
 
 
