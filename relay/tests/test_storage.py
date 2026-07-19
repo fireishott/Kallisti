@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.database import Database
-from app.models import AuditLog, AuthSession, InboxItem, PushRegistration, User, VoiceTurn, utcnow
+from app.models import AuditLog, AuthSession, HermesHost, InboxItem, PushRegistration, User, VoiceTurn, utcnow
 from app.services import (
     append_message,
     create_voice_session,
@@ -37,6 +37,19 @@ def make_database(tmp_path):
     database = Database(settings.database_url)
     database.create_all()
     return settings, database
+
+
+def test_sqlite_database_uses_production_pragmas(tmp_path):
+    _, database = make_database(tmp_path)
+
+    with database.engine.connect() as connection:
+        journal_mode = connection.exec_driver_sql("PRAGMA journal_mode").scalar()
+        busy_timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
+        foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar()
+
+    assert journal_mode == "wal"
+    assert busy_timeout >= 5000
+    assert foreign_keys == 1
 
 
 def test_device_upsert_token_rotation_and_audit(tmp_path):
@@ -136,7 +149,14 @@ def test_inject_voice_transcript_appends_after_existing_chat_messages(tmp_path):
             delivery_status="delivered",
         )
 
-        host = type("Host", (), {"id": "host-123"})()
+        host = HermesHost(
+            id="host-123",
+            user_id=user.id,
+            display_name="Test Host",
+            connector_token_hash="connector-token-hash",
+        )
+        db.add(host)
+        db.commit()
         voice_session, _ = create_voice_session(db, user_id=user.id, host_id=host.id)
         old_turn_time = utcnow() - timedelta(minutes=5)
 

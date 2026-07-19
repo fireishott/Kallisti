@@ -25,9 +25,8 @@ struct AttachmentPickerSheet: View {
                 .padding(.top, Design.Spacing.sm)
 
             // Header
-            Text("Add to Chat")
-                .font(Design.Typography.headline)
-                .foregroundStyle(Design.Colors.foreground)
+            Text("Attach · Chat")
+                .brandEyebrow()
 
             // Attachment options
             HStack(spacing: Design.Spacing.sm) {
@@ -98,12 +97,15 @@ struct AttachmentPickerSheet: View {
                     .font(.system(size: Design.Size.iconLarge))
                     .foregroundStyle(Design.Colors.foreground)
                 Text(label)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.foreground)
+                    .brandEyebrow()
             }
             .frame(maxWidth: .infinity)
             .frame(height: 80)
             .background(Design.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                    .stroke(Design.Colors.border, lineWidth: 1)
+            )
             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
         }
     }

@@ -18,36 +18,50 @@ struct VoiceAttachmentSheet: View {
                 .frame(width: 36, height: 5)
                 .padding(.top, Design.Spacing.sm)
 
-            VStack(spacing: Design.Spacing.xs) {
-                // Camera button
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    Button {
-                        onCameraRequested()
-                        dismiss()
-                    } label: {
-                        Label("Live Camera", systemImage: "video.fill")
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                Text("Voice · Attach")
+                    .brandEyebrow()
+                    .padding(.horizontal, Design.Spacing.xs)
+
+                VStack(spacing: Design.Spacing.xs) {
+                    // Camera button
+                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                        Button {
+                            onCameraRequested()
+                            dismiss()
+                        } label: {
+                            Label("Live Camera", systemImage: "video.fill")
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.foreground)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Design.Spacing.md)
+                                .background(Design.Colors.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                                        .stroke(Design.Colors.border, lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+                        }
+                    }
+
+                    // Photo library picker
+                    PhotosPicker(
+                        selection: $selectedPhoto,
+                        matching: .images,
+                        photoLibrary: .shared()
+                    ) {
+                        Label("Photo Library", systemImage: "photo.on.rectangle")
                             .font(Design.Typography.body)
                             .foregroundStyle(Design.Colors.foreground)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(Design.Spacing.md)
                             .background(Design.Colors.surface)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                                    .stroke(Design.Colors.border, lineWidth: 1)
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
                     }
-                }
-
-                // Photo library picker
-                PhotosPicker(
-                    selection: $selectedPhoto,
-                    matching: .images,
-                    photoLibrary: .shared()
-                ) {
-                    Label("Photo Library", systemImage: "photo.on.rectangle")
-                        .font(Design.Typography.body)
-                        .foregroundStyle(Design.Colors.foreground)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Design.Spacing.md)
-                        .background(Design.Colors.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
                 }
             }
             .padding(.horizontal, Design.Spacing.lg)

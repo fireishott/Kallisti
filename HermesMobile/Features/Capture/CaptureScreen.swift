@@ -8,22 +8,31 @@ struct CaptureScreen: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            ContentUnavailableView {
-                Label("Capture", systemImage: "camera.viewfinder")
+            VStack(spacing: Design.Spacing.md) {
+                Text("Capture · Soon")
+                    .brandEyebrow()
+
+                Text("visual capture")
+                    .font(Design.Typography.editorialItalic)
                     .foregroundStyle(Design.Colors.foreground)
-            } description: {
-                Text("Camera and canvas features are coming soon. This screen is a placeholder for future Hermes visual capabilities.")
+
+                Text("Camera and canvas features are in development. This surface will host future Hermes visual capabilities.")
+                    .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.secondaryForeground)
-            } actions: {
-                Button("Go Back") {
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Design.Spacing.xl)
+
+                Button {
                     dismiss()
+                } label: {
+                    Text("Go Back")
+                        .brandEyebrow(Design.Colors.background)
+                        .padding(.horizontal, Design.Spacing.lg)
+                        .padding(.vertical, Design.Spacing.md)
                 }
-                .font(Design.Typography.headline)
-                .foregroundStyle(Design.Colors.foreground)
-                .padding(.horizontal, Design.Spacing.lg)
-                .padding(.vertical, Design.Spacing.sm)
                 .background(Design.Brand.accent)
-                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                .clipShape(Capsule())
+                .padding(.top, Design.Spacing.sm)
             }
         }
         .navigationTitle("Capture")

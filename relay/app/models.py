@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -132,13 +132,99 @@ class PushRegistration(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     device_id: Mapped[str] = mapped_column(String(36), ForeignKey("devices.id"), nullable=False)
-    apns_token: Mapped[str] = mapped_column(Text, nullable=False)
+    transport: Mapped[str] = mapped_column(Text, nullable=False, default="direct")
+    apns_token: Mapped[str | None] = mapped_column(Text)
     push_environment: Mapped[str] = mapped_column(Text, nullable=False)
     bundle_id: Mapped[str | None] = mapped_column(Text)
+    relay_handle: Mapped[str | None] = mapped_column(Text)
+    send_grant: Mapped[str | None] = mapped_column(Text)
+    relay_id: Mapped[str | None] = mapped_column(Text)
+    relay_public_key: Mapped[str | None] = mapped_column(Text)
+    token_debug_suffix: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class RelayIdentity(Base):
+    __tablename__ = "relay_identity"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    algorithm: Mapped[str] = mapped_column(Text, nullable=False, default="ed25519")
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    private_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerChallenge(Base):
+    __tablename__ = "push_broker_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    challenge: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AppAttestCredential(Base):
+    __tablename__ = "app_attest_credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    installation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, nullable=False)
+    app_version: Mapped[str | None] = mapped_column(Text)
+    environment: Mapped[str] = mapped_column(Text, nullable=False)
+    key_id: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    receipt: Mapped[str | None] = mapped_column(Text)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerRegistration(Base):
+    __tablename__ = "push_broker_registrations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    relay_id: Mapped[str] = mapped_column(Text, nullable=False)
+    relay_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    app_attest_credential_id: Mapped[str] = mapped_column(String(36), ForeignKey("app_attest_credentials.id"), nullable=False)
+    installation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, nullable=False)
+    app_version: Mapped[str | None] = mapped_column(Text)
+    apns_environment: Mapped[str] = mapped_column(Text, nullable=False)
+    apns_token: Mapped[str] = mapped_column(Text, nullable=False)
+    apns_token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    token_debug_suffix: Mapped[str | None] = mapped_column(Text)
+    relay_handle: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    send_grant_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerSendNonce(Base):
+    """Tracks recently-seen send-request nonces to reject signature replays.
+
+    Rows older than the iat skew window can be pruned after each insert —
+    the server rejects any iat outside that window anyway, so entries are
+    no longer load-bearing once they age out.
+    """
+    __tablename__ = "push_broker_send_nonces"
+    __table_args__ = (
+        UniqueConstraint("relay_handle", "nonce", name="uq_push_broker_send_nonces_handle_nonce"),
+        Index("ix_push_broker_send_nonces_iat", "iat"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    relay_handle: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    iat: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class Conversation(Base):

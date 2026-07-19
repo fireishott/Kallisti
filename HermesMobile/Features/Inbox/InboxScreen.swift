@@ -64,8 +64,7 @@ struct InboxScreen: View {
         ToolbarItem(placement: .topBarTrailing) {
             if inboxStore.unreadCount > 0 {
                 Text("\(inboxStore.unreadCount) new")
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
             }
         }
     }

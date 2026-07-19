@@ -1,18 +1,40 @@
 import Foundation
 
+enum PushTransportMode: String, Codable, Hashable, Sendable {
+    case direct
+    case relay
+}
+
 struct AppBuildConfiguration: Equatable, Sendable {
     let hostedRelayBaseURL: String?
     let hostedRelayEnabled: Bool
+    let pushTransport: PushTransportMode
+    let pushBrokerBaseURL: URL?
     let supportURL: URL?
     let termsOfServiceURL: URL?
     let privacyPolicyURL: URL?
 
     static func current(bundle: Bundle = .main) -> AppBuildConfiguration {
-        let info = bundle.infoDictionary ?? [:]
+        AppBuildConfiguration(infoDictionary: bundle.infoDictionary ?? [:])
+    }
+
+    init(infoDictionary: [String: Any]) {
+        let info = infoDictionary
         let hostedRelayBaseURL = RelayConfiguration.normalizeBaseURL(
             info["APP_HOSTED_RELAY_URL"] as? String
         )
         let hostedRelayEnabled = (info["APP_HOSTED_RELAY_ENABLED"] as? Bool) ?? false
+        let pushTransport = PushTransportMode(
+            rawValue: ((info["APP_PUSH_TRANSPORT"] as? String) ?? "direct")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        ) ?? .direct
+
+        let pushBrokerBaseURL: URL? = {
+            guard let raw = info["APP_PUSH_BROKER_URL"] as? String else { return nil }
+            guard let normalized = RelayConfiguration.normalizeBaseURL(raw) else { return nil }
+            return URL(string: normalized)
+        }()
 
         func urlValue(_ key: String) -> URL? {
             guard let raw = info[key] as? String, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -21,13 +43,17 @@ struct AppBuildConfiguration: Equatable, Sendable {
             return URL(string: raw)
         }
 
-        return AppBuildConfiguration(
-            hostedRelayBaseURL: hostedRelayBaseURL,
-            hostedRelayEnabled: hostedRelayEnabled && hostedRelayBaseURL != nil,
-            supportURL: urlValue("APP_SUPPORT_URL"),
-            termsOfServiceURL: urlValue("APP_TERMS_URL"),
-            privacyPolicyURL: urlValue("APP_PRIVACY_URL")
-        )
+        self.hostedRelayBaseURL = hostedRelayBaseURL
+        self.hostedRelayEnabled = hostedRelayEnabled && hostedRelayBaseURL != nil
+        self.pushTransport = pushTransport
+        self.pushBrokerBaseURL = pushBrokerBaseURL
+        self.supportURL = urlValue("APP_SUPPORT_URL")
+        self.termsOfServiceURL = urlValue("APP_TERMS_URL")
+        self.privacyPolicyURL = urlValue("APP_PRIVACY_URL")
+    }
+
+    var usesManagedPushBroker: Bool {
+        pushTransport == .relay && pushBrokerBaseURL != nil
     }
 }
 
@@ -37,14 +63,188 @@ enum RelayMode: String, Codable, CaseIterable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .custom: "Use My Relay"
-        case .hosted: "Use Hosted Relay"
+        case .custom: "Self-Hosted"
+        case .hosted: "Managed"
+        }
+    }
+}
+
+enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
+    case managedRelay
+    case tailscale
+    case selfHostedRelay
+
+    init(legacyRelayMode: RelayMode) {
+        switch legacyRelayMode {
+        case .hosted:
+            self = .managedRelay
+        case .custom:
+            self = .selfHostedRelay
+        }
+    }
+
+    var legacyRelayMode: RelayMode {
+        switch self {
+        case .managedRelay:
+            return .hosted
+        case .tailscale, .selfHostedRelay:
+            return .custom
+        }
+    }
+
+    var displayLabel: String {
+        switch self {
+        case .managedRelay:
+            return "Managed Relay"
+        case .tailscale:
+            return "Tailscale"
+        case .selfHostedRelay:
+            return "Self-Hosted Relay"
+        }
+    }
+
+    var compactLabel: String {
+        switch self {
+        case .managedRelay:
+            return "Managed"
+        case .tailscale:
+            return "Tailscale"
+        case .selfHostedRelay:
+            return "Relay URL"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .managedRelay:
+            return "Hosted reachability, queueing, and official push delivery."
+        case .tailscale:
+            return "Private tailnet reachability for a local Hermes relay."
+        case .selfHostedRelay:
+            return "Bring your own public Hermes relay URL."
+        }
+    }
+
+    var usesCustomRelayURL: Bool {
+        switch self {
+        case .managedRelay:
+            return false
+        case .tailscale, .selfHostedRelay:
+            return true
+        }
+    }
+
+    var reliesOnOfficialPushRelay: Bool {
+        switch self {
+        case .managedRelay:
+            return true
+        case .tailscale, .selfHostedRelay:
+            return false
+        }
+    }
+
+    var defaultOfflineMessage: String {
+        switch self {
+        case .managedRelay:
+            return "Hermes relay is unavailable right now."
+        case .tailscale:
+            return "Open Tailscale or reconnect to your tailnet to reach Hermes."
+        case .selfHostedRelay:
+            return "Your self-hosted relay URL is not reachable."
+        }
+    }
+
+    var hostOfflineMessage: String {
+        switch self {
+        case .managedRelay:
+            return "Messages can queue while your Hermes host reconnects."
+        case .tailscale:
+            return "The relay is reachable, but the connector is offline. Keep the Mac relay running to queue messages."
+        case .selfHostedRelay:
+            return "Your relay is reachable, but the connector is offline. Messages can queue while it stays online."
+        }
+    }
+
+    var notConnectedMessage: String {
+        switch self {
+        case .managedRelay:
+            return "Pair a Hermes host with the managed relay before sending messages."
+        case .tailscale:
+            return "Pair a Hermes host on your tailnet before sending messages."
+        case .selfHostedRelay:
+            return "Pair a Hermes host with this self-hosted relay before sending messages."
+        }
+    }
+
+    /// Shown inline in chat when the user attempts to send while the relay is
+    /// confirmed unreachable. Each mode's guidance is honest about what can
+    /// recover delivery: managed retries once the network returns, Tailscale
+    /// needs the tailnet back, self-hosted needs the URL reachable again.
+    var unreachableSendBlockedMessage: String {
+        switch self {
+        case .managedRelay:
+            return "Hermes relay is unreachable. Check your connection and try again."
+        case .tailscale:
+            return "Can't reach your tailnet relay. Open Tailscale to reconnect, then send again."
+        case .selfHostedRelay:
+            return "Your self-hosted relay URL is not reachable. Check the URL in Settings and try again."
+        }
+    }
+
+    /// Action label shown on the chat connection banner's retry/settings button.
+    /// Tailscale gets an "Open Tailscale" shortcut since that's the most common
+    /// recovery step; the others fall back to the generic retry/settings actions.
+    var unreachableActionLabel: String {
+        switch self {
+        case .managedRelay, .selfHostedRelay:
+            return "Retry"
+        case .tailscale:
+            return "Open Tailscale"
+        }
+    }
+
+    /// Deep-link URL scheme used by the Tailscale iOS app. Other modes return
+    /// nil and fall back to a local retry action.
+    var unreachableActionDeepLink: URL? {
+        switch self {
+        case .tailscale:
+            return URL(string: "tailscale://")
+        case .managedRelay, .selfHostedRelay:
+            return nil
+        }
+    }
+
+    /// Inline hint shown under the relay URL field during onboarding/settings
+    /// to help users pick a sensible URL for their mode.
+    var relayURLHint: String? {
+        switch self {
+        case .managedRelay:
+            return nil
+        case .tailscale:
+            return "Use your tailnet URL — e.g. https://my-mac.tail-scale.ts.net/v1 — or run `tailscale serve` to proxy a local relay."
+        case .selfHostedRelay:
+            return "Point this at your public Hermes relay — e.g. https://relay.example.com/v1."
+        }
+    }
+
+    /// Honest summary of what background delivery to expect in each mode.
+    /// Shown near the relay configuration so users aren't surprised when
+    /// Tailscale/self-hosted builds don't wake the app.
+    var backgroundDeliveryNote: String {
+        switch self {
+        case .managedRelay:
+            return "Managed relay can wake Hermes via official push while the app is backgrounded."
+        case .tailscale:
+            return "Tailscale mode stays honest: messages arrive while the app is in the foreground or reconnected on your tailnet. No official background push."
+        case .selfHostedRelay:
+            return "Self-hosted relays don't receive official push credentials. Background delivery depends on your relay's own notification channel."
         }
     }
 }
 
 struct RelayConfiguration: Codable, Hashable, Sendable {
     var relayMode: RelayMode
+    var connectionMode: RelayConnectionMode
     var customRelayBaseURL: String
     var hostedRelayBaseURL: String?
     var hostedRelayEnabled: Bool
@@ -55,13 +255,76 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         hostedRelayBaseURL: String? = nil,
         hostedRelayEnabled: Bool = false
     ) {
-        self.relayMode = relayMode
+        let resolvedConnectionMode = RelayConnectionMode(legacyRelayMode: relayMode)
+        self.relayMode = resolvedConnectionMode.legacyRelayMode
+        self.connectionMode = resolvedConnectionMode
         self.customRelayBaseURL = RelayConfiguration.normalizeBaseURL(customRelayBaseURL) ?? customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         self.hostedRelayBaseURL = RelayConfiguration.normalizeBaseURL(hostedRelayBaseURL)
         self.hostedRelayEnabled = hostedRelayEnabled && self.hostedRelayBaseURL != nil
-        if relayMode == .hosted && !self.canUseHosted {
-            self.relayMode = .custom
+        if self.connectionMode == .managedRelay && !self.canUseHosted {
+            self.connectionMode = .selfHostedRelay
+            self.relayMode = self.connectionMode.legacyRelayMode
         }
+    }
+
+    init(
+        connectionMode: RelayConnectionMode,
+        customRelayBaseURL: String = "",
+        hostedRelayBaseURL: String? = nil,
+        hostedRelayEnabled: Bool = false
+    ) {
+        self.relayMode = connectionMode.legacyRelayMode
+        self.connectionMode = connectionMode
+        self.customRelayBaseURL = RelayConfiguration.normalizeBaseURL(customRelayBaseURL) ?? customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.hostedRelayBaseURL = RelayConfiguration.normalizeBaseURL(hostedRelayBaseURL)
+        self.hostedRelayEnabled = hostedRelayEnabled && self.hostedRelayBaseURL != nil
+        if self.connectionMode == .managedRelay && !self.canUseHosted {
+            self.connectionMode = .selfHostedRelay
+            self.relayMode = self.connectionMode.legacyRelayMode
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case relayMode
+        case connectionMode
+        case customRelayBaseURL
+        case hostedRelayBaseURL
+        case hostedRelayEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedRelayMode = try container.decodeIfPresent(RelayMode.self, forKey: .relayMode) ?? .custom
+        let decodedConnectionMode = try container.decodeIfPresent(RelayConnectionMode.self, forKey: .connectionMode)
+            ?? RelayConnectionMode(legacyRelayMode: decodedRelayMode)
+        self.init(
+            connectionMode: decodedConnectionMode,
+            customRelayBaseURL: try container.decodeIfPresent(String.self, forKey: .customRelayBaseURL) ?? "",
+            hostedRelayBaseURL: try container.decodeIfPresent(String.self, forKey: .hostedRelayBaseURL),
+            hostedRelayEnabled: try container.decodeIfPresent(Bool.self, forKey: .hostedRelayEnabled) ?? false
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(relayMode, forKey: .relayMode)
+        try container.encode(connectionMode, forKey: .connectionMode)
+        try container.encode(customRelayBaseURL, forKey: .customRelayBaseURL)
+        try container.encodeIfPresent(hostedRelayBaseURL, forKey: .hostedRelayBaseURL)
+        try container.encode(hostedRelayEnabled, forKey: .hostedRelayEnabled)
+    }
+
+    mutating func updateConnectionMode(_ mode: RelayConnectionMode) {
+        connectionMode = mode
+        relayMode = mode.legacyRelayMode
+        if connectionMode == .managedRelay && !canUseHosted {
+            connectionMode = .selfHostedRelay
+            relayMode = connectionMode.legacyRelayMode
+        }
+    }
+
+    mutating func updateLegacyRelayMode(_ mode: RelayMode) {
+        updateConnectionMode(RelayConnectionMode(legacyRelayMode: mode))
     }
 
     static func defaultValue(
@@ -69,7 +332,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         environmentPolicy: AppEnvironmentPolicy = .currentBuild
     ) -> RelayConfiguration {
         RelayConfiguration(
-            relayMode: .custom,
+            connectionMode: .selfHostedRelay,
             customRelayBaseURL: environmentPolicy.allowsEnvironmentOverrides ? AppEnvironment.development.baseURLString : "",
             hostedRelayBaseURL: buildConfiguration.hostedRelayBaseURL,
             hostedRelayEnabled: buildConfiguration.hostedRelayEnabled
@@ -83,7 +346,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
     ) -> RelayConfiguration {
         if environmentPolicy.allowsEnvironmentOverrides, environment != .production {
             return RelayConfiguration(
-                relayMode: .custom,
+                connectionMode: .selfHostedRelay,
                 customRelayBaseURL: environment.baseURLString,
                 hostedRelayBaseURL: buildConfiguration.hostedRelayBaseURL,
                 hostedRelayEnabled: buildConfiguration.hostedRelayEnabled
@@ -92,7 +355,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
 
         if buildConfiguration.hostedRelayEnabled, buildConfiguration.hostedRelayBaseURL != nil {
             return RelayConfiguration(
-                relayMode: .hosted,
+                connectionMode: .managedRelay,
                 customRelayBaseURL: "",
                 hostedRelayBaseURL: buildConfiguration.hostedRelayBaseURL,
                 hostedRelayEnabled: true
@@ -109,20 +372,28 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         hostedRelayBaseURL = buildConfiguration.hostedRelayBaseURL
         hostedRelayEnabled = buildConfiguration.hostedRelayEnabled && hostedRelayBaseURL != nil
         customRelayBaseURL = RelayConfiguration.normalizeBaseURL(customRelayBaseURL) ?? customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if relayMode == .hosted && !canUseHosted {
-            relayMode = .custom
+        if connectionMode == .managedRelay && !canUseHosted {
+            connectionMode = .selfHostedRelay
         }
+        relayMode = connectionMode.legacyRelayMode
     }
 
     var canUseHosted: Bool {
         hostedRelayEnabled && hostedRelayBaseURL != nil
     }
 
+    var selectableConnectionModes: [RelayConnectionMode] {
+        if canUseHosted {
+            return [.managedRelay, .tailscale, .selfHostedRelay]
+        }
+        return [.tailscale, .selfHostedRelay]
+    }
+
     var activeBaseURLString: String? {
-        switch relayMode {
-        case .custom:
+        switch connectionMode {
+        case .tailscale, .selfHostedRelay:
             return RelayConfiguration.normalizeBaseURL(customRelayBaseURL)
-        case .hosted:
+        case .managedRelay:
             guard canUseHosted else { return RelayConfiguration.normalizeBaseURL(customRelayBaseURL) }
             return hostedRelayBaseURL
         }
@@ -136,15 +407,15 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
     }
 
     var validationMessage: String? {
-        switch relayMode {
-        case .custom:
+        switch connectionMode {
+        case .tailscale, .selfHostedRelay:
             let trimmed = customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return "Enter your relay URL." }
             guard RelayConfiguration.normalizeBaseURL(trimmed) != nil else {
-                return "Relay URL must be an absolute http(s) URL ending with /v1."
+                return "Relay URL must be an absolute https:// URL ending with /v1 (plain http:// is only allowed for localhost)."
             }
             return nil
-        case .hosted:
+        case .managedRelay:
             return canUseHosted ? nil : "Hosted relay is not configured in this app build."
         }
     }
@@ -169,6 +440,15 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
             return nil
         }
 
+        // Plaintext HTTP is only accepted for loopback hosts. Allowing http://
+        // over the public internet would expose bearer tokens, pairing codes,
+        // and all user chat content to any on-path observer. Tailscale and
+        // managed relays are always HTTPS; users wanting to test a local relay
+        // can reach it via 127.0.0.1 / localhost.
+        if scheme == "http", !RelayConfiguration.isLoopbackHost(components.host) {
+            return nil
+        }
+
         let normalizedPath: String
         switch components.path {
         case "", "/":
@@ -181,6 +461,13 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         }
         components.path = normalizedPath
         return components.string
+    }
+
+    private static func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
     }
 }
 
@@ -368,9 +655,6 @@ struct UserSettings: Codable, Hashable, Sendable {
     ) -> UserSettings {
         var sanitized = policy.sanitize(self)
         sanitized.relayConfiguration.applyBuildConfiguration(buildConfiguration)
-        if sanitized.relayConfiguration.relayMode == .hosted, !sanitized.relayConfiguration.canUseHosted {
-            sanitized.relayConfiguration.relayMode = .custom
-        }
         return sanitized
     }
 }

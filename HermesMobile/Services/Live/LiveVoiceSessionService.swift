@@ -112,6 +112,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var ignoreCurrentAssistantFinalization = false
     private var lastImageItemID: String?
     fileprivate var isEndingSession = false
+    // Brief grace window for transient ICE/peer disconnects — iOS frequently
+    // reports `.disconnected` for 1–3 seconds during normal network roaming
+    // (Wi-Fi ↔ cellular, app resume). Treating each blip as a hard failure
+    // shows "Connection lost" before WebRTC has a chance to recover.
+    private var transientDisconnectTask: Task<Void, Never>?
+    private static let disconnectGracePeriod: Duration = .seconds(4)
 
     #if canImport(WebRTC)
     private static let peerFactory = RTCPeerConnectionFactory()
@@ -201,12 +207,29 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
         do {
             #if canImport(WebRTC)
-            // Phase 1: Prepare WebRTC (peer connection + SDP offer) in parallel
-            // with the relay bootstrap request. This saves ~200-500ms.
+            // Parallelise everything that doesn't depend on the relay ephemeral
+            // key: audio session activation, WebRTC peer + SDP offer, and the
+            // relay bootstrap POST all run concurrently. The relay bootstrap is
+            // the long pole (it kicks off the connector's subprocess pre-warm,
+            // usually 500–1500ms); by the time it returns, WebRTC has the SDP
+            // offer ready and we can go straight to SDP exchange.
+            async let preparedWebRTC: PreparedWebRTC = prepareWebRTC()
+            async let bootstrapResponse: TalkSessionResponse = performAuthorizedRequest { [self] in
+                let token = await self.accessTokenProvider()
+                return try await self.apiClient.post(
+                    path: "talk/session",
+                    body: EmptyBody(),
+                    accessToken: token
+                )
+            }
+            // Audio session activation is fast (~50ms) and synchronous, but it
+            // must complete before WebRTC installs its own audio unit. Running
+            // it inline here is fine — it happens alongside the two awaits.
             try configureAudioSession()
-            let prepared = try await prepareWebRTC()
-            #endif
 
+            let prepared = try await preparedWebRTC
+            let response = try await bootstrapResponse
+            #else
             let response: TalkSessionResponse = try await performAuthorizedRequest { [self] in
                 let token = await self.accessTokenProvider()
                 return try await self.apiClient.post(
@@ -215,12 +238,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                     accessToken: token
                 )
             }
+            #endif
             voiceSessionID = response.voiceSession.id
             startedAt = .now
             latencyMetrics.relayBootstrapReceivedAt = .now
             startTimer()
             #if canImport(WebRTC)
-            // Phase 2: Exchange SDP with the ephemeral key from bootstrap
             try await connectWithPrepared(prepared, bootstrap: response.bootstrap)
             #else
             try await endRemoteSession()
@@ -244,6 +267,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     func endSession() async {
+        // Guard against double-invocation — `onDisappear` and the X-button both
+        // fire `endSession`, and we don't want the second call to surface
+        // spurious errors from a half-torn-down session.
+        guard !isEndingSession else { return }
+        transientDisconnectTask?.cancel()
+        transientDisconnectTask = nil
         stopTimer()
         startedAt = nil
         isEndingSession = true
@@ -415,6 +444,33 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     private var hasActiveRealtimeSession: Bool {
         voiceSessionID != nil || connectionState == .connected || connectionState == .connecting
+    }
+
+    fileprivate var hasPendingTransientDisconnect: Bool {
+        transientDisconnectTask != nil
+    }
+
+    fileprivate func armTransientDisconnect() {
+        transientDisconnectTask?.cancel()
+        statusMessage = "Reconnecting\u{2026}"
+        voiceState = .interrupted
+        transientDisconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.disconnectGracePeriod)
+            guard let self, !Task.isCancelled, !self.isEndingSession else { return }
+            self.transientDisconnectTask = nil
+            // If we're still not reconnected, surface the failure so the
+            // overlay can offer a Reconnect button.
+            if self.connectionState != .connected {
+                self.connectionState = .failed
+                self.voiceState = .disconnected
+                self.statusMessage = "Talk connection lost."
+            }
+        }
+    }
+
+    fileprivate func cancelTransientDisconnect() {
+        transientDisconnectTask?.cancel()
+        transientDisconnectTask = nil
     }
 
     @objc
@@ -1079,13 +1135,23 @@ private final class RealtimePeerDelegate: NSObject, RTCPeerConnectionDelegate, R
             }
             switch state {
             case .open:
+                owner.cancelTransientDisconnect()
                 owner.connectionState = .connected
                 owner.voiceState = .listening
                 owner.statusMessage = "Listening"
-            case .closed, .closing:
-                owner.connectionState = .failed
-                owner.voiceState = .disconnected
-                owner.statusMessage = "Connection lost."
+            case .closing:
+                // `.closing` shows up transiently during normal teardown as
+                // WebRTC drains its SCTP queues. Let the peer-connection state
+                // handler decide whether this is a real failure.
+                break
+            case .closed:
+                // Only surface a hard failure if the peer isn't already on
+                // the grace timer — otherwise let that handle the recovery UI.
+                if !owner.hasPendingTransientDisconnect {
+                    owner.connectionState = .failed
+                    owner.voiceState = .disconnected
+                    owner.statusMessage = "Connection lost."
+                }
             default:
                 break
             }
@@ -1125,13 +1191,19 @@ private final class RealtimePeerDelegate: NSObject, RTCPeerConnectionDelegate, R
             }
             switch stateChanged {
             case .connected:
+                owner.cancelTransientDisconnect()
                 if owner.latencyMetrics.realtimeConnectedAt == nil {
                     owner.latencyMetrics.realtimeConnectedAt = .now
                 }
                 owner.connectionState = .connected
                 owner.voiceState = .listening
                 owner.statusMessage = "Listening"
-            case .failed, .disconnected, .closed:
+            case .disconnected:
+                // Don't flip to failed immediately — give WebRTC a grace window
+                // to auto-recover before we surface "Connection lost" to the user.
+                owner.armTransientDisconnect()
+            case .failed, .closed:
+                owner.cancelTransientDisconnect()
                 owner.connectionState = .failed
                 owner.voiceState = .disconnected
                 owner.statusMessage = "Talk connection lost."

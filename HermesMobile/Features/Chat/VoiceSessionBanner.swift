@@ -17,17 +17,15 @@ struct VoiceSessionBanner: View {
     private var bannerContent: some View {
         HStack(spacing: Design.Spacing.xxs) {
             Image(systemName: "waveform")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Design.Colors.secondaryForeground)
 
-            Text("Voice chat ended")
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            Text("Voice · Ended")
+                .brandEyebrow()
 
             if let duration {
                 Text(formattedDuration(duration))
-                    .font(Design.Typography.caption.monospacedDigit())
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow(Design.Colors.tertiaryForeground)
             }
         }
     }

@@ -5,8 +5,10 @@ import Foundation
 final class MockSecureStore: SecureStoreProtocol {
     private var store: [String: String] = [:]
 
-    func store(key: String, value: String) async {
+    @discardableResult
+    func store(key: String, value: String) async -> Bool {
         store[key] = value
+        return true
     }
 
     func retrieve(key: String) async -> String? {

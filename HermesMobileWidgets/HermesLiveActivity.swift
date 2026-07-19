@@ -3,10 +3,19 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
+// Brand palette mirrored from Design.swift — widget target doesn't link the
+// main app's Design module, so we keep a minimal palette inline.
+enum HermesBrand {
+    static let accent = Color(red: 1.0, green: 0.247, blue: 0.0)       // signal-orange #FF3F00
+    static let foreground = Color(red: 0.757, green: 0.753, blue: 0.714) // bone #C1C0B6
+    static let surface = Color(red: 0.11, green: 0.12, blue: 0.13)     // surface
+    static let border = Color(red: 0.27, green: 0.27, blue: 0.26, opacity: 0.35)
+}
+
 struct HermesBrandIcon: View {
     let size: CGFloat
-    var fallbackSymbol: String = "brain.head.profile"
-    var fallbackTint: Color = .yellow
+    var fallbackSymbol: String = "waveform"
+    var fallbackTint: Color = HermesBrand.accent
     var backgroundTint: Color? = nil
     var cornerRadius: CGFloat? = nil
 
@@ -74,18 +83,21 @@ struct HermesLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(context.attributes.agentName)
-                            .font(.headline)
-                            .foregroundStyle(.white)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textCase(.uppercase)
+                            .tracking(1.2)
+                            .foregroundStyle(.white.opacity(0.7))
                         Text(context.state.status)
                             .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.8))
+                            .italic()
+                            .foregroundStyle(.white)
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if let tool = context.state.toolName {
                         Text(tool)
-                            .font(.caption2)
-                            .foregroundStyle(.yellow.opacity(0.7))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(HermesBrand.accent.opacity(0.8))
                     }
                 }
             } compactLeading: {
@@ -94,8 +106,10 @@ struct HermesLiveActivity: Widget {
             } compactTrailing: {
                 // Compact right side
                 Text(context.state.status.prefix(12))
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.8))
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundStyle(.white.opacity(0.85))
             } minimal: {
                 // Minimal (when multiple Live Activities compete)
                 HermesBrandIcon(size: 16)
@@ -109,23 +123,26 @@ struct HermesLiveActivity: Widget {
         HStack(spacing: 12) {
             HermesBrandIcon(
                 size: 44,
-                backgroundTint: Color.yellow.opacity(0.15),
+                backgroundTint: HermesBrand.surface,
                 cornerRadius: 12
             )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(context.attributes.agentName)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                    .foregroundStyle(.secondary)
 
                 Text(context.state.status)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .italic()
+                    .foregroundStyle(.primary)
 
                 if let tool = context.state.toolName {
                     Text(tool)
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(HermesBrand.accent)
                 }
             }
 

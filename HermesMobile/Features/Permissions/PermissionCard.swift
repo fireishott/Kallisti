@@ -13,6 +13,10 @@ struct PermissionCard: View {
         .padding(Design.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
     }
 
@@ -22,9 +26,14 @@ struct PermissionCard: View {
         HStack(spacing: Design.Spacing.sm) {
             Image(systemName: capability.permissionType.displayIcon)
                 .font(.system(size: Design.Size.iconMedium))
-                .foregroundStyle(.white)
+                .foregroundStyle(Design.Colors.foreground)
                 .frame(width: Design.Size.avatarSmall, height: Design.Size.avatarSmall)
-                .background(capability.permissionType.displayColor, in: .rect(cornerRadius: Design.CornerRadius.sm))
+                .background(Design.Colors.surface2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
+                        .stroke(Design.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
 
             Text(capability.permissionType.displayLabel)
                 .font(Design.Typography.headline)
@@ -48,8 +57,8 @@ struct PermissionCard: View {
     private var statusAndAction: some View {
         HStack {
             Label(statusLabelText, systemImage: statusIcon)
-                .font(Design.Typography.footnote)
-                .foregroundStyle(capability.status.displayColor)
+                .labelStyle(.titleAndIcon)
+                .brandEyebrow(capability.status.displayColor)
 
             Spacer()
 
@@ -58,8 +67,7 @@ struct PermissionCard: View {
                     onRequest()
                 } label: {
                     Text(actionLabel)
-                        .font(Design.Typography.footnote.weight(.semibold))
-                        .foregroundStyle(Design.Colors.foreground)
+                        .brandEyebrow(Design.Colors.background)
                         .padding(.horizontal, Design.Spacing.md)
                         .padding(.vertical, Design.Spacing.xs)
                 }

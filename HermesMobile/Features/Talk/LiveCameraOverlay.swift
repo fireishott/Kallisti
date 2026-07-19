@@ -61,8 +61,8 @@ struct LiveCameraOverlay: View {
                 if permissionDenied {
                     VStack(spacing: Design.Spacing.sm) {
                         Text("Camera access is required.")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(.white.opacity(0.7))
+                            .font(Design.Typography.editorialItalicSmall)
+                            .foregroundStyle(.white.opacity(0.85))
                             .multilineTextAlignment(.center)
 
                         Button {
@@ -71,7 +71,9 @@ struct LiveCameraOverlay: View {
                             }
                         } label: {
                             Text("Open Settings")
-                                .font(Design.Typography.callout.weight(.medium))
+                                .font(Design.Typography.eyebrow)
+                                .textCase(.uppercase)
+                                .tracking(1.2)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, Design.Spacing.lg)
                                 .padding(.vertical, Design.Spacing.sm)
@@ -82,9 +84,11 @@ struct LiveCameraOverlay: View {
                     .padding(.bottom, Design.Spacing.xxl)
                 } else {
                     // Subtle status
-                    Text("Camera active \u{2022} voice continues")
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(.white.opacity(0.6))
+                    Text("Camera \u{2022} Active")
+                        .font(Design.Typography.eyebrow)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
+                        .foregroundStyle(.white.opacity(0.7))
                         .padding(.bottom, Design.Spacing.xxl)
                 }
             }

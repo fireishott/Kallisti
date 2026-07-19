@@ -124,6 +124,13 @@ final class SensorUploadService {
     private var isActive = false
     private var isDraining = false
     private var outboxState: SensorOutboxState
+    // Exponential backoff after upload failures. Without this, every new
+    // sensor sample (arriving every few seconds while walking or during
+    // health updates) hammers the relay during an outage.
+    private var consecutiveUploadFailures = 0
+    private var nextAllowedDrainAt: Date?
+    private static let backoffBaseSeconds: Double = 2
+    private static let backoffMaxSeconds: Double = 60
 
     private let iso8601Formatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -250,6 +257,10 @@ final class SensorUploadService {
         guard isActive else { return }
         guard isPairedProvider() else { return }
 
+        if let nextAllowed = nextAllowedDrainAt, Date() < nextAllowed {
+            return
+        }
+
         guard let accessToken = await accessTokenProvider(), !accessToken.isEmpty else {
             return
         }
@@ -261,7 +272,10 @@ final class SensorUploadService {
         while isActive && isPairedProvider() {
             if let pendingLocation = outboxState.pendingLocation {
                 let delivered = await uploadLocation(pendingLocation)
-                guard delivered else { break }
+                guard delivered else {
+                    noteUploadFailure()
+                    return
+                }
                 outboxState.pendingLocation = nil
                 persistOutboxState()
                 continue
@@ -269,7 +283,10 @@ final class SensorUploadService {
 
             if !outboxState.pendingHealthSamples.isEmpty {
                 let delivered = await uploadHealth(outboxState.pendingHealthSamples)
-                guard delivered else { break }
+                guard delivered else {
+                    noteUploadFailure()
+                    return
+                }
                 outboxState.pendingHealthSamples.removeAll()
                 persistOutboxState()
                 continue
@@ -277,6 +294,19 @@ final class SensorUploadService {
 
             break
         }
+
+        // All pending items drained — reset the backoff counter.
+        consecutiveUploadFailures = 0
+        nextAllowedDrainAt = nil
+    }
+
+    private func noteUploadFailure() {
+        consecutiveUploadFailures += 1
+        let delay = min(
+            Self.backoffMaxSeconds,
+            Self.backoffBaseSeconds * pow(2, Double(consecutiveUploadFailures - 1))
+        )
+        nextAllowedDrainAt = Date().addingTimeInterval(delay)
     }
 
     private func persistOutboxState() {

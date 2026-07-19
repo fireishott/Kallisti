@@ -25,7 +25,11 @@ struct CodeBlockView: View {
                     .padding(.vertical, Design.Spacing.xs)
             }
         }
-        .background(Color.white.opacity(0.05))
+        .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Code block\(language.map { ", \($0)" } ?? "")")
@@ -36,8 +40,7 @@ struct CodeBlockView: View {
         HStack(spacing: Design.Spacing.xs) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(Design.Typography.caption2.monospaced())
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
             }
 
             Spacer()
@@ -47,9 +50,11 @@ struct CodeBlockView: View {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 10, weight: .medium))
                     Text(didCopy ? "Copied" : "Copy")
-                        .font(Design.Typography.caption2)
+                        .font(Design.Typography.eyebrow)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
                 }
-                .foregroundStyle(didCopy ? .green : Design.Colors.secondaryForeground)
+                .foregroundStyle(didCopy ? Design.Colors.success : Design.Colors.secondaryForeground)
                 .animation(Design.Motion.quickResponse, value: didCopy)
             }
             .buttonStyle(.plain)

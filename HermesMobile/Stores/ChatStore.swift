@@ -24,6 +24,16 @@ final class ChatStore {
     /// (success or final failure).
     private var stallRetryCounts: [UUID: Int] = [:]
 
+    // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
+    // Buffer deltas in an Array<String> (avoids O(n²) inline concat) and flush
+    // onto the placeholder at ~30fps so every append triggers at most one
+    // @Observable notification per frame.
+    private var pendingDeltaChunks: [String] = []
+    private var pendingDeltaBytes: Int = 0
+    private var deltaFlushTask: Task<Void, Never>?
+    private static let deltaFlushInterval: Duration = .milliseconds(33)
+    private static let deltaFlushByteThreshold = 4_096
+
     var isStreaming: Bool { streamingMessageID != nil }
 
     /// Dynamic slash command catalog fetched from the connected Hermes host.
@@ -213,15 +223,7 @@ final class ChatStore {
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].content += delta
-                        conv.messages[idx].toolActivity = nil
-                        for i in conv.messages[idx].toolActivities.indices {
-                            conv.messages[idx].toolActivities[i].isActive = false
-                        }
-                        self.conversation = conv
-                    }
+                    self.enqueueDelta(delta, placeholderID: placeholderID)
 
                 case .reasoningDelta(let delta):
                     progressContinuation?.yield(())
@@ -234,6 +236,7 @@ final class ChatStore {
 
                 case .toolActivity(let label):
                     progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         for i in conv.messages[idx].toolActivities.indices {
@@ -250,6 +253,7 @@ final class ChatStore {
 
                 case .finished(let finalMessage, let usage, let diff):
                     progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
@@ -293,6 +297,7 @@ final class ChatStore {
                     // resolve the watchdog race immediately rather than waiting
                     // out the timeout, and handle it exactly as before.
                     progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         if acceptedJobID == nil {
                             self.conversation?.messages[idx] = Message(
@@ -405,6 +410,11 @@ final class ChatStore {
         streamingTask?.cancel()
         streamingTask = nil
         chatLiveActivity.endActivity()
+
+        // Flush any buffered deltas onto the placeholder before finalizing.
+        if let sid = streamingMessageID {
+            flushPendingDeltas(placeholderID: sid)
+        }
 
         // Finalize current streaming message with content received so far
         if let sid = streamingMessageID,
@@ -573,7 +583,73 @@ final class ChatStore {
         }) == true
     }
 
-    private static let maxPollAttempts = 30 // 30 × 2s = 60 seconds max
+    // MARK: - Delta coalescing
+
+    private func enqueueDelta(_ delta: String, placeholderID: UUID) {
+        guard !delta.isEmpty else { return }
+        pendingDeltaChunks.append(delta)
+        pendingDeltaBytes += delta.utf8.count
+
+        // If we've buffered a lot, flush immediately so the UI doesn't fall
+        // multiple frames behind during a burst.
+        if pendingDeltaBytes >= Self.deltaFlushByteThreshold {
+            flushPendingDeltas(placeholderID: placeholderID)
+            return
+        }
+
+        guard deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self, placeholderID] in
+            try? await Task.sleep(for: Self.deltaFlushInterval)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.flushPendingDeltas(placeholderID: placeholderID)
+            }
+        }
+    }
+
+    private func flushPendingDeltas(placeholderID: UUID) {
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+
+        guard !pendingDeltaChunks.isEmpty else { return }
+        let chunks = pendingDeltaChunks
+        pendingDeltaChunks = []
+        pendingDeltaBytes = 0
+
+        guard var conv = conversation,
+              let idx = conv.messages.firstIndex(where: { $0.id == placeholderID })
+        else { return }
+
+        // Single concat: O(sum(chunk sizes)) instead of O(n·chunks) across ticks.
+        var buffer = conv.messages[idx].content
+        buffer.reserveCapacity(buffer.count + pendingDeltaBytes)
+        for chunk in chunks { buffer.append(chunk) }
+        conv.messages[idx].content = buffer
+
+        // Only touch tool-activity state when it actually needs clearing —
+        // avoids spurious writes on every delta for messages that never ran tools.
+        if conv.messages[idx].toolActivity != nil {
+            conv.messages[idx].toolActivity = nil
+        }
+        var toolActivities = conv.messages[idx].toolActivities
+        var didClearActive = false
+        for i in toolActivities.indices where toolActivities[i].isActive {
+            toolActivities[i].isActive = false
+            didClearActive = true
+        }
+        if didClearActive {
+            conv.messages[idx].toolActivities = toolActivities
+        }
+
+        conversation = conv
+    }
+
+    // Exponential backoff delays (seconds). The first polls are fast because
+    // the relay usually delivers within a handful of seconds; later polls
+    // spread out so we don't hammer a struggling relay. ~130s total budget.
+    private static let pollingBackoffSeconds: [Double] = [
+        1.5, 2, 3, 5, 8, 12, 18, 25, 30, 30,
+    ]
 
     private func restartPendingPollingIfNeeded() {
         guard isPollingEnabled, hasPendingMessages else {
@@ -586,12 +662,11 @@ final class ChatStore {
 
         pollingTask = Task { [weak self] in
             guard let self else { return }
-            var attempts = 0
 
-            while !Task.isCancelled, attempts < Self.maxPollAttempts {
-                attempts += 1
-                try? await Task.sleep(for: .seconds(2))
+            for (attempt, delay) in Self.pollingBackoffSeconds.enumerated() {
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
+
                 let fresh = await self.hermesClient.loadConversation()
                 self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
                 if let latestUsage = self.conversation?.latestUsage {
@@ -605,18 +680,22 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     break
                 }
-            }
 
-            // If we exhausted attempts, mark stuck messages as failed
-            if attempts >= Self.maxPollAttempts, self.hasPendingMessages {
-                if var conv = self.conversation {
-                    for i in conv.messages.indices where conv.messages[i].sender == .user && conv.messages[i].status == .sending {
-                        conv.messages[i].status = .failed
+                // On the last attempt, mark anything still pending as failed
+                // so the user sees an actionable state instead of forever-sending.
+                let isLastAttempt = attempt == Self.pollingBackoffSeconds.count - 1
+                if isLastAttempt, self.hasPendingMessages {
+                    if var conv = self.conversation {
+                        for i in conv.messages.indices
+                            where conv.messages[i].sender == .user && conv.messages[i].status == .sending
+                        {
+                            conv.messages[i].status = .failed
+                        }
+                        self.conversation = conv
+                        self.persistence.saveConversationCache(conv)
                     }
-                    self.conversation = conv
-                    self.persistence.saveConversationCache(conv)
+                    self.pendingMessageSentAt = nil
                 }
-                self.pendingMessageSentAt = nil
             }
 
             if self.pollingTask?.isCancelled == false {

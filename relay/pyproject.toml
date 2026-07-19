@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "FastAPI relay for Hermes Mobile."
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography>=46.0.0,<47.0.0",
   "fastapi>=0.115.0,<1.0.0",
   "httpx[http2]>=0.28.0,<1.0.0",
   "PyJWT[crypto]>=2.9.0,<3.0.0",
@@ -34,3 +35,6 @@ addopts = "-q"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["certs/*.pem"]

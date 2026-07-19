@@ -49,7 +49,7 @@ final class HermesMobileUITests: XCTestCase {
         let app = makeApp(context: context)
         app.launch()
 
-        XCTAssertTrue(app.buttons["Enter Code Manually"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Begin"].waitForExistence(timeout: 5))
         completePairing(in: app, setupCode: context.setupCode)
 
         XCTAssertTrue(composerInput(in: app).waitForExistence(timeout: 5))
@@ -90,7 +90,7 @@ final class HermesMobileUITests: XCTestCase {
         let relaunchedApp = makeApp(context: context)
         relaunchedApp.launch()
 
-        XCTAssertFalse(relaunchedApp.buttons["Enter Code Manually"].waitForExistence(timeout: 2))
+        XCTAssertFalse(relaunchedApp.buttons["Begin"].waitForExistence(timeout: 2))
         XCTAssertTrue(composerInput(in: relaunchedApp).waitForExistence(timeout: 5))
     }
 
@@ -110,7 +110,7 @@ final class HermesMobileUITests: XCTestCase {
         XCTAssertTrue(disconnectButton.waitForExistence(timeout: 5))
         disconnectButton.tap()
 
-        XCTAssertTrue(app.buttons["Enter Code Manually"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Begin"].waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -149,17 +149,33 @@ final class HermesMobileUITests: XCTestCase {
 
     @MainActor
     private func completePairing(in app: XCUIApplication, setupCode: String) {
-        app.buttons["Enter Code Manually"].tap()
+        // Welcome → Relay
+        let beginButton = app.buttons["Begin"]
+        if beginButton.waitForExistence(timeout: 5) {
+            beginButton.tap()
+        }
 
+        // Relay → Pairing (default relay URL is pre-filled in debug builds)
+        let continueToPairing = app.buttons["Continue"]
+        XCTAssertTrue(continueToPairing.waitForExistence(timeout: 5))
+        continueToPairing.tap()
+
+        // Pairing
         let setupCodeField = app.textFields["Setup code"]
         XCTAssertTrue(setupCodeField.waitForExistence(timeout: 5))
         setupCodeField.tap()
         setupCodeField.typeText(setupCode)
         app.buttons["Connect Hermes"].tap()
 
-        let continueButton = app.buttons["Continue"]
-        if continueButton.waitForExistence(timeout: 5) {
-            continueButton.tap()
+        // Permissions → Ready (tap Continue, then Open app)
+        let continueFromPermissions = app.buttons["Continue"]
+        if continueFromPermissions.waitForExistence(timeout: 5) {
+            continueFromPermissions.tap()
+        }
+
+        let openApp = app.buttons["Open app"]
+        if openApp.waitForExistence(timeout: 5) {
+            openApp.tap()
         }
 
         XCTAssertTrue(app.buttons["Open settings"].waitForExistence(timeout: 8))

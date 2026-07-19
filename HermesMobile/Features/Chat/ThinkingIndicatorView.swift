@@ -35,11 +35,11 @@ struct ThinkingIndicatorView: View {
 
     private func toolActivityLabel(_ label: String) -> some View {
         Text(label)
-            .font(Design.Typography.caption)
-            .foregroundStyle(Design.Colors.secondaryForeground)
+            .brandEyebrow()
             .padding(.horizontal, Design.Spacing.sm)
             .padding(.vertical, Design.Spacing.xxs)
             .background(Design.Colors.surface)
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
             .clipShape(Capsule())
             .transition(.opacity)
             .animation(Design.Motion.quickResponse, value: label)
@@ -69,8 +69,7 @@ struct ThinkingIndicatorView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = context.date.timeIntervalSince(startTime)
                 Text(formatElapsed(elapsed))
-                    .font(Design.Typography.caption2)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow(Design.Colors.tertiaryForeground)
             }
         }
     }

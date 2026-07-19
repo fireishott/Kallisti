@@ -16,11 +16,12 @@ struct VoiceOverlayScreen: View {
 
             VStack(spacing: 0) {
                 // Top bar
-                HStack {
-                    Text("Hermes")
+                HStack(alignment: .firstTextBaseline, spacing: Design.Spacing.xs) {
+                    Text("HERMES")
                         .font(Design.Typography.headline)
+                        .tracking(1.0)
                         .foregroundStyle(Design.Colors.foreground)
-                    Text("Voice")
+                    Text("· voice")
                         .font(Design.Typography.headline)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                     Spacer()
@@ -122,14 +123,11 @@ struct VoiceOverlayScreen: View {
                         .frame(width: 80, height: 80)
                         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
                 } else if !item.text.isEmpty {
-                    Text(item.text)
-                        .font(Design.Typography.body)
+                    Text("\u{201C}\(item.text)\u{201D}")
+                        .font(Design.Typography.editorialItalicSmall)
                         .foregroundStyle(Design.Colors.foreground)
-                        .padding(.horizontal, Design.Spacing.md)
-                        .padding(.vertical, Design.Spacing.sm)
-                        .background(Design.Colors.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl))
-                        .opacity(item.isPartial ? 0.6 : 1)
+                        .multilineTextAlignment(.trailing)
+                        .opacity(item.isPartial ? 0.55 : 1)
                 }
             }
         case .hermes:
@@ -142,8 +140,7 @@ struct VoiceOverlayScreen: View {
             }
         case .system:
             Text(item.text)
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+                .brandEyebrow()
                 .frame(maxWidth: .infinity)
         }
     }
@@ -169,10 +166,13 @@ struct VoiceOverlayScreen: View {
                         }
                     } label: {
                         Text("Open Settings")
-                            .font(Design.Typography.callout.weight(.medium))
+                            .brandEyebrow(Design.Colors.foreground)
                             .padding(.horizontal, Design.Spacing.lg)
                             .padding(.vertical, Design.Spacing.xs)
                             .background(Design.Colors.surface)
+                            .overlay(
+                                Capsule().stroke(Design.Colors.border, lineWidth: 1)
+                            )
                             .clipShape(Capsule())
                     }
                 }
@@ -184,30 +184,38 @@ struct VoiceOverlayScreen: View {
                     .controlSize(.small)
                     .tint(Design.Colors.secondaryForeground)
                 Text("Connecting\u{2026}")
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
             }
 
         case (.connected, .listening):
-            Text("Listening")
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            orbStatus(dot: Design.Colors.success, label: "Hermes · Listening")
 
         case (.connected, .thinking):
-            Text(talkStore.statusMessage ?? "")
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            if let status = talkStore.statusMessage, !status.isEmpty {
+                orbStatus(dot: Design.Brand.primary, label: status)
+            } else {
+                orbStatus(dot: Design.Brand.primary, label: "Hermes · Thinking")
+            }
 
         case (.connected, .speaking):
-            EmptyView()
+            orbStatus(dot: Design.Brand.accent, label: "Hermes · Speaking")
 
         case (_, .disconnected):
-            Text("Disconnected")
-                .font(Design.Typography.callout)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            orbStatus(dot: Design.Colors.warning, label: "Disconnected")
 
         default:
             EmptyView()
+        }
+    }
+
+    /// `● hermes · speaking` status strip — the signature brand metadata line.
+    private func orbStatus(dot: Color, label: String) -> some View {
+        HStack(spacing: Design.Spacing.xs) {
+            Circle()
+                .fill(dot)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .brandEyebrow(Design.Colors.foreground)
         }
     }
 
@@ -217,63 +225,75 @@ struct VoiceOverlayScreen: View {
         HStack(spacing: Design.Spacing.xl) {
             if talkStore.isSessionActive {
                 // Live camera button
-                Button { showLiveCameraOverlay = true } label: {
-                    Image(systemName: "video.fill")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .frame(width: 52, height: 52)
-                        .background(Design.Colors.surface)
-                        .clipShape(Circle())
+                voiceControlButton(
+                    systemImage: "video.fill",
+                    accessibilityLabel: "Open live camera"
+                ) {
+                    showLiveCameraOverlay = true
                 }
-                .accessibilityLabel("Open live camera")
 
                 // Mute button
-                Button {
+                voiceControlButton(
+                    systemImage: talkStore.isMuted ? "mic.slash.fill" : "mic.fill",
+                    tint: talkStore.isMuted ? Design.Colors.danger : Design.Colors.foreground,
+                    accessibilityLabel: talkStore.isMuted ? "Unmute" : "Mute"
+                ) {
                     Task { await talkStore.toggleMute() }
-                } label: {
-                    Image(systemName: talkStore.isMuted ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(talkStore.isMuted ? .red : Design.Colors.foreground)
-                        .frame(width: 52, height: 52)
-                        .background(Design.Colors.surface)
-                        .clipShape(Circle())
                 }
-                .accessibilityLabel(talkStore.isMuted ? "Unmute" : "Mute")
 
                 Spacer()
 
-                // Close button
-                Button {
+                // Close button — signal-orange primary end-session
+                voiceControlButton(
+                    systemImage: "xmark",
+                    background: Design.Brand.accent,
+                    tint: Design.Colors.background,
+                    accessibilityLabel: "End voice session"
+                ) {
                     Task {
                         await talkStore.endSession()
                         router.isVoiceOverlayPresented = false
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .frame(width: 52, height: 52)
-                        .background(Design.Colors.surface)
-                        .clipShape(Circle())
                 }
-                .accessibilityLabel("End voice session")
             } else {
                 Spacer()
 
                 // Close button when not active (e.g. failed to start)
-                Button {
+                voiceControlButton(
+                    systemImage: "xmark",
+                    background: Design.Brand.accent,
+                    tint: Design.Colors.background,
+                    accessibilityLabel: "Close"
+                ) {
                     router.isVoiceOverlayPresented = false
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .frame(width: 52, height: 52)
-                        .background(Design.Colors.surface)
-                        .clipShape(Circle())
                 }
-                .accessibilityLabel("Close")
             }
         }
         .padding(.horizontal, Design.Spacing.xl)
+    }
+
+    private func voiceControlButton(
+        systemImage: String,
+        background: Color = Design.Colors.surface,
+        tint: Color = Design.Colors.foreground,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 52, height: 52)
+                .background(background)
+                .overlay(
+                    Circle().stroke(
+                        background == Design.Colors.surface
+                            ? Design.Colors.border : Color.clear,
+                        lineWidth: 1
+                    )
+                )
+                .clipShape(Circle())
+        }
+        .accessibilityLabel(accessibilityLabel)
     }
 }

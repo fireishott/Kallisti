@@ -21,7 +21,7 @@ Tracked files should keep generic defaults. Real deployment values belong in loc
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `PUBLIC_BASE_URL` | Yes | Public API base URL ending in `/v1` |
-| `DATABASE_URL` | Yes | PostgreSQL in production; SQLite is fine for local dev |
+| `DATABASE_URL` | Yes | SQLite on a persistent volume is supported for the single-node managed beta path; PostgreSQL is recommended for multi-node production |
 | `INTERNAL_API_KEY` | Yes | Must be a strong random value outside development/test |
 | `RELAY_ENVIRONMENT` | Recommended | `development`, `test`, or `production` |
 
@@ -53,9 +53,15 @@ Tracked files should keep generic defaults. Real deployment values belong in loc
 | `APNS_KEY_PATH` or `APNS_KEY_CONTENTS` | Optional | `.p8` key path or raw key contents |
 | `APNS_KEY_ID` | Optional | Apple Key ID |
 | `APNS_TEAM_ID` | Optional | Apple Team ID |
+| `PUSH_BROKER_BASE_URL` | Optional | Remote managed push broker base URL ending in `/v1`; defaults to `PUBLIC_BASE_URL` for combined managed deployments |
 | `APNS_BUNDLE_ID` | Optional | Default app bundle ID for push delivery |
 | `APNS_ENVIRONMENT` | Optional | `development` or `production` |
 | `APP_PRESENCE_STALE_SECONDS` | Optional | Foreground suppression window |
+
+`/v1/push/register` supports two relay-side storage modes:
+
+- `transport = "direct"` stores a raw APNs token on the relay and sends directly with the relay's APNs credentials.
+- `transport = "relay"` stores an opaque `relayHandle` + `sendGrant` + relay identity metadata, then sends through the managed push broker.
 
 ## Connector environment variables
 
@@ -93,6 +99,8 @@ The app reads these keys from `Info.plist` or local build settings.
 | --- | --- | --- |
 | `APP_HOSTED_RELAY_ENABLED` | Optional | Enables a hosted-relay option in the app UI |
 | `APP_HOSTED_RELAY_URL` | Optional | Hosted relay base URL ending in `/v1` |
+| `APP_PUSH_TRANSPORT` | Optional | `direct` or `relay`; `relay` enables the managed push broker path for official builds |
+| `APP_PUSH_BROKER_URL` | Optional | Managed push broker base URL ending in `/v1`; required when `APP_PUSH_TRANSPORT=relay` |
 | `APP_SUPPORT_URL` | Optional | Support link shown in Settings |
 | `APP_TERMS_URL` | Optional | Terms of Service link |
 | `APP_PRIVACY_URL` | Optional | Privacy Policy link |

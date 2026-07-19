@@ -16,11 +16,38 @@ enum SharedWidgetDataStore {
     }()
     private static let dataKey = "hermes.widget.data"
 
+    // Coalesce bursts of reloads. During chat streaming the caller can write
+    // widget data dozens of times per second; `reloadAllTimelines` is an
+    // expensive IPC boundary and the widget only needs the latest state.
+    private static let reloadQueue = DispatchQueue(label: "io.hermesmobile.widgetReload")
+    nonisolated(unsafe) private static var pendingReload = false
+    nonisolated(unsafe) private static var lastReloadAt: Date?
+    private static let reloadMinInterval: TimeInterval = 2.0
+
     static func write(_ data: HermesWidgetData) {
         guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
         guard let encoded = try? JSONEncoder().encode(data) else { return }
         defaults.set(encoded, forKey: dataKey)
-        WidgetCenter.shared.reloadAllTimelines()
+        scheduleReload()
+    }
+
+    private static func scheduleReload() {
+        reloadQueue.async {
+            if pendingReload { return }
+            let delay: TimeInterval
+            if let last = lastReloadAt {
+                let elapsed = Date().timeIntervalSince(last)
+                delay = max(0, reloadMinInterval - elapsed)
+            } else {
+                delay = 0
+            }
+            pendingReload = true
+            reloadQueue.asyncAfter(deadline: .now() + delay) {
+                pendingReload = false
+                lastReloadAt = .now
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
     }
 
     static func read() -> HermesWidgetData {

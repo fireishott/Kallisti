@@ -47,13 +47,13 @@ struct InboxItemDetailSheet: View {
 
     private var metadataSection: some View {
         HStack(spacing: Design.Spacing.md) {
-            Label(item.status.rawValue.capitalized, systemImage: "checklist")
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            Label(item.status.rawValue, systemImage: "checklist")
+                .labelStyle(.titleAndIcon)
+                .brandEyebrow()
 
-            Label(item.priority.rawValue.capitalized, systemImage: "flag")
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            Label(item.priority.rawValue, systemImage: "flag")
+                .labelStyle(.titleAndIcon)
+                .brandEyebrow()
         }
     }
 }

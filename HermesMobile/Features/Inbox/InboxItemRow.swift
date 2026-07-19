@@ -22,6 +22,10 @@ struct InboxItemRow: View {
         .padding(Design.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
         .opacity(item.isRead ? 0.7 : 1.0)
         .onTapGesture(perform: onOpenDetails)
@@ -44,15 +48,13 @@ struct InboxItemRow: View {
                     .foregroundStyle(Design.Colors.foreground)
 
                 Text(item.timestamp, style: .relative)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
+                    .brandEyebrow(Design.Colors.tertiaryForeground)
             }
 
             Spacer()
 
-            Text(item.priority.rawValue.capitalized)
-                .font(Design.Typography.caption2.weight(.semibold))
-                .foregroundStyle(Design.Colors.secondaryForeground)
+            Text(item.priority.rawValue)
+                .brandEyebrow()
 
             if !item.isRead {
                 Circle()
@@ -71,8 +73,7 @@ struct InboxItemRow: View {
                 onPrimaryAction()
             } label: {
                 Text(item.primaryAction?.title ?? defaultPrimaryActionTitle)
-                    .font(Design.Typography.footnote.weight(.semibold))
-                    .foregroundStyle(Design.Colors.foreground)
+                    .brandEyebrow(Design.Colors.background)
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.vertical, Design.Spacing.xs)
             }
@@ -84,12 +85,12 @@ struct InboxItemRow: View {
                 onSecondaryAction()
             } label: {
                 Text(item.secondaryAction?.title ?? "Dismiss")
-                    .font(Design.Typography.footnote.weight(.medium))
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.vertical, Design.Spacing.xs)
             }
             .background(Design.Colors.surface)
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
             .clipShape(Capsule())
             .accessibilityLabel("Dismiss \(item.title)")
         }

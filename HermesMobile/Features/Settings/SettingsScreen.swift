@@ -84,7 +84,7 @@ struct SettingsScreen: View {
 
                 settingsToggle(
                     icon: "bolt.fill",
-                    iconColor: Design.Brand.accent,
+                    iconColor: Design.Colors.foreground,
                     title: "Auto-Connect",
                     isOn: autoConnectBinding
                 )
@@ -100,14 +100,14 @@ struct SettingsScreen: View {
                 if pairingStore.isPaired {
                     settingsRow(
                         icon: "point.3.connected.trianglepath.dotted",
-                        iconColor: Design.Brand.accent,
+                        iconColor: Design.Colors.foreground,
                         title: "Active Relay",
                         value: pairingStore.pairedRelayConfiguration?.hostDisplayName ?? relayConfiguration.relayOriginLabel
                     )
                     sectionDivider
                     settingsRow(
                         icon: "link",
-                        iconColor: .secondary,
+                        iconColor: Design.Colors.secondaryForeground,
                         title: "Base URL",
                         value: pairingStore.pairedRelayConfiguration?.baseURLString ?? relayConfiguration.activeBaseURLString ?? "Not configured"
                     )
@@ -116,44 +116,64 @@ struct SettingsScreen: View {
                         .foregroundStyle(Design.Colors.secondaryForeground)
                         .padding(.top, Design.Spacing.xs)
                 } else {
-                    if relayConfiguration.canUseHosted {
-                        Picker("Relay Mode", selection: relayModeBinding) {
-                            Text(RelayMode.custom.displayLabel).tag(RelayMode.custom)
-                            Text(RelayMode.hosted.displayLabel).tag(RelayMode.hosted)
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        Text("CONNECTION MODE").brandEyebrow()
+
+                        Picker("Connection Mode", selection: connectionModeBinding) {
+                            ForEach(relayConfiguration.selectableConnectionModes, id: \.self) { mode in
+                                Text(mode.compactLabel).tag(mode)
+                            }
                         }
                         .pickerStyle(.segmented)
-
-                        sectionDivider
                     }
 
-                    if relayConfiguration.relayMode == .custom {
+                    sectionDivider
+
+                    if relayConfiguration.connectionMode.usesCustomRelayURL {
                         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-                            TextField("https://your-relay.example.com/v1", text: customRelayURLBinding)
+                            TextField(customRelayURLPlaceholder, text: customRelayURLBinding)
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.URL)
                                 .autocorrectionDisabled()
-                                .font(Design.Typography.callout.monospaced())
+                                .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
                                 .padding(Design.Spacing.md)
-                                .background(Design.Colors.background, in: RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                                .background(Design.Colors.background)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                                        .stroke(Design.Colors.border, lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
 
-                            Text("Enter the relay API base URL your connector will use.")
+                            if let hint = relayConfiguration.connectionMode.relayURLHint {
+                                Text(hint)
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Text(relayConfiguration.connectionMode.shortDescription)
                                 .font(Design.Typography.caption)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
                     } else if let hostedRelayBaseURL = relayConfiguration.hostedRelayBaseURL {
                         settingsRow(
                             icon: "cloud",
-                            iconColor: Design.Brand.accent,
+                            iconColor: Design.Colors.foreground,
                             title: "Hosted Relay",
                             value: hostedRelayBaseURL
                         )
                     }
 
+                    Text(backgroundDeliveryNote)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     if let relayValidationMessage {
                         Text(relayValidationMessage)
                             .font(Design.Typography.caption)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Design.Colors.warning)
                     }
                 }
             }
@@ -176,9 +196,9 @@ struct SettingsScreen: View {
     private var hostStatusRowColor: Color {
         switch hostStore.connectionState {
         case .online:
-            return .green
+            return Design.Colors.success
         case .offline, .unreachable:
-            return .orange
+            return Design.Colors.warning
         case .notConnected:
             return Design.Colors.secondaryForeground
         }
@@ -340,7 +360,7 @@ struct SettingsScreen: View {
             VStack(spacing: 0) {
                 settingsToggle(
                     icon: "bell.fill",
-                    iconColor: .orange,
+                    iconColor: Design.Colors.foreground,
                     title: "Notifications",
                     isOn: notificationsBinding
                 )
@@ -349,7 +369,7 @@ struct SettingsScreen: View {
 
                 settingsToggle(
                     icon: "hand.tap.fill",
-                    iconColor: .purple,
+                    iconColor: Design.Colors.foreground,
                     title: "Haptic Feedback",
                     isOn: hapticBinding
                 )
@@ -364,7 +384,7 @@ struct SettingsScreen: View {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 settingsRow(
                     icon: "location.fill",
-                    iconColor: .blue,
+                    iconColor: Design.Brand.primary,
                     title: "Authorization",
                     value: permissionsStore.locationAuthorizationLevel.displayLabel
                 )
@@ -373,7 +393,7 @@ struct SettingsScreen: View {
 
                 settingsRow(
                     icon: "scope",
-                    iconColor: .blue,
+                    iconColor: Design.Brand.primary,
                     title: "Accuracy",
                     value: permissionsStore.locationAccuracyLevel.displayLabel
                 )
@@ -382,7 +402,7 @@ struct SettingsScreen: View {
 
                 settingsToggle(
                     icon: "location.circle.fill",
-                    iconColor: .blue,
+                    iconColor: Design.Brand.primary,
                     title: "Background Location",
                     isOn: backgroundLocationBinding
                 )
@@ -400,7 +420,7 @@ struct SettingsScreen: View {
         SettingsSectionView(title: "Privacy") {
             settingsNavRow(
                 icon: "lock.shield.fill",
-                iconColor: .green,
+                iconColor: Design.Colors.success,
                 title: "Permissions"
             ) {
                 dismiss()
@@ -419,7 +439,7 @@ struct SettingsScreen: View {
             VStack(spacing: 0) {
                 settingsRow(
                     icon: "info.circle",
-                    iconColor: .secondary,
+                    iconColor: Design.Colors.secondaryForeground,
                     title: "Version",
                     value: "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0") (\(Bundle.main.object(forInfoDictionaryKey: kCFBundleVersionKey as String) as? String ?? "1"))"
                 )
@@ -428,7 +448,7 @@ struct SettingsScreen: View {
 
                 settingsNavRow(
                     icon: "doc.text",
-                    iconColor: .secondary,
+                    iconColor: Design.Colors.secondaryForeground,
                     title: "Terms of Service"
                 ) {
                     openConfiguredURL(settingsStore.buildConfiguration.termsOfServiceURL)
@@ -438,7 +458,7 @@ struct SettingsScreen: View {
 
                 settingsNavRow(
                     icon: "hand.raised",
-                    iconColor: .secondary,
+                    iconColor: Design.Colors.secondaryForeground,
                     title: "Privacy Policy"
                 ) {
                     openConfiguredURL(settingsStore.buildConfiguration.privacyPolicyURL)
@@ -449,7 +469,7 @@ struct SettingsScreen: View {
 
                     settingsNavRow(
                         icon: "questionmark.circle",
-                        iconColor: .secondary,
+                        iconColor: Design.Colors.secondaryForeground,
                         title: "Support"
                     ) {
                         openConfiguredURL(settingsStore.buildConfiguration.supportURL)
@@ -475,10 +495,7 @@ struct SettingsScreen: View {
                 settingsStore.settings.notificationsEnabled = newValue
                 // Immediately register or deactivate push token on the relay
                 Task {
-                    let container = AppContainer.sharedDefault()
-                    if let token = UserDefaults.standard.string(forKey: "hermes.apns.deviceToken") {
-                        await container.registerPushTokenIfNeeded(token)
-                    }
+                    await AppContainer.sharedDefault().reregisterStoredPushToken()
                 }
             }
         )
@@ -525,6 +542,25 @@ struct SettingsScreen: View {
         relayConfiguration.validationMessage
     }
 
+    private var customRelayURLPlaceholder: String {
+        switch relayConfiguration.connectionMode {
+        case .managedRelay:
+            return "https://your-relay.example.com/v1"
+        case .tailscale:
+            return "https://my-mac.tail-scale.ts.net/v1"
+        case .selfHostedRelay:
+            return "https://your-relay.example.com/v1"
+        }
+    }
+
+    private var backgroundDeliveryNote: String {
+        let mode = relayConfiguration.connectionMode
+        if mode == .managedRelay && !settingsStore.buildConfiguration.usesManagedPushBroker {
+            return "Managed mode selected, but this build uses direct relay push only."
+        }
+        return mode.backgroundDeliveryNote
+    }
+
     private var backgroundLocationDescription: String {
         if settingsStore.settings.locationSyncPreference == .backgroundAllowed {
             switch permissionsStore.locationAuthorizationLevel {
@@ -542,12 +578,12 @@ struct SettingsScreen: View {
         return "Foreground-only keeps location updates limited to active app use."
     }
 
-    private var relayModeBinding: Binding<RelayMode> {
+    private var connectionModeBinding: Binding<RelayConnectionMode> {
         Binding(
-            get: { settingsStore.settings.relayConfiguration.relayMode },
+            get: { settingsStore.settings.relayConfiguration.connectionMode },
             set: { newValue in
                 var relayConfiguration = settingsStore.settings.relayConfiguration
-                relayConfiguration.relayMode = newValue
+                relayConfiguration.updateConnectionMode(newValue)
                 settingsStore.settings.relayConfiguration = relayConfiguration
             }
         )

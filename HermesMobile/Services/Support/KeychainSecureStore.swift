@@ -9,17 +9,37 @@ final class KeychainSecureStore: SecureStoreProtocol {
         self.serviceName = serviceName
     }
 
-    func store(key: String, value: String) async {
+    @discardableResult
+    func store(key: String, value: String) async -> Bool {
         let data = Data(value.utf8)
         let query = baseQuery(for: key)
 
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var insertQuery = query
-            insertQuery[kSecValueData as String] = data
-            SecItemAdd(insertQuery as CFDictionary, nil)
+        // Never update accessibility via SecItemUpdate — SecItemUpdate can't change
+        // kSecAttrAccessible, so we only use it to overwrite the value. Pre-existing
+        // items created without accessibility set will be migrated on first store:
+        // we delete and re-add so the new item inherits ThisDeviceOnly.
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return true
         }
+        if updateStatus != errSecItemNotFound {
+            return false
+        }
+
+        var insertQuery = query
+        insertQuery[kSecValueData as String] = data
+        // kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly:
+        //  - `ThisDeviceOnly` excludes the item from iCloud Keychain backups and
+        //    iCloud/Finder device restores, so push grants and session keys can't
+        //    be carried to another device.
+        //  - `AfterFirstUnlock` permits background reads (notification extensions,
+        //    BG fetches) once the device has been unlocked since boot.
+        insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(insertQuery as CFDictionary, nil)
+        return addStatus == errSecSuccess
     }
 
     func retrieve(key: String) async -> String? {

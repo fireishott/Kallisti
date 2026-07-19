@@ -38,7 +38,7 @@ struct TalkModeScreen: View {
                 if let blockedReason = talkStore.blockedReason, !talkStore.isSessionActive {
                     Text(blockedReason)
                         .font(Design.Typography.callout)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Design.Colors.warning)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, Design.Spacing.lg)
                 }
@@ -67,9 +67,8 @@ struct TalkModeScreen: View {
     private var sessionTimer: some View {
         Group {
             if talkStore.isSessionActive {
-                Text(formattedDuration)
-                    .font(Design.Typography.callout.monospacedDigit())
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                Text("Session · \(formattedDuration)")
+                    .brandEyebrow()
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
@@ -93,22 +92,23 @@ struct TalkModeScreen: View {
                 } label: {
                     Image(systemName: talkStore.isMuted ? "mic.slash.fill" : "mic.fill")
                         .font(.system(size: Design.Size.iconLarge))
-                        .foregroundStyle(talkStore.isMuted ? .red : Design.Colors.foreground)
+                        .foregroundStyle(talkStore.isMuted ? Design.Colors.danger : Design.Colors.foreground)
                         .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                         .background(Design.Colors.surface)
+                        .overlay(Circle().stroke(Design.Colors.border, lineWidth: 1))
                         .clipShape(Circle())
                 }
                 .accessibilityLabel(talkStore.isMuted ? "Unmute" : "Mute")
 
-                // End session button
+                // End session button — signal-orange primary CTA
                 Button {
                     endSession()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: Design.Size.iconLarge, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Design.Colors.background)
                         .frame(width: Design.Size.iconHero, height: Design.Size.iconHero)
-                        .background(.red, in: Circle())
+                        .background(Design.Brand.accent, in: Circle())
                 }
                 .accessibilityLabel("End session")
             } else {
@@ -117,13 +117,13 @@ struct TalkModeScreen: View {
                     startSession()
                 } label: {
                     Label("Start Talking", systemImage: "mic.fill")
-                        .font(Design.Typography.headline)
-                        .foregroundStyle(Design.Colors.foreground)
+                        .labelStyle(.titleAndIcon)
+                        .brandEyebrow(Design.Colors.background)
                         .padding(.horizontal, Design.Spacing.lg)
-                        .padding(.vertical, Design.Spacing.sm)
+                        .padding(.vertical, Design.Spacing.md)
                 }
                 .background(Design.Brand.accent)
-                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                .clipShape(Capsule())
                 .accessibilityLabel("Start voice session")
                 .disabled(!talkStore.canStartSession)
                 .opacity(talkStore.canStartSession ? 1 : 0.5)
@@ -136,11 +136,11 @@ struct TalkModeScreen: View {
 
     private var mockIndicator: some View {
         Text(sessionStore.state.isMockMode ? "MOCK" : "LIVE")
-            .font(Design.Typography.caption2)
-            .foregroundStyle(Design.Colors.secondaryForeground)
+            .brandEyebrow(sessionStore.state.isMockMode ? Design.Colors.warning : Design.Colors.success)
             .padding(.horizontal, Design.Spacing.xs)
             .padding(.vertical, Design.Spacing.xxxs)
             .background(Design.Colors.surface)
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
             .clipShape(Capsule())
     }
 

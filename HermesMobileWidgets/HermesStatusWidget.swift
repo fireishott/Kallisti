@@ -48,18 +48,22 @@ private struct HermesStatusView: View {
             HStack {
                 HermesBrandIcon(size: 22)
                 Text("Hermes")
-                    .font(.headline)
+                    .font(.system(.caption, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
                     .foregroundStyle(.primary)
                 Spacer()
                 Circle()
-                    .fill(entry.data.hostOnline ? .green : .gray)
+                    .fill(entry.data.hostOnline ? HermesBrand.accent : .gray)
                     .frame(width: 8, height: 8)
             }
 
             if entry.data.voiceSessionActive {
-                Label("Voice Active", systemImage: "waveform")
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
+                Label("Voice · Active", systemImage: "waveform")
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundStyle(HermesBrand.accent)
             }
 
             Spacer()
@@ -67,17 +71,20 @@ private struct HermesStatusView: View {
             if let preview = entry.data.lastMessagePreview {
                 Text(preview)
                     .font(.caption)
+                    .italic()
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             } else {
                 Text(entry.data.hostOnline ? "Ready" : "Offline")
-                    .font(.caption)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
                     .foregroundStyle(.secondary)
             }
 
             if let messageAt = entry.data.lastMessageAt {
                 Text(messageAt, style: .relative)
-                    .font(.caption2)
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
         }
@@ -96,7 +103,7 @@ private struct HermesStatusView: View {
                 HermesBrandIcon(size: 18)
             }
             Circle()
-                .fill(entry.data.hostOnline ? .green : .gray)
+                .fill(entry.data.hostOnline ? HermesBrand.accent : .gray)
                 .frame(width: 5, height: 5)
         }
         .widgetURL(URL(string: "hermes://chat"))
@@ -109,7 +116,9 @@ private struct HermesStatusView: View {
             HStack(spacing: 4) {
                 HermesBrandIcon(size: 14)
                 Text("Hermes")
-                    .font(.headline)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
                 Spacer()
                 if entry.data.voiceSessionActive {
                     Image(systemName: "waveform")
@@ -121,11 +130,14 @@ private struct HermesStatusView: View {
             if let preview = entry.data.lastMessagePreview {
                 Text(preview)
                     .font(.caption)
+                    .italic()
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             } else {
                 Text(entry.data.hostOnline ? "Ready" : "Offline")
-                    .font(.caption)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
                     .foregroundStyle(.secondary)
             }
         }

@@ -10,9 +10,23 @@ struct MarkdownContentView: View {
     var showCursor: Bool = false
 
     @State private var fullscreenImage: MarkdownSegment?
+    @State private var cachedSegments: [MarkdownSegment] = []
+    @State private var cachedContent: String = ""
+    @State private var cachedStreaming: Bool = false
+
+    /// Parse markdown at most once per content change. SwiftUI re-evaluates
+    /// `body` any time an ancestor invalidates; without this cache the parser
+    /// (line split + regex scan + AttributedString coercion) runs even when
+    /// `content` hasn't changed, which dominated streaming CPU.
+    private func currentSegments() -> [MarkdownSegment] {
+        if cachedContent == content && cachedStreaming == isStreaming {
+            return cachedSegments
+        }
+        return parseMarkdownSegments(content, isStreaming: isStreaming)
+    }
 
     var body: some View {
-        let segments = parseMarkdownSegments(content, isStreaming: isStreaming)
+        let segments = currentSegments()
 
         if segments.isEmpty && showCursor {
             BlinkingCursor()
@@ -34,7 +48,20 @@ struct MarkdownContentView: View {
                     ImageViewerScreen(url: url, altText: altText)
                 }
             }
+            .onChange(of: content, initial: true) { _, _ in
+                updateCache(segments)
+            }
+            .onChange(of: isStreaming) { _, _ in
+                updateCache(segments)
+            }
         }
+    }
+
+    private func updateCache(_ segments: [MarkdownSegment]) {
+        guard cachedContent != content || cachedStreaming != isStreaming else { return }
+        cachedSegments = segments
+        cachedContent = content
+        cachedStreaming = isStreaming
     }
 
     @ViewBuilder
@@ -170,8 +197,10 @@ struct ImageViewerScreen: View {
                         savedToPhotos ? "Saved" : (saveError ?? "Save to Photos"),
                         systemImage: savedToPhotos ? "checkmark.circle.fill" : (saveError != nil ? "exclamationmark.triangle" : "arrow.down.to.line")
                     )
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(saveError != nil ? .red : .white)
+                    .font(Design.Typography.eyebrow)
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                    .foregroundStyle(saveError != nil ? Design.Colors.danger : .white)
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.vertical, Design.Spacing.sm)
                     .background(.ultraThinMaterial)

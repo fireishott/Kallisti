@@ -768,25 +768,43 @@ def upsert_push_registration(
     db: Session,
     *,
     device: Device,
-    apns_token: str,
+    transport: str = "direct",
+    apns_token: str | None,
     push_environment: str,
     bundle_id: str,
+    relay_handle: str | None = None,
+    send_grant: str | None = None,
+    relay_id: str | None = None,
+    relay_public_key: str | None = None,
+    token_debug_suffix: str | None = None,
 ) -> PushRegistration:
     registration = db.scalar(select(PushRegistration).where(PushRegistration.device_id == device.id))
 
     if registration is None:
         registration = PushRegistration(
             device_id=device.id,
+            transport=transport,
             apns_token=apns_token,
             push_environment=push_environment,
             bundle_id=bundle_id,
+            relay_handle=relay_handle,
+            send_grant=send_grant,
+            relay_id=relay_id,
+            relay_public_key=relay_public_key,
+            token_debug_suffix=token_debug_suffix,
             last_registered_at=utcnow(),
         )
         db.add(registration)
     else:
+        registration.transport = transport
         registration.apns_token = apns_token
         registration.push_environment = push_environment
         registration.bundle_id = bundle_id
+        registration.relay_handle = relay_handle
+        registration.send_grant = send_grant
+        registration.relay_id = relay_id
+        registration.relay_public_key = relay_public_key
+        registration.token_debug_suffix = token_debug_suffix
         registration.is_active = True
         registration.last_registered_at = utcnow()
 

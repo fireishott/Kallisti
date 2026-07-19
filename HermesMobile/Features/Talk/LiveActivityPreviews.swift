@@ -15,26 +15,26 @@ private struct LockScreenPreview: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "brain.head.profile")
+            Image(systemName: "waveform")
                 .font(.title2)
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Design.Brand.accent)
                 .frame(width: 44, height: 44)
-                .background(Color.yellow.opacity(0.15))
+                .background(Design.Colors.surface)
+                .overlay(Circle().stroke(Design.Colors.border, lineWidth: 1))
                 .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Hermes")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                    .brandEyebrow()
 
                 Text(status)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(Design.Typography.editorialItalicSmall)
+                    .foregroundStyle(Design.Colors.foreground)
 
                 if let tool = toolName {
                     Text(tool)
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(Design.Brand.accent)
                 }
             }
 
@@ -45,11 +45,15 @@ private struct LockScreenPreview: View {
                 let s = elapsedSeconds % 60
                 Text(String(format: "%d:%02d", m, s))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
         }
         .padding()
-        .background(.ultraThinMaterial)
+        .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
@@ -61,15 +65,17 @@ private struct DynamicIslandCompactPreview: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "brain.head.profile")
+            Image(systemName: "waveform")
                 .font(.caption)
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Design.Brand.accent)
 
             Spacer()
 
             Text(status.prefix(12))
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.8))
+                .font(.system(.caption2, design: .monospaced))
+                .textCase(.uppercase)
+                .tracking(1.0)
+                .foregroundStyle(.white.opacity(0.85))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -86,25 +92,27 @@ private struct DynamicIslandExpandedPreview: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "brain.head.profile")
+            Image(systemName: "waveform")
                 .font(.title2)
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Design.Brand.accent)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Hermes")
-                    .font(.headline)
-                    .foregroundStyle(.white)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                    .foregroundStyle(.white.opacity(0.7))
                 Text(status)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
+                    .font(Design.Typography.editorialItalicSmall)
+                    .foregroundStyle(.white)
             }
 
             Spacer()
 
             if let tool = toolName {
                 Text(tool)
-                    .font(.caption2)
-                    .foregroundStyle(.yellow.opacity(0.7))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Design.Brand.accent.opacity(0.8))
             }
         }
         .padding()
@@ -117,9 +125,9 @@ private struct DynamicIslandExpandedPreview: View {
 
 private struct DynamicIslandMinimalPreview: View {
     var body: some View {
-        Image(systemName: "brain.head.profile")
+        Image(systemName: "waveform")
             .font(.caption)
-            .foregroundStyle(.yellow)
+            .foregroundStyle(Design.Brand.accent)
             .frame(width: 36, height: 36)
             .background(Color.black)
             .clipShape(Circle())

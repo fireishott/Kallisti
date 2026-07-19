@@ -34,10 +34,15 @@ struct PermissionsScreen: View {
     }
 
     private var headerText: some View {
-        Text("Hermes works best with your permission. You control what data Hermes can access.")
-            .font(Design.Typography.callout)
-            .foregroundStyle(Design.Colors.secondaryForeground)
-            .padding(.horizontal, Design.Spacing.xxs)
+        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            Text("Access")
+                .brandEyebrow()
+            Text("hermes works best with your permission. you control what data hermes can access.")
+                .font(Design.Typography.editorialItalicSmall)
+                .foregroundStyle(Design.Colors.foreground)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Design.Spacing.xxs)
     }
 
 }

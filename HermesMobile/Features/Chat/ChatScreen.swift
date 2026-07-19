@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatScreen: View {
     @Environment(ChatStore.self) private var chatStore
@@ -231,7 +232,7 @@ struct ChatScreen: View {
         Button {
             showContextPopover.toggle()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: Design.Spacing.xs) {
                 Circle()
                     .fill(connectionIndicatorColor)
                     .frame(width: 6, height: 6)
@@ -245,8 +246,14 @@ struct ChatScreen: View {
 
                 contextRing(progress: contextProgress)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Design.Spacing.sm)
             .padding(.vertical, 6)
+            .background(
+                Capsule().fill(Design.Colors.surface)
+            )
+            .overlay(
+                Capsule().stroke(Design.Colors.border, lineWidth: 1)
+            )
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
@@ -305,9 +312,7 @@ struct ChatScreen: View {
 
                 VStack(alignment: .leading, spacing: Design.Spacing.xs) {
                     Text("Context Window")
-                        .font(.system(.caption2, weight: .semibold))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                        .textCase(.uppercase)
+                        .brandEyebrow()
 
                     if let usedTokens = currentContextTokens {
                         let progress = min(Double(usedTokens) / Double(maxCtx), 1.0)
@@ -392,9 +397,9 @@ struct ChatScreen: View {
     }
 
     private func contextColor(_ progress: Double) -> Color {
-        if progress > 0.85 { return .red }
-        if progress > 0.65 { return .orange }
-        return Design.Brand.accent
+        if progress > 0.85 { return Design.Colors.danger }
+        if progress > 0.65 { return Design.Colors.warning }
+        return Design.Brand.primary
     }
 
     private func formatTokenCount(_ count: Int) -> String {
@@ -422,11 +427,11 @@ struct ChatScreen: View {
     private var connectionIndicatorColor: Color {
         switch hostStore.connectionState {
         case .online:
-            return .green
+            return Design.Colors.success
         case .offline, .unreachable:
-            return .orange
+            return Design.Colors.warning
         case .notConnected:
-            return .gray
+            return Design.Colors.tertiaryForeground
         }
     }
 
@@ -454,6 +459,7 @@ struct ChatScreen: View {
                             MessageBubble(message: message) { failedMessage in
                                 Task { await chatStore.retryMessage(failedMessage) }
                             }
+                            .equatable()
                             .id(message.id)
                         }
                     }
@@ -537,7 +543,14 @@ struct ChatScreen: View {
         case .offline:
             return "Hermes host offline"
         case .unreachable:
-            return "Could not refresh host status"
+            switch settingsStore.settings.relayConfiguration.connectionMode {
+            case .managedRelay:
+                return "Managed relay unreachable"
+            case .tailscale:
+                return "Tailnet relay unreachable"
+            case .selfHostedRelay:
+                return "Relay URL unreachable"
+            }
         case .notConnected:
             return "No Hermes host connected"
         }
@@ -548,11 +561,11 @@ struct ChatScreen: View {
         case .online:
             return "Your Hermes host is connected."
         case .offline:
-            return "Messages will queue until your Hermes host reconnects."
+            return settingsStore.settings.relayConfiguration.connectionMode.hostOfflineMessage
         case .unreachable:
-            return hostStore.lastErrorMessage ?? "Check your relay connection or refresh your session."
+            return hostStore.lastErrorMessage ?? settingsStore.settings.relayConfiguration.connectionMode.defaultOfflineMessage
         case .notConnected:
-            return "Pair a Hermes host from Settings to send messages through your Mac."
+            return settingsStore.settings.relayConfiguration.connectionMode.notConnectedMessage
         }
     }
 
@@ -561,14 +574,20 @@ struct ChatScreen: View {
         case .online, .offline, .notConnected:
             return "Settings"
         case .unreachable:
-            return "Retry"
+            return settingsStore.settings.relayConfiguration.connectionMode.unreachableActionLabel
         }
     }
 
     private func connectionBannerAction() {
         switch hostStore.connectionState {
         case .unreachable:
-            Task { await hostStore.refresh() }
+            let mode = settingsStore.settings.relayConfiguration.connectionMode
+            if let deepLink = mode.unreachableActionDeepLink,
+               UIApplication.shared.canOpenURL(deepLink) {
+                UIApplication.shared.open(deepLink)
+            } else {
+                Task { await hostStore.refresh() }
+            }
         case .online, .offline, .notConnected:
             router.presentSheet(.settings)
         }
@@ -580,6 +599,15 @@ struct ChatScreen: View {
         let content = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard !content.isEmpty || !attachments.isEmpty else { return }
+
+        // Mode-aware pre-flight: when the relay is confirmed unreachable the
+        // request would just fail. Each connection mode needs different guidance
+        // (retry managed vs. reopen Tailscale vs. check a self-hosted URL), so
+        // short-circuit the send and surface the right next step.
+        if refuseSendIfUnreachable() {
+            return
+        }
+
         messageText = ""
         pendingAttachments = []
         isComposerFocused = false
@@ -596,6 +624,14 @@ struct ChatScreen: View {
             }
             scrollToBottom()
         }
+    }
+
+    @discardableResult
+    private func refuseSendIfUnreachable() -> Bool {
+        guard hostStore.connectionState == .unreachable else { return false }
+        let mode = settingsStore.settings.relayConfiguration.connectionMode
+        appendSystemMessage(mode.unreachableSendBlockedMessage)
+        return true
     }
 
     func handleAttachmentResult(_ result: AttachmentResult) {
@@ -616,17 +652,20 @@ struct ChatScreen: View {
         // Agent pass-through: send the raw slash command text as a chat message.
         // The Hermes agent processes it natively — same as Discord/Telegram.
         guard command.isLocal else {
-            let messageText: String
+            let outgoing: String
             if let arg = argument?.trimmingCharacters(in: .whitespacesAndNewlines), !arg.isEmpty {
-                messageText = "/\(command.name) \(arg)"
+                outgoing = "/\(command.name) \(arg)"
             } else {
-                messageText = "/\(command.name)"
+                outgoing = "/\(command.name)"
             }
-            Task { await sendSlashAsMessage(messageText) }
+            Task { await sendSlashAsMessage(outgoing) }
             return
         }
 
-        // Local commands handled by the iOS app directly.
+        // Local commands dispatch synchronously in-app, so the composer is
+        // consumed on tap.
+        messageText = ""
+
         switch command.name {
         case "new", "reset", "clear":
             showClearConfirmation = true
@@ -660,7 +699,11 @@ struct ChatScreen: View {
     }
 
     /// Sends a slash command as a regular chat message to the Hermes agent.
+    /// Clears the composer only after the send is accepted, so a draft refused
+    /// for unreachability stays editable for retry.
     private func sendSlashAsMessage(_ text: String) async {
+        if refuseSendIfUnreachable() { return }
+        messageText = ""
         await chatStore.sendMessage(text, attachments: [])
         scrollToBottom()
     }
@@ -698,6 +741,7 @@ struct ChatScreen: View {
     }
 
     private func performRetry() async {
+        if refuseSendIfUnreachable() { return }
         guard let messages = chatStore.conversation?.messages, !messages.isEmpty else {
             appendSystemMessage("No messages to retry.")
             return

@@ -5,6 +5,7 @@ import base64
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import httpx
 import inspect
 import logging
 import uuid
@@ -21,12 +22,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .apns import PushResult, create_apns_client
+from .app_attest import AppAttestVerificationError, verify_app_attest_registration_proof
+from .app_attest_trust import AppAttestTrustAnchorError, load_bundled_app_attest_roots
 from .config import Settings
 from .database import Database
 from .hermes_adapter import build_hermes_adapter
 from .models import Conversation, HermesHost, Message, PushRegistration
 from .pairing import HostSetupCodePayload, format_phone_pairing_code, build_host_setup_code
+from .push_broker import create_push_broker_challenge, serialize_push_broker_challenge
+from .push_broker import (
+    PushBrokerChallengeError,
+    PushBrokerSendError,
+    canonical_push_broker_signed_payload,
+    create_push_broker_registration,
+    verify_push_broker_send_request,
+)
 from .rate_limit import PhonePairingRateLimiter
+from .relay_identity import _b64url_decode, ensure_relay_identity, serialize_relay_identity, sign_relay_payload
 from .schemas import (
     ConnectorSetupRequest,
     CronCreateRequest,
@@ -44,6 +56,8 @@ from .schemas import (
     SensorHealthRequest,
     SensorLocationRequest,
     PushRegisterRequest,
+    PushBrokerRegisterRequest,
+    PushBrokerSendRequest,
     RefreshRequest,
     VoiceTurnCreateRequest,
 )
@@ -148,6 +162,21 @@ def reply_state_for_job(job_status: str) -> str:
     return "pending"
 
 
+def broker_http2_supported() -> bool:
+    try:
+        import h2  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def decode_b64url_field(value: str, *, field_name: str) -> bytes:
+    try:
+        return _b64url_decode(value)
+    except Exception as error:  # noqa: BLE001 - any decode failure is a bad client payload
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64url field: {field_name}.") from error
+
+
 @dataclass
 class ConnectorSession:
     websocket: WebSocket
@@ -177,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         database.create_all()
         app.state.apns_client = create_apns_client(settings)
+        app.state.push_broker_http_client = httpx.AsyncClient(http2=broker_http2_supported(), timeout=30.0)
 
         async def _cleanup_stale_job_queues():
             """Periodically remove event queues for completed/failed jobs."""
@@ -202,6 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             cleanup_task.cancel()
+            await app.state.push_broker_http_client.aclose()
             if app.state.apns_client:
                 close_method = getattr(app.state.apns_client, "close", None)
                 if callable(close_method):
@@ -213,6 +244,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.database = database
     app.state.hermes_adapter = build_hermes_adapter(settings)
+    # Load the bundled + pinned Apple App Attest root CA. If the fingerprint
+    # doesn't match or the file is missing, loudly surface the misconfiguration
+    # rather than silently falling back to accepting any chain. The push-broker
+    # register endpoint still returns 503 when trusted_roots is empty, so
+    # logging here is enough — we don't want a boot failure to take down all
+    # other endpoints (pairing, SSE, etc.) on an older image that lacks the PEM.
+    try:
+        app.state.app_attest_trusted_roots = load_bundled_app_attest_roots()
+    except AppAttestTrustAnchorError as error:
+        logger.error("App Attest trust anchor unavailable: %s", error)
+        app.state.app_attest_trusted_roots = []
     app.state.phone_pairing_rate_limiter = PhonePairingRateLimiter(
         max_attempts=settings.phone_pairing_max_attempts_per_ip,
         window_seconds=settings.phone_pairing_rate_limit_window_seconds,
@@ -297,6 +339,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         app.state.connector_sessions.pop(user_id, None)
 
+    async def default_push_broker_sender(*, registration: PushRegistration, title: str, body: str) -> bool:
+        import secrets as _secrets
+        import time as _time
+
+        with database.session() as db:
+            identity = ensure_relay_identity(db, settings=settings)
+        broker_base_url = (settings.push_broker_base_url or settings.public_base_url).rstrip("/")
+        payload = {
+            "relayHandle": registration.relay_handle,
+            "sendGrant": registration.send_grant,
+            "relayId": registration.relay_id or identity.id,
+            "relayPublicKey": registration.relay_public_key or identity.public_key,
+            "pushType": "alert",
+            "title": title,
+            "body": body,
+            "nonce": _secrets.token_urlsafe(24),
+            "iat": int(_time.time()),
+        }
+        signature = sign_relay_payload(identity, payload)
+        response = await app.state.push_broker_http_client.post(
+            f"{broker_base_url}/push-broker/send",
+            json=payload | {"signature": signature},
+        )
+        return response.status_code == 200 and bool(response.json().get("data", {}).get("sent"))
+
+    app.state.push_broker_sender = default_push_broker_sender
+
     async def maybe_send_message_push(
         *,
         db: Session,
@@ -316,6 +385,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         for device, registration in active_push_registrations_for_user(db, user_id=user_id):
             if device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
+                continue
+            if registration.transport == "relay":
+                sender = app.state.push_broker_sender
+                try:
+                    sent = await sender(registration=registration, title="Hermes", body=preview)
+                except Exception:
+                    logger.warning("Push broker delivery failed for device %s", device.id, exc_info=True)
+                    continue
+                if not sent:
+                    logger.warning("Push broker delivery not accepted for device %s", device.id)
                 continue
 
             result = await apns_client.send_alert_push(
@@ -565,6 +644,144 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "environment": request_settings.environment,
             }
         )
+
+    @app.get("/v1/relay/identity")
+    def relay_identity(
+        db: Session = Depends(get_db),
+        request_settings: Settings = Depends(get_settings),
+    ) -> dict:
+        identity = ensure_relay_identity(db, settings=request_settings)
+        return success({"identity": serialize_relay_identity(identity, settings=request_settings)})
+
+    @app.post("/v1/push-broker/challenge")
+    def push_broker_challenge(
+        db: Session = Depends(get_db),
+        request_settings: Settings = Depends(get_settings),
+    ) -> dict:
+        challenge = create_push_broker_challenge(db, settings=request_settings)
+        return success(serialize_push_broker_challenge(challenge))
+
+    @app.post("/v1/push-broker/register")
+    def push_broker_register(
+        payload: PushBrokerRegisterRequest,
+        request: Request,
+        db: Session = Depends(get_db),
+        request_settings: Settings = Depends(get_settings),
+    ) -> dict:
+        team_id = request_settings.apns_team_id
+        if not team_id:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Push broker App Attest team ID is not configured.")
+        trusted_roots = getattr(request.app.state, "app_attest_trusted_roots", None)
+        if not trusted_roots:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Push broker App Attest roots are not configured.")
+
+        # Build the signed-payload bytes server-side so the client never gets
+        # to dictate the exact byte sequence verified by App Attest. The client
+        # must produce the same canonical bytes before signing.
+        signed_payload = canonical_push_broker_signed_payload(
+            challenge_id=payload.challengeId,
+            installation_id=payload.installationId,
+            bundle_id=payload.bundleId,
+            app_version=payload.appVersion,
+            apns_environment=payload.apnsEnvironment,
+            apns_token=payload.apnsToken,
+            relay_id=payload.relayIdentity.id,
+            relay_public_key=payload.relayIdentity.publicKey,
+            relay_base_url=payload.relayIdentity.relayBaseURL,
+        )
+
+        try:
+            app_attest = verify_app_attest_registration_proof(
+                attestation_object=decode_b64url_field(payload.appAttest.attestationObject, field_name="appAttest.attestationObject"),
+                assertion_object=decode_b64url_field(payload.appAttest.assertion, field_name="appAttest.assertion"),
+                signed_payload=signed_payload,
+                key_id=payload.appAttest.keyId,
+                challenge=payload.challenge,
+                team_id=team_id,
+                bundle_id=payload.bundleId,
+                environment="development" if payload.apnsEnvironment in {"development", "sandbox"} else "production",
+                trusted_root_certificates=trusted_roots,
+            )
+        except AppAttestVerificationError as error:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+
+        try:
+            result = create_push_broker_registration(
+                db,
+                settings=request_settings,
+                challenge_id=payload.challengeId,
+                challenge=payload.challenge,
+                relay_id=payload.relayIdentity.id,
+                relay_public_key=payload.relayIdentity.publicKey,
+                installation_id=payload.installationId,
+                bundle_id=payload.bundleId,
+                app_version=payload.appVersion,
+                apns_environment=payload.apnsEnvironment,
+                apns_token=payload.apnsToken,
+                app_attest=app_attest,
+            )
+        except PushBrokerChallengeError as error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        return success(result.gateway_payload() | {"expiresAt": result.expires_at})
+
+    @app.post("/v1/push-broker/send")
+    async def push_broker_send(
+        payload: PushBrokerSendRequest,
+        request: Request,
+        db: Session = Depends(get_db),
+    ) -> dict:
+        signed_payload = {
+            "relayHandle": payload.relayHandle,
+            "sendGrant": payload.sendGrant,
+            "relayId": payload.relayId,
+            "relayPublicKey": payload.relayPublicKey,
+            "pushType": payload.pushType,
+            "title": payload.title,
+            "body": payload.body,
+            "nonce": payload.nonce,
+            "iat": payload.iat,
+        }
+        try:
+            registration = verify_push_broker_send_request(
+                db,
+                relay_handle=payload.relayHandle,
+                send_grant=payload.sendGrant,
+                relay_id=payload.relayId,
+                relay_public_key=payload.relayPublicKey,
+                payload=signed_payload,
+                signature=payload.signature,
+                nonce=payload.nonce,
+                iat=payload.iat,
+            )
+        except PushBrokerSendError as error:
+            detail = str(error)
+            status_code = status.HTTP_401_UNAUTHORIZED
+            if "expired" in detail or "revoked" in detail:
+                status_code = status.HTTP_409_CONFLICT
+            elif "invalid." in detail and "handle" in detail:
+                status_code = status.HTTP_404_NOT_FOUND
+            raise HTTPException(status_code=status_code, detail=detail) from error
+
+        apns_client = request.app.state.apns_client
+        if apns_client is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="APNs client is not configured.")
+
+        if payload.pushType == "silent":
+            result = await apns_client.send_silent_push(
+                registration.apns_token,
+                bundle_id=registration.bundle_id,
+                environment=registration.apns_environment,
+            )
+        else:
+            result = await apns_client.send_alert_push(
+                registration.apns_token,
+                title=payload.title or "Hermes",
+                body=payload.body or "",
+                bundle_id=registration.bundle_id,
+                environment=registration.apns_environment,
+            )
+        sent = getattr(result, "value", result) == "sent"
+        return success({"sent": sent, "relayHandle": registration.relay_handle})
 
     @app.post("/v1/connector/setup")
     def connector_setup(
@@ -1469,9 +1686,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registration = upsert_push_registration(
             db,
             device=auth.device,
+            transport=payload.transport,
             apns_token=payload.apnsToken,
             push_environment=settings.apns_environment,  # Override: use relay env, not app-reported
             bundle_id=payload.bundleId,
+            relay_handle=payload.relayHandle,
+            send_grant=payload.sendGrant,
+            relay_id=payload.relayId,
+            relay_public_key=payload.relayPublicKey,
+            token_debug_suffix=payload.tokenDebugSuffix,
         )
         record_audit(
             db,
@@ -2009,32 +2232,93 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     done_event_data["message"] = serialize_message(result_message, job=job)
 
         async def event_stream():
+            # Coalesce streaks of text_delta events into a single outgoing SSE
+            # frame. On noisy connections each frame carries TLS + HTTP/2 framing
+            # overhead, so batching 5–20 deltas cuts bytes-on-wire and wakeups on
+            # the iOS side by an order of magnitude for long model outputs.
+            delta_buffer: list[str] = []
+            delta_job_id: str | None = None
+            # ~40ms is below human perception of streaming lag but wide enough
+            # to absorb the tokens-per-second cadence of GPT-4 class models.
+            delta_flush_window = 0.04
+
+            def drain_delta(data: dict) -> None:
+                delta_buffer.append(str(data.get("delta") or ""))
+                nonlocal delta_job_id
+                delta_job_id = data.get("jobId") or delta_job_id
+
+            def flushed_delta_frame() -> str | None:
+                if not delta_buffer:
+                    return None
+                merged = "".join(delta_buffer)
+                delta_buffer.clear()
+                if not merged:
+                    return None
+                payload = {"jobId": delta_job_id or job_id, "kind": "text_delta", "delta": merged}
+                return f"event: text_delta\ndata: {json.dumps(jsonable_encoder(payload))}\n\n"
+
+            def emit_event(event: dict) -> str | None:
+                event_type = event.get("event", "progress")
+                if event_type == "text_delta":
+                    drain_delta(event.get("data", {}) or {})
+                    return None
+                data = json.dumps(jsonable_encoder(event.get("data", {})))
+                return f"event: {event_type}\ndata: {data}\n\n"
+
             try:
-                # First, replay any buffered events (text_delta, tool_activity, etc.)
+                # Replay any buffered events (text_delta, tool_activity, etc.)
+                # that landed before the SSE connection opened.
                 while not queue.empty():
                     event = queue.get_nowait()
-                    event_type = event.get("event", "progress")
-                    data = json.dumps(jsonable_encoder(event.get("data", {})))
-                    yield f"event: {event_type}\ndata: {data}\n\n"
-                    if event_type == "done":
-                        return
+                    frame = emit_event(event)
+                    if frame is not None:
+                        flushed = flushed_delta_frame()
+                        if flushed is not None:
+                            yield flushed
+                        yield frame
+                        if event.get("event") == "done":
+                            return
+
+                flushed = flushed_delta_frame()
+                if flushed is not None:
+                    yield flushed
 
                 # If job already completed, emit the done event after replaying buffer
                 if done_event_data is not None:
                     yield f"event: done\ndata: {json.dumps(jsonable_encoder(done_event_data))}\n\n"
                     return
 
-                # Otherwise, stream live events as they arrive
+                # Live phase — drain events with short-timeout coalescing for
+                # text_delta streaks, long-timeout keepalive otherwise.
                 while True:
+                    # If we're sitting on buffered deltas, use the short flush
+                    # window so we never hold a delta longer than ~40ms.
+                    timeout = delta_flush_window if delta_buffer else float(settings.sse_keepalive_seconds)
                     try:
-                        event = await asyncio.wait_for(queue.get(), timeout=float(settings.sse_keepalive_seconds))
-                        event_type = event.get("event", "progress")
-                        data = json.dumps(jsonable_encoder(event.get("data", {})))
-                        yield f"event: {event_type}\ndata: {data}\n\n"
-                        if event_type == "done":
-                            break
+                        event = await asyncio.wait_for(queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
-                        yield ": keepalive\n\n"
+                        if delta_buffer:
+                            flushed = flushed_delta_frame()
+                            if flushed is not None:
+                                yield flushed
+                        else:
+                            yield ": keepalive\n\n"
+                        continue
+
+                    frame = emit_event(event)
+                    if frame is None:
+                        # Buffered a delta. Continue draining without yielding —
+                        # the next iteration's short timeout will flush it.
+                        continue
+
+                    # Non-delta event: flush any pending delta first so order
+                    # is preserved, then emit this event.
+                    flushed = flushed_delta_frame()
+                    if flushed is not None:
+                        yield flushed
+                    yield frame
+                    if event.get("event") == "done":
+                        break
             finally:
                 unsubscribe_job_events(job_id, queue)
 
@@ -2152,6 +2436,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         connection_nonce = str(uuid.uuid4())
         host_id: str | None = None
         user_id: str | None = None
+        # Track the job currently being executed so the `finally` block can
+        # surface a `done`/failed event if the connector drops mid-response.
+        # Without this, iOS SSE clients hang until their own request timeout.
+        in_flight_job_id: str | None = None
 
         try:
             with database.session() as db:
@@ -2209,6 +2497,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     session = connector_session_for_user(user_id)
                     if session is not None and session.connection_nonce == connection_nonce:
                         session.busy = True
+
+                    in_flight_job_id = claimed_job.id
 
                     try:
                         await websocket.send_json(job_payload)
@@ -2302,6 +2592,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     "event": "done",
                                     "data": done_event_data,
                                 })
+                                in_flight_job_id = None
                                 break
 
                             if message_type == "job.failed" and incoming.get("jobId") == claimed_job.id:
@@ -2331,6 +2622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                             "message": result_message,
                                         },
                                     })
+                                in_flight_job_id = None
                                 break
 
                             await websocket.close(code=4400)
@@ -2392,6 +2684,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             return
         finally:
+            if in_flight_job_id is not None:
+                # Connector dropped mid-response. Mark the job failed and emit a
+                # `done` event so the iOS SSE subscriber unblocks immediately —
+                # otherwise the client would wait for the request timeout.
+                try:
+                    with database.session() as db:
+                        failed_job = fail_message_job(
+                            db,
+                            job_id=in_flight_job_id,
+                            connection_nonce=connection_nonce,
+                            error_text="Hermes connector disconnected before completing the response.",
+                            retryable=False,
+                        )
+                        result_message = (
+                            serialize_message(db.get(Message, failed_job.result_message_id), job=failed_job)
+                            if failed_job is not None
+                            and failed_job.result_message_id
+                            and db.get(Message, failed_job.result_message_id) is not None
+                            else None
+                        )
+                    publish_job_event(in_flight_job_id, {
+                        "event": "done",
+                        "data": {
+                            "jobId": in_flight_job_id,
+                            "status": "failed",
+                            "error": "Hermes connector disconnected.",
+                            "message": result_message,
+                        },
+                    })
+                except Exception:  # noqa: BLE001 — last-ditch cleanup
+                    logger.exception(
+                        "Failed to fail in-flight job %s after connector disconnect",
+                        in_flight_job_id,
+                    )
+
             if host_id is not None:
                 clear_connector_session(user_id, connection_nonce)
                 with database.session() as db:

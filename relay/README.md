@@ -15,7 +15,7 @@ In production, Hermes execution stays on the user-owned host through the connect
 ## Requirements
 
 - Python 3.11+
-- PostgreSQL for production
+- PostgreSQL for multi-node production, or SQLite on a persistent volume for the single-node managed beta path
 - HTTPS base URL for public deployments
 - a strong `INTERNAL_API_KEY`
 
@@ -39,12 +39,12 @@ For same-network device testing, see [docs/local-dev.md](docs/local-dev.md).
 > [!IMPORTANT]
 > The relay must not run in production with `INTERNAL_API_KEY=replace-me`. Current code treats that as a startup error outside development/test.
 
-Minimum production configuration:
+Minimum single-node managed relay configuration:
 
 ```bash
 export RELAY_ENVIRONMENT=production
 export PUBLIC_BASE_URL=https://your-relay.example.com/v1
-export DATABASE_URL=postgresql+psycopg://...
+export DATABASE_URL=sqlite:////data/relay.db
 export INTERNAL_API_KEY=replace-with-a-real-secret
 export HERMES_ADAPTER=connector
 ```
@@ -68,7 +68,9 @@ Two supported paths:
 - **Guided path**: run `hermes-mobile setup` on the connector host and choose the Fly deployment option
 - **Manual path**: follow [docs/fly-io.md](docs/fly-io.md)
 
-The relay docs assume Fly Managed Postgres for new deployments.
+The tracked Fly config uses a single relay machine with SQLite on a persistent
+Fly Volume. Fly Managed Postgres remains the right next step when you need
+multi-node relay workers, managed database backups, or richer admin tooling.
 
 ## Local Hermes execution modes
 
@@ -89,6 +91,7 @@ For public/self-hosted users, `connector` mode is the intended deployment model.
 
 - `GET /v1/health`
 - `GET /v1/version`
+- `GET /v1/relay/identity`
 - `GET /v1/session`
 - `POST /v1/auth/refresh`
 - `POST /v1/auth/revoke`
@@ -120,7 +123,14 @@ For public/self-hosted users, `connector` mode is the intended deployment model.
 
 - `GET /v1/inbox`
 - `POST /v1/inbox/{id}/action`
+- `POST /v1/push-broker/challenge`
+  - server challenge used by the future App Attest push broker registration flow
+- `POST /v1/push-broker/register`
+  - App Attest verified APNs relay registration that returns an opaque relay handle and send grant
+- `POST /v1/push-broker/send`
+  - relay-signed APNs send through a validated relay handle and send grant
 - `POST /v1/push/register`
+  - stores either direct APNs tokens or broker-backed relay handle/send grant metadata
 - `POST /v1/push/deactivate`
 - `POST /v1/push/send` *(internal)*
 - `POST /internal/inbox/create`

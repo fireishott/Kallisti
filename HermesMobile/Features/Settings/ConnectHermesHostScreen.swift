@@ -36,16 +36,22 @@ struct ConnectHermesHostScreen: View {
 
     private var hostStatusCard: some View {
         VStack(spacing: Design.Spacing.lg) {
+            Text("Host · Status")
+                .brandEyebrow()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             // Large status icon
             ZStack {
                 Circle()
                     .fill(statusColor.opacity(0.12))
+                    .overlay(
+                        Circle().stroke(statusColor.opacity(0.4), lineWidth: 1)
+                    )
                     .frame(width: 80, height: 80)
                 Image(systemName: statusIcon)
                     .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(statusColor)
             }
-            .padding(.top, Design.Spacing.sm)
 
             // Status text
             VStack(spacing: Design.Spacing.xxs) {
@@ -76,6 +82,10 @@ struct ConnectHermesHostScreen: View {
         .padding(Design.Spacing.lg)
         .frame(maxWidth: .infinity)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.xl)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl))
     }
 
@@ -83,9 +93,8 @@ struct ConnectHermesHostScreen: View {
 
     private var setupCard: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.md) {
-            Label("Setup", systemImage: "terminal")
-                .font(Design.Typography.headline)
-                .foregroundStyle(Design.Colors.foreground)
+            Text("Setup · Terminal")
+                .brandEyebrow()
 
             setupStep(number: "1", command: "hermes-mobile setup", detail: "One-time registration")
             setupStep(number: "2", command: "hermes-mobile pair-phone", detail: "Scan the code in-app")
@@ -93,6 +102,10 @@ struct ConnectHermesHostScreen: View {
         }
         .padding(Design.Spacing.lg)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.xl)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl))
     }
 
@@ -107,7 +120,7 @@ struct ConnectHermesHostScreen: View {
                     actionRow(
                         icon: "desktopcomputer.trianglebadge.exclamationmark",
                         label: "Revoke Host",
-                        color: .red
+                        color: Design.Colors.danger
                     )
                 }
                 .disabled(hostStore.isWorking)
@@ -124,11 +137,15 @@ struct ConnectHermesHostScreen: View {
                 actionRow(
                     icon: "rectangle.portrait.and.arrow.right",
                     label: "Disconnect",
-                    color: .red
+                    color: Design.Colors.danger
                 )
             }
         }
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.xl)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl))
     }
 
@@ -150,20 +167,16 @@ struct ConnectHermesHostScreen: View {
 
     private func setupStep(number: String, command: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: Design.Spacing.sm) {
-            Text(number)
-                .font(.system(size: 13, weight: .bold, design: .rounded))
-                .foregroundStyle(Design.Brand.accent)
-                .frame(width: 22, height: 22)
-                .background(Design.Brand.accent.opacity(0.15))
-                .clipShape(Circle())
+            Text("00\(number)")
+                .brandEyebrow(Design.Brand.accent)
+                .frame(width: 28, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(command)
-                    .font(.system(.callout, design: .monospaced))
+                Text("$ \(command)")
+                    .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
                 Text(detail)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
             }
         }
     }
@@ -189,7 +202,7 @@ struct ConnectHermesHostScreen: View {
     private func errorBanner(message: String) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Design.Colors.warning)
             Text(message)
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.foreground)
@@ -197,6 +210,10 @@ struct ConnectHermesHostScreen: View {
         }
         .padding(Design.Spacing.md)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                .stroke(Design.Colors.warning.opacity(0.35), lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
     }
 
@@ -205,9 +222,9 @@ struct ConnectHermesHostScreen: View {
     private var statusColor: Color {
         switch hostStore.connectionState {
         case .online:
-            return .green
+            return Design.Colors.success
         case .offline, .unreachable:
-            return .orange
+            return Design.Colors.warning
         case .notConnected:
             return Design.Colors.secondaryForeground
         }

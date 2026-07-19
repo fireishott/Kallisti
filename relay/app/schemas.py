@@ -89,9 +89,74 @@ class RefreshRequest(BaseModel):
 
 class PushRegisterRequest(BaseModel):
     deviceId: UUID
-    apnsToken: str
+    transport: str = Field(default="direct", pattern="^(direct|relay)$")
+    apnsToken: str | None = None
     pushEnvironment: str
     bundleId: str
+    relayHandle: str | None = None
+    sendGrant: str | None = None
+    relayId: str | None = None
+    relayPublicKey: str | None = None
+    tokenDebugSuffix: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> "PushRegisterRequest":
+        if self.transport == "direct":
+            if not self.apnsToken:
+                raise ValueError("Direct push registration requires apnsToken.")
+        else:
+            required = [self.relayHandle, self.sendGrant, self.relayId, self.relayPublicKey]
+            if any(not value for value in required):
+                raise ValueError("Relay push registration requires relayHandle, sendGrant, relayId, and relayPublicKey.")
+        return self
+
+
+class PushBrokerRelayIdentityRequest(BaseModel):
+    id: str = Field(min_length=1)
+    publicKey: str = Field(min_length=1)
+    relayBaseURL: str | None = None
+
+
+class PushBrokerAppAttestRequest(BaseModel):
+    keyId: str = Field(min_length=1)
+    attestationObject: str = Field(min_length=1)
+    assertion: str = Field(min_length=1)
+
+
+class PushBrokerRegisterRequest(BaseModel):
+    challengeId: str = Field(min_length=1)
+    challenge: str = Field(min_length=1)
+    relayIdentity: PushBrokerRelayIdentityRequest
+    installationId: str = Field(min_length=1)
+    bundleId: str = Field(min_length=1)
+    appVersion: str | None = None
+    apnsEnvironment: str = Field(pattern="^(development|production|sandbox)$")
+    apnsToken: str = Field(min_length=1)
+    appAttest: PushBrokerAppAttestRequest
+
+
+class PushBrokerSendRequest(BaseModel):
+    relayHandle: str = Field(min_length=1)
+    sendGrant: str = Field(min_length=1)
+    relayId: str = Field(min_length=1)
+    relayPublicKey: str = Field(min_length=1)
+    pushType: str = Field(pattern="^(alert|silent)$")
+    title: str | None = None
+    body: str | None = None
+    # Replay defense: `nonce` is a random token unique per request, and `iat`
+    # is the Unix epoch seconds at which the signer produced the request. The
+    # broker rejects requests whose `iat` falls outside a small skew window
+    # and refuses to accept a (relayHandle, nonce) pair twice.
+    nonce: str = Field(min_length=16, max_length=128)
+    iat: int = Field(ge=0)
+    signature: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_alert_content(self) -> "PushBrokerSendRequest":
+        if self.pushType == "alert":
+            if not self.title or not self.body:
+                raise ValueError("Alert push requires title and body.")
+        return self
 
 
 class DeviceAppStateRequest(BaseModel):

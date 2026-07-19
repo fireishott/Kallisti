@@ -27,37 +27,35 @@ private struct HermesHealthView: View {
         VStack(spacing: 8) {
             HStack {
                 HermesBrandIcon(size: 16)
-                Text("Hermes Health")
-                    .font(.subheadline.weight(.semibold))
+                Text("Health · Today")
+                    .font(.system(.caption2, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.2)
                     .foregroundStyle(.primary)
                 Spacer()
                 Text(entry.data.updatedAt, style: .relative)
-                    .font(.caption2)
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
 
             HStack(spacing: 12) {
                 metricCard(
                     icon: "figure.walk",
-                    color: .green,
                     label: "Steps",
                     value: entry.data.steps.map { formatNumber($0) } ?? "--"
                 )
                 metricCard(
                     icon: "flame.fill",
-                    color: .orange,
                     label: "Calories",
                     value: entry.data.activeCalories.map { formatNumber($0) } ?? "--"
                 )
                 metricCard(
                     icon: "bed.double.fill",
-                    color: .indigo,
                     label: "Sleep",
                     value: entry.data.sleepHours.map { String(format: "%.1fh", $0) } ?? "--"
                 )
                 metricCard(
                     icon: "heart.fill",
-                    color: .red,
                     label: "Heart",
                     value: entry.data.heartRate.map { "\($0)" } ?? "--"
                 )
@@ -66,16 +64,18 @@ private struct HermesHealthView: View {
         .widgetURL(URL(string: "hermes://health"))
     }
 
-    private func metricCard(icon: String, color: Color, label: String, value: String) -> some View {
+    private func metricCard(icon: String, label: String, value: String) -> some View {
         VStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.title3)
-                .foregroundStyle(color)
+                .foregroundStyle(HermesBrand.foreground)
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
             Text(label)
-                .font(.caption2)
+                .font(.system(.caption2, design: .monospaced))
+                .textCase(.uppercase)
+                .tracking(1.0)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)

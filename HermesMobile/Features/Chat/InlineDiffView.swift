@@ -35,11 +35,10 @@ struct InlineDiffView: View {
             HStack(spacing: Design.Spacing.xs) {
                 Image(systemName: "doc.text.magnifyingglass")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Design.Brand.accent)
+                    .foregroundStyle(Design.Colors.foreground)
 
                 Text(diff.summary)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
                     .lineLimit(1)
 
                 Spacer()
@@ -53,6 +52,10 @@ struct InlineDiffView: View {
             .padding(.horizontal, Design.Spacing.sm)
             .padding(.vertical, Design.Spacing.xxs + 2)
             .background(Design.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
+                    .stroke(Design.Colors.border, lineWidth: 1)
+            )
             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
         }
         .buttonStyle(.plain)
@@ -62,13 +65,13 @@ struct InlineDiffView: View {
         HStack(spacing: Design.Spacing.xxs) {
             if diff.totalAdditions > 0 {
                 Text("+\(diff.totalAdditions)")
-                    .font(Design.Typography.caption2.weight(.medium).monospaced())
-                    .foregroundStyle(.green)
+                    .font(Design.Typography.caption2.weight(.medium))
+                    .foregroundStyle(Design.Colors.success)
             }
             if diff.totalDeletions > 0 {
                 Text("-\(diff.totalDeletions)")
-                    .font(Design.Typography.caption2.weight(.medium).monospaced())
-                    .foregroundStyle(.red)
+                    .font(Design.Typography.caption2.weight(.medium))
+                    .foregroundStyle(Design.Colors.danger)
             }
         }
     }
@@ -105,14 +108,14 @@ struct InlineDiffView: View {
 
                     VStack(alignment: .leading, spacing: 0) {
                         Text(file.fileName)
-                            .font(Design.Typography.caption.monospaced())
+                            .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.foreground)
                             .lineLimit(1)
 
                         if !file.directoryPath.isEmpty {
                             Text(file.directoryPath)
-                                .font(Design.Typography.caption2.monospaced())
-                                .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.4))
+                                .font(Design.Typography.caption2)
+                                .foregroundStyle(Design.Colors.tertiaryForeground)
                                 .lineLimit(1)
                         }
                     }
@@ -122,13 +125,13 @@ struct InlineDiffView: View {
                     HStack(spacing: Design.Spacing.xxs) {
                         if file.additions > 0 {
                             Text("+\(file.additions)")
-                                .font(Design.Typography.caption2.monospaced())
-                                .foregroundStyle(.green)
+                                .font(Design.Typography.caption2)
+                                .foregroundStyle(Design.Colors.success)
                         }
                         if file.deletions > 0 {
                             Text("-\(file.deletions)")
-                                .font(Design.Typography.caption2.monospaced())
-                                .foregroundStyle(.red)
+                                .font(Design.Typography.caption2)
+                                .foregroundStyle(Design.Colors.danger)
                         }
                     }
 
@@ -160,7 +163,11 @@ struct InlineDiffView: View {
             .padding(.horizontal, Design.Spacing.xs)
             .padding(.vertical, Design.Spacing.xxs)
         }
-        .background(Color.white.opacity(0.04))
+        .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.xs)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xs))
         .padding(.horizontal, Design.Spacing.xs)
         .padding(.bottom, Design.Spacing.xxs)
@@ -186,10 +193,10 @@ struct InlineDiffView: View {
 
     private func colorForStatus(_ fileStatus: String) -> Color {
         switch fileStatus {
-        case "added": return .green
-        case "deleted": return .red
-        case "renamed": return .blue
-        default: return .orange
+        case "added": return Design.Colors.success
+        case "deleted": return Design.Colors.danger
+        case "renamed": return Design.Brand.primary
+        default: return Design.Colors.warning
         }
     }
 
@@ -218,32 +225,32 @@ struct InlineDiffView: View {
                 result.append(DiffLine(
                     prefix: "",
                     content: line,
-                    prefixColor: .secondary,
-                    contentColor: .secondary,
-                    backgroundColor: Color.blue.opacity(0.05)
+                    prefixColor: Design.Colors.secondaryForeground,
+                    contentColor: Design.Colors.secondaryForeground,
+                    backgroundColor: Design.Brand.primary.opacity(0.08)
                 ))
             } else if line.hasPrefix("+") {
                 result.append(DiffLine(
                     prefix: "+",
                     content: String(line.dropFirst()),
-                    prefixColor: .green,
-                    contentColor: .primary,
-                    backgroundColor: Color.green.opacity(0.08)
+                    prefixColor: Design.Colors.success,
+                    contentColor: Design.Colors.foreground,
+                    backgroundColor: Design.Colors.success.opacity(0.10)
                 ))
             } else if line.hasPrefix("-") {
                 result.append(DiffLine(
                     prefix: "-",
                     content: String(line.dropFirst()),
-                    prefixColor: .red,
-                    contentColor: .primary,
-                    backgroundColor: Color.red.opacity(0.08)
+                    prefixColor: Design.Colors.danger,
+                    contentColor: Design.Colors.foreground,
+                    backgroundColor: Design.Colors.danger.opacity(0.10)
                 ))
             } else if !line.isEmpty {
                 result.append(DiffLine(
                     prefix: " ",
                     content: line.hasPrefix(" ") ? String(line.dropFirst()) : line,
                     prefixColor: .clear,
-                    contentColor: .secondary,
+                    contentColor: Design.Colors.secondaryForeground,
                     backgroundColor: .clear
                 ))
             }

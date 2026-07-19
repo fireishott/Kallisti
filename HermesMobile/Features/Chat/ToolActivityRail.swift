@@ -34,8 +34,7 @@ struct ToolActivityRail: View {
 
             if let latest = latestActivity {
                 Text(latest.label)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .brandEyebrow()
                     .lineLimit(1)
                     .id(latest.id)
                     .transition(.asymmetric(
@@ -48,6 +47,7 @@ struct ToolActivityRail: View {
         .padding(.horizontal, Design.Spacing.sm)
         .padding(.vertical, Design.Spacing.xxs + 1)
         .background(Design.Colors.surface)
+        .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
         .clipShape(Capsule())
     }
 
@@ -64,11 +64,10 @@ struct ToolActivityRail: View {
                 HStack(spacing: Design.Spacing.xs) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 10))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .foregroundStyle(Design.Colors.success)
 
-                    Text("Used \(activities.count) tool\(activities.count == 1 ? "" : "s")")
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    Text("\(activities.count) tool\(activities.count == 1 ? "" : "s") used")
+                        .brandEyebrow()
 
                     if activities.count > 1 {
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
@@ -79,6 +78,7 @@ struct ToolActivityRail: View {
                 .padding(.horizontal, Design.Spacing.sm)
                 .padding(.vertical, Design.Spacing.xxs + 1)
                 .background(Design.Colors.surface)
+                .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -100,19 +100,18 @@ struct ToolActivityRail: View {
             ForEach(activities) { activity in
                 HStack(spacing: Design.Spacing.xs) {
                     Circle()
-                        .fill(Design.Colors.secondaryForeground)
+                        .fill(Design.Colors.foreground)
                         .frame(width: 5, height: 5)
 
                     Text(activity.label)
                         .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .foregroundStyle(Design.Colors.foreground)
                         .lineLimit(1)
 
                     Spacer()
 
                     Text(activity.startedAt, style: .time)
-                        .font(Design.Typography.caption2)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .brandEyebrow(Design.Colors.tertiaryForeground)
                 }
                 .padding(.horizontal, Design.Spacing.xs)
                 .padding(.vertical, Design.Spacing.xxxs)
@@ -121,6 +120,10 @@ struct ToolActivityRail: View {
         .padding(.vertical, Design.Spacing.xxs)
         .padding(.horizontal, Design.Spacing.xxs)
         .background(Design.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.sm))
     }
 }

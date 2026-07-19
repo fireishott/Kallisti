@@ -120,6 +120,38 @@ def test_push_and_inbox_roundtrip(tmp_path):
         assert actions_response.json()["data"]["actions"][0]["actionId"] == "approve"
 
 
+def test_push_register_accepts_relay_transport_metadata(tmp_path):
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        device_id = register_data["deviceId"]
+
+        push_response = client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "pushEnvironment": "production",
+                "bundleId": "io.hermesmobile.HermesMobile",
+                "transport": "relay",
+                "relayHandle": "relay-handle-123",
+                "sendGrant": "relay-send-grant-123",
+                "relayId": "self-hosted-relay-123",
+                "relayPublicKey": "relay-public-key-123",
+                "tokenDebugSuffix": "efef5678",
+            },
+        )
+        assert push_response.status_code == 200
+        assert push_response.json()["data"]["registered"] is True
+
+        session_response = client.get(
+            "/v1/session",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert session_response.status_code == 200
+        assert session_response.json()["data"]["push"]["tokenRegistered"] is True
+
+
 def test_device_app_state_roundtrip(tmp_path):
     with build_client(tmp_path) as client:
         register_data = register_device(client)
@@ -188,6 +220,80 @@ def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
         assert alerts[0]["token"] == "deadbeef"
         assert alerts[0]["title"] == "Hermes"
         assert "Hello Hermes" in alerts[0]["body"]
+
+
+def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_path):
+    class StubAPNsClient:
+        def __init__(self) -> None:
+            self.alerts = []
+
+        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None):
+            self.alerts.append({
+                "token": token,
+                "title": title,
+                "body": body,
+                "category": category,
+                "bundle_id": bundle_id,
+                "environment": environment,
+            })
+            from app.apns import PushResult
+            return PushResult.SENT
+
+    broker_calls = []
+
+    async def stub_broker_sender(*, registration, title: str, body: str):
+        broker_calls.append({
+            "registration_id": registration.id,
+            "title": title,
+            "body": body,
+        })
+        return True
+
+    with build_client(tmp_path, hermes_adapter="mock") as client:
+        client.app.state.apns_client = StubAPNsClient()
+        client.app.state.push_broker_sender = stub_broker_sender
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        device_id = register_data["deviceId"]
+
+        push_response = client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "pushEnvironment": "production",
+                "bundleId": "io.hermesmobile.HermesMobile",
+                "transport": "relay",
+                "relayHandle": "relay-handle-123",
+                "sendGrant": "relay-send-grant-123",
+                "relayId": "self-hosted-relay-123",
+                "relayPublicKey": "relay-public-key-123",
+                "tokenDebugSuffix": "efef5678",
+            },
+        )
+        assert push_response.status_code == 200
+
+        state_response = client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"state": "background"},
+        )
+        assert state_response.status_code == 200
+
+        message_response = client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"text": "Hello Hermes"},
+        )
+        assert message_response.status_code == 200
+
+        assert broker_calls == [{
+            "registration_id": broker_calls[0]["registration_id"],
+            "title": "Hermes",
+            "body": broker_calls[0]["body"],
+        }]
+        assert "Hello Hermes" in broker_calls[0]["body"]
+        assert client.app.state.apns_client.alerts == []
 
 
 def test_chat_roundtrip_uses_relay_conversation(tmp_path):
