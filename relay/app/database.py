@@ -51,18 +51,6 @@ class Database:
             # Herald rebrand migration: rename hermes_hosts table and columns
             if "hermes_hosts" in table_names and "herald_hosts" not in table_names:
                 connection.execute(text("ALTER TABLE hermes_hosts RENAME TO herald_hosts"))
-                # Rebuild foreign keys that pointed to hermes_hosts
-                for table, col in [
-                    ("host_enrollment_invites", "redeemed_host_id"),
-                    ("phone_pairing_codes", "host_id"),
-                    ("phone_pairing_codes", "created_by_host_id"),
-                    ("message_jobs", "host_id"),
-                    ("voice_sessions", "host_id"),
-                ]:
-                    if table in table_names:
-                        cols = {c["name"] for c in inspector.get_columns(table)}
-                        if col in cols:
-                            pass  # FK column names don't change, only the target table
                 # Rename columns inside the now-renamed herald_hosts table
                 for old_col, new_col in [
                     ("hermes_command", "herald_command"),
@@ -74,8 +62,46 @@ class Database:
                     except Exception:
                         pass  # Column may already be renamed or not exist
             elif "hermes_hosts" in table_names and "herald_hosts" in table_names:
-                # Both exist (partial migration?) — drop old after verifying
+                # Both exist — create_all() made herald_hosts, need to drop old one.
+                # Drop FK constraints first, then the table, then re-add FKs.
+                fk_queries = [
+                    "ALTER TABLE host_enrollment_invites DROP CONSTRAINT IF EXISTS host_enrollment_invites_redeemed_host_id_fkey",
+                    "ALTER TABLE phone_pairing_codes DROP CONSTRAINT IF EXISTS phone_pairing_codes_host_id_fkey",
+                    "ALTER TABLE phone_pairing_codes DROP CONSTRAINT IF EXISTS phone_pairing_codes_created_by_host_id_fkey",
+                    "ALTER TABLE message_jobs DROP CONSTRAINT IF EXISTS message_jobs_host_id_fkey",
+                    "ALTER TABLE voice_sessions DROP CONSTRAINT IF EXISTS voice_sessions_host_id_fkey",
+                ]
+                for q in fk_queries:
+                    try:
+                        connection.execute(text(q))
+                    except Exception:
+                        pass
                 connection.execute(text("DROP TABLE IF EXISTS hermes_hosts"))
+                # Re-add FKs pointing to herald_hosts
+                readd_queries = [
+                    "ALTER TABLE host_enrollment_invites ADD CONSTRAINT host_enrollment_invites_redeemed_host_id_fkey FOREIGN KEY (redeemed_host_id) REFERENCES herald_hosts(id)",
+                    "ALTER TABLE phone_pairing_codes ADD CONSTRAINT phone_pairing_codes_host_id_fkey FOREIGN KEY (host_id) REFERENCES herald_hosts(id)",
+                    "ALTER TABLE phone_pairing_codes ADD CONSTRAINT phone_pairing_codes_created_by_host_id_fkey FOREIGN KEY (created_by_host_id) REFERENCES herald_hosts(id)",
+                    "ALTER TABLE message_jobs ADD CONSTRAINT message_jobs_host_id_fkey FOREIGN KEY (host_id) REFERENCES herald_hosts(id)",
+                    "ALTER TABLE voice_sessions ADD CONSTRAINT voice_sessions_host_id_fkey FOREIGN KEY (host_id) REFERENCES herald_hosts(id)",
+                ]
+                for q in readd_queries:
+                    try:
+                        connection.execute(text(q))
+                    except Exception:
+                        pass
+                # Rename columns if they still have old names
+                host_cols = {c["name"] for c in inspector.get_columns("herald_hosts")}
+                for old_col, new_col in [
+                    ("hermes_command", "herald_command"),
+                    ("hermes_version", "herald_version"),
+                    ("hermes_model", "herald_model"),
+                ]:
+                    if old_col in host_cols and new_col not in host_cols:
+                        try:
+                            connection.execute(text(f"ALTER TABLE herald_hosts RENAME COLUMN {old_col} TO {new_col}"))
+                        except Exception:
+                            pass
 
             # Rename hermes_session_id on conversations
             if "conversations" in table_names:
