@@ -9,7 +9,7 @@ Thanks for your interest in contributing! This project is an independent iOS com
 3. Set up local development:
    - **Relay:** `cd relay && pip install -e . && uvicorn app.main:app`
    - **Connector:** `cd connector && pip install -e . && hermes-mobile setup`
-   - **iOS App:** Open `HermesMobile.xcodeproj` in Xcode 26+
+   - **iOS App:** Open `Herald.xcodeproj` in Xcode 26+
 
 ## Development Requirements
 
@@ -28,7 +28,7 @@ cd connector && pip install -e ".[dev]" && pytest tests/
 cd relay && pip install -e ".[dev]" && pytest tests/
 
 # iOS (Xcode)
-xcodebuild test -project HermesMobile.xcodeproj -scheme HermesMobile \
+xcodebuild test -project Herald.xcodeproj -scheme Herald \
   -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 

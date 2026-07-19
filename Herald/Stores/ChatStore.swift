@@ -500,6 +500,10 @@ final class ChatStore {
         }
     }
 
+    func deleteMessage(_ message: Message) {
+        conversation?.messages.removeAll { $0.id == message.id }
+    }
+
     func retryMessage(_ message: Message) async {
         // Remove the failed message
         conversation?.messages.removeAll { $0.id == message.id }

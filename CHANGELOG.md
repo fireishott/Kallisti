@@ -2,6 +2,16 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.0.0] - 2026-07-19
+
+### Changed
+- Rebrand from Hermes-iOS to HERALD
+- New bundle ID: `net.fihonline.herald`
+- New relay container: `herald-relay`
+- New connector package: `herald-connector`
+- Theme preset renamed: `.nous` → `.herald` with brand orange (#FF6B00) accent
+- Version reset to 1.0.0 to mark the new identity
+
 ## [0.10.0] - 2026-07-17
 
 ### Added - Session Management + Right Panel + iPhone Drawer

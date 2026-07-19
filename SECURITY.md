@@ -33,7 +33,7 @@ The connector runs on the same machine as the Hermes Agent:
 ### iOS App
 
 - **Relay URL:** Configured during onboarding, persisted locally. Not hardcoded.
-- **Credentials:** Stored in the iOS Keychain (service name: `io.hermesmobile.HermesMobile.session`)
+- **Credentials:** Stored in the iOS Keychain (service name: `io.hermesmobile.Herald.session`)
 - **Health data:** Read-only HealthKit access, uploaded to the relay only when the connector is connected and acknowledges receipt
 - **Camera/mic:** Requested just-in-time, not at launch. Camera frames for voice mode are sent directly to OpenAI via WebRTC, not through the relay.
 

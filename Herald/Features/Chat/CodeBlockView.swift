@@ -15,11 +15,10 @@ struct CodeBlockView: View {
                 header
             }
 
-            // Code content
+            // Code content (syntax-highlighted)
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code)
+                Text(SyntaxHighlighter.tokenize(code: code, language: language))
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(Design.Colors.foreground)
                     .textSelection(.enabled)
                     .padding(.horizontal, Design.Spacing.sm)
                     .padding(.vertical, Design.Spacing.xs)

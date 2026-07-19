@@ -77,6 +77,7 @@ struct HeraldApp: App {
                 .environment(container.profileStore)
                 .environment(container.skillsStore)
                 .environment(container.cronStore)
+                .environment(container.canvasStore)
                 .environment(container.attachmentService)
                 .task { await container.initialize() }
                 .onChange(of: scenePhase) { _, newPhase in

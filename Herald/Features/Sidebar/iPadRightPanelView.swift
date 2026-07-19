@@ -6,6 +6,7 @@ import SwiftUI
 struct iPadRightPanelView: View {
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(ChatStore.self) private var chatStore
+    @Environment(HeraldCanvasStore.self) private var canvasStore
     @Binding var isOpen: Bool
     @Binding var selectedTab: RightPanelTab
 
@@ -20,6 +21,7 @@ struct iPadRightPanelView: View {
                 case .logs:     logsContent
                 case .terminal: terminalContent
                 case .tools:    toolsContent
+                case .canvas:   CanvasView(store: canvasStore)
                 }
             }
             .frame(width: panelWidth)
@@ -224,7 +226,7 @@ struct iPadRightPanelView: View {
 // MARK: - Right Panel Tab
 
 enum RightPanelTab: String, CaseIterable, Identifiable {
-    case logs, terminal, tools
+    case logs, terminal, tools, canvas
     var id: String { rawValue }
 
     var title: String {
@@ -232,6 +234,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
         case .logs: "Logs"
         case .terminal: "Term"
         case .tools: "Tools"
+        case .canvas: "Canvas"
         }
     }
 
@@ -240,6 +243,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
         case .logs: "list.bullet.rectangle"
         case .terminal: "apple.terminal"
         case .tools: "hammer"
+        case .canvas: "rectangle.on.rectangle"
         }
     }
 }

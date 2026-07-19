@@ -24,6 +24,7 @@ final class AppContainer {
     let profileStore: ProfileStore
     let skillsStore: SkillsStore
     let cronStore: CronStore
+    let canvasStore: HeraldCanvasStore
     let attachmentService: AttachmentService
     let sensorUploadService: SensorUploadService?
     let themeManager: ThemeManager
@@ -52,6 +53,7 @@ final class AppContainer {
         profileStore: ProfileStore? = nil,
         skillsStore: SkillsStore? = nil,
         cronStore: CronStore? = nil,
+        canvasStore: HeraldCanvasStore? = nil,
         attachmentService: AttachmentService? = nil,
         sensorUploadService: SensorUploadService? = nil,
         apiClient: RelayAPIClient? = nil,
@@ -91,6 +93,7 @@ final class AppContainer {
             apiClient: apiClient,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
+        self.canvasStore = canvasStore ?? HeraldCanvasStore()
         self.attachmentService = attachmentService ?? AttachmentService(
             apiClient: apiClient,
             accessTokenProvider: { await sessionStore.currentAccessToken() },

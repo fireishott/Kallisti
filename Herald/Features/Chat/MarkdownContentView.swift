@@ -2,12 +2,14 @@ import Photos
 import SwiftUI
 
 /// Renders message content with inline markdown formatting, fenced code blocks,
-/// and inline images. Images from markdown (`![alt](url)`) are rendered as
-/// tappable async-loaded previews that open in a fullscreen viewer.
+/// inline images, thinking blocks, tool calls, and tables.
+/// Images from markdown (`![alt](url)`) are rendered as tappable async-loaded
+/// previews that open in a fullscreen viewer.
 struct MarkdownContentView: View {
     let content: String
     let isStreaming: Bool
     var showCursor: Bool = false
+    var toolActivities: [ToolActivity] = []
 
     @State private var fullscreenImage: MarkdownSegment?
     @State private var cachedSegments: [MarkdownSegment] = []
@@ -22,7 +24,7 @@ struct MarkdownContentView: View {
         if cachedContent == content && cachedStreaming == isStreaming {
             return cachedSegments
         }
-        return parseMarkdownSegments(content, isStreaming: isStreaming)
+        return parseMarkdownSegments(content, isStreaming: isStreaming, toolActivities: toolActivities)
     }
 
     var body: some View {
@@ -40,6 +42,12 @@ struct MarkdownContentView: View {
                         CodeBlockView(language: language, code: code)
                     case .image(_, let url, let altText):
                         inlineImageView(url: url, altText: altText, segment: segment)
+                    case .thinking(_, let thinkContent):
+                        ThinkingBlockView(content: thinkContent, isStreaming: isStreaming)
+                    case .toolCall(_, let name, let args, let result):
+                        ToolCallBubbleView(name: name, args: args, result: result)
+                    case .table(_, let rows):
+                        TableBlockView(rows: rows)
                     }
                 }
             }

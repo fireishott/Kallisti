@@ -11,6 +11,7 @@ struct ChatScreen: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(ThemeManager.self) private var themeManager
     @Environment(TabRouter.self) private var router
+    @Environment(HeraldCanvasStore.self) private var canvasStore
     @Binding var isSessionDrawerOpen: Bool
 
     @State private var messageText = ""
@@ -21,6 +22,7 @@ struct ChatScreen: View {
     @FocusState private var isComposerFocused: Bool
 
     @State private var showAttachmentPicker = false
+    @State private var showCanvas = false
     private let thinkingIndicatorID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
     var body: some View {
@@ -120,6 +122,11 @@ struct ChatScreen: View {
             ModelSelectorSheet { _, _ in }
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showCanvas) {
+            CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - Wallpaper
@@ -161,8 +168,21 @@ struct ChatScreen: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
-                router.presentSheet(.settings)
+            HStack(spacing: Design.Spacing.sm) {
+                Button {
+                    showCanvas = true
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(canvasStore.activeArtifact != nil
+                            ? Design.Brand.accent
+                            : Design.Colors.secondaryForeground)
+                }
+                .buttonStyle(.plain)
+
+                GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
+                    router.presentSheet(.settings)
+                }
             }
         }
     }
@@ -456,9 +476,20 @@ struct ChatScreen: View {
                 LazyVStack(spacing: Design.Spacing.md) {
                     if let messages = chatStore.conversation?.messages {
                         ForEach(messages) { message in
-                            MessageBubble(message: message) { failedMessage in
-                                Task { await chatStore.retryMessage(failedMessage) }
-                            }
+                            MessageBubble(
+                                message: message,
+                                onRetry: { failedMessage in
+                                    Task { await chatStore.retryMessage(failedMessage) }
+                                },
+                                onDelete: { msg in
+                                    chatStore.deleteMessage(msg)
+                                },
+                                onOpenCanvas: { msg in
+                                    let sessionID = chatStore.conversation?.id.uuidString ?? "unknown"
+                                    canvasStore.open(message: msg, sessionID: sessionID)
+                                    showCanvas = true
+                                }
+                            )
                             .equatable()
                             .id(message.id)
                         }

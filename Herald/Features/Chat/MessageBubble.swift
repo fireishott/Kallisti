@@ -1,8 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct MessageBubble: View, Equatable {
     let message: Message
     var onRetry: ((Message) -> Void)? = nil
+    var onDelete: ((Message) -> Void)? = nil
+    var onOpenCanvas: ((Message) -> Void)? = nil
 
     /// Only the message itself affects the rendered bubble — the retry closure
     /// is captured fresh per parent render but is functionally stable. Comparing
@@ -18,6 +21,76 @@ struct MessageBubble: View, Equatable {
     private var isBudgetWarning: Bool { message.content.contains("[BUDGET WARNING:") }
 
     var body: some View {
+        contentView
+            .contextMenu {
+                // Copy text — always
+                Button {
+                    UIPasteboard.general.string = message.content
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                }
+
+                // Copy first code block — only if message contains one
+                let segments = parseMarkdownSegments(message.content)
+                if let codeBlock = segments.first(where: {
+                    if case .codeBlock = $0 { return true }
+                    return false
+                }), case .codeBlock(_, _, let code) = codeBlock {
+                    Button {
+                        UIPasteboard.general.string = code
+                    } label: {
+                        Label("Copy Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                }
+
+                // Open in Canvas — only if extractable content exists
+                let hasCanvas = segments.contains(where: {
+                    if case .codeBlock = $0 { return true }
+                    return false
+                })
+                if hasCanvas {
+                    Button {
+                        onOpenCanvas?(message)
+                    } label: {
+                        Label("Open in Canvas", systemImage: "rectangle.on.rectangle")
+                    }
+                }
+
+                Divider()
+
+                // Retry — assistant messages only
+                if isHermes {
+                    Button {
+                        onRetry?(message)
+                    } label: {
+                        Label("Retry", systemImage: "arrow.counterclockwise")
+                    }
+                }
+
+                // Share
+                Button {
+                    let av = UIActivityViewController(activityItems: [message.content], applicationActivities: nil)
+                    if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let root = scene.windows.first?.rootViewController {
+                        root.present(av, animated: true)
+                    }
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+
+                Divider()
+
+                // Delete — destructive
+                Button(role: .destructive) {
+                    onDelete?(message)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
         if message.sender == .system && message.content.contains("[Voice session ended]") {
             VoiceSessionBanner(duration: message.voiceSessionDuration)
         } else if message.sender == .system {
