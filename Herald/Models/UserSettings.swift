@@ -412,7 +412,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
             let trimmed = customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return "Enter your relay URL." }
             guard RelayConfiguration.normalizeBaseURL(trimmed) != nil else {
-                return "Relay URL must be an absolute https:// URL ending with /v1 (plain http:// is only allowed for localhost)."
+                return "Relay URL must be an absolute https:// URL ending with /v1 (plain http:// is only allowed for localhost and LAN addresses)."
             }
             return nil
         case .managedRelay:
@@ -468,6 +468,22 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         return host == "localhost"
             || host == "127.0.0.1"
             || host == "::1"
+            || isPrivateNetworkHost(host)
+    }
+
+    /// RFC1918 private network ranges — allowed over HTTP for LAN relays.
+    private static func isPrivateNetworkHost(_ host: String) -> Bool {
+        guard let octets = host.split(separator: ".").compactMap({ Int($0) }) as [Int]?,
+              octets.count == 4,
+              octets.allSatisfy({ (0...255).contains($0) })
+        else { return false }
+        // 10.0.0.0/8
+        if octets[0] == 10 { return true }
+        // 172.16.0.0/12
+        if octets[0] == 172, (16...31).contains(octets[1]) { return true }
+        // 192.168.0.0/16
+        if octets[0] == 192, octets[1] == 168 { return true }
+        return false
     }
 }
 
