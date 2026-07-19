@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time as _time
 import uuid
 from datetime import datetime, timedelta
@@ -32,6 +33,8 @@ from .models import (
 )
 from .pairing import generate_phone_pairing_code, normalize_phone_pairing_code
 from .security import generate_token, hash_token, issue_tokens, normalize_datetime
+
+logger = logging.getLogger("hermes.relay")
 
 
 def ensure_default_user(db: Session, settings: Settings) -> User:
@@ -1122,6 +1125,32 @@ def requeue_expired_message_jobs(db: Session) -> None:
 
 _last_requeue_at: float = 0.0
 _REQUEUE_INTERVAL: float = 30.0
+_STALE_QUEUED_JOB_THRESHOLD: timedelta = timedelta(seconds=60)
+
+
+def log_stale_queued_jobs(db: Session) -> None:
+    """Log a warning for jobs that have sat queued past a reasonable
+    threshold without ever being claimed.
+
+    Unlike requeue_expired_message_jobs (which reclaims jobs whose lease
+    expired after being claimed), a job stuck in "queued" never had a
+    lease set at all — it was created but the connector's WebSocket claim
+    loop never picked it up. This doesn't fix that drop, but makes it
+    visible in relay logs instead of failing silently.
+    """
+    threshold = utcnow() - _STALE_QUEUED_JOB_THRESHOLD
+    stale_jobs = db.scalars(
+        select(MessageJob).where(
+            MessageJob.status == "queued",
+            MessageJob.created_at < threshold,
+        )
+    ).all()
+    for job in stale_jobs:
+        logger.warning(
+            "MessageJob %s has been queued since %s without being claimed "
+            "(host may be offline or the WebSocket connection dropped)",
+            job.id, job.created_at,
+        )
 
 
 def claim_next_message_job(
@@ -1135,6 +1164,7 @@ def claim_next_message_job(
     now_mono = _time.monotonic()
     if now_mono - _last_requeue_at >= _REQUEUE_INTERVAL:
         requeue_expired_message_jobs(db)
+        log_stale_queued_jobs(db)
         _last_requeue_at = now_mono
 
     job = db.scalar(
