@@ -7,11 +7,11 @@
 <p align="center">
   <strong>Self-hosted AI companion for iPhone and iPad</strong>
   <br/>
-  <sub>Voice mode · Sensors · CarPlay · Rich Chat · Session management · Relay architecture</sub>
+  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Session management · Relay architecture</sub>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-FF6B00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgZmlsbD0iIzBBMEEwQSIvPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1MiwgNjApIHNjYWxlKDQuMSkiPjxwYXRoIGQ9Ik0zMiAxMDAgQzEwIDgwIDAgNTUgMTIgMzUgQzE4IDI1IDI0IDM4IDI2IDQ1IEMyOCAzNSAzNSAxMCA1MCAwIEM0NSAyMCA0OCAzMCA1MiAzOCBDNTYgMjAgNjAgMjggNjIgNDAgQzY4IDI4IDcyIDQwIDcwIDU4IEM2OCA3NSA2MCA4OCA1MCAxMDAgWiIgZmlsbD0iI0ZGNkIwMCIvPjxwYXRoIGQ9Ik01MCAxMDAgQzM4IDg1IDMyIDY4IDM4IDUyIEM0MiA0MiA0NiA1MCA0OCA1OCBDNTAgNDggNTQgMzggNTggNDggQzYyIDYwIDYwIDc4IDUwIDEwMCBaIiBmaWxsPSIjRkZGNUUwIi8+PC9nPjwvc3ZnPg==" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.1.0-FF6B00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgZmlsbD0iIzBBMEEwQSIvPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1MiwgNjApIHNjYWxlKDQuMSkiPjxwYXRoIGQ9Ik0zMiAxMDAgQzEwIDgwIDAgNTUgMTIgMzUgQzE4IDI1IDI0IDM4IDI2IDQ1IEMyOCAzNSAzNSAxMCA1MCAwIEM0NSAyMCA0OCAzMCA1MiAzOCBDNTYgMjAgNjAgMjggNjIgNDAgQzY4IDI4IDcyIDQwIDcwIDU4IEM2OCA3NSA2MCA4OCA1MCAxMDAgWiIgZmlsbD0iI0ZGNkIwMCIvPjxwYXRoIGQ9Ik01MCAxMDAgQzM4IDg1IDMyIDY4IDM4IDUyIEM0MiA0MiA0NiA1MCA0OCA1OCBDNTAgNDggNTQgMzggNTggNDggQzYyIDYwIDYwIDc4IDUwIDEwMCBaIiBmaWxsPSIjRkZGNUUwIi8+PC9nPjwvc3ZnPg==" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-26+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 26+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
@@ -286,7 +286,7 @@ Herald/
 │   │   └── Renderers/      # Code, thinking, tool call, table views
 │   ├── Canvas/             # Canvas panel for code artifacts
 │   ├── Sidebar/            # iPad right panel
-│   ├── Voice/              # Voice mode (OpenAI Realtime)
+│   ├── Voice/              # Voice mode (OpenAI Realtime + Mimo TTS)
 │   ├── Sessions/           # Session management
 │   └── Settings/           # App settings
 ├── Models/                 # Data models (Message, Artifact, etc.)
