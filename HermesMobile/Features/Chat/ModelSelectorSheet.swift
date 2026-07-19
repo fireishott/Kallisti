@@ -75,6 +75,9 @@ struct ModelSelectorSheet: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .refreshable {
+            await modelStore.loadModels(force: true)
+        }
     }
 
     private func modelRow(_ model: ModelStore.HermesModel) -> some View {
