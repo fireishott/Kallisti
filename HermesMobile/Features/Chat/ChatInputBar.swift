@@ -104,6 +104,15 @@ struct ChatInputBar: View {
                             handlePrimaryAction()
                         }
                     }
+                    .onKeyPress(.return) { press in
+                        if press.modifiers.contains(.shift) {
+                            return .ignored
+                        }
+                        if canSend {
+                            handlePrimaryAction()
+                        }
+                        return .handled
+                    }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
                     .padding(.bottom, Design.Spacing.xs)
