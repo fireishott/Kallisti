@@ -29,6 +29,28 @@ packages:
     url: https://github.com/stasel/WebRTC.git
     version: 130.0.0
 
+schemes:
+  Herald:
+    build:
+      targets:
+        Herald: all
+        HeraldWidgets: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: HeraldTests
+          parallelizable: true
+        - name: HeraldUITests
+          parallelizable: true
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
   Herald:
     type: application
