@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <rect width="800" height="200" fill="#0A0A0A"/>
+  <!-- Nodes -->
+  <!-- iPhone/iPad -->
+  <rect x="20" y="70" width="140" height="60" rx="8" fill="#1A1D23" stroke="#FF6B00" stroke-width="1.5"/>
+  <text x="90" y="96" font-family="'SF Mono', 'Courier New', monospace" font-size="13" fill="#F5F0E8" text-anchor="middle">iPhone / iPad</text>
+  <text x="90" y="116" font-family="'SF Mono', 'Courier New', monospace" font-size="11" fill="#FF6B00" text-anchor="middle">HERALD app</text>
+  <!-- Relay -->
+  <rect x="230" y="70" width="140" height="60" rx="8" fill="#1A1D23" stroke="#FF6B00" stroke-width="1.5"/>
+  <text x="300" y="96" font-family="'SF Mono', 'Courier New', monospace" font-size="13" fill="#F5F0E8" text-anchor="middle">Relay</text>
+  <text x="300" y="116" font-family="'SF Mono', 'Courier New', monospace" font-size="11" fill="#FF6B00" text-anchor="middle">herald-relay</text>
+  <!-- Connector -->
+  <rect x="440" y="70" width="140" height="60" rx="8" fill="#1A1D23" stroke="#FF6B00" stroke-width="1.5"/>
+  <text x="510" y="96" font-family="'SF Mono', 'Courier New', monospace" font-size="13" fill="#F5F0E8" text-anchor="middle">Connector</text>
+  <text x="510" y="116" font-family="'SF Mono', 'Courier New', monospace" font-size="11" fill="#FF6B00" text-anchor="middle">herald-connector</text>
+  <!-- Runtime -->
+  <rect x="650" y="70" width="130" height="60" rx="8" fill="#1A1D23" stroke="#FF6B00" stroke-width="1.5"/>
+  <text x="715" y="96" font-family="'SF Mono', 'Courier New', monospace" font-size="13" fill="#F5F0E8" text-anchor="middle">AI Runtime</text>
+  <text x="715" y="116" font-family="'SF Mono', 'Courier New', monospace" font-size="11" fill="#FF6B00" text-anchor="middle">Hermes / Ollama</text>
+  <!-- Arrows -->
+  <line x1="160" y1="100" x2="230" y2="100" stroke="#FF6B00" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="370" y1="100" x2="440" y2="100" stroke="#FF6B00" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="580" y1="100" x2="650" y2="100" stroke="#FF6B00" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- Labels -->
+  <text x="195" y="90" font-family="'SF Mono', 'Courier New', monospace" font-size="9" fill="#F5F0E8" text-anchor="middle">HTTPS/SSE</text>
+  <text x="405" y="90" font-family="'SF Mono', 'Courier New', monospace" font-size="9" fill="#F5F0E8" text-anchor="middle">WebSocket</text>
+  <text x="615" y="90" font-family="'SF Mono', 'Courier New', monospace" font-size="9" fill="#F5F0E8" text-anchor="middle">MCP / stdio</text>
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#FF6B00"/>
+    </marker>
+  </defs>
+</svg>

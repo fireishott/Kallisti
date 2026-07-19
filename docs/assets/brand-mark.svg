@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" width="600" height="120">
+  <!-- Flame mark -->
+  <g transform="translate(20, 8)">
+    <!-- Outer flame body -->
+    <path d="M32 100 C10 80 0 55 12 35 C18 25 24 38 26 45 C28 30 35 10 50 0 C45 20 48 30 52 38 C56 20 60 28 62 40 C68 28 72 40 70 58 C68 75 60 88 50 100 Z"
+          fill="#FF6B00"/>
+    <!-- Inner hot tip -->
+    <path d="M50 100 C38 85 32 68 38 52 C42 42 46 50 48 58 C50 48 54 38 58 48 C62 60 60 78 50 100 Z"
+          fill="#FFF5E0"/>
+    <!-- Ember shadow accent -->
+    <path d="M32 100 C14 82 8 60 16 40 C20 30 24 40 26 48 L28 42 C30 28 36 14 50 0 C42 22 44 34 46 44 L44 36 C40 18 50 4 50 4 C46 24 50 36 52 42 L50 34 C54 22 60 30 62 42 C64 30 68 38 70 58 C68 76 60 90 50 100 Z"
+          fill="#FF3D00" opacity="0.4"/>
+  </g>
+  <!-- HERALD text -->
+  <text x="120" y="78"
+        font-family="'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+        font-size="56"
+        font-weight="700"
+        letter-spacing="8"
+        fill="#F5F0E8">HERALD</text>
+</svg>
