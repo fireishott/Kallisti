@@ -232,7 +232,7 @@ class HermesCLIExecutor:
         transcript = "\n".join(history_lines) if history_lines else "(no prior messages)"
 
         return (
-            "You are Hermes responding inside Hermes Mobile.\n"
+            "You are Hermes responding inside Herald.\n"
             "Continue the conversation naturally using the history below.\n"
             "Return only the next assistant reply.\n\n"
             f"Conversation history:\n{transcript}\n\n"

@@ -217,7 +217,7 @@ def render_voice_system_prompt(
     )
 
     delegation_rules = (
-        "You are speaking through Hermes Mobile talk mode.\n"
+        "You are speaking through Herald talk mode.\n"
         "You have one tool available: `hermes_delegate`. Use it when:\n"
         "- The user asks about files, code, or anything on their machine\n"
         "- The user asks you to DO something (run commands, read configs, create files)\n"

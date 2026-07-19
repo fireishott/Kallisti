@@ -376,11 +376,11 @@ def print_header(text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="herald",
-        description="Connect your Hermes CLI to Hermes Mobile.",
+        description="Connect your Hermes CLI to Herald.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    setup = subparsers.add_parser("setup", help="Register this machine with a Hermes Mobile relay.")
+    setup = subparsers.add_parser("setup", help="Register this machine with a Herald relay.")
     setup.add_argument("--relay-url", help="Relay API base URL. Required unless HERMES_MOBILE_RELAY_URL is set.")
     setup.add_argument(
         "--skip-mcp",
@@ -399,7 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "configure-mcp",
-        help="Write Hermes Mobile MCP tools into the local Hermes config and validate them.",
+        help="Write Herald MCP tools into the local Hermes config and validate them.",
     )
     configure_realtime = subparsers.add_parser(
         "configure-realtime",
@@ -412,9 +412,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store the API key without validating the Realtime session flow right now.",
     )
     subparsers.add_parser("pair-phone", help="Generate a short-lived phone pairing code and QR.")
-    subparsers.add_parser("run", help="Run the long-lived Hermes Mobile connector.")
+    subparsers.add_parser("run", help="Run the long-lived Herald connector.")
     subparsers.add_parser("status", help="Show the current connector state.")
-    subparsers.add_parser("validate-mcp", help="Verify Hermes can discover the Hermes Mobile MCP tools.")
+    subparsers.add_parser("validate-mcp", help="Verify Hermes can discover the Herald MCP tools.")
     subparsers.add_parser("reset", help="Remove local connector state and start fresh.")
 
     service = subparsers.add_parser("service", help="Manage the connector background service.")
@@ -434,7 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ── Interactive wizard (no subcommand) ───────────────────────────
 
 def run_wizard(connector: HermesMobileConnector) -> int:
-    print_header("Hermes Mobile Connector Setup")
+    print_header("Herald Connector Setup")
 
     # Check for existing state
     try:
@@ -474,7 +474,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
 
     # Step 3: Register
     print_header("Step 3 of 5 — Register This Machine")
-    print("Registering this machine with the Hermes Mobile relay...")
+    print("Registering this machine with the Herald relay...")
     try:
         state = connector.setup(relay_url=relay_url, configure_mcp=False)
     except Exception as e:
@@ -522,7 +522,7 @@ def run_wizard(connector: HermesMobileConnector) -> int:
 def _wizard_post_setup(connector: HermesMobileConnector) -> int:
     # Step 4: Phone pairing
     print_header("Step 4 of 5 — Pair Your Phone")
-    print("Generate a one-time code for the Hermes Mobile app.\n")
+    print("Generate a one-time code for the Herald app.\n")
 
     if not confirm("Generate a phone pairing code now?"):
         print("\nYou can generate one later with: herald pair-phone")
@@ -548,7 +548,7 @@ def _wizard_post_setup(connector: HermesMobileConnector) -> int:
     import json
     qr_payload = json.dumps({"code": pairing.code, "relay": relay_url}, separators=(",", ":"))
     print_qr_code(qr_payload)
-    print("Open Hermes Mobile on your phone and scan the QR code.")
+    print("Open Herald on your phone and scan the QR code.")
     print()
 
     input("Press Enter once your phone is paired...")
@@ -611,7 +611,7 @@ def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int
     print(f"Registered. Host: {state.host_id}")
     if args.skip_mcp:
         print("Native MCP config skipped.")
-        print("Run `herald configure-mcp` when you want to add Hermes Mobile tools to ~/.hermes/config.yaml.")
+        print("Run `herald configure-mcp` when you want to add Herald tools to ~/.hermes/config.yaml.")
     elif state.mcp_last_test_error:
         print(f"Native MCP check: warning — {state.mcp_last_test_error}")
     else:
@@ -625,7 +625,7 @@ def cmd_setup(args: argparse.Namespace, connector: HermesMobileConnector) -> int
 
 def cmd_configure_mcp(connector: HermesMobileConnector) -> int:
     state = connector.configure_mcp()
-    print(f"Configured Hermes Mobile MCP for host {state.host_id}")
+    print(f"Configured Herald MCP for host {state.host_id}")
     for line in connector.validate_mcp():
         print(line)
     return 0
@@ -657,7 +657,7 @@ def cmd_enroll(args: argparse.Namespace, connector: HermesMobileConnector) -> in
     )
     print(f"Enrolled host {state.host_id} against {state.relay_url}")
     if args.skip_mcp:
-        print("Native MCP config skipped. Run `herald configure-mcp` later if you want Hermes Mobile tools in Hermes.")
+        print("Native MCP config skipped. Run `herald configure-mcp` later if you want Herald tools in Hermes.")
     print("Run `herald configure-realtime` when you want to enable OpenAI Realtime talk mode.")
     return 0
 
@@ -678,7 +678,7 @@ def cmd_pair_phone(connector: HermesMobileConnector) -> int:
     import json
     qr_payload = json.dumps({"code": pairing.code, "relay": relay_url}, separators=(",", ":"))
     print_qr_code(qr_payload)
-    print("Open Hermes Mobile on your phone and scan the QR code.")
+    print("Open Herald on your phone and scan the QR code.")
     print(f"Or enter the code manually: {pairing.display_code}")
     return 0
 

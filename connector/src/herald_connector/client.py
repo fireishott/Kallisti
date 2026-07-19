@@ -567,7 +567,7 @@ class HermesMobileConnector:
             _, selected_model = self._create_openai_realtime_session(
                 api_key=secrets.openai_api_key,
                 config=config,
-                instructions="Validation run for Hermes Mobile talk mode.",
+                instructions="Validation run for Herald talk mode.",
                 relay_mcp_url=None,
             )
             config.enabled = True
@@ -2092,7 +2092,7 @@ class HermesMobileConnector:
                     session_definition["tools"] = [
                         {
                             "type": "mcp",
-                            "server_label": "hermes_mobile_relay",
+                            "server_label": "herald_relay",
                             "server_url": relay_mcp_url,
                             "allowed_tools": ["hermes_delegate"],
                             "require_approval": "never",
