@@ -28,7 +28,7 @@ extension DeviceRegistrationRequest {
             deviceName: device.name,
             appVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0",
             buildNumber: bundle.object(forInfoDictionaryKey: kCFBundleVersionKey as String) as? String ?? "1",
-            bundleID: bundle.bundleIdentifier ?? "net.fihonline.herald.Herald",
+            bundleID: bundle.bundleIdentifier ?? "net.fihonline.herald",
             deviceModel: device.model,
             systemVersion: device.systemVersion,
             environment: environment,

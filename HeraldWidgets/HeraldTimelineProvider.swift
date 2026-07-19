@@ -30,7 +30,7 @@ struct HeraldTimelineProvider: TimelineProvider {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
         }
-        return "group.net.fihonline.herald.Herald"
+        return "group.net.fihonline.herald"
     }()
     private static let dataKey = "hermes.widget.data"
 

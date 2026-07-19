@@ -12,7 +12,7 @@ struct HeraldHealthWidget: Widget {
                     Color(.systemBackground)
                 }
         }
-        .configurationDisplayName("Hermes Health")
+        .configurationDisplayName("Herald Health")
         .description("Daily health metrics at a glance.")
         .supportedFamilies([.systemMedium])
     }

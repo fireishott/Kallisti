@@ -1,7 +1,7 @@
 import SwiftUI
 import WidgetKit
 
-/// Glanceable Hermes status — connection state, last message, voice indicator.
+/// Glanceable Herald status — connection state, last message, voice indicator.
 struct HeraldStatusWidget: Widget {
     let kind = "HeraldStatus"
 
@@ -12,7 +12,7 @@ struct HeraldStatusWidget: Widget {
                     Color(.systemBackground)
                 }
         }
-        .configurationDisplayName("Hermes Status")
+        .configurationDisplayName("Herald Status")
         .description("Connection status and recent messages.")
         .supportedFamilies([
             .systemSmall,
