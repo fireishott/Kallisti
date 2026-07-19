@@ -293,6 +293,71 @@ def _provider_base_url(config: dict, provider: str | None) -> str | None:
     return None
 
 
+def _read_dynamic_catalog_models(hermes_home: Path, config: dict) -> list[dict]:
+    """Surface models from the dynamic model catalog cache for the
+    currently configured provider (e.g. OpenRouter via model.provider=auto).
+
+    Scoped to the single configured provider only — the cache contains
+    100+ gateway providers, and dumping all of them would flood the
+    picker with irrelevant duplicates.
+    """
+    cache_path = hermes_home / "models_dev_cache.json"
+    if not cache_path.is_file():
+        return []
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(catalog, dict):
+        return []
+
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        return []
+    provider_id = model_cfg.get("provider")
+    base_url = model_cfg.get("base_url") or ""
+
+    matched_provider_key = None
+    if provider_id and provider_id != "auto" and provider_id in catalog:
+        matched_provider_key = provider_id
+    elif base_url:
+        for key in catalog:
+            if key in base_url:
+                matched_provider_key = key
+                break
+
+    if not matched_provider_key:
+        return []
+
+    provider_entry = catalog.get(matched_provider_key)
+    if not isinstance(provider_entry, dict):
+        return []
+    provider_models = provider_entry.get("models")
+    if not isinstance(provider_models, dict):
+        return []
+
+    default_model = model_cfg.get("default")
+    results: list[dict] = []
+    for model_id, model_meta in provider_models.items():
+        if not isinstance(model_meta, dict):
+            continue
+        limit = model_meta.get("limit")
+        context_limit = None
+        if isinstance(limit, dict):
+            raw_context = limit.get("context")
+            if isinstance(raw_context, (int, float)):
+                context_limit = int(raw_context)
+        results.append({
+            "name": str(model_id),
+            "provider": str(matched_provider_key),
+            "providerName": str(provider_entry.get("name", matched_provider_key)),
+            "contextWindow": context_limit,
+            "isProviderDefault": model_id == default_model,
+        })
+    return results
+
+
 class HermesMobileConnector:
     def __init__(
         self,
@@ -1173,6 +1238,31 @@ class HermesMobileConnector:
         """
         hermes_home = self._resolve_hermes_home()
         models = self._read_available_models(hermes_home)
+
+        config_path = hermes_home / "config.yaml"
+        config: dict = {}
+        if config_path.is_file():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    try:
+                        import yaml
+
+                        config = yaml.safe_load(f) or {}
+                    except ImportError:
+                        from ruamel.yaml import YAML
+
+                        config = YAML(typ="safe").load(f) or {}
+            except Exception:
+                config = {}
+
+        dynamic_models = _read_dynamic_catalog_models(hermes_home, config)
+        seen = {(m["name"], m["provider"]) for m in models}
+        for m in dynamic_models:
+            key = (m["name"], m["provider"])
+            if key not in seen:
+                models.append(m)
+                seen.add(key)
+
         logger.info("models.list RPC: hermes_home=%s, models_count=%d", hermes_home, len(models))
         return {
             "activeModel": self._read_active_model(hermes_home),
