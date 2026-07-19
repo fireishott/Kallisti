@@ -1,7 +1,7 @@
 <!-- HERALD — Self-hosted AI companion for iPhone and iPad -->
 
 <p align="center">
-  <img src="docs/assets/brand-mark.svg" alt="HERALD" width="400"/>
+  <img src="docs/assets/brand-mark.png" alt="HERALD" width="400"/>
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/app-icon.svg" alt="HERALD" width="120" style="border-radius: 22px"/>
+  <img src="docs/assets/app-icon.png" alt="HERALD" width="120" style="border-radius: 22px"/>
 </p>
 
 ---
@@ -30,14 +30,7 @@ HERALD is a **native iOS companion** for [Hermes Agent](https://github.com/NousR
 
 HERALD is not the AI. It's the phone interface for **your** Hermes agent.
 
-```
-┌─────────────┐     HTTPS/SSE     ┌─────────────┐     WebSocket     ┌─────────────┐     MCP/stdio     ┌─────────────┐
-│  iPhone /   │ ◄──────────────► │    Relay     │ ◄──────────────► │  Connector   │ ◄──────────────► │  AI Runtime  │
-│    iPad     │                  │ herald-relay │                  │herald-connector│                │  Ollama /    │
-│  HERALD app │                  │              │                  │              │                  │   Hermes     │
-│  (iOS)      │                  │              │                  │              │                  │   Agent      │
-└─────────────┘                  └─────────────┘                  └─────────────┘                  └─────────────┘
-```
+
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Architecture" width="100%"/>
