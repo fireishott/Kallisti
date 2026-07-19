@@ -184,7 +184,7 @@ def test_sse_completed_job_fast_path_returns_done_with_usage_and_message(tmp_pat
         assert data["status"] == "completed"
         assert data["jobId"] == job["id"]
         assert data["usage"]["total_tokens"] == 150
-        assert data["message"]["role"] == "herald"
+        assert data["message"]["role"] == "hermes"
         assert data["message"]["text"] == "Fast path reply"
         assert data["message"]["jobId"] == job["id"]
 

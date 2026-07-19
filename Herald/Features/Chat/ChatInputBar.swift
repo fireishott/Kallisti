@@ -38,7 +38,7 @@ struct ChatInputBar: View {
         return (cmd, arg)
     }
 
-    /// Uses the dynamic catalog from ChatStore (fetched from the Herald host).
+    /// Uses the dynamic catalog from ChatStore (fetched from the Hermes host).
     /// Falls back to the built-in list if the catalog hasn't loaded yet.
     private var filteredCommands: [SlashCommand] {
         let query = parsedSlashInput.command.lowercased()

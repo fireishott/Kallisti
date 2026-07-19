@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.herald_adapter import HeraldChatResult
+from app.hermes_adapter import HeraldChatResult
 from app.main import create_app
 
 
@@ -314,7 +314,7 @@ def test_chat_roundtrip_uses_relay_conversation(tmp_path):
             json={"text": "Hello Herald"},
         )
         assert message_response.status_code == 200
-        assert message_response.json()["data"]["message"]["role"] == "herald"
+        assert message_response.json()["data"]["message"]["role"] == "hermes"
         assert "Hello Herald" in message_response.json()["data"]["message"]["text"]
 
         updated_conversation = client.get(
@@ -369,7 +369,7 @@ def test_chat_roundtrip_persists_herald_session_id_for_resume(tmp_path):
     stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.herald_adapter = stub_adapter
+        client.app.state.hermes_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
 
@@ -402,7 +402,7 @@ def test_chat_create_message_is_idempotent_for_client_message_id(tmp_path):
     stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.herald_adapter = stub_adapter
+        client.app.state.hermes_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
         client_message_id = "11111111-2222-3333-4444-555555555555"
@@ -489,7 +489,7 @@ def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):
             return HeraldChatResult(text=f"Reply for {latest_user_message}", session_id="session-123")
 
     with build_client(tmp_path) as client:
-        client.app.state.herald_adapter = StubHeraldAdapter()
+        client.app.state.hermes_adapter = StubHeraldAdapter()
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
         headers = {"Authorization": f"Bearer {access_token}"}

@@ -2,8 +2,8 @@ import Foundation
 
 enum MessageSender: String, Codable, Hashable, Sendable {
     case user
-    case herald
+    case hermes
     case system
     case voiceUser = "voice_user"
-    case voiceHerald = "voice_herald"
+    case voiceHermes = "voice_herald"
 }

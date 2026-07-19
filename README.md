@@ -26,13 +26,16 @@
 
 ## What is HERALD?
 
-HERALD is a **native iOS client** for self-hosted AI runtimes. It connects to your own server through a relay, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, CarPlay, and session management — without your data leaving your infrastructure.
+HERALD is a **native iOS companion** for [Hermes Agent](https://github.com/NousResearch/hermes-agent) runtimes. It connects to your self-hosted Hermes instance through a relay, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, CarPlay, and session management — without your data leaving your infrastructure.
+
+HERALD is not the AI. It's the phone interface for **your** Hermes agent.
 
 ```
 ┌─────────────┐     HTTPS/SSE     ┌─────────────┐     WebSocket     ┌─────────────┐     MCP/stdio     ┌─────────────┐
 │  iPhone /   │ ◄──────────────► │    Relay     │ ◄──────────────► │  Connector   │ ◄──────────────► │  AI Runtime  │
 │    iPad     │                  │ herald-relay │                  │herald-connector│                │  Ollama /    │
 │  HERALD app │                  │              │                  │              │                  │   Hermes     │
+│  (iOS)      │                  │              │                  │              │                  │   Agent      │
 └─────────────┘                  └─────────────┘                  └─────────────┘                  └─────────────┘
 ```
 

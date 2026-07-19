@@ -326,7 +326,7 @@ def test_completed_job_events_include_usage_and_result_message(tmp_path):
             payload = json.loads(events_response.text.split("data: ", maxsplit=1)[1].strip())
             assert payload["status"] == "completed"
             assert payload["usage"]["totalTokens"] == 20
-            assert payload["message"]["role"] == "herald"
+            assert payload["message"]["role"] == "hermes"
             assert payload["message"]["jobId"] == job["id"]
 
 
@@ -439,7 +439,7 @@ def test_talk_readiness_reflects_connector_configuration(tmp_path):
                         "preferredModels": ["gpt-realtime-1.5", "gpt-realtime"],
                         "selectedModel": None,
                         "voice": "verse",
-                        "blockedReason": "OpenAI Realtime is not configured on this Herald host.",
+                        "blockedReason": "OpenAI Realtime is not configured on this Hermes host.",
                         "voiceContextUpdatedAt": "2026-04-01T12:00:00Z",
                     },
                 }
@@ -451,7 +451,7 @@ def test_talk_readiness_reflects_connector_configuration(tmp_path):
             assert data["ready"] is False
             assert data["hostOnline"] is True
             assert data["configured"] is False
-            assert data["blockedReason"] == "OpenAI Realtime is not configured on this Herald host."
+            assert data["blockedReason"] == "OpenAI Realtime is not configured on this Hermes host."
             assert data["voice"] == "verse"
 
 
@@ -785,13 +785,13 @@ def test_talk_session_returns_conflict_when_connector_is_unconfigured(tmp_path):
                     "type": "rpc.response",
                     "requestId": rpc["requestId"],
                     "success": False,
-                    "error": "OpenAI Realtime talk mode is not configured on this Herald host.",
+                    "error": "OpenAI Realtime talk mode is not configured on this Hermes host.",
                 }
             )
             thread.join(timeout=5)
 
             assert response["payload"].status_code == 409
-            assert response["payload"].json()["detail"] == "OpenAI Realtime talk mode is not configured on this Herald host."
+            assert response["payload"].json()["detail"] == "OpenAI Realtime talk mode is not configured on this Hermes host."
 
 
 def test_sensor_delivery_returns_retry_offline_and_delivered_after_connector_ack(tmp_path):

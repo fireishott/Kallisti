@@ -390,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enroll = subparsers.add_parser("enroll", help="(Legacy) Redeem an HC1 host setup code.")
     enroll.add_argument("--code", required=True, help="HC1 setup code.")
-    enroll.add_argument("--display-name", help="Optional label for this Herald host.")
+    enroll.add_argument("--display-name", help="Optional label for this Hermes host.")
     enroll.add_argument(
         "--skip-mcp",
         action="store_true",
@@ -403,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     configure_realtime = subparsers.add_parser(
         "configure-realtime",
-        help="Add or update the OpenAI Realtime configuration stored on this Herald host.",
+        help="Add or update the OpenAI Realtime configuration stored on this Hermes host.",
     )
     configure_realtime.add_argument("--clear", action="store_true", help="Remove the stored OpenAI API key and disable talk mode.")
     configure_realtime.add_argument(
@@ -412,9 +412,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store the API key without validating the Realtime session flow right now.",
     )
     subparsers.add_parser("pair-phone", help="Generate a short-lived phone pairing code and QR.")
-    subparsers.add_parser("run", help="Run the long-lived Herald connector.")
+    subparsers.add_parser("run", help="Run the long-lived connector.")
     subparsers.add_parser("status", help="Show the current connector state.")
-    subparsers.add_parser("validate-mcp", help="Verify runtime can discover the Herald MCP tools.")
+    subparsers.add_parser("validate-mcp", help="Verify runtime can discover the Hermes MCP tools.")
     subparsers.add_parser("reset", help="Remove local connector state and start fresh.")
 
     service = subparsers.add_parser("service", help="Manage the connector background service.")
@@ -625,7 +625,7 @@ def cmd_setup(args: argparse.Namespace, connector: HeraldConnector) -> int:
 
 def cmd_configure_mcp(connector: HeraldConnector) -> int:
     state = connector.configure_mcp()
-    print(f"Configured Herald MCP for host {state.host_id}")
+    print(f"Configured MCP for host {state.host_id}")
     for line in connector.validate_mcp():
         print(line)
     return 0

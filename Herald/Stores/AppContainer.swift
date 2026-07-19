@@ -572,7 +572,7 @@ final class AppContainer {
         return legacyToken
     }
 
-    /// Fetches the dynamic slash command catalog from the connected Herald host.
+    /// Fetches the dynamic slash command catalog from the connected Hermes host.
     /// Merges built-in commands, gateway commands, skills, and personality options.
     func refreshCommandCatalog(force: Bool = false) async {
         if !force,

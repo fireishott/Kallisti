@@ -228,7 +228,7 @@ final class SessionListStore {
     /// All sessions grouped by source for platform sub-sections.
     var sessionsBySource: [(source: String, sessions: [SessionSummary])] {
         let all = recentSessions
-        let grouped = Dictionary(grouping: all) { $0.source ?? "herald" }
+        let grouped = Dictionary(grouping: all) { $0.source ?? "hermes" }
         return grouped
             .sorted { $0.key < $1.key }
             .map { (source: $0.key, sessions: $0.value) }

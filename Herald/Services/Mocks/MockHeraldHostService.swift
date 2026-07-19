@@ -5,7 +5,7 @@ final class MockHeraldHostService: HeraldHostServiceProtocol {
     var currentHost: HeraldHostStatus? = HeraldHostStatus(
         id: UUID(),
         displayName: "Mock Herald Host",
-        hostname: "mock-herald.local",
+        hostname: "mock-hermes.local",
         platform: "macos",
         connectorVersion: "0.1.0",
         heraldCommand: "herald",

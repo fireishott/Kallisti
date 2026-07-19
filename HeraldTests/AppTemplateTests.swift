@@ -12,7 +12,7 @@ struct HeraldMobileTests {
 
     @Test func conversationPreviewTextShowsLastMessage() async throws {
         let messages = [
-            Message(sender: .herald, content: "First message"),
+            Message(sender: .hermes, content: "First message"),
             Message(sender: .user, content: "Second message"),
         ]
         let conversation = Conversation(title: "Test", messages: messages)

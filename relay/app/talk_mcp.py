@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 HERMES_DELEGATE_TOOL = {
-    "name": "herald_delegate",
+    "name": "hermes_delegate",
     "description": (
         "Delegate a voice request to the connected Herald host. "
         "Use this when the user asks for something that requires "
@@ -184,7 +184,7 @@ async def _handle_tools_call(
     tool_name = params.get("name", "")
     arguments = params.get("arguments", {})
 
-    if tool_name != "herald_delegate":
+    if tool_name != "hermes_delegate":
         return _err(req_id, -32601, f"Unknown tool: {tool_name}")
 
     prompt = arguments.get("prompt", "").strip()
@@ -230,7 +230,7 @@ async def _handle_tools_call(
             "isError": False,
         })
     except Exception:
-        logger.exception("herald_delegate failed")
+        logger.exception("hermes_delegate failed")
         return _ok(req_id, {
             "content": [{"type": "text", "text": "The delegation request failed. Please try again."}],
             "isError": True,

@@ -68,7 +68,7 @@ struct SettingsScreen: View {
                     settingsNavRow(
                         icon: hostStatusRowIcon,
                         iconColor: hostStatusRowColor,
-                        title: "Herald Host",
+                        title: "Hermes Host",
                         value: hostStatusRowValue,
                         accessibilityIdentifier: "settings.heraldHost"
                     ) {
@@ -207,7 +207,7 @@ struct SettingsScreen: View {
     private var hostStatusRowValue: String {
         switch hostStore.connectionState {
         case .online, .offline:
-            return hostStore.currentHost?.resolvedDisplayName ?? "Herald Host"
+            return hostStore.currentHost?.resolvedDisplayName ?? "Hermes Host"
         case .unreachable:
             return "Status unavailable"
         case .notConnected:

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Loads the model catalog from the connected Herald host via the relay.
+/// Loads the model catalog from the connected Hermes host via the relay.
 ///
 /// Listing comes from `GET /v1/models` (config.yaml providers on the host).
 /// Switching goes through `POST /v1/model`, which edits the host's

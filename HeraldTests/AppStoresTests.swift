@@ -201,7 +201,7 @@ struct AppStoresTests {
         var currentConversation: Conversation?
         var sendCallCount = 0
         var lastClientMessageID: UUID?
-        var nextResponse = Message(sender: .herald, content: "Recorded response", status: .delivered)
+        var nextResponse = Message(sender: .hermes, content: "Recorded response", status: .delivered)
 
         func connect() async {}
 
@@ -226,17 +226,17 @@ struct AppStoresTests {
         }
 
         func loadConversation() async -> Conversation {
-            currentConversation ?? Conversation(title: "Herald")
+            currentConversation ?? Conversation(title: "Hermes")
         }
 
         func clearConversation() async throws -> Conversation {
-            let conversation = Conversation(title: "Herald")
+            let conversation = Conversation(title: "Hermes")
             currentConversation = conversation
             return conversation
         }
 
         func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-            currentConversation ?? Conversation(title: "Herald")
+            currentConversation ?? Conversation(title: "Hermes")
         }
     }
 
@@ -303,7 +303,7 @@ struct AppStoresTests {
         }
 
         func emitAssistantTurn(_ text: String) {
-            transcriptItems.append(TranscriptItem(speaker: .herald, text: text, isPartial: false))
+            transcriptItems.append(TranscriptItem(speaker: .hermes, text: text, isPartial: false))
         }
 
         private func publishSnapshot() {
@@ -485,7 +485,7 @@ struct AppStoresTests {
         #expect(heraldClient.lastClientMessageID != nil)
 
         chatStore.conversation = Conversation(
-            title: "Herald",
+            title: "Hermes",
             messages: [
                 Message(sender: .user, content: "Still waiting", status: .sending),
             ]
@@ -507,17 +507,17 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .herald, content: "unused", status: .delivered)
+                Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 let jobID = UUID()
                 let finalMessageID = UUID()
                 currentConversation = Conversation(
-                    title: "Herald",
+                    title: "Hermes",
                     messages: [
                         Message(id: clientMessageID, sender: .user, content: message, status: .sent),
-                        Message(id: finalMessageID, sender: .herald, content: "Patched answer", jobID: jobID, status: .delivered),
+                        Message(id: finalMessageID, sender: .hermes, content: "Patched answer", jobID: jobID, status: .delivered),
                     ]
                 )
 
@@ -541,7 +541,7 @@ struct AppStoresTests {
                         continuation.yield(.finished(
                             Message(
                                 id: finalMessageID,
-                                sender: .herald,
+                                sender: .hermes,
                                 content: "Patched answer",
                                 jobID: jobID,
                                 status: .delivered
@@ -555,17 +555,17 @@ struct AppStoresTests {
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
 
             func clearConversation() async throws -> Conversation {
-                let conversation = Conversation(title: "Herald")
+                let conversation = Conversation(title: "Hermes")
                 currentConversation = conversation
                 return conversation
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -578,7 +578,7 @@ struct AppStoresTests {
 
         await chatStore.sendMessage("Fix the bug")
 
-        let heraldMessage = chatStore.conversation?.messages.last(where: { $0.sender == .herald })
+        let heraldMessage = chatStore.conversation?.messages.last(where: { $0.sender == .hermes })
         #expect(heraldMessage?.toolActivities.count == 1)
         #expect(heraldMessage?.codeDiff?.fileCount == 1)
         #expect(heraldMessage?.codeDiff?.summary == "1 file changed, 2 insertions(+), 1 deletion(-)")
@@ -594,7 +594,7 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .herald, content: "unused", status: .delivered)
+                Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -606,15 +606,15 @@ struct AppStoresTests {
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Herald")
+                Conversation(title: "Hermes")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -626,9 +626,9 @@ struct AppStoresTests {
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
         let userMessage = Message(sender: .user, content: "Waiting", status: .sending)
-        let placeholder = Message(sender: .herald, content: "", status: .sending, isStreaming: true)
-        chatStore.conversation = Conversation(title: "Herald", messages: [userMessage, placeholder])
-        heraldClient.currentConversation = Conversation(title: "Herald", messages: [userMessage])
+        let placeholder = Message(sender: .hermes, content: "", status: .sending, isStreaming: true)
+        chatStore.conversation = Conversation(title: "Hermes", messages: [userMessage, placeholder])
+        heraldClient.currentConversation = Conversation(title: "Hermes", messages: [userMessage])
 
         await chatStore.loadConversation()
 
@@ -646,7 +646,7 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .herald, content: "unused", status: .delivered)
+                Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -654,22 +654,22 @@ struct AppStoresTests {
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
                         try? await Task.sleep(for: .milliseconds(50))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Done", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .hermes, content: "Done", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Herald")
+                Conversation(title: "Hermes")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -703,12 +703,12 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .herald, content: "unused", status: .delivered)
+                Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
-                    title: "Herald",
+                    title: "Hermes",
                     messages: [
                         Message(id: userID, clientMessageID: clientMessageID, sender: .user, content: message, status: .sent),
                     ]
@@ -726,10 +726,10 @@ struct AppStoresTests {
             func loadConversation() async -> Conversation {
                 loadConversationCallCount += 1
                 let conversation = Conversation(
-                    title: "Herald",
+                    title: "Hermes",
                     messages: [
                         Message(id: userID, sender: .user, content: "Fix it", status: .delivered),
-                        Message(id: assistantID, sender: .herald, content: "Recovered after polling", jobID: jobID, status: .delivered),
+                        Message(id: assistantID, sender: .hermes, content: "Recovered after polling", jobID: jobID, status: .delivered),
                     ]
                 )
                 currentConversation = conversation
@@ -737,11 +737,11 @@ struct AppStoresTests {
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Herald")
+                Conversation(title: "Hermes")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -785,7 +785,7 @@ struct AppStoresTests {
                   "jobId":"\#(jobID.uuidString.lowercased())",
                   "conversation":{
                     "id":"\#(conversationID.uuidString)",
-                    "title":"Herald",
+                    "title":"Hermes",
                     "updatedAt":"2026-04-05T18:00:00Z",
                     "messages":[
                       {
@@ -829,7 +829,7 @@ struct AppStoresTests {
                 {"data":{
                   "conversation":{
                     "id":"\#(conversationID.uuidString)",
-                    "title":"Herald",
+                    "title":"Hermes",
                     "updatedAt":"2026-04-05T18:00:01Z",
                     "messages":[
                       {
@@ -905,7 +905,7 @@ struct AppStoresTests {
             requestCount.value += 1
             let url = try #require(request.url)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (response, #"{"data":{"conversation":{"id":"00000000-0000-0000-0000-000000000000","title":"Herald","updatedAt":"2026-04-05T18:00:00Z","messages":[]}}}"#.data(using: .utf8)!)
+            return (response, #"{"data":{"conversation":{"id":"00000000-0000-0000-0000-000000000000","title":"Hermes","updatedAt":"2026-04-05T18:00:00Z","messages":[]}}}"#.data(using: .utf8)!)
         }
 
         defer {
@@ -957,7 +957,7 @@ struct AppStoresTests {
             func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
                 lastMessage = message
                 lastAttachments = attachments
-                return Message(sender: .herald, content: "unused", status: .delivered)
+                return Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -966,22 +966,22 @@ struct AppStoresTests {
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Retried", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .hermes, content: "Retried", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Herald")
+                Conversation(title: "Hermes")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -1003,7 +1003,7 @@ struct AppStoresTests {
             status: .failed,
             attachments: [MessageAttachment(from: attachment)]
         )
-        chatStore.conversation = Conversation(title: "Herald", messages: [failedMessage])
+        chatStore.conversation = Conversation(title: "Hermes", messages: [failedMessage])
 
         await chatStore.retryMessage(failedMessage)
 
@@ -1022,12 +1022,12 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
-                Message(sender: .herald, content: "unused", status: .delivered)
+                Message(sender: .hermes, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
-                    title: "Herald",
+                    title: "Hermes",
                     messages: [
                         Message(
                             id: UUID(),
@@ -1044,29 +1044,29 @@ struct AppStoresTests {
                                 )
                             }
                         ),
-                        Message(sender: .herald, content: "I saw the attachment.", status: .delivered),
+                        Message(sender: .hermes, content: "I saw the attachment.", status: .delivered),
                     ]
                 )
 
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "I saw the attachment.", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .hermes, content: "I saw the attachment.", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Herald")
+                Conversation(title: "Hermes")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Herald")
+                currentConversation ?? Conversation(title: "Hermes")
             }
         }
 
@@ -1374,7 +1374,7 @@ struct AppStoresTests {
         #expect(voiceService.transcriptItems[0].speaker == .user)
         #expect(voiceService.transcriptItems[0].text == "What should I focus on today?")
         #expect(voiceService.transcriptItems[0].isPartial == false)
-        #expect(voiceService.transcriptItems[1].speaker == .herald)
+        #expect(voiceService.transcriptItems[1].speaker == .hermes)
         #expect(voiceService.transcriptItems[1].text == "Let me check that.")
     }
 
@@ -1431,7 +1431,7 @@ struct AppStoresTests {
             {"data":{
               "conversation":{
                 "id":"\#(conversationID.uuidString)",
-                "title":"Herald",
+                "title":"Hermes",
                 "updatedAt":"2026-04-03T21:15:00Z",
                 "messages":[]
               }
@@ -1882,9 +1882,9 @@ struct AppStoresTests {
 
     @Test
     func relayConnectionModesExposeModeAwareChatRecoveryCopy() throws {
-        #expect(RelayConnectionMode.managedRelay.hostOfflineMessage == "Messages can queue while your Herald host reconnects.")
-        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Herald.")
-        #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a Herald host with this self-hosted relay before sending messages.")
+        #expect(RelayConnectionMode.managedRelay.hostOfflineMessage == "Messages can queue while your Hermes host reconnects.")
+        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Hermes.")
+        #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a Hermes host with this self-hosted relay before sending messages.")
     }
 
     @Test
@@ -1929,7 +1929,7 @@ struct AppStoresTests {
         #expect(tailscaleHint.contains("tailscale serve"))
         // Self-hosted nudges users toward a public URL example.
         let selfHostedHint = try #require(RelayConnectionMode.selfHostedRelay.relayURLHint)
-        #expect(selfHostedHint.contains("public Herald relay"))
+        #expect(selfHostedHint.contains("public Hermes relay"))
     }
 
     @Test
@@ -2331,10 +2331,10 @@ struct AppStoresTests {
     func chatStoreLoadsLatestUsageFromConversationMetadata() async {
         let heraldClient = RecordingHeraldClient()
         heraldClient.currentConversation = Conversation(
-            title: "Herald",
+            title: "Hermes",
             messages: [
                 Message(sender: .user, content: "Hello"),
-                Message(sender: .herald, content: "Hi")
+                Message(sender: .hermes, content: "Hi")
             ],
             latestUsage: TokenUsage(
                 promptTokens: 3200,

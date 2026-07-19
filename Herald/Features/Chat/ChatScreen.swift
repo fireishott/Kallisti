@@ -570,9 +570,9 @@ struct ChatScreen: View {
     private var connectionBannerTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Herald host online"
+            return "Hermes host online"
         case .offline:
-            return "Herald host offline"
+            return "Hermes host offline"
         case .unreachable:
             switch settingsStore.settings.relayConfiguration.connectionMode {
             case .managedRelay:
@@ -583,14 +583,14 @@ struct ChatScreen: View {
                 return "Relay URL unreachable"
             }
         case .notConnected:
-            return "No Herald host connected"
+            return "No Hermes host connected"
         }
     }
 
     private var connectionBannerMessage: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Herald host is connected."
+            return "Your Hermes host is connected."
         case .offline:
             return settingsStore.settings.relayConfiguration.connectionMode.hostOfflineMessage
         case .unreachable:

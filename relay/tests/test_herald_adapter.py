@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.config import Settings
-from app.herald_adapter import CLIHeraldAdapter, CLIHeraldResponse, HeraldConversationMessage
+from app.hermes_adapter import CLIHeraldAdapter, CLIHeraldResponse, HeraldConversationMessage
 
 
 def build_adapter() -> CLIHeraldAdapter:
@@ -39,7 +39,7 @@ def test_send_message_replays_when_resumed_session_is_missing(monkeypatch):
     adapter = build_adapter()
     calls: list[list[str]] = []
 
-    monkeypatch.setattr("app.herald_adapter.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr("app.hermes_adapter.shutil.which", lambda command: f"/usr/bin/{command}")
 
     def fake_run(command, cwd, capture_output, text, check):
         calls.append(command)
@@ -63,7 +63,7 @@ def test_send_message_replays_when_resumed_session_is_missing(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr("app.herald_adapter.subprocess.run", fake_run)
+    monkeypatch.setattr("app.hermes_adapter.subprocess.run", fake_run)
 
     result = adapter.send_message(
         latest_user_message="Need help",

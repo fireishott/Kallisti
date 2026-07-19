@@ -36,7 +36,7 @@ final class ChatStore {
 
     var isStreaming: Bool { streamingMessageID != nil }
 
-    /// Dynamic slash command catalog fetched from the connected Herald host.
+    /// Dynamic slash command catalog fetched from the connected Hermes host.
     /// Includes gateway commands, installed skills, custom personalities,
     /// and hidden quick-command metadata for manual slash dispatch.
     private(set) var commandCatalog: [SlashCommand] = SlashCommand.allBuiltIn

@@ -66,7 +66,7 @@ enum TalkConnectionState: String, Codable, Hashable, Sendable {
 
 enum TranscriptSpeaker: String, Codable, Hashable, Sendable {
     case user
-    case herald
+    case hermes
     case system
 
     var displayLabel: String {

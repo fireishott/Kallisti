@@ -13,7 +13,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 
-MCP_SERVER_NAME = "herald"
+MCP_SERVER_NAME = "hermes_mobile"
 MCP_TOOL_NAMES = [
     "get_user_location",
     "get_location_history",
@@ -243,7 +243,7 @@ def validate_native_mcp_tools(*, server_name: str = MCP_SERVER_NAME) -> str | No
 def native_mcp_readiness_message(*, hermes_command: str) -> str:
     if _hermes_chat_running(hermes_command):
         return "Reload required — a Hermes chat is already running. Run `/reload-mcp` or restart chat."
-    return "Ready now — fresh Hermes chats will load the Herald MCP tools."
+    return "Ready now — fresh Hermes chats will load the Hermes MCP tools."
 
 
 def _hermes_chat_running(hermes_command: str) -> bool:

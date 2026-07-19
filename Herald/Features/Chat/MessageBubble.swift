@@ -16,7 +16,7 @@ struct MessageBubble: View, Equatable {
     }
 
     private var isUser: Bool { message.sender == .user || message.sender == .voiceUser }
-    private var isHerald: Bool { message.sender == .herald || message.sender == .voiceHerald }
+    private var isHermes: Bool { message.sender == .herald || message.sender == .voiceHerald }
     private var isCompactionMessage: Bool { message.content.hasPrefix("[CONTEXT COMPACTION]") }
     private var isBudgetWarning: Bool { message.content.contains("[BUDGET WARNING:") }
 
@@ -59,7 +59,7 @@ struct MessageBubble: View, Equatable {
                 Divider()
 
                 // Retry — assistant messages only
-                if isHerald {
+                if isHermes {
                     Button {
                         onRetry?(message)
                     } label: {
@@ -105,7 +105,7 @@ struct MessageBubble: View, Equatable {
             .padding(.horizontal, Design.Spacing.md)
         } else {
             HStack(alignment: .top, spacing: Design.Spacing.xs) {
-                heraldMessage
+                hermesMessage
                 Spacer(minLength: Design.Spacing.xxl)
             }
             .padding(.horizontal, Design.Spacing.md)
@@ -179,7 +179,7 @@ struct MessageBubble: View, Equatable {
 
     // MARK: - Herald Message
 
-    private var heraldMessage: some View {
+    private var hermesMessage: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
             if message.isVoiceTranscript {
                 voiceTranscriptText(message.content)

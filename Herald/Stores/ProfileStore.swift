@@ -1,6 +1,6 @@
 import Foundation
 
-/// Loads the profile catalog from the connected Herald host via the relay.
+/// Loads the profile catalog from the connected Hermes host via the relay.
 ///
 /// Listing comes from `GET /profiles` (the profile tree on the host).
 /// Active-profile switching is dispatched through the chat path, so this store

@@ -147,9 +147,9 @@ struct iPadRightPanelView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("$ herald agent --version")
+                    Text("$ hermes agent --version")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
-                    Text("Herald Agent v2.1.0 — Nous Research")
+                    Text("Hermes Agent v2.1.0 — Nous Research")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)
                     Text("")
                     Text("$ tail -f ~/.herald/logs/agent.log")

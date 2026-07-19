@@ -707,7 +707,7 @@ def inject_voice_transcript(
         base_created_at = max(normalize_datetime(last_message_at), base_created_at)
 
     for index, turn in enumerate(turns):
-        role = "voice_user" if turn.role == "user" else "voice_herald"
+        role = "voice_user" if turn.role == "user" else "voice_hermes"
         append_message(
             db,
             conversation=conversation,
@@ -966,8 +966,8 @@ def get_or_create_current_conversation(db: Session, *, user_id: str, device_id: 
         conversation = Conversation(
             user_id=user_id,
             device_id=device_id,
-            title="Herald",
-            source="herald" if device_id is None else "ios",
+            title="Hermes",
+            source="hermes" if device_id is None else "ios",
         )
         db.add(conversation)
         db.commit()
@@ -1074,7 +1074,7 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
-    if role == "user" and conversation.title == "Herald":
+    if role == "user" and conversation.title == "Hermes":
         derived_title = derive_title_from_message(text)
         if derived_title:
             conversation.title = derived_title
@@ -1276,7 +1276,7 @@ def complete_message_job(
     result_message = _finalize_job_message(
         db,
         job=job,
-        role="herald",
+        role="hermes",
         text=text,
         delivery_status="delivered",
         attachments_data=attachments,
@@ -1332,7 +1332,7 @@ def fail_message_job(
         db,
         job=job,
         role="system",
-        text=f"Herald could not process this message: {error_text}",
+        text=f"Hermes could not process this message: {error_text}",
         delivery_status="delivered",
     )
     user_message.delivery_status = "failed"

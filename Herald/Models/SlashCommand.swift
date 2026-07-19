@@ -116,7 +116,7 @@ extension SlashCommand {
         SlashCommand(name: "help", description: "Show available commands", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
         SlashCommand(name: "usage", description: "Show token usage", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
         SlashCommand(name: "insights", description: "Show usage insights", category: "Info", acceptsArgument: true, isDestructive: false, isLocal: false),
-        SlashCommand(name: "update", description: "Update Herald Agent", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
+        SlashCommand(name: "update", description: "Update Hermes Agent", category: "Info", acceptsArgument: false, isDestructive: false, isLocal: false),
     ]
 
     /// Creates a pass-through command from a remote catalog entry.

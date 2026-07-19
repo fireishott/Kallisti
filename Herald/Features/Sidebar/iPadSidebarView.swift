@@ -289,7 +289,7 @@ struct iPadSidebarView: View {
     @ViewBuilder
     private var platformSections: some View {
         let groups = sessionStore.sessionsBySource
-            .filter { $0.source != "herald" && $0.source != "ios" }
+            .filter { $0.source != "hermes" && $0.source != "ios" }
         ForEach(groups, id: \.source) { group in
             Section(group.source.uppercased()) {
                 ForEach(group.sessions.prefix(5)) { session in

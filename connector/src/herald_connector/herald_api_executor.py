@@ -51,7 +51,7 @@ class HeraldAPIExecutor:
 
     @staticmethod
     def _api_role(role: str) -> str:
-        if role in ("herald", "voice_herald"):
+        if role in ("hermes", "voice_hermes"):
             return "assistant"
         if role == "voice_user":
             return "user"
