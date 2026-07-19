@@ -3,9 +3,9 @@ import Foundation
 /// Loads the model catalog from the connected Hermes host via the relay.
 ///
 /// Listing comes from `GET /v1/models` (config.yaml providers on the host).
-/// Switching is dispatched through the normal chat path as a `/model <name>`
-/// command, so this store is read-only apart from an optimistic active-model
-/// update while the gateway confirmation streams back.
+/// Switching goes through `POST /v1/model`, which edits the host's
+/// config.yaml directly and returns the resulting active model — that
+/// response is the source of truth for `activeModel`, not an optimistic guess.
 @MainActor
 @Observable
 final class ModelStore {
@@ -28,6 +28,10 @@ final class ModelStore {
 
     private struct ModelCatalogResponse: Decodable {
         let models: [HermesModel]?
+        let activeModel: ActiveModel?
+    }
+
+    private struct ModelSetResponse: Decodable {
         let activeModel: ActiveModel?
     }
 
@@ -94,14 +98,21 @@ final class ModelStore {
         }
     }
 
-    /// Optimistically marks a model active while the `/model` command's
-    /// confirmation streams back through the chat path.
-    func markActive(_ model: HermesModel) {
-        activeModel = ActiveModel(
-            name: model.name,
-            provider: model.provider,
-            contextWindow: model.contextWindow
+    /// Switches the active model via `POST /v1/model`. The relay edits the
+    /// host's config.yaml and returns the resulting active model, which is
+    /// applied directly here — no optimistic guessing.
+    func switchModel(to name: String, provider: String) async throws {
+        guard let apiClient, let token = await accessTokenProvider() else {
+            errorMessage = "Not connected to a relay."
+            return
+        }
+        let body = ["name": name, "provider": provider]
+        let response: ModelSetResponse = try await apiClient.post(
+            path: "model", body: body, accessToken: token
         )
+        if let updated = response.activeModel {
+            activeModel = updated
+        }
     }
 
     func reset() {

@@ -113,10 +113,11 @@ struct ChatScreen: View {
             .presentationDragIndicator(.hidden)
         }
         .sheet(isPresented: $showModelSelector) {
-            ModelSelectorSheet { model, setAsDefault in
-                switchModel(model, setAsDefault: setAsDefault)
-            }
-            .presentationDetents([.medium, .large])
+            // The sheet performs the switch itself via
+            // ModelStore.switchModel(to:provider:) and only calls back on
+            // success; nothing further to do here.
+            ModelSelectorSheet { _, _ in }
+                .presentationDetents([.medium, .large])
         }
     }
 
@@ -133,19 +134,6 @@ struct ChatScreen: View {
         default:
             0.35
         }
-    }
-
-    // MARK: - Model switching
-
-    /// Dispatches `/model <name>` through the normal chat path. The gateway
-    /// confirms in the transcript and ChatStore parses the confirmation to
-    /// update the model chip.
-    private func switchModel(_ model: ModelStore.HermesModel, setAsDefault: Bool) {
-        var command = "/model \(model.name)"
-        if setAsDefault {
-            command += " --global"
-        }
-        Task { await chatStore.sendMessage(command) }
     }
 
     // MARK: - Toolbar
@@ -182,12 +170,16 @@ struct ChatScreen: View {
     @State private var showModelSelector = false
     @State private var showProfileSelector = false
 
+    /// `ModelStore.activeModel` is the authoritative source once populated —
+    /// it's set from the `POST /v1/model` response after a direct switch, so
+    /// preferring it here means the chip updates the moment a switch
+    /// succeeds instead of waiting for the next command-catalog refresh.
     private var displayedModelName: String? {
-        chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
+        modelStore.activeModel?.name ?? chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
     }
 
     private var effectiveContextWindow: Int? {
-        chatStore.resolvedContextWindow(fallbackModelName: displayedModelName)
+        modelStore.activeModel?.contextWindow ?? chatStore.resolvedContextWindow(fallbackModelName: displayedModelName)
     }
 
     private var currentContextTokens: Int? {

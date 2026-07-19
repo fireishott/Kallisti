@@ -192,7 +192,6 @@ final class ChatStore {
                     } else if let usage {
                         self.lastTokenUsage = usage
                     }
-                    self.detectModelSwitch(from: finalMessage.content)
                     self.detectProfileSwitch(in: finalMessage.content)
                     self.streamingMessageID = nil
                     self.pendingMessageSentAt = nil
@@ -576,41 +575,6 @@ final class ChatStore {
             .map { "\($0.kind)|\($0.fileName)|\($0.mimeType)" }
             .sorted()
             .joined(separator: "||")
-    }
-
-    // MARK: - Model Switch Detection
-
-    /// Detect a model switch from the agent's response text.
-    /// Updates activeModelName and contextWindow immediately so the
-    /// toolbar chip reflects the change in the same render frame.
-    // Regex for context window in /model response: "Context: 1,000,000 tokens"
-    nonisolated(unsafe) private static let contextWindowPattern = /Context:\s*([\d,]+)\s*tokens/
-
-    private func detectModelSwitch(from text: String) {
-        // Match: "Model switched to `claude-sonnet-4-6`" or "Model switched: gpt-4-turbo"
-        let patterns: [Regex<(Substring, Substring)>] = [
-            /[Mm]odel\s+switched\s+to\s+`?([A-Za-z0-9._-]+)`?/,
-            /[Mm]odel\s+switched:\s+`?([A-Za-z0-9._-]+)`?/,
-        ]
-        for pattern in patterns {
-            if let match = text.firstMatch(of: pattern) {
-                let newModel = String(match.1)
-                activeModelName = newModel
-
-                // v0.8.0: the /model response includes "Context: N tokens"
-                // — parse it directly instead of relying on a heuristic table.
-                if let ctxMatch = text.firstMatch(of: Self.contextWindowPattern) {
-                    let raw = String(ctxMatch.1).replacingOccurrences(of: ",", with: "")
-                    if let ctxValue = Int(raw), ctxValue > 0 {
-                        contextWindow = ctxValue
-                        return
-                    }
-                }
-                // If context not in response, clear and let next catalog refresh resolve it
-                contextWindow = nil
-                return
-            }
-        }
     }
 
     // MARK: - Profile Switch Detection

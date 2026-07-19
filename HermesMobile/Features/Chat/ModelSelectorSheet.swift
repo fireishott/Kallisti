@@ -1,28 +1,40 @@
 import SwiftUI
 
 /// Sheet listing every model configured on the Hermes host, grouped by
-/// provider. Selecting a model dispatches `/model <name>` through the chat
-/// path (optionally with `--global` to persist beyond the current session).
+/// provider. Selecting a model switches it directly via
+/// `ModelStore.switchModel(to:provider:)` (`POST /v1/model`).
 struct ModelSelectorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ModelStore.self) private var modelStore
 
     @State private var setAsGlobalDefault = false
+    @State private var isSwitching = false
+    @State private var switchingModelID: String?
+    @State private var switchError: String?
 
-    /// Called when the user picks a model. The bool is true when the change
-    /// should persist globally (`/model <name> --global`).
+    /// Called after a model switch succeeds (the switch itself already
+    /// happened via `ModelStore.switchModel`). Lets the presenter react —
+    /// e.g. dismiss a popover — without re-dispatching anything.
     var onSelect: (ModelStore.HermesModel, Bool) -> Void
 
     var body: some View {
         NavigationStack {
-            Group {
-                if modelStore.isLoading && modelStore.models.isEmpty {
-                    ProgressView("Loading models…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if modelStore.models.isEmpty {
-                    emptyState
-                } else {
-                    modelList
+            VStack(spacing: 0) {
+                if let switchError {
+                    errorBanner(message: switchError)
+                        .padding(.horizontal, Design.Spacing.md)
+                        .padding(.top, Design.Spacing.sm)
+                }
+
+                Group {
+                    if modelStore.isLoading && modelStore.models.isEmpty {
+                        ProgressView("Loading models…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if modelStore.models.isEmpty {
+                        emptyState
+                    } else {
+                        modelList
+                    }
                 }
             }
             .background(Design.Colors.background)
@@ -67,9 +79,7 @@ struct ModelSelectorSheet: View {
 
     private func modelRow(_ model: ModelStore.HermesModel) -> some View {
         Button {
-            modelStore.markActive(model)
-            onSelect(model, setAsGlobalDefault)
-            dismiss()
+            selectModel(model)
         } label: {
             HStack(spacing: Design.Spacing.sm) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -94,7 +104,9 @@ struct ModelSelectorSheet: View {
 
                 Spacer()
 
-                if modelStore.isActive(model) {
+                if isSwitching && switchingModelID == model.id {
+                    ProgressView()
+                } else if modelStore.isActive(model) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Design.Brand.accent)
                 }
@@ -102,6 +114,38 @@ struct ModelSelectorSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isSwitching)
+    }
+
+    private func selectModel(_ model: ModelStore.HermesModel) {
+        switchError = nil
+        isSwitching = true
+        switchingModelID = model.id
+        Task {
+            do {
+                try await modelStore.switchModel(to: model.name, provider: model.provider)
+                isSwitching = false
+                onSelect(model, setAsGlobalDefault)
+                dismiss()
+            } catch {
+                isSwitching = false
+                switchError = error.localizedDescription
+            }
+        }
+    }
+
+    private func errorBanner(message: String) -> some View {
+        HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.foreground)
+                .lineLimit(2)
+        }
+        .padding(Design.Spacing.md)
+        .background(Design.Colors.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
     }
 
     private var emptyState: some View {
