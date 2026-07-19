@@ -1,6 +1,6 @@
 import XCTest
 
-final class HermesMobileUITests: XCTestCase {
+final class HeraldMobileUITests: XCTestCase {
     private struct UITestLaunchContext {
         private struct ExternalConfiguration: Decodable {
             let setupCode: String?

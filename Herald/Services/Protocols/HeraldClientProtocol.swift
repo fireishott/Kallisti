@@ -7,7 +7,7 @@ struct SessionListResponse: Codable, Sendable {
 }
 
 @MainActor
-protocol HermesClientProtocol {
+protocol HeraldClientProtocol {
     var connectionStatus: ConnectionStatus { get }
     var currentConversation: Conversation? { get }
     func connect() async

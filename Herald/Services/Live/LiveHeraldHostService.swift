@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class LiveHermesHostService: HermesHostServiceProtocol {
+final class LiveHeraldHostService: HeraldHostServiceProtocol {
     private struct EmptyBody: Encodable {}
 
     private struct EnrollmentResponse: Decodable {
@@ -39,7 +39,7 @@ final class LiveHermesHostService: HermesHostServiceProtocol {
         self.accessTokenRefresher = accessTokenRefresher
     }
 
-    func fetchCurrentHost(accessToken: String?) async throws -> HermesHostStatus? {
+    func fetchCurrentHost(accessToken: String?) async throws -> HeraldHostStatus? {
         let response: CurrentHostResponse = try await performAuthorizedRequest(initialAccessToken: accessToken) { token in
             try await self.apiClient.get(
                 path: "hosts/current",
@@ -75,8 +75,8 @@ final class LiveHermesHostService: HermesHostServiceProtocol {
         }
     }
 
-    private func mapHost(_ host: RelayHost) -> HermesHostStatus {
-        HermesHostStatus(
+    private func mapHost(_ host: RelayHost) -> HeraldHostStatus {
+        HeraldHostStatus(
             id: host.id,
             displayName: host.displayName,
             hostname: host.hostname,

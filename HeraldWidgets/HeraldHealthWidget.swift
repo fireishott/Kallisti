@@ -2,12 +2,12 @@ import SwiftUI
 import WidgetKit
 
 /// Health metrics grid — steps, calories, sleep, heart rate.
-struct HermesHealthWidget: Widget {
-    let kind = "HermesHealth"
+struct HeraldHealthWidget: Widget {
+    let kind = "HeraldHealth"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: HermesTimelineProvider()) { entry in
-            HermesHealthView(entry: entry)
+        StaticConfiguration(kind: kind, provider: HeraldTimelineProvider()) { entry in
+            HeraldHealthView(entry: entry)
                 .containerBackground(for: .widget) {
                     Color(.systemBackground)
                 }
@@ -20,13 +20,13 @@ struct HermesHealthWidget: Widget {
 
 // MARK: - Views
 
-private struct HermesHealthView: View {
-    let entry: HermesWidgetEntry
+private struct HeraldHealthView: View {
+    let entry: HeraldWidgetEntry
 
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                HermesBrandIcon(size: 16)
+                HeraldBrandIcon(size: 16)
                 Text("Health · Today")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
@@ -68,7 +68,7 @@ private struct HermesHealthView: View {
         VStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.title3)
-                .foregroundStyle(HermesBrand.foreground)
+                .foregroundStyle(HeraldBrand.foreground)
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
@@ -92,8 +92,8 @@ private struct HermesHealthView: View {
 // MARK: - Previews
 
 #Preview("Medium", as: .systemMedium) {
-    HermesHealthWidget()
+    HeraldHealthWidget()
 } timeline: {
-    HermesWidgetEntry.placeholder
-    HermesWidgetEntry(date: .now, data: .empty)
+    HeraldWidgetEntry.placeholder
+    HeraldWidgetEntry(date: .now, data: .empty)
 }

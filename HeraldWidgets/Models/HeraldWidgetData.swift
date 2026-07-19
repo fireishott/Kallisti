@@ -3,7 +3,7 @@ import Foundation
 /// Snapshot of app state shared between the main app and widget extension
 /// via App Group UserDefaults. Updated by the main app whenever state changes;
 /// read by widget timeline providers to render Home Screen and CarPlay widgets.
-struct HermesWidgetData: Codable, Sendable {
+struct HeraldWidgetData: Codable, Sendable {
     var hostName: String?
     var hostOnline: Bool = false
     var lastMessagePreview: String?
@@ -16,5 +16,5 @@ struct HermesWidgetData: Codable, Sendable {
     var heartRate: Int?
     var updatedAt: Date = .now
 
-    static let empty = HermesWidgetData()
+    static let empty = HeraldWidgetData()
 }

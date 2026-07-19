@@ -4,7 +4,7 @@ struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(AppSessionStore.self) private var sessionStore
-    @Environment(HermesHostStore.self) private var hostStore
+    @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(PermissionsStore.self) private var permissionsStore
     @Environment(SettingsStore.self) private var settingsStore

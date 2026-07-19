@@ -4,7 +4,7 @@ import SwiftUI
 /// Shows Hermes engine logs, terminal output, and tool activity —
 /// similar to the right panel in Hermes Desktop.
 struct iPadRightPanelView: View {
-    @Environment(HermesHostStore.self) private var hostStore
+    @Environment(HeraldHostStore.self) private var hostStore
     @Environment(ChatStore.self) private var chatStore
     @Binding var isOpen: Bool
     @Binding var selectedTab: RightPanelTab

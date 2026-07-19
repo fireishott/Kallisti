@@ -62,13 +62,13 @@ final class SessionListStore {
         }
     }
 
-    private let hermesClient: any HermesClientProtocol
+    private let hermesClient: any HeraldClientProtocol
     private let chatStore: ChatStore
     private let settingsStore: SettingsStore
     private var searchTask: Task<Void, Never>?
     private var searchObservationTask: Task<Void, Never>?
 
-    init(hermesClient: any HermesClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore) {
+    init(hermesClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore) {
         self.hermesClient = hermesClient
         self.chatStore = chatStore
         self.settingsStore = settingsStore

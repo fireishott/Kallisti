@@ -13,7 +13,7 @@ final class AppContainer {
     let router = TabRouter()
     let sessionStore: AppSessionStore
     let pairingStore: PairingStore
-    let hostStore: HermesHostStore
+    let hostStore: HeraldHostStore
     let chatStore: ChatStore
     let inboxStore: InboxStore
     let permissionsStore: PermissionsStore
@@ -41,7 +41,7 @@ final class AppContainer {
     init(
         sessionStore: AppSessionStore,
         pairingStore: PairingStore,
-        hostStore: HermesHostStore,
+        hostStore: HeraldHostStore,
         chatStore: ChatStore,
         inboxStore: InboxStore,
         permissionsStore: PermissionsStore,
@@ -136,7 +136,7 @@ final class AppContainer {
         let persistence = UserDefaultsAppPersistenceStore(defaults: resolvedDefaults)
         let buildConfiguration = AppBuildConfiguration.current()
         let secureStore = KeychainSecureStore(
-            serviceName: processEnvironment["UITEST_KEYCHAIN_SERVICE"] ?? "io.hermesmobile.HermesMobile.session"
+            serviceName: processEnvironment["UITEST_KEYCHAIN_SERVICE"] ?? "net.fihonline.herald.Herald.session"
         )
         let settingsStore = SettingsStore(
             persistence: persistence,
@@ -199,11 +199,11 @@ final class AppContainer {
         )
         activePairingStore = runtimePairingStore
 
-        let hostService: any HermesHostServiceProtocol
+        let hostService: any HeraldHostServiceProtocol
         if usesMockPairingService {
-            hostService = MockHermesHostService()
+            hostService = MockHeraldHostService()
         } else {
-            hostService = LiveHermesHostService(
+            hostService = LiveHeraldHostService(
                 apiClient: apiClient,
                 accessTokenRefresher: {
                     await sessionStore.refreshAccessTokenIfNeeded()
@@ -212,13 +212,13 @@ final class AppContainer {
             )
         }
 
-        let hostStore = HermesHostStore(
+        let hostStore = HeraldHostStore(
             hostService: hostService,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
 
-        let hermesClient = ResilientHermesClient(
-            primary: LiveHermesClient(
+        let hermesClient = ResilientHeraldClient(
+            primary: LiveHeraldClient(
                 apiClient: apiClient,
                 accessTokenProvider: { await sessionStore.currentAccessToken() },
                 accessTokenRefresher: {
@@ -227,7 +227,7 @@ final class AppContainer {
                 },
                 allowDemoFallback: allowMockFallbacks && usesMockPairingService
             ),
-            fallback: MockHermesClient(),
+            fallback: MockHeraldClient(),
             allowsFallback: { allowMockFallbacks && (activePairingStore?.isPaired != true || usesMockPairingService) }
         )
 
@@ -484,7 +484,7 @@ final class AppContainer {
                 accessToken: accessToken,
                 deviceID: deviceID,
                 installationID: sessionStore.state.installationID,
-                bundleID: Bundle.main.bundleIdentifier ?? "io.hermesmobile.HermesMobile",
+                bundleID: Bundle.main.bundleIdentifier ?? "net.fihonline.herald.Herald",
                 appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0",
                 pushEnvironment: pushEnvironment
             )

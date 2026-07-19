@@ -35,7 +35,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 struct iPadSidebarView: View {
     @Binding var selectedSection: SidebarSection
     @Binding var isRightPanelOpen: Bool
-    @Environment(HermesHostStore.self) private var hostStore
+    @Environment(HeraldHostStore.self) private var hostStore
     @Environment(SessionListStore.self) private var sessionStore
     @State private var renamingSession: SessionSummary?
     @State private var renameText = ""
@@ -117,7 +117,7 @@ struct iPadSidebarView: View {
 
     private var headerRow: some View {
         HStack {
-            Text("Hermes")
+            Text("Herald")
                 .font(Design.Typography.screenTitle)
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()

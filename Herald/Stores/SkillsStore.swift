@@ -8,7 +8,7 @@ import Foundation
 @MainActor
 @Observable
 final class SkillsStore {
-    struct HermesSkill: Decodable, Identifiable, Hashable {
+    struct HeraldSkill: Decodable, Identifiable, Hashable {
         let name: String
         let description: String
         let path: String
@@ -17,10 +17,10 @@ final class SkillsStore {
     }
 
     private struct SkillCatalogResponse: Decodable {
-        let skills: [HermesSkill]
+        let skills: [HeraldSkill]
     }
 
-    private(set) var skills: [HermesSkill] = []
+    private(set) var skills: [HeraldSkill] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
     var searchText = ""
@@ -38,7 +38,7 @@ final class SkillsStore {
     }
 
     /// Skills filtered by the current search text, matching on name or description.
-    var filteredSkills: [HermesSkill] {
+    var filteredSkills: [HeraldSkill] {
         if searchText.isEmpty { return skills }
         return skills.filter {
             $0.name.localizedCaseInsensitiveContains(searchText) ||

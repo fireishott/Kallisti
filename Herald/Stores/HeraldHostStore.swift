@@ -1,6 +1,6 @@
 import Foundation
 
-enum HermesHostConnectionState: Equatable, Sendable {
+enum HeraldHostConnectionState: Equatable, Sendable {
     case online
     case offline
     case unreachable
@@ -9,19 +9,19 @@ enum HermesHostConnectionState: Equatable, Sendable {
 
 @MainActor
 @Observable
-final class HermesHostStore {
-    var currentHost: HermesHostStatus?
+final class HeraldHostStore {
+    var currentHost: HeraldHostStatus?
     var activeEnrollmentCode: HostEnrollmentCode?
     var isLoading = false
     var isWorking = false
     var lastErrorMessage: String?
     var onHostChanged: (@MainActor () -> Void)?
 
-    private let hostService: any HermesHostServiceProtocol
+    private let hostService: any HeraldHostServiceProtocol
     private let accessTokenProvider: @MainActor () async -> String?
 
     init(
-        hostService: any HermesHostServiceProtocol,
+        hostService: any HeraldHostServiceProtocol,
         accessTokenProvider: @escaping @MainActor () async -> String?
     ) {
         self.hostService = hostService
@@ -32,7 +32,7 @@ final class HermesHostStore {
         currentHost?.isOnline == true
     }
 
-    var connectionState: HermesHostConnectionState {
+    var connectionState: HeraldHostConnectionState {
         if currentHost?.isOnline == true {
             return .online
         }

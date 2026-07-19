@@ -1,7 +1,7 @@
 import Testing
-@testable import HermesMobile
+@testable import Herald
 
-struct HermesMobileTests {
+struct HeraldMobileTests {
 
     @Test func messageCreationDefaultsToSentStatus() async throws {
         let message = Message(sender: .user, content: "Hello Hermes")

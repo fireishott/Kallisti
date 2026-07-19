@@ -2,8 +2,8 @@ import Foundation
 import os
 
 @MainActor
-final class LiveHermesClient: HermesClientProtocol {
-    private static let logger = Logger(subsystem: "io.hermesmobile.HermesMobile", category: "LiveHermesClient")
+final class LiveHeraldClient: HeraldClientProtocol {
+    private static let logger = Logger(subsystem: "net.fihonline.herald.Herald", category: "LiveHeraldClient")
     private static let maxRequestBodyBytes = 1_000_000
     private struct ConversationResponse: Decodable {
         let conversation: RelayConversation
@@ -300,7 +300,7 @@ final class LiveHermesClient: HermesClientProtocol {
             return DemoData.sampleConversation
         }
 
-        return Conversation(title: "Hermes")
+        return Conversation(title: "Herald")
     }
 
     private func mapConversation(_ relayConversation: RelayConversation) -> Conversation {
@@ -522,7 +522,7 @@ final class LiveHermesClient: HermesClientProtocol {
 
 // MARK: - Session Management
 
-extension LiveHermesClient {
+extension LiveHeraldClient {
     private struct SessionListAPIResponse: Decodable {
         let sessions: [SessionAPIEntry]
         let total: Int

@@ -1,6 +1,6 @@
 import XCTest
 
-final class HermesMobileUITestsLaunchTests: XCTestCase {
+final class HeraldMobileUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true

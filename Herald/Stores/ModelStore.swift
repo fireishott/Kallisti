@@ -9,7 +9,7 @@ import Foundation
 @MainActor
 @Observable
 final class ModelStore {
-    struct HermesModel: Decodable, Identifiable, Hashable {
+    struct HeraldModel: Decodable, Identifiable, Hashable {
         let name: String
         let provider: String
         let providerName: String?
@@ -27,7 +27,7 @@ final class ModelStore {
     }
 
     private struct ModelCatalogResponse: Decodable {
-        let models: [HermesModel]?
+        let models: [HeraldModel]?
         let activeModel: ActiveModel?
     }
 
@@ -35,7 +35,7 @@ final class ModelStore {
         let activeModel: ActiveModel?
     }
 
-    private(set) var models: [HermesModel] = []
+    private(set) var models: [HeraldModel] = []
     private(set) var activeModel: ActiveModel?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -53,7 +53,7 @@ final class ModelStore {
 
     /// Models grouped by provider display name, providers sorted alphabetically
     /// with the active model's provider first.
-    var modelsByProvider: [(provider: String, models: [HermesModel])] {
+    var modelsByProvider: [(provider: String, models: [HeraldModel])] {
         let grouped = Dictionary(grouping: models, by: \.displayProviderName)
         return grouped
             .map { (provider: $0.key, models: $0.value) }
@@ -65,7 +65,7 @@ final class ModelStore {
             }
     }
 
-    func isActive(_ model: HermesModel) -> Bool {
+    func isActive(_ model: HeraldModel) -> Bool {
         model.name == activeModel?.name
     }
 

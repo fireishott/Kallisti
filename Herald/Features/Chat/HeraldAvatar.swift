@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct HermesAvatar: View {
+struct HeraldAvatar: View {
     var size: CGFloat = Design.Size.avatarSmall
 
     var body: some View {
@@ -13,6 +13,6 @@ struct HermesAvatar: View {
                 Circle().stroke(Design.Colors.border, lineWidth: 1)
             )
             .clipShape(Circle())
-            .accessibilityLabel("Hermes")
+            .accessibilityLabel("Herald")
     }
 }

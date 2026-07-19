@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ProfileSelectorSheet: View {
-    let profiles: [ProfileStore.HermesProfile]
+    let profiles: [ProfileStore.HeraldProfile]
     let activeProfileName: String?
     let onSelect: (String) -> Void
     @Environment(\.dismiss) private var dismiss

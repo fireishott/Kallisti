@@ -15,7 +15,7 @@ struct ModelSelectorSheet: View {
     /// Called after a model switch succeeds (the switch itself already
     /// happened via `ModelStore.switchModel`). Lets the presenter react —
     /// e.g. dismiss a popover — without re-dispatching anything.
-    var onSelect: (ModelStore.HermesModel, Bool) -> Void
+    var onSelect: (ModelStore.HeraldModel, Bool) -> Void
 
     var body: some View {
         NavigationStack {
@@ -80,7 +80,7 @@ struct ModelSelectorSheet: View {
         }
     }
 
-    private func modelRow(_ model: ModelStore.HermesModel) -> some View {
+    private func modelRow(_ model: ModelStore.HeraldModel) -> some View {
         Button {
             selectModel(model)
         } label: {
@@ -120,7 +120,7 @@ struct ModelSelectorSheet: View {
         .disabled(isSwitching)
     }
 
-    private func selectModel(_ model: ModelStore.HermesModel) {
+    private func selectModel(_ model: ModelStore.HeraldModel) {
         switchError = nil
         isSwitching = true
         switchingModelID = model.id

@@ -9,7 +9,7 @@ import Foundation
 @MainActor
 @Observable
 final class ProfileStore {
-    struct HermesProfile: Decodable, Identifiable, Hashable {
+    struct HeraldProfile: Decodable, Identifiable, Hashable {
         let name: String
         let description: String
         let skillCount: Int
@@ -18,11 +18,11 @@ final class ProfileStore {
     }
 
     private struct ProfileCatalogResponse: Decodable {
-        let activeProfile: HermesProfile?
-        let profiles: [HermesProfile]
+        let activeProfile: HeraldProfile?
+        let profiles: [HeraldProfile]
     }
 
-    private(set) var profiles: [HermesProfile] = []
+    private(set) var profiles: [HeraldProfile] = []
     private(set) var activeProfileName: String?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -39,7 +39,7 @@ final class ProfileStore {
     }
 
     /// The full profile object for the currently active profile, if any.
-    var activeProfile: HermesProfile? {
+    var activeProfile: HeraldProfile? {
         guard let name = activeProfileName else { return nil }
         return profiles.first { $0.name == name }
     }

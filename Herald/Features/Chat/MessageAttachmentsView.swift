@@ -57,7 +57,7 @@ struct MessageAttachmentsView: View {
 
     private func openFile(_ attachment: MessageAttachment) async {
         guard let data = await attachmentService.data(for: attachment) else { return }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HermesPreview", isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HeraldPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(sanitized(attachment.fileName))
         do {

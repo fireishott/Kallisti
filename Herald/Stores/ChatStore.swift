@@ -54,7 +54,7 @@ final class ChatStore {
     /// active profile name on the owning ProfileStore.
     var profileStore: ProfileStore?
 
-    private let hermesClient: any HermesClientProtocol
+    private let hermesClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 
@@ -62,7 +62,7 @@ final class ChatStore {
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
 
-    init(hermesClient: any HermesClientProtocol, persistence: any AppPersistenceStoreProtocol) {
+    init(hermesClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
         self.hermesClient = hermesClient
         self.persistence = persistence
     }
@@ -114,7 +114,7 @@ final class ChatStore {
             attachments: attachments.map { MessageAttachment(from: $0) }
         )
         if conversation == nil {
-            conversation = Conversation(title: "Hermes")
+            conversation = Conversation(title: "Herald")
         }
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp

@@ -272,7 +272,7 @@ private struct WelcomeStepView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Brand row
             HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                HermesMark(size: 22, color: Design.Colors.foreground)
+                HeraldMark(size: 22, color: Design.Colors.foreground)
                 Text("HERMES · iOS")
                     .brandEyebrow(Design.Colors.foreground)
                 Spacer()
@@ -287,7 +287,7 @@ private struct WelcomeStepView: View {
             // Huge mono display
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Hermes")
+                    Text("Herald")
                     Text("on")
                         .foregroundStyle(Design.Colors.tertiaryForeground)
                     Text("iOS.")
@@ -825,7 +825,7 @@ private struct ReadyStepView: View {
     var body: some View {
         ZStack {
             // Background glyph
-            HermesMark(size: 340, color: Design.Colors.foreground.opacity(0.06))
+            HeraldMark(size: 340, color: Design.Colors.foreground.opacity(0.06))
                 .offset(x: 120, y: -40)
 
             VStack(alignment: .leading, spacing: 0) {
@@ -942,7 +942,7 @@ struct OnboardingGhostCta: View {
 
 // MARK: - Hermes Mark
 
-struct HermesMark: View {
+struct HeraldMark: View {
     let size: CGFloat
     let color: Color
 

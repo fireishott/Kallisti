@@ -2,10 +2,10 @@ import SwiftUI
 import WidgetKit
 
 @main
-struct HermesWidgetBundle: WidgetBundle {
+struct HeraldWidgetBundle: WidgetBundle {
     var body: some Widget {
-        HermesLiveActivity()
-        HermesStatusWidget()
-        HermesHealthWidget()
+        HeraldLiveActivity()
+        HeraldStatusWidget()
+        HeraldHealthWidget()
     }
 }

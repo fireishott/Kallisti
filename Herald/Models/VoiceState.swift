@@ -72,7 +72,7 @@ enum TranscriptSpeaker: String, Codable, Hashable, Sendable {
     var displayLabel: String {
         switch self {
         case .user: "You"
-        case .hermes: "Hermes"
+        case .hermes: "Herald"
         case .system: "System"
         }
     }

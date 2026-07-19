@@ -3,7 +3,7 @@ import Foundation
 
 /// Shared attributes for Hermes Live Activities.
 /// Used by both the main app (to start/update activities) and the widget extension (to render them).
-struct HermesActivityAttributes: ActivityAttributes, Sendable {
+struct HeraldActivityAttributes: ActivityAttributes, Sendable {
     /// Dynamic data — updated throughout the activity's lifetime.
     struct ContentState: Codable, Hashable, Sendable {
         var status: String            // "Listening", "Thinking", "Working on that…"
@@ -14,5 +14,5 @@ struct HermesActivityAttributes: ActivityAttributes, Sendable {
     }
 
     /// Immutable for the lifetime of the activity.
-    var agentName: String = "Hermes"
+    var agentName: String = "Herald"
 }

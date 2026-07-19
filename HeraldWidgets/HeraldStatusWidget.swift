@@ -2,12 +2,12 @@ import SwiftUI
 import WidgetKit
 
 /// Glanceable Hermes status — connection state, last message, voice indicator.
-struct HermesStatusWidget: Widget {
-    let kind = "HermesStatus"
+struct HeraldStatusWidget: Widget {
+    let kind = "HeraldStatus"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: HermesTimelineProvider()) { entry in
-            HermesStatusView(entry: entry)
+        StaticConfiguration(kind: kind, provider: HeraldTimelineProvider()) { entry in
+            HeraldStatusView(entry: entry)
                 .containerBackground(for: .widget) {
                     Color(.systemBackground)
                 }
@@ -24,8 +24,8 @@ struct HermesStatusWidget: Widget {
 
 // MARK: - Views
 
-private struct HermesStatusView: View {
-    let entry: HermesWidgetEntry
+private struct HeraldStatusView: View {
+    let entry: HeraldWidgetEntry
     @Environment(\.widgetFamily) var family
 
     var body: some View {
@@ -46,15 +46,15 @@ private struct HermesStatusView: View {
     private var systemSmallView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                HermesBrandIcon(size: 22)
-                Text("Hermes")
+                HeraldBrandIcon(size: 22)
+                Text("Herald")
                     .font(.system(.caption, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.2)
                     .foregroundStyle(.primary)
                 Spacer()
                 Circle()
-                    .fill(entry.data.hostOnline ? HermesBrand.accent : .gray)
+                    .fill(entry.data.hostOnline ? HeraldBrand.accent : .gray)
                     .frame(width: 8, height: 8)
             }
 
@@ -63,7 +63,7 @@ private struct HermesStatusView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.0)
-                    .foregroundStyle(HermesBrand.accent)
+                    .foregroundStyle(HeraldBrand.accent)
             }
 
             Spacer()
@@ -100,10 +100,10 @@ private struct HermesStatusView: View {
                     .font(.title3)
                     .widgetAccentable()
             } else {
-                HermesBrandIcon(size: 18)
+                HeraldBrandIcon(size: 18)
             }
             Circle()
-                .fill(entry.data.hostOnline ? HermesBrand.accent : .gray)
+                .fill(entry.data.hostOnline ? HeraldBrand.accent : .gray)
                 .frame(width: 5, height: 5)
         }
         .widgetURL(URL(string: "hermes://chat"))
@@ -114,8 +114,8 @@ private struct HermesStatusView: View {
     private var rectangularView: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                HermesBrandIcon(size: 14)
-                Text("Hermes")
+                HeraldBrandIcon(size: 14)
+                Text("Herald")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.2)
@@ -148,20 +148,20 @@ private struct HermesStatusView: View {
 // MARK: - Previews
 
 #Preview("Small", as: .systemSmall) {
-    HermesStatusWidget()
+    HeraldStatusWidget()
 } timeline: {
-    HermesWidgetEntry.placeholder
-    HermesWidgetEntry(date: .now, data: .empty)
+    HeraldWidgetEntry.placeholder
+    HeraldWidgetEntry(date: .now, data: .empty)
 }
 
 #Preview("Circular", as: .accessoryCircular) {
-    HermesStatusWidget()
+    HeraldStatusWidget()
 } timeline: {
-    HermesWidgetEntry.placeholder
+    HeraldWidgetEntry.placeholder
 }
 
 #Preview("Rectangular", as: .accessoryRectangular) {
-    HermesStatusWidget()
+    HeraldStatusWidget()
 } timeline: {
-    HermesWidgetEntry.placeholder
+    HeraldWidgetEntry.placeholder
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SkillDetailView: View {
-    let skill: SkillsStore.HermesSkill
+    let skill: SkillsStore.HeraldSkill
 
     var body: some View {
         ScrollView {

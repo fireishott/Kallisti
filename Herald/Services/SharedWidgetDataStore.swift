@@ -1,7 +1,7 @@
 import Foundation
 import WidgetKit
 
-/// Reads and writes `HermesWidgetData` to the App Group shared container.
+/// Reads and writes `HeraldWidgetData` to the App Group shared container.
 /// The main app writes; the widget extension reads.
 enum SharedWidgetDataStore {
     /// App Group identifier. Reads from the APP_GROUP_ID Info.plist key if set,
@@ -12,19 +12,19 @@ enum SharedWidgetDataStore {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
         }
-        return "group.com.herald.legacy"
+        return "group.net.fihonline.heraldApp"
     }()
     private static let dataKey = "hermes.widget.data"
 
     // Coalesce bursts of reloads. During chat streaming the caller can write
     // widget data dozens of times per second; `reloadAllTimelines` is an
     // expensive IPC boundary and the widget only needs the latest state.
-    private static let reloadQueue = DispatchQueue(label: "io.hermesmobile.widgetReload")
+    private static let reloadQueue = DispatchQueue(label: "net.fihonline.herald.widgetReload")
     nonisolated(unsafe) private static var pendingReload = false
     nonisolated(unsafe) private static var lastReloadAt: Date?
     private static let reloadMinInterval: TimeInterval = 2.0
 
-    static func write(_ data: HermesWidgetData) {
+    static func write(_ data: HeraldWidgetData) {
         guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
         guard let encoded = try? JSONEncoder().encode(data) else { return }
         defaults.set(encoded, forKey: dataKey)
@@ -50,10 +50,10 @@ enum SharedWidgetDataStore {
         }
     }
 
-    static func read() -> HermesWidgetData {
+    static func read() -> HeraldWidgetData {
         guard let defaults = UserDefaults(suiteName: appGroupID),
               let data = defaults.data(forKey: dataKey),
-              let decoded = try? JSONDecoder().decode(HermesWidgetData.self, from: data)
+              let decoded = try? JSONDecoder().decode(HeraldWidgetData.self, from: data)
         else {
             return .empty
         }

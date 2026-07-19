@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Design Tokens
 // Public Ethos brand kit — monospace-forward, bone on near-black,
-// signal-orange agent accent. All visual constants for HermesMobile.
+// signal-orange agent accent. All visual constants for Herald.
 // No magic numbers in view code.
 
 enum Design {

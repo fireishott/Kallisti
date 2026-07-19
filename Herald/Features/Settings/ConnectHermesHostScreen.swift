@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConnectHermesHostScreen: View {
-    @Environment(HermesHostStore.self) private var hostStore
+    @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(\.dismiss) private var dismiss
 

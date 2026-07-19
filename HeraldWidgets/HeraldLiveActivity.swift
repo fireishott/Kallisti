@@ -5,17 +5,17 @@ import WidgetKit
 
 // Brand palette mirrored from Design.swift — widget target doesn't link the
 // main app's Design module, so we keep a minimal palette inline.
-enum HermesBrand {
+enum HeraldBrand {
     static let accent = Color(red: 1.0, green: 0.247, blue: 0.0)       // signal-orange #FF3F00
     static let foreground = Color(red: 0.757, green: 0.753, blue: 0.714) // bone #C1C0B6
     static let surface = Color(red: 0.11, green: 0.12, blue: 0.13)     // surface
     static let border = Color(red: 0.27, green: 0.27, blue: 0.26, opacity: 0.35)
 }
 
-struct HermesBrandIcon: View {
+struct HeraldBrandIcon: View {
     let size: CGFloat
     var fallbackSymbol: String = "waveform"
-    var fallbackTint: Color = HermesBrand.accent
+    var fallbackTint: Color = HeraldBrand.accent
     var backgroundTint: Color? = nil
     var cornerRadius: CGFloat? = nil
 
@@ -69,16 +69,16 @@ extension View {
     }
 }
 
-struct HermesLiveActivity: Widget {
+struct HeraldLiveActivity: Widget {
     var body: some WidgetConfiguration {
-        ActivityConfiguration(for: HermesActivityAttributes.self) { context in
+        ActivityConfiguration(for: HeraldActivityAttributes.self) { context in
             // Lock Screen layout
             lockScreenView(context: context)
         } dynamicIsland: { context in
             DynamicIsland {
                 // Expanded view (long press on Dynamic Island)
                 DynamicIslandExpandedRegion(.leading) {
-                    HermesBrandIcon(size: 28)
+                    HeraldBrandIcon(size: 28)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -97,12 +97,12 @@ struct HermesLiveActivity: Widget {
                     if let tool = context.state.toolName {
                         Text(tool)
                             .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(HermesBrand.accent.opacity(0.8))
+                            .foregroundStyle(HeraldBrand.accent.opacity(0.8))
                     }
                 }
             } compactLeading: {
                 // Compact left side of Dynamic Island
-                HermesBrandIcon(size: 14)
+                HeraldBrandIcon(size: 14)
             } compactTrailing: {
                 // Compact right side
                 Text(context.state.status.prefix(12))
@@ -112,18 +112,18 @@ struct HermesLiveActivity: Widget {
                     .foregroundStyle(.white.opacity(0.85))
             } minimal: {
                 // Minimal (when multiple Live Activities compete)
-                HermesBrandIcon(size: 16)
+                HeraldBrandIcon(size: 16)
             }
         }
         .supplementalActivityFamilies([.small])
     }
 
     @ViewBuilder
-    private func lockScreenView(context: ActivityViewContext<HermesActivityAttributes>) -> some View {
+    private func lockScreenView(context: ActivityViewContext<HeraldActivityAttributes>) -> some View {
         HStack(spacing: 12) {
-            HermesBrandIcon(
+            HeraldBrandIcon(
                 size: 44,
-                backgroundTint: HermesBrand.surface,
+                backgroundTint: HeraldBrand.surface,
                 cornerRadius: 12
             )
 
@@ -142,7 +142,7 @@ struct HermesLiveActivity: Widget {
                 if let tool = context.state.toolName {
                     Text(tool)
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(HermesBrand.accent)
+                        .foregroundStyle(HeraldBrand.accent)
                 }
             }
 
@@ -171,5 +171,5 @@ struct HermesLiveActivity: Widget {
     }
 }
 
-// Previews are in HermesMobile/Features/Talk/LiveActivityPreviews.swift
+// Previews are in Herald/Features/Talk/LiveActivityPreviews.swift
 // (Widget extension targets cannot host previews.)

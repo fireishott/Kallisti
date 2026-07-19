@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class ResilientHermesClient: HermesClientProtocol {
+final class ResilientHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus {
         primary.connectionStatus
     }
@@ -10,13 +10,13 @@ final class ResilientHermesClient: HermesClientProtocol {
         primary.currentConversation ?? fallback.currentConversation
     }
 
-    private let primary: any HermesClientProtocol
-    private let fallback: any HermesClientProtocol
+    private let primary: any HeraldClientProtocol
+    private let fallback: any HeraldClientProtocol
     private let allowsFallback: @MainActor () -> Bool
 
     init(
-        primary: any HermesClientProtocol,
-        fallback: any HermesClientProtocol,
+        primary: any HeraldClientProtocol,
+        fallback: any HeraldClientProtocol,
         allowsFallback: @escaping @MainActor () -> Bool = { true }
     ) {
         self.primary = primary
@@ -67,7 +67,7 @@ final class ResilientHermesClient: HermesClientProtocol {
 
 // MARK: - Session Management
 
-extension ResilientHermesClient {
+extension ResilientHeraldClient {
     func listSessions(limit: Int, offset: Int, allDevices: Bool = false) async throws -> SessionListResponse {
         do {
             return try await primary.listSessions(limit: limit, offset: offset, allDevices: allDevices)

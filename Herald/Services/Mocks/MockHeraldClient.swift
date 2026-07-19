@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 @Observable
-final class MockHermesClient: HermesClientProtocol {
+final class MockHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .connected
     var currentConversation: Conversation?
 
@@ -100,13 +100,13 @@ final class MockHermesClient: HermesClientProtocol {
     }
 
     func clearConversation() async throws -> Conversation {
-        let fresh = Conversation(title: "Hermes")
+        let fresh = Conversation(title: "Herald")
         currentConversation = fresh
         return fresh
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-        return currentConversation ?? Conversation(title: "Hermes")
+        return currentConversation ?? Conversation(title: "Herald")
     }
 
     private func generateResponse(for input: String) -> String {
@@ -124,7 +124,7 @@ final class MockHermesClient: HermesClientProtocol {
 
 // MARK: - Session Management (Mock)
 
-extension MockHermesClient {
+extension MockHeraldClient {
     func listSessions(limit: Int, offset: Int, allDevices: Bool = false) async throws -> SessionListResponse {
         let all = DemoData.sampleSessions
         let page = Array(all.dropFirst(offset).prefix(limit))

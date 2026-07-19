@@ -34,7 +34,7 @@ struct SkillsBrowserView: View {
         }
         .searchable(text: Bindable(skillsStore).searchText, prompt: "Search skills")
         .navigationTitle("Skills")
-        .navigationDestination(for: SkillsStore.HermesSkill.self) { skill in
+        .navigationDestination(for: SkillsStore.HeraldSkill.self) { skill in
             SkillDetailView(skill: skill)
         }
         .refreshable { await skillsStore.loadSkills(force: true) }

@@ -9,7 +9,7 @@ struct ThinkingIndicatorView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: Design.Spacing.xs) {
-            HermesAvatar(size: Design.Size.avatarSmall)
+            HeraldAvatar(size: Design.Size.avatarSmall)
                 .opacity(isPulsing ? 0.5 : 1.0)
 
             VStack(alignment: .leading, spacing: Design.Spacing.xxs) {

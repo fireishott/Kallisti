@@ -2,7 +2,7 @@ import Foundation
 import HealthKit
 import Testing
 import UIKit
-@testable import HermesMobile
+@testable import Herald
 
 @Suite(.serialized)
 struct AppStoresTests {
@@ -171,11 +171,11 @@ struct AppStoresTests {
     }
 
     @MainActor
-    private final class RecordingHermesHostService: HermesHostServiceProtocol {
-        var currentHost: HermesHostStatus?
+    private final class RecordingHermesHostService: HeraldHostServiceProtocol {
+        var currentHost: HeraldHostStatus?
         var fetchError: Error?
 
-        func fetchCurrentHost(accessToken: String?) async throws -> HermesHostStatus? {
+        func fetchCurrentHost(accessToken: String?) async throws -> HeraldHostStatus? {
             if let fetchError {
                 throw fetchError
             }
@@ -196,7 +196,7 @@ struct AppStoresTests {
     }
 
     @MainActor
-    private final class RecordingHermesClient: HermesClientProtocol {
+    private final class RecordingHermesClient: HeraldClientProtocol {
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         var sendCallCount = 0
@@ -499,7 +499,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesStreamingArtifactsAfterConversationRefresh() async throws {
-        final class StreamingArtifactClient: HermesClientProtocol {
+        final class StreamingArtifactClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -586,7 +586,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesStreamingPlaceholderDuringConversationRefresh() async throws {
-        final class PlaceholderRefreshClient: HermesClientProtocol {
+        final class PlaceholderRefreshClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -638,7 +638,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreKeepsAcceptedMessagePendingUntilTerminalResultArrives() async throws {
-        final class PendingUntilFinishedClient: HermesClientProtocol {
+        final class PendingUntilFinishedClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -691,7 +691,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreRefreshesConversationWhenStreamingFailsAfterJobAccepted() async throws {
-        final class StreamingFailureClient: HermesClientProtocol {
+        final class StreamingFailureClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var loadConversationCallCount = 0
@@ -869,7 +869,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let hermesClient = LiveHermesClient(
+        let hermesClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { "token" },
             allowDemoFallback: false
@@ -926,7 +926,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let hermesClient = LiveHermesClient(
+        let hermesClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { "token" },
             allowDemoFallback: false
@@ -945,7 +945,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreRetriesAttachmentOnlyMessageWithRestoredAttachments() async throws {
-        final class AttachmentRetryClient: HermesClientProtocol {
+        final class AttachmentRetryClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var lastMessage: String?
@@ -1014,7 +1014,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesUserAttachmentPreviewMetadataAfterRefresh() async throws {
-        final class AttachmentRoundTripClient: HermesClientProtocol {
+        final class AttachmentRoundTripClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -1448,7 +1448,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let hermesClient = LiveHermesClient(
+        let hermesClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { accessToken.value },
             accessTokenRefresher: {
@@ -1519,7 +1519,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let hostService = LiveHermesHostService(
+        let hostService = LiveHeraldHostService(
             apiClient: apiClient,
             accessTokenRefresher: {
                 refreshCallCount.value += 1
@@ -1678,7 +1678,7 @@ struct AppStoresTests {
                 let body = requestBodyString(request)
                 #expect(body.contains("\"challengeId\":\"challenge-123\""))
                 #expect(body.contains("\"keyId\":\"attest-key\""))
-                let data = #"{"data":{"transport":"relay","relayHandle":"relay-handle-123","sendGrant":"relay-send-grant-123","relayId":"relay-123","relayPublicKey":"relay-pub-key","installationId":"install-123","topic":"io.hermesmobile.HermesMobile","environment":"production","tokenDebugSuffix":"efef5678","expiresAt":"2026-05-01T00:00:00Z"}}"#.data(using: .utf8)!
+                let data = #"{"data":{"transport":"relay","relayHandle":"relay-handle-123","sendGrant":"relay-send-grant-123","relayId":"relay-123","relayPublicKey":"relay-pub-key","installationId":"install-123","topic":"net.fihonline.herald","environment":"production","tokenDebugSuffix":"efef5678","expiresAt":"2026-05-01T00:00:00Z"}}"#.data(using: .utf8)!
                 return (response, data)
             }
             if url.absoluteString == "https://relay.example.com/v1/push/register" {
@@ -1725,7 +1725,7 @@ struct AppStoresTests {
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
-            bundleID: "io.hermesmobile.HermesMobile",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.1.0",
             pushEnvironment: "production"
         )
@@ -1819,7 +1819,7 @@ struct AppStoresTests {
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
-            bundleID: "io.hermesmobile.HermesMobile",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.1.0",
             pushEnvironment: "production"
         )
@@ -2080,7 +2080,7 @@ struct AppStoresTests {
     @Test @MainActor
     func hostStoreGeneratesEnrollmentCodeAndClearsOnRevoke() async throws {
         let service = RecordingHermesHostService()
-        service.currentHost = HermesHostStatus(
+        service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
             hostname: "test-host",
@@ -2094,7 +2094,7 @@ struct AppStoresTests {
             isOnline: false
         )
 
-        let hostStore = HermesHostStore(
+        let hostStore = HeraldHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )
@@ -2115,7 +2115,7 @@ struct AppStoresTests {
         let service = RecordingHermesHostService()
         service.fetchError = RelayAPIClient.ClientError.requestFailed("Relay unreachable.")
 
-        let hostStore = HermesHostStore(
+        let hostStore = HeraldHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )
@@ -2130,7 +2130,7 @@ struct AppStoresTests {
     @Test @MainActor
     func hostStoreKeepsKnownOnlineHostDuringRefreshErrors() async throws {
         let service = RecordingHermesHostService()
-        service.currentHost = HermesHostStatus(
+        service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
             hostname: "test-host",
@@ -2144,7 +2144,7 @@ struct AppStoresTests {
             isOnline: true
         )
 
-        let hostStore = HermesHostStore(
+        let hostStore = HeraldHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )

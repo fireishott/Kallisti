@@ -5,7 +5,7 @@ struct ChatScreen: View {
     @Environment(ChatStore.self) private var chatStore
     @Environment(ModelStore.self) private var modelStore
     @Environment(ProfileStore.self) private var profileStore
-    @Environment(HermesHostStore.self) private var hostStore
+    @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(SettingsStore.self) private var settingsStore
@@ -688,7 +688,7 @@ struct ChatScreen: View {
                 chatStore.setConversationTitle(name)
                 appendSystemMessage("Session title set: \(name)")
             } else {
-                let current = chatStore.conversation?.title ?? "Hermes"
+                let current = chatStore.conversation?.title ?? "Herald"
                 let id = chatStore.conversation.map { String($0.id.uuidString.prefix(8)) } ?? "—"
                 appendSystemMessage("Session ID: \(id)…\nTitle: \(current)\nUsage: /title <your session title>")
             }
@@ -809,7 +809,7 @@ struct ChatScreen: View {
         for msg in messages {
             guard msg.sender == .user || msg.sender == .hermes else { continue }
             visibleIndex += 1
-            let role = msg.sender == .user ? "You" : "Hermes"
+            let role = msg.sender == .user ? "You" : "Herald"
             let preview = msg.content.prefix(previewLimit)
             let suffix = msg.content.count > previewLimit ? "..." : ""
             lines.append("[\(role) #\(visibleIndex)] \(preview)\(suffix)")

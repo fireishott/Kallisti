@@ -24,7 +24,7 @@ private struct LockScreenPreview: View {
                 .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hermes")
+                Text("Herald")
                     .brandEyebrow()
 
                 Text(status)
@@ -97,7 +97,7 @@ private struct DynamicIslandExpandedPreview: View {
                 .foregroundStyle(Design.Brand.accent)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hermes")
+                Text("Herald")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.2)

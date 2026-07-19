@@ -1,8 +1,8 @@
 import Foundation
 
 @MainActor
-final class MockHermesHostService: HermesHostServiceProtocol {
-    var currentHost: HermesHostStatus? = HermesHostStatus(
+final class MockHeraldHostService: HeraldHostServiceProtocol {
+    var currentHost: HeraldHostStatus? = HeraldHostStatus(
         id: UUID(),
         displayName: "Mock Hermes Host",
         hostname: "mock-hermes.local",
@@ -16,7 +16,7 @@ final class MockHermesHostService: HermesHostServiceProtocol {
         isOnline: true
     )
 
-    func fetchCurrentHost(accessToken: String?) async throws -> HermesHostStatus? {
+    func fetchCurrentHost(accessToken: String?) async throws -> HeraldHostStatus? {
         currentHost
     }
 

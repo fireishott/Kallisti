@@ -1,6 +1,6 @@
 import Foundation
 
-struct HermesHostStatus: Codable, Hashable, Sendable {
+struct HeraldHostStatus: Codable, Hashable, Sendable {
     let id: UUID
     let displayName: String?
     let hostname: String?

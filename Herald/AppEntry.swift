@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-final class HermesAppDelegate: NSObject, UIApplicationDelegate {
+final class HeraldAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -53,9 +53,9 @@ final class HermesAppDelegate: NSObject, UIApplicationDelegate {
 }
 
 @main
-struct HermesMobileApp: App {
+struct HeraldApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @UIApplicationDelegateAdaptor(HermesAppDelegate.self) private var appDelegate
+    @UIApplicationDelegateAdaptor(HeraldAppDelegate.self) private var appDelegate
     @State private var container = AppContainer.sharedDefault()
 
     var body: some Scene {
