@@ -144,6 +144,18 @@ struct ChatInputBar: View {
                         }
                         return .ignored
                     }
+                    .onChange(of: text) { oldValue, newValue in
+                        // Virtual keyboard Return key inserts a newline into
+                        // multiline TextField. onKeyPress only fires for hardware
+                        // keyboards, so we detect the newline here instead.
+                        guard settingsStore.settings.enterToSend else { return }
+                        guard newValue.contains("\n") else { return }
+                        // Strip the newline and send
+                        text = newValue.replacingOccurrences(of: "\n", with: "")
+                        if canSend {
+                            handlePrimaryAction()
+                        }
+                    }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
                     .padding(.bottom, Design.Spacing.xs)
