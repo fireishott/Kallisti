@@ -141,7 +141,11 @@ final class PermissionsStore {
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
         await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { _ in
-                continuation.resume()
+                // Resume on main actor to avoid thread-safety issues that can
+                // cause crashes on iOS 18 when the TCC dialog dismisses.
+                Task { @MainActor in
+                    continuation.resume()
+                }
             }
         }
     }
