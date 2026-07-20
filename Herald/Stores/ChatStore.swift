@@ -771,7 +771,7 @@ final class ChatStore {
                     $0.jobID == remoteJobID
                         && $0.sender == remote.sender
                         && $0.sender == .herald
-                        && (!$0.toolActivities.isEmpty || $0.codeDiff != nil)
+                        && (!$0.toolActivities.isEmpty || $0.codeDiff != nil || !$0.reasoning.isEmpty)
                 })
             } else {
                 local = nil
@@ -786,6 +786,13 @@ final class ChatStore {
 
             if let diff = local.codeDiff, refreshedConversation.messages[index].codeDiff == nil {
                 refreshedConversation.messages[index].codeDiff = diff
+            }
+
+            if !local.reasoning.isEmpty {
+                refreshedConversation.messages[index].reasoning = local.reasoning
+                if local.reasoningDuration != nil {
+                    refreshedConversation.messages[index].reasoningDuration = local.reasoningDuration
+                }
             }
 
             if !local.attachments.isEmpty {
