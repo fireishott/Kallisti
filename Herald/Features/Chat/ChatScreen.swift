@@ -432,8 +432,9 @@ struct ChatScreen: View {
     }
 
     private func compactModelName(_ model: String) -> String {
-        guard model.count > 16 else { return model }
-        return String(model.prefix(16)) + "…"
+        let limit = DeviceClass.isPhone ? 12 : 16
+        guard model.count > limit else { return model }
+        return String(model.prefix(limit)) + "…"
     }
 
     private func compactDecimal(_ value: Double, suffix: String) -> String {

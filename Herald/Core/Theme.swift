@@ -203,14 +203,11 @@ struct ChatWallpaperBackground: View {
             Color(.systemBackground)
             GeometryReader { geo in
                 let markSize = min(geo.size.width * 1.2, 500)
-                // Render the icon in the foreground color so it's visible on
-                // both light and dark backgrounds (white-on-dark, dark-on-light).
                 Image("AppIconImage")
                     .resizable()
-                    .renderingMode(.template)
                     .aspectRatio(contentMode: .fit)
                     .frame(width: markSize, height: markSize)
-                    .foregroundStyle(Color(.label).opacity(0.08))
+                    .opacity(0.18)
                     .offset(x: geo.size.width * 0.2, y: -40)
             }
             RadialGradient(
