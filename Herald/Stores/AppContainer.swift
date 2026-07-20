@@ -78,6 +78,7 @@ final class AppContainer {
         let messageID: String?
         let jobID: String?
         let action: String?
+        let replyText: String?
     }
     private var pendingNotificationRoute: PendingNotificationRoute?
 
@@ -194,8 +195,11 @@ final class AppContainer {
         )
         let syncCoordinator = MockSyncCoordinator()
         let notificationService = LiveNotificationService()
-        let allowMockFallbacks = AppEnvironmentPolicy.currentBuild.allowsEnvironmentOverrides
         let usesMockPairingService = processEnvironment["UITEST_PAIRING_MODE"] == "mock"
+        // Mock responses must never mask a failed or missing real pairing on a
+        // developer build. They are reserved for the explicitly mocked UI-test
+        // harness, which opts in through its launch environment.
+        let allowMockFallbacks = usesMockPairingService
         let pairingService: any PairingServiceProtocol
         var activePairingStore: PairingStore?
 
@@ -267,19 +271,22 @@ final class AppContainer {
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
 
-        let heraldClient = ResilientHeraldClient(
-            primary: LiveHeraldClient(
+        let heraldClient: any HeraldClientProtocol
+        if usesMockPairingService {
+            heraldClient = MockHeraldClient()
+        } else {
+            let liveClient = LiveHeraldClient(
                 apiClient: apiClient,
                 accessTokenProvider: { await sessionStore.currentAccessToken() },
                 accessTokenRefresher: {
                     await sessionStore.refreshAccessTokenIfNeeded()
                     return await sessionStore.currentAccessToken()
                 },
-                allowDemoFallback: allowMockFallbacks && usesMockPairingService
-            ),
-            fallback: MockHeraldClient(),
-            allowsFallback: { allowMockFallbacks && (activePairingStore?.isPaired != true || usesMockPairingService) }
-        )
+                allowDemoFallback: false
+            )
+            liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
+            heraldClient = liveClient
+        }
 
         let liveLocationService = LiveLocationService()
         liveLocationService.updateSyncPreference(settingsStore.settings.locationSyncPreference)
@@ -328,6 +335,25 @@ final class AppContainer {
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak) }
                 ts.apiKeyHolder = apiKeyHolder
+
+                // Wire the full Talk pipeline when not in UI-test mock mode
+                if !usesMockPairingService {
+                    let capture = TalkAudioCapture()
+                    let asr = MimoASRService(apiKeyProvider: { apiKeyHolder.get() })
+                    let playback = PCMPlaybackQueue()
+                    let turnClient = TalkTurnClient(heraldClient: heraldClient)
+                    let conversationId = UUID()
+                    let coordinator = HermesTalkCoordinator(
+                        capture: capture,
+                        asr: asr,
+                        tts: tts,
+                        turnClient: turnClient,
+                        playback: playback,
+                        conversationId: conversationId
+                    )
+                    ts.attachHermesCoordinator(coordinator)
+                }
+
                 return ts
             }(),
             sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore, persistence: persistence),
@@ -452,7 +478,8 @@ final class AppContainer {
             conversationID: conversationID,
             messageID: messageID,
             jobID: jobID,
-            action: action
+            action: action,
+            replyText: replyText
         )
 
         if isInitialized {
@@ -467,7 +494,7 @@ final class AppContainer {
     private func processPendingNotificationRoute() async {
         guard let route = pendingNotificationRoute else { return }
         pendingNotificationRoute = nil
-        await processRoute(route)
+        await processRoute(route, replyText: route.replyText)
     }
 
     private func processRoute(_ route: PendingNotificationRoute, replyText: String? = nil) async {

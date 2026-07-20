@@ -4,6 +4,17 @@ import os
 
 @MainActor
 final class TalkAudioCapture {
+    enum CaptureError: LocalizedError {
+        case noAudioInput
+
+        var errorDescription: String? {
+            switch self {
+            case .noAudioInput:
+                return "No microphone input is available."
+            }
+        }
+    }
+
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "TalkAudioCapture")
 
     private var audioEngine: AVAudioEngine?
@@ -30,7 +41,15 @@ final class TalkAudioCapture {
     func startRecording() throws {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let format = inputNode.inputFormat(forBus: 0)
+        let format = inputNode.outputFormat(forBus: 0)
+
+        // installTap(_:bufferSize:format:) raises an Objective-C exception for
+        // a zero-rate/zero-channel format, which bypasses Swift's do/catch and
+        // terminates the app. This can occur when permission is denied or no
+        // input route is ready, so reject it before touching the audio graph.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw CaptureError.noAudioInput
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
@@ -49,6 +68,7 @@ final class TalkAudioCapture {
             }
         }
 
+        engine.prepare()
         try engine.start()
         audioEngine = engine
         isRecording = true

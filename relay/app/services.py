@@ -1102,6 +1102,7 @@ def create_message_job(
     conversation_id: str,
     user_message_id: str,
     session_id_snapshot: str | None,
+    reasoning_effort: str | None = None,
 ) -> MessageJob:
     job = MessageJob(
         user_id=user_id,
@@ -1110,6 +1111,7 @@ def create_message_job(
         session_id_snapshot=session_id_snapshot,
         status="queued",
         retryable=True,
+        reasoning_effort=reasoning_effort,
     )
     db.add(job)
     db.commit()
@@ -1186,7 +1188,7 @@ def log_stale_queued_jobs(db: Session, settings: Settings) -> None:
 
         if host is None or host.revoked_at is not None:
             # Genuine orphan: no host or revoked host
-            if job.created_at < orphan_threshold:
+            if normalize_datetime(job.created_at) < orphan_threshold:
                 # Transition to terminal failed state
                 job.status = "failed"
                 job.error_text = "No active host available to process this message."
@@ -1601,12 +1603,17 @@ def append_job_event(
         select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)
     )
     new_seq = max_seq + 1
+    # The first durable-log schema shipped source_seq as NOT NULL while the
+    # legacy connector legitimately emits unsequenced events. Store a stable,
+    # per-job negative surrogate for those events so older SQLite databases can
+    # append them without colliding with real (non-negative) source sequences.
+    stored_source_seq = source_seq if source_seq is not None else -new_seq
 
     event = JobEvent(
         job_id=job_id,
         seq=new_seq,
         attempt=attempt,
-        source_seq=source_seq,
+        source_seq=stored_source_seq,
         type=event_type,
         payload_json=payload,
     )

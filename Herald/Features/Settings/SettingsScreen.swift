@@ -495,8 +495,39 @@ struct SettingsScreen: View {
                     title: "Show Reasoning",
                     isOn: showReasoningBinding
                 )
+
+                sectionDivider
+
+                reasoningEffortPicker
             }
         }
+    }
+
+    private var reasoningEffortPicker: some View {
+        HStack {
+            Label("Reasoning Effort", systemImage: "slider.horizontal.3")
+                .font(Design.Typography.body)
+                .foregroundStyle(Design.Colors.foreground)
+
+            Spacer()
+
+            Picker("", selection: reasoningEffortBinding) {
+                ForEach(ReasoningEffort.allCases, id: \.self) { effort in
+                    Text(effort.displayLabel).tag(effort)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(Design.Colors.secondaryForeground)
+        }
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.md)
+    }
+
+    private var reasoningEffortBinding: Binding<ReasoningEffort> {
+        Binding(
+            get: { settingsStore.settings.reasoningEffort },
+            set: { settingsStore.settings.reasoningEffort = $0 }
+        )
     }
 
 

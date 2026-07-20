@@ -4,6 +4,36 @@ All notable changes to Hermes iOS are documented here.
 
 ## [1.7.1] - 2026-07-20
 
+### Fix: Talk startup crash and production wiring
+
+- **Prevent microphone startup crash** (`Herald/Services/Live/TalkAudioCapture.swift`, `Herald/Services/Live/HermesTalkCoordinator.swift`): Talk now resolves microphone permission before recording, rejects zero-rate or zero-channel input formats before installing an audio tap, and prepares the audio engine before starting it. Missing permission or input now produces a recoverable, visible error instead of terminating the app after the orb becomes active.
+
+- **Wire the production Hermes Talk pipeline** (`Herald/Stores/AppContainer.swift`, `Herald/Stores/TalkStore.swift`): The production container now constructs and attaches capture, MiMo ASR/TTS, Hermes turn streaming, and PCM playback dependencies. Readiness reports missing coordinator or MiMo credentials instead of silently accepting Start Talking.
+
+- **Reset failed Talk sessions** (`Herald/Stores/TalkStore.swift`): Capture failures return the UI to an inactive failed state so Start Talking does not leave a misleading connected orb or an unendable session.
+
+### Fix: Production connectivity and app recovery
+
+- **Use the hosted production relay by default** (`project.yml`, `Herald/Resources/Info.plist`, `Herald/Models/UserSettings.swift`): v1.7.1 points new installs at `https://hermes-relay.fihonline.net/v1` and migrates the stale DEBUG localhost default without replacing intentional custom relay choices.
+
+- **Remove runtime mock fallback outside UI tests** (`Herald/Stores/AppContainer.swift`, `Herald/Stores/AppSessionStore.swift`): Failed production pairing and network calls can no longer be masked by demo data. Bootstrap also repairs sessions left in mock mode.
+
+- **Refresh the active connector profile** (`Herald/Features/Chat/ChatScreen.swift`): Chat forces a profile refresh when it becomes active, preventing stale pre-pairing profile names after reconnects.
+
+- **Restore iPad Settings navigation and notification replies** (`Herald/Features/Sidebar/AdaptiveRootView.swift`, `Herald/Stores/AppContainer.swift`): iPad Settings destinations route correctly, and notification reply text survives cold-launch routing.
+
+### Feature: Reasoning effort selection
+
+- **Add a user-facing reasoning selector** (`Herald/Models/UserSettings.swift`, `Herald/Features/Settings/SettingsScreen.swift`): Users can choose Off, Low, Medium, or High reasoning effort, with Medium used for older saved settings.
+
+- **Persist and relay the selected effort** (`Herald/Services/Live/LiveHeraldClient.swift`, `relay/app/models.py`, `relay/app/schemas.py`, `relay/app/services.py`, `relay/app/main.py`): The setting is captured with each job and forwarded to the connector execution frame.
+
+### Fix: Relay database compatibility
+
+- **Repair legacy SQLite schemas** (`relay/app/database.py`, `relay/app/services.py`): Startup repairs foreign keys left on the pre-rebrand host table, adds the reasoning-effort column, normalizes naive timestamps during orphan cleanup, and supplies collision-free surrogate source sequences for older NOT NULL event tables.
+
+- **Report only genuine streaming** (`Herald/Services/Live/LiveHeraldClient.swift`): Already-completed synchronous replies are no longer split into fake word-by-word deltas.
+
 ### Fix: Terminal result plumbing from coordinator to client
 
 - **Add TerminalResult to RunResult** (`Herald/Services/Live/JobStreamCoordinator.swift`): Extended `RunResult` to carry terminal payload (text, usage tokens, error) from the done event. This allows the caller to pass terminal data into `resolveFinalMessage` instead of always supplying `nil`.

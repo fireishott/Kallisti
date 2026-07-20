@@ -130,7 +130,12 @@ struct AdaptiveRootView: View {
         case .talk:
             TalkModeScreen()
         case .settings:
-            SettingsScreen()
+            NavigationStack(path: router.pathBinding()) {
+                SettingsScreen()
+                    .navigationDestination(for: Route.self) { route in
+                        routeDestination(route)
+                    }
+            }
         }
     }
 
@@ -148,6 +153,20 @@ struct AdaptiveRootView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isRightPanelOpen ? "Close inspector" : "Open inspector")
+    }
+
+    // MARK: - Navigation
+
+    @ViewBuilder
+    private func routeDestination(_ route: Route) -> some View {
+        switch route {
+        case .permissions:
+            PermissionsScreen()
+        case .capture:
+            CaptureScreen()
+        case .connectHost:
+            ConnectHeraldHostScreen()
+        }
     }
 
     // MARK: - Router Synchronization

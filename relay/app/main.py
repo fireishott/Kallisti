@@ -650,6 +650,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sessionId": job.session_id_snapshot,
             "timeoutSeconds": settings.connector_job_lease_seconds,
         }
+        if job.reasoning_effort:
+            job_data["reasoningEffort"] = job.reasoning_effort
         if voice_transcript_lines:
             job_data["voiceTranscriptContext"] = "\n".join(voice_transcript_lines)
         if user_message.attachments_data:
@@ -2192,6 +2194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conversation_id=conversation.id,
             user_message_id=user_message.id,
             session_id_snapshot=conversation.herald_session_id,
+            reasoning_effort=payload.reasoningEffort,
         )
 
         if request_settings.herald_adapter == "connector":
