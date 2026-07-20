@@ -85,7 +85,6 @@ struct ChatScreen: View {
             scrollToBottom()
         }
         .onChange(of: chatStore.pendingMessageSentAt) {
-            guard chatStore.streamingMessageID == nil else { return }
             scrollToBottom()
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
@@ -740,7 +739,9 @@ struct ChatScreen: View {
         messageText = ""
 
         switch command.name {
-        case "new", "reset", "clear":
+        case "new", "reset":
+            Task { await performClear() }
+        case "clear":
             showClearConfirmation = true
 
         case "history":

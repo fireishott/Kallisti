@@ -75,7 +75,7 @@ extension SlashCommand {
 
     // Commands handled locally by the iOS app
     static let localCommands: [SlashCommand] = [
-        SlashCommand(name: "new", description: "Start a new session", category: "Session", acceptsArgument: false, isDestructive: true, isLocal: true),
+        SlashCommand(name: "new", description: "Start a new session", category: "Session", acceptsArgument: false, isDestructive: false, isLocal: true),
         SlashCommand(name: "clear", description: "Clear and start a new session", category: "Session", acceptsArgument: false, isDestructive: true, isLocal: true),
         SlashCommand(name: "undo", description: "Remove the last exchange", category: "Session", acceptsArgument: false, isDestructive: true, isLocal: true),
         SlashCommand(name: "retry", description: "Retry the last message", category: "Session", acceptsArgument: false, isDestructive: false, isLocal: true),

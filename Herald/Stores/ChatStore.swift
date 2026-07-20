@@ -185,6 +185,19 @@ final class ChatStore {
             }
 
             failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
+
+            // The job may still be running server-side.  Poll once after a
+            // short delay so a late completion replaces the error message
+            // instead of leaving "tap to retry" + spinning dots on screen.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, !Task.isCancelled else { return }
+                let fresh = await self.refreshActiveConversation()
+                self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
+                if let latestUsage = self.conversation?.latestUsage {
+                    self.lastTokenUsage = latestUsage
+                }
+            }
             return
         }
     }
@@ -252,6 +265,9 @@ final class ChatStore {
                     // Show tool progress on Lock Screen / Dynamic Island
                     self.chatLiveActivity.startToolCall(toolName: label)
                     self.chatLiveActivity.updateToolProgress(label)
+
+                case .keepalive:
+                    progressContinuation?.yield(())
 
                 case .finished(let finalMessage, let usage, let diff):
                     progressContinuation?.yield(())
@@ -389,7 +405,10 @@ final class ChatStore {
     private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
         let errorText = "Herald didn't respond — tap to retry"
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+            // Replace with error message but keep the same ID so a late
+            // .finished can still find and replace it with the actual response.
             conversation?.messages[idx] = Message(
+                id: placeholderID,
                 sender: .system,
                 content: errorText,
                 status: .failed

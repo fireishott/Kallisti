@@ -714,6 +714,15 @@ class HeraldConnector:
             state.last_error = None
             self.state_store.save(state)
 
+            # Re-validate the MCP command path on every connect, not just at
+            # enroll.  If the connector venv moved or was reinstalled, the
+            # `command` in ~/.hermes/config.yaml goes stale and Hermes can't
+            # spawn the stdio server — "TaskGroup 1 sub-exception".
+            try:
+                register_native_mcp_server(state_dir=self.state_store.state_dir)
+            except Exception:
+                pass  # non-fatal; MCP tools just won't be available
+
             send_queue: asyncio.Queue[str | None] = asyncio.Queue()
             active_jobs: dict[str, asyncio.Task] = {}
 
@@ -922,6 +931,12 @@ class HeraldConnector:
                         "jobId": job["id"],
                         "kind": "tool_activity",
                         "label": event.label,
+                    }))
+                elif event.type == "keepalive":
+                    await websocket.send(json.dumps({
+                        "type": "job.progress",
+                        "jobId": job["id"],
+                        "kind": "keepalive",
                     }))
                 elif event.type == "finish":
                     session_id = event.session_id

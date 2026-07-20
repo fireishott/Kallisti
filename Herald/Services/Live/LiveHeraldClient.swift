@@ -417,6 +417,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                            !label.isEmpty {
                             continuation.yield(.toolActivity(label))
                         }
+                    case "keepalive":
+                        continuation.yield(.keepalive)
                     case "done":
                         return decode(StreamDonePayload.self, from: sseEvent.data)
                     default:

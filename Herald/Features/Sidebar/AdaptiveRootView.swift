@@ -43,6 +43,20 @@ struct AdaptiveRootView: View {
                         .transition(.move(edge: .trailing))
                     }
                 }
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            if value.translation.width < -50 && !isRightPanelOpen {
+                                withAnimation(Design.Motion.standard) {
+                                    isRightPanelOpen = true
+                                }
+                            } else if value.translation.width > 50 && isRightPanelOpen {
+                                withAnimation(Design.Motion.standard) {
+                                    isRightPanelOpen = false
+                                }
+                            }
+                        }
+                )
         }
     }
 
