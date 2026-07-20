@@ -311,7 +311,7 @@ Built on the foundation of [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS
 ---
 
 <p align="center">
-  <img src="docs/assets/brand-mark-vertical.svg" alt="HERALD" width="120"/>
+  <img src="docs/assets/brand-mark.png" alt="HERALD" width="120"/>
   <br/>
   <sub>Your AI. Your server. Your rules.</sub>
 </p>
