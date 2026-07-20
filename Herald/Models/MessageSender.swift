@@ -10,7 +10,7 @@ enum MessageSender: String, Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         switch raw {
-        case "assistant": self = .herald
+        case "herald", "hermes", "assistant": self = .herald
         case "user": self = .user
         case "system": self = .system
         case "voice_user": self = .voiceUser
