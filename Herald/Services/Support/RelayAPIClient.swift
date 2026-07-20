@@ -221,6 +221,7 @@ final class RelayAPIClient {
 
                     var currentEvent = "message"
                     var currentData = ""
+                    var currentID: String?
 
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
@@ -235,10 +236,12 @@ final class RelayAPIClient {
                             if !currentData.isEmpty {
                                 continuation.yield(SSEEvent(
                                     event: currentEvent,
-                                    data: currentData
+                                    data: currentData,
+                                    id: currentID
                                 ))
                                 currentEvent = "message"
                                 currentData = ""
+                                currentID = nil
                             }
                             continue
                         }
@@ -252,6 +255,8 @@ final class RelayAPIClient {
                             } else {
                                 currentData += "\n" + value
                             }
+                        } else if line.hasPrefix("id:") {
+                            currentID = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                         }
                     }
 

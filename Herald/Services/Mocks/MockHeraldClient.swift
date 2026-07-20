@@ -157,4 +157,12 @@ extension MockHeraldClient {
     func loadConversation(id: UUID) async throws -> Conversation {
         currentConversation ?? DemoData.sampleConversation
     }
+
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+        nil
+    }
+
+    func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+        Message(sender: .user, content: text, status: .sent)
+    }
 }

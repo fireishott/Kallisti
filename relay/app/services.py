@@ -1296,6 +1296,32 @@ def complete_message_job(
     return job
 
 
+def renew_message_job_lease(
+    db: Session,
+    *,
+    job_id: str,
+    connection_nonce: str,
+    settings,
+) -> bool:
+    """Renew the lease for a running job. Returns True if the lease was renewed."""
+    now = utcnow()
+    new_lease = now + timedelta(seconds=settings.connector_job_lease_seconds)
+    result = db.execute(
+        update(MessageJob)
+        .where(
+            MessageJob.id == job_id,
+            MessageJob.status == "running",
+            MessageJob.claimed_connection_nonce == connection_nonce,
+        )
+        .values(
+            lease_expires_at=new_lease,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
 def fail_message_job(
     db: Session,
     *,

@@ -2,6 +2,28 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.3] - 2026-07-20
+
+### Changed - Resumable Live Job Connection
+
+- **Connector job heartbeats** (`connector/src/herald_connector/client.py`): Jobs now emit `job.started` immediately and `job.heartbeat` every 10 seconds with phase tracking (`starting`, `thinking`, `tool`, `writing`, `cli_waiting`). Active jobs survive across WebSocket reconnects.
+
+- **Relay renewable lease** (`relay/app/main.py`, `relay/app/services.py`): Job lease is now renewed by `job.started`, `job.heartbeat`, and `job.progress` messages instead of using a fixed 180-second wall-clock deadline. Healthy long-running jobs are no longer killed by timeout.
+
+- **SSE event IDs** (`relay/app/main.py`): Job events now carry monotonically increasing `eventId` fields for reconnection tracking.
+
+- **Job status endpoint** (`relay/app/main.py`): New `GET /v1/jobs/{job_id}` returns authoritative job status for recovery after SSE gaps.
+
+- **Grace period on disconnect** (`relay/app/main.py`): Connector WebSocket disconnect no longer immediately fails in-flight jobs. A `reconnecting` event is published and the job's lease governs recovery.
+
+- **iOS resumable streaming** (`Herald/Services/Live/LiveHeraldClient.swift`): SSE EOF without `done` is now treated as a transport interruption, not success. The client checks job status via `GET /v1/jobs/{id}` and handles completed/failed/running states appropriately.
+
+- **New streaming events** (`Herald/Models/StreamingUpdate.swift`): Added `.started(phase:)`, `.heartbeat(phase:)`, `.reconnecting`, and `.cancelled` cases for richer job lifecycle visibility.
+
+- **SSE event ID parsing** (`Herald/Services/Support/RelayAPIClient.swift`, `Herald/Models/SSEEvent.swift`): SSE parser now extracts `id:` fields for reconnection tracking.
+
+- **Polling safety net** (`Herald/Stores/ChatStore.swift`): Polling no longer marks messages as `.failed` after exhausting attempts. Server-authoritative job state is respected.
+
 ## [1.2.2] - 2026-07-20
 
 ### Fixed - Build 12 & 13 Reconciliation

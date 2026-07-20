@@ -375,6 +375,11 @@ class HeraldConnector:
         self._voice_delegate_sessions: dict[str, str] = {}
         self._health_cache: tuple[float, HostRuntimeAdapter | None] = (0.0, None)
         self._HEALTH_CACHE_TTL: float = 30.0
+        # Connection-independent job tracking: survives across _run_once calls
+        self._active_jobs: dict[str, asyncio.Task] = {}
+        self._job_phases: dict[str, str] = {}
+        self._pending_results: dict[str, list[dict]] = {}
+        self._job_heartbeat_tasks: dict[str, asyncio.Task] = {}
 
     @property
     def sensor_store(self) -> SensorStore:
@@ -688,23 +693,31 @@ class HeraldConnector:
             additional_headers={"Authorization": f"Bearer {state.connector_credential}"},
             max_size=50 * 1024 * 1024,  # 50 MB — job payloads with image attachments can be large
         ) as websocket:
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "hello",
-                        "version": 1,
-                        "connector": {
-                            "platform": metadata.platform,
-                            "hostname": metadata.hostname,
-                            "connectorVersion": metadata.connector_version,
-                            "heraldCommand": metadata.hermes_command,
-                            "heraldVersion": metadata.hermes_version,
-                            "heraldModel": metadata.hermes_model,
-                            "displayName": metadata.display_name,
-                        },
-                    }
-                )
-            )
+            # Build hello with resume info if we have active jobs from a prior connection
+            hello_payload: dict = {
+                "type": "hello",
+                "version": 1,
+                "connector": {
+                    "platform": metadata.platform,
+                    "hostname": metadata.hostname,
+                    "connectorVersion": metadata.connector_version,
+                    "heraldCommand": metadata.hermes_command,
+                    "heraldVersion": metadata.hermes_version,
+                    "heraldModel": metadata.hermes_model,
+                    "displayName": metadata.display_name,
+                },
+            }
+            # Include resume info if reconnecting with active jobs
+            if self._active_jobs:
+                hello_payload["resume"] = {
+                    "activeJobIds": list(self._active_jobs.keys()),
+                    "pendingResults": {
+                        jid: results
+                        for jid, results in self._pending_results.items()
+                        if results
+                    },
+                }
+            await websocket.send(json.dumps(hello_payload))
 
             ready = json.loads(await websocket.recv())
             if ready.get("type") != "ready":
@@ -715,7 +728,6 @@ class HeraldConnector:
             self.state_store.save(state)
 
             send_queue: asyncio.Queue[str | None] = asyncio.Queue()
-            active_jobs: dict[str, asyncio.Task] = {}
 
             async def send_worker() -> None:
                 """Serialize all outbound WebSocket messages through a single coroutine."""
@@ -729,6 +741,12 @@ class HeraldConnector:
 
             def enqueue(payload: dict) -> None:
                 send_queue.put_nowait(json.dumps(payload))
+
+            # Drain any buffered terminal results from prior connection
+            for job_id, results in list(self._pending_results.items()):
+                for result in results:
+                    enqueue(result)
+                self._pending_results.pop(job_id, None)
 
             try:
                 while True:
@@ -748,8 +766,8 @@ class HeraldConnector:
                         job = message["job"]
                         job_id = job.get("id", "unknown")
                         task = asyncio.create_task(self._handle_job_enqueue(job, enqueue))
-                        active_jobs[job_id] = task
-                        task.add_done_callback(lambda _t, jid=job_id: active_jobs.pop(jid, None))
+                        self._active_jobs[job_id] = task
+                        task.add_done_callback(lambda _t, jid=job_id: self._active_jobs.pop(jid, None))
                         continue
                     if message_type == "rpc.request":
                         response = await self._handle_rpc_request(message)
@@ -825,10 +843,18 @@ class HeraldConnector:
 
     async def _handle_job_enqueue(self, job: dict, enqueue) -> None:
         """Run a job using the shared send queue instead of a direct websocket."""
-        # Build a thin wrapper so _handle_job / _handle_job_* can call .send()
+        job_id = job.get("id", "unknown")
+
         class _WS:
             async def send(self, payload):
-                enqueue(json.loads(payload) if isinstance(payload, str) else payload)
+                parsed = json.loads(payload) if isinstance(payload, str) else payload
+                enqueue(parsed)
+                # Buffer terminal results for reconnect delivery
+                if parsed.get("type") in ("job.result", "job.failed"):
+                    self_ref._pending_results.setdefault(job_id, []).append(parsed)
+
+        # Use a ref so the inner class can access the instance
+        self_ref = self
         await self._handle_job(_WS(), job)
 
     async def _handle_job(self, websocket, job: dict) -> None:
@@ -866,14 +892,47 @@ class HeraldConnector:
                 import shutil
                 shutil.rmtree(staging_dir, ignore_errors=True)
 
+    def _start_job_heartbeat(self, job_id: str, enqueue) -> None:
+        """Start a background task that emits job.heartbeat every 10 seconds."""
+        async def _heartbeat_loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(10.0)
+                    phase = self._job_phases.get(job_id, "starting")
+                    enqueue({
+                        "type": "job.heartbeat",
+                        "jobId": job_id,
+                        "phase": phase,
+                    })
+            except asyncio.CancelledError:
+                pass
+        self._job_heartbeat_tasks[job_id] = asyncio.create_task(_heartbeat_loop())
+
+    def _stop_job_heartbeat(self, job_id: str) -> None:
+        """Cancel and remove the heartbeat task for a job."""
+        task = self._job_heartbeat_tasks.pop(job_id, None)
+        if task is not None:
+            task.cancel()
+        self._job_phases.pop(job_id, None)
+
     async def _handle_job_streaming(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
     ) -> None:
         """Process a job using the Hermes API server with streaming events."""
+        job_id = job["id"]
         try:
             accumulated_text = ""
             session_id: str | None = None
             usage: dict | None = None
+
+            # Emit job.started immediately, before waiting for first token
+            await websocket.send(json.dumps({
+                "type": "job.started",
+                "jobId": job_id,
+                "phase": "starting",
+            }))
+            self._job_phases[job_id] = "starting"
+            self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
 
             # Snapshot git state before Hermes runs so we can diff afterwards
             pre_snapshot = await capture_snapshot(workdir) if workdir else None
@@ -901,25 +960,26 @@ class HeraldConnector:
             ):
                 if event.type == "text_delta":
                     accumulated_text += event.data
+                    self._job_phases[job_id] = "writing"
                     await websocket.send(json.dumps({
                         "type": "job.progress",
-                        "jobId": job["id"],
+                        "jobId": job_id,
                         "kind": "text_delta",
                         "delta": event.data,
                     }))
                 elif event.type == "reasoning_delta":
-                    # Reasoning is transient — streamed for display but not part of
-                    # the persisted answer text, so we don't accumulate it here.
+                    self._job_phases[job_id] = "thinking"
                     await websocket.send(json.dumps({
                         "type": "job.progress",
-                        "jobId": job["id"],
+                        "jobId": job_id,
                         "kind": "reasoning_delta",
                         "delta": event.data,
                     }))
                 elif event.type == "tool_activity":
+                    self._job_phases[job_id] = "tool"
                     await websocket.send(json.dumps({
                         "type": "job.progress",
-                        "jobId": job["id"],
+                        "jobId": job_id,
                         "kind": "tool_activity",
                         "label": event.label,
                     }))
@@ -940,7 +1000,7 @@ class HeraldConnector:
 
             result_payload: dict = {
                 "type": "job.result",
-                "jobId": job["id"],
+                "jobId": job_id,
                 "text": cleaned_text,
                 "sessionId": session_id,
                 "usage": usage,
@@ -950,17 +1010,29 @@ class HeraldConnector:
             if diff_data is not None:
                 result_payload["diff"] = diff_data
 
+            self._stop_job_heartbeat(job_id)
             await websocket.send(json.dumps(result_payload))
         except Exception as error:  # noqa: BLE001
+            self._stop_job_heartbeat(job_id)
             await websocket.send(json.dumps({
                 "type": "job.failed",
-                "jobId": job["id"],
+                "jobId": job_id,
                 "retryable": self._is_retryable_job_error(error),
                 "error": str(error),
             }))
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
         """Process a job using the CLI subprocess (original path)."""
+        job_id = job["id"]
+
+        # Emit job.started immediately
+        await websocket.send(json.dumps({
+            "type": "job.started",
+            "jobId": job_id,
+            "phase": "cli_waiting",
+        }))
+        self._job_phases[job_id] = "cli_waiting"
+        self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
 
         async def execute_job() -> dict:
             try:
@@ -995,25 +1067,29 @@ class HeraldConnector:
                 )
                 return {
                     "type": "job.result",
-                    "jobId": job["id"],
+                    "jobId": job_id,
                     "text": result.text,
                     "sessionId": result.session_id,
                 }
             except Exception as error:  # noqa: BLE001
                 return {
                     "type": "job.failed",
-                    "jobId": job["id"],
+                    "jobId": job_id,
                     "retryable": self._is_retryable_job_error(error),
                     "error": str(error),
                 }
 
         task = asyncio.create_task(execute_job())
-        while True:
-            done, _ = await asyncio.wait({task}, timeout=self.heartbeat_interval_seconds)
-            if task in done:
-                await websocket.send(json.dumps(task.result()))
-                return
-            await websocket.send(json.dumps({"type": "heartbeat"}))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.heartbeat_interval_seconds)
+                if task in done:
+                    self._stop_job_heartbeat(job_id)
+                    await websocket.send(json.dumps(task.result()))
+                    return
+        except Exception:
+            self._stop_job_heartbeat(job_id)
+            raise
 
     def _build_cli_attachment_context(self, *, job_id: str, attachments: list[dict]) -> str:
         attachment_root = self.state_store.state_dir / "attachment_staging" / job_id

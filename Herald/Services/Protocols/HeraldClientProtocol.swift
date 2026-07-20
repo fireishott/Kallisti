@@ -45,4 +45,11 @@ protocol HeraldClientProtocol {
 
     /// Load a specific conversation by session ID.
     func loadConversation(id: UUID) async throws -> Conversation
+
+    /// Get the authoritative status of a job.
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
+
+    /// Send a message to a specific conversation with a specific client message ID.
+    /// Used by notification actions where the target conversation may not be the current one.
+    func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message
 }

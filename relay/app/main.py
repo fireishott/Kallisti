@@ -113,6 +113,7 @@ from .services import (
     rename_session,
     revoke_auth_session,
     revoke_current_herald_host,
+    renew_message_job_lease,
     rotate_auth_session,
     search_sessions,
     serialize_conversation,
@@ -276,6 +277,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.connector_rpc_waiters: dict[str, asyncio.Future[dict]] = {}
     app.state.job_event_queues: dict[str, list[asyncio.Queue]] = {}
     app.state.job_event_buffers: dict[str, list[dict]] = {}
+    app.state.job_event_sequence: dict[str, int] = {}
 
     def subscribe_job_events(job_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
@@ -300,6 +302,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.job_event_queues.setdefault(job_id, [])
 
     def publish_job_event(job_id: str, event: dict) -> None:
+        # Assign monotonically increasing event ID per job
+        seq = app.state.job_event_sequence.get(job_id, 0) + 1
+        app.state.job_event_sequence[job_id] = seq
+        event["eventId"] = seq
         queues = app.state.job_event_queues.get(job_id, [])
         if not queues:
             # No subscribers yet — buffer the event on a replay list so late
@@ -2208,6 +2214,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return success_response(payload_data, status_code=status_code)
 
     # ------------------------------------------------------------------
+    # Job Status Snapshot
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/jobs/{job_id}")
+    async def get_job_status(
+        job_id: str,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ):
+        """Return the authoritative status of a job. Used for recovery after SSE gaps."""
+        from .models import MessageJob
+
+        job = get_message_job(db, job_id=job_id)
+        if job is None or job.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+        result: dict = {
+            "jobId": job.id,
+            "status": job.status,
+            "conversationId": job.conversation_id,
+            "createdAt": job.created_at.isoformat() if job.created_at else None,
+            "claimedAt": job.claimed_at.isoformat() if job.claimed_at else None,
+            "leaseExpiresAt": job.lease_expires_at.isoformat() if job.lease_expires_at else None,
+            "completedAt": job.completed_at.isoformat() if job.completed_at else None,
+            "retryable": job.retryable,
+        }
+        if job.result_message_id:
+            result_message = db.get(Message, job.result_message_id)
+            if result_message is not None:
+                result["message"] = serialize_message(result_message, job=job)
+        if job.error_text:
+            result["error"] = job.error_text
+        if job.usage_data:
+            result["usage"] = job.usage_data
+        if job.diff_data:
+            result["diff"] = job.diff_data
+        return success_response(result)
+
+    # ------------------------------------------------------------------
     # Job Events SSE
     # ------------------------------------------------------------------
 
@@ -2533,24 +2578,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     try:
                         await websocket.send_json(job_payload)
 
-                        # An absolute deadline for THIS claimed job, independent of any
-                        # other traffic on the connection. Without this, unrelated
-                        # heartbeats/RPC responses (e.g. iOS polling commands.catalog)
-                        # reset the receive-level timeout below on every iteration, so a
-                        # connector task that hangs mid-job and never sends job.result/
-                        # job.failed can wedge this connection indefinitely — silently
-                        # blocking every subsequent job from ever being claimed, since
-                        # claim_next_message_job() only runs from this same loop. This
-                        # deadline is checked every iteration (which happens at least as
-                        # often as connector_heartbeat_timeout_seconds) regardless of
-                        # what kind of message just arrived.
-                        job_deadline = time.monotonic() + settings.connector_job_lease_seconds
-
+                        # Use the database lease_expires_at as the authoritative
+                        # deadline. job.started, job.heartbeat, and job.progress
+                        # messages from the connector renew this lease. Generic
+                        # heartbeats and RPC traffic do NOT renew it.
                         while True:
-                            if time.monotonic() >= job_deadline:
-                                fail_stuck_job("Hermes host stopped responding.")
-                                await websocket.close(code=1011)
-                                return
+                            # Check lease expiry by reading from database
+                            with database.session() as db:
+                                current_job = get_message_job(db, job_id=claimed_job.id)
+                                if current_job is None or current_job.status not in ("running", "queued"):
+                                    # Job was completed/failed externally
+                                    in_flight_job_id = None
+                                    break
+                                if current_job.lease_expires_at and utcnow() >= current_job.lease_expires_at:
+                                    fail_stuck_job("Hermes host stopped responding.")
+                                    await websocket.close(code=1011)
+                                    return
 
                             try:
                                 incoming = await asyncio.wait_for(
@@ -2558,9 +2601,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     timeout=settings.connector_heartbeat_timeout_seconds,
                                 )
                             except asyncio.TimeoutError:
-                                fail_stuck_job("Hermes host stopped responding.")
-                                await websocket.close(code=1011)
-                                return
+                                # No message received — check lease again next iteration
+                                continue
 
                             message_type = incoming.get("type")
                             if message_type == "heartbeat":
@@ -2569,6 +2611,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 if touched is None:
                                     await websocket.close(code=4401)
                                     return
+                                continue
+
+                            if message_type == "job.started" and incoming.get("jobId") == claimed_job.id:
+                                with database.session() as db:
+                                    renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
+                                publish_job_event(claimed_job.id, {
+                                    "event": "started",
+                                    "data": {
+                                        "jobId": claimed_job.id,
+                                        "phase": incoming.get("phase", "starting"),
+                                    },
+                                })
+                                continue
+
+                            if message_type == "job.heartbeat" and incoming.get("jobId") == claimed_job.id:
+                                with database.session() as db:
+                                    renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
+                                publish_job_event(claimed_job.id, {
+                                    "event": "heartbeat",
+                                    "data": {
+                                        "jobId": claimed_job.id,
+                                        "phase": incoming.get("phase", "unknown"),
+                                    },
+                                })
                                 continue
 
                             if message_type == "sensor.ack":
@@ -2588,6 +2654,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 continue
 
                             if message_type == "job.progress" and incoming.get("jobId") == claimed_job.id:
+                                with database.session() as db:
+                                    renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
                                 publish_job_event(claimed_job.id, {
                                     "event": incoming.get("kind", "progress"),
                                     "data": {
@@ -2734,39 +2802,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         finally:
             if in_flight_job_id is not None:
-                # Connector dropped mid-response. Mark the job failed and emit a
-                # `done` event so the iOS SSE subscriber unblocks immediately —
-                # otherwise the client would wait for the request timeout.
-                try:
-                    with database.session() as db:
-                        failed_job = fail_message_job(
-                            db,
-                            job_id=in_flight_job_id,
-                            connection_nonce=connection_nonce,
-                            error_text="Hermes connector disconnected before completing the response.",
-                            retryable=False,
-                        )
-                        result_message = (
-                            serialize_message(db.get(Message, failed_job.result_message_id), job=failed_job)
-                            if failed_job is not None
-                            and failed_job.result_message_id
-                            and db.get(Message, failed_job.result_message_id) is not None
-                            else None
-                        )
-                    publish_job_event(in_flight_job_id, {
-                        "event": "done",
-                        "data": {
-                            "jobId": in_flight_job_id,
-                            "status": "failed",
-                            "error": "Hermes connector disconnected.",
-                            "message": result_message,
-                        },
-                    })
-                except Exception:  # noqa: BLE001 — last-ditch cleanup
-                    logger.exception(
-                        "Failed to fail in-flight job %s after connector disconnect",
-                        in_flight_job_id,
-                    )
+                # Connector dropped mid-response. Instead of immediately failing
+                # the job, publish a reconnecting event. The job's lease_expires_at
+                # will cause it to be failed/requeued if the connector doesn't
+                # reconnect in time.
+                logger.info(
+                    "Connector disconnected with in-flight job %s — lease governs recovery",
+                    in_flight_job_id,
+                )
+                publish_job_event(in_flight_job_id, {
+                    "event": "reconnecting",
+                    "data": {
+                        "jobId": in_flight_job_id,
+                        "reason": "Connector disconnected — waiting for reconnection",
+                    },
+                })
 
             if host_id is not None:
                 clear_connector_session(user_id, connection_nonce)

@@ -305,6 +305,43 @@ final class ChatStore {
                     self.chatLiveActivity.endActivity()
                     await self.autoTitleIfNeeded()
 
+                case .started(let phase):
+                    self.appendLog(level: .info, "Job started — phase: \(phase)")
+                    progressContinuation?.yield(())
+                    self.chatLiveActivity.updateToolProgress(phase)
+
+                case .heartbeat(let phase):
+                    // Heartbeat resets the watchdog — job is alive
+                    progressContinuation?.yield(())
+                    self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
+
+                case .reconnecting:
+                    self.appendLog(level: .warning, "Stream reconnecting...")
+                    progressContinuation?.yield(())
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = "Reconnecting..."
+                        self.conversation = conv
+                    }
+
+                case .cancelled:
+                    self.appendLog(level: .info, "Job cancelled")
+                    progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
+                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        self.conversation?.messages[idx] = Message(
+                            sender: .system,
+                            content: "Cancelled",
+                            status: .failed
+                        )
+                    }
+                    self.streamingMessageID = nil
+                    self.pendingMessageSentAt = nil
+                    self.chatLiveActivity.endActivity()
+                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                        self.conversation?.messages[idx].status = .delivered
+                    }
+
                 case .failed(let errorMessage):
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
@@ -679,9 +716,10 @@ final class ChatStore {
 
     // Exponential backoff delays (seconds). The first polls are fast because
     // the relay usually delivers within a handful of seconds; later polls
-    // spread out so we don't hammer a struggling relay. ~130s total budget.
+    // spread out so we don't hammer a struggling relay. Polling is a low-frequency
+    // safety net — it must never override a nonterminal server job.
     private static let pollingBackoffSeconds: [Double] = [
-        1.5, 2, 3, 5, 8, 12, 18, 25, 30, 30,
+        2, 3, 5, 8, 12, 18, 25, 30, 30, 30, 30, 30,
     ]
 
     private func restartPendingPollingIfNeeded() {
@@ -696,7 +734,7 @@ final class ChatStore {
         pollingTask = Task { [weak self] in
             guard let self else { return }
 
-            for (attempt, delay) in Self.pollingBackoffSeconds.enumerated() {
+            for delay in Self.pollingBackoffSeconds {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
                 let fresh = await self.refreshActiveConversation()
@@ -712,23 +750,10 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     break
                 }
-
-                // On the last attempt, mark anything still pending as failed
-                // so the user sees an actionable state instead of forever-sending.
-                let isLastAttempt = attempt == Self.pollingBackoffSeconds.count - 1
-                if isLastAttempt, self.hasPendingMessages {
-                    if var conv = self.conversation {
-                        for i in conv.messages.indices
-                            where conv.messages[i].sender == .user && conv.messages[i].status == .sending
-                        {
-                            conv.messages[i].status = .failed
-                        }
-                        self.conversation = conv
-                        self.persistence.saveConversationCache(conv)
-                    }
-                    self.pendingMessageSentAt = nil
-                }
             }
+            // Polling exhausted — do NOT mark messages as failed.
+            // The job may still be running on the server. The user can
+            // see the sending state and choose to retry manually.
 
             if self.pollingTask?.isCancelled == false {
                 self.pollingTask = nil
