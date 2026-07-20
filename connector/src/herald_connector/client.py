@@ -1458,11 +1458,10 @@ class HeraldConnector:
     async def _rpc_profiles_list(self) -> dict:
         hermes_home = self._resolve_hermes_home()
         # HERMES_HOME points at a specific profile dir (e.g. ~/.hermes/profiles/ignyte).
-        # Sibling profiles live in the parent. Fall back to the legacy nested path.
+        # Sibling profiles live in the parent; detect via multiple subdirs in the parent.
         parent_dir = hermes_home.parent
-        if (parent_dir / hermes_home.name).is_dir() and any(
-            (parent_dir / d).is_dir() for d in [hermes_home.name]
-        ):
+        sibling_profiles = [d for d in parent_dir.iterdir() if d.is_dir()]
+        if len(sibling_profiles) > 1:
             profiles_dir = parent_dir
         else:
             profiles_dir = hermes_home / "profiles"

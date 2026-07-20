@@ -13,6 +13,7 @@ struct ChatInputBar: View {
 
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
+    @Environment(ProfileStore.self) private var profileStore
     @Environment(TabRouter.self) private var router
 
     @State private var speechService = LiveSpeechService()
@@ -27,6 +28,13 @@ struct ChatInputBar: View {
 
     private var isSlashMode: Bool {
         text.hasPrefix("/")
+    }
+
+    private var placeholderText: String {
+        if let profile = profileStore.activeProfileName {
+            return "Reply to \(profile)"
+        }
+        return "Reply to Herald"
     }
 
     /// Parses the command and any trailing argument from the text field.
@@ -90,12 +98,12 @@ struct ChatInputBar: View {
 
                 // Text input area
                 TextField(
-                    speechService.isListening ? "Listening..." : "Reply to Herald",
+                    speechService.isListening ? "Listening..." : placeholderText,
                     text: $text,
                     axis: .vertical
                 )
                     .accessibilityIdentifier("chat.composer")
-                    .accessibilityLabel("Reply to Herald")
+                    .accessibilityLabel(placeholderText)
                     .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.foreground)
                     .lineLimit(1...5)
