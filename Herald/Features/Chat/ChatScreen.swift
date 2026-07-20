@@ -521,7 +521,7 @@ struct ChatScreen: View {
             .scrollDismissesKeyboard(.interactively)
             .redacted(reason: chatStore.isLoading ? .placeholder : [])
             .onTapGesture {
-                isComposerFocused = false
+                isComposerFocused = true
             }
             .onAppear { scrollProxy = proxy }
         }

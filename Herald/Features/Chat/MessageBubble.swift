@@ -5,6 +5,7 @@ struct MessageBubble: View, Equatable {
     let message: Message
     var onRetry: ((Message) -> Void)? = nil
     @Environment(TalkStore.self) private var talkStore
+    @Environment(SettingsStore.self) private var settingsStore
     var onDelete: ((Message) -> Void)? = nil
     var onOpenCanvas: ((Message) -> Void)? = nil
 
@@ -190,7 +191,7 @@ struct MessageBubble: View, Equatable {
             } else if message.isStreaming && message.content.isEmpty && message.toolActivities.isEmpty && message.reasoning.isEmpty {
                 streamingPlaceholder
             } else {
-                if !message.reasoning.isEmpty {
+                if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
                     ReasoningView(
                         reasoning: message.reasoning,
                         isStreaming: message.isStreaming && message.content.isEmpty,

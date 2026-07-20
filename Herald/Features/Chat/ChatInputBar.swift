@@ -109,14 +109,10 @@ struct ChatInputBar: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .lineLimit(1...5)
                     .focused(isFocused)
-                    .submitLabel(settingsStore.settings.enterToSend ? .send : .return)
-                    .onSubmit {
-                        if settingsStore.settings.enterToSend, canSend {
-                            handlePrimaryAction()
-                        }
-                    }
                     .onKeyPress { press in
-                        guard press.key == .return, !press.modifiers.contains(.shift) else {
+                        guard settingsStore.settings.enterToSend,
+                              press.key == .return,
+                              !press.modifiers.contains(.shift) else {
                             return .ignored
                         }
                         if canSend {
@@ -124,6 +120,21 @@ struct ChatInputBar: View {
                             return .handled
                         }
                         return .ignored
+                    }
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            if settingsStore.settings.enterToSend {
+                                Spacer()
+                                Button {
+                                    if canSend { handlePrimaryAction() }
+                                } label: {
+                                    Text("Send")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(canSend ? Design.Brand.accent : Design.Colors.tertiaryForeground)
+                                }
+                                .disabled(!canSend)
+                            }
+                        }
                     }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)

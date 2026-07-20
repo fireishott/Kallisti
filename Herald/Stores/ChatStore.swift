@@ -293,6 +293,7 @@ final class ChatStore {
                     self.streamingMessageID = nil
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
+                    await self.autoTitleIfNeeded()
 
                 case .failed(let errorMessage):
                     // An explicit failure is a real signal, not silence — let it
@@ -499,6 +500,22 @@ final class ChatStore {
         if let conversation {
             persistence.saveConversationCache(conversation)
             onConversationChanged?()
+        }
+    }
+
+    private func autoTitleIfNeeded() async {
+        guard let conv = conversation,
+              conv.title == "New Chat",
+              let firstUserMessage = conv.messages.first(where: { $0.sender == .user })
+        else { return }
+        let raw = firstUserMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        let title = raw.count > 60 ? String(raw.prefix(57)) + "..." : raw
+        do {
+            _ = try await heraldClient.renameSession(id: conv.id, title: title)
+            conversation?.title = title
+        } catch {
+            // Non-critical — session stays titled "New Chat" in list but works fine
         }
     }
 

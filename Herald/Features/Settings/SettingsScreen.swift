@@ -400,6 +400,15 @@ struct SettingsScreen: View {
                     title: "Enter to Send",
                     isOn: enterToSendBinding
                 )
+
+                sectionDivider
+
+                settingsToggle(
+                    icon: "brain",
+                    iconColor: Design.Colors.foreground,
+                    title: "Show Reasoning",
+                    isOn: showReasoningBinding
+                )
             }
         }
     }
@@ -656,6 +665,13 @@ struct SettingsScreen: View {
         Binding(
             get: { settingsStore.settings.enterToSend },
             set: { settingsStore.settings.enterToSend = $0 }
+        )
+    }
+
+    private var showReasoningBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.showReasoning },
+            set: { settingsStore.settings.showReasoning = $0 }
         )
     }
 

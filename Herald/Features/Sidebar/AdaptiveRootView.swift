@@ -2,14 +2,20 @@ import SwiftUI
 
 /// Root view that adapts to device class:
 /// - iPad: NavigationSplitView with sidebar + detail + optional right panel
-/// - iPhone: NavigationStack with slide-out session drawer
+/// - iPhone landscape: iPad layout scaled down (verticalSizeClass = .compact)
+/// - iPhone portrait: TabView with slide-out session drawer
 struct AdaptiveRootView: View {
     @State private var selectedSection: SidebarSection = .chat
     @State private var isRightPanelOpen = false
     @State private var rightPanelTab: RightPanelTab = .logs
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var useIPadLayout: Bool {
+        DeviceClass.isPad || verticalSizeClass == .compact
+    }
 
     var body: some View {
-        if DeviceClass.isPad {
+        if useIPadLayout {
             iPadLayout
         } else {
             MainTabView()

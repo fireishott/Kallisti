@@ -592,6 +592,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsVoice: String
     var ttsAutoSpeak: Bool
     var enterToSend: Bool
+    var showReasoning: Bool
 
     init(
         userName: String = "User",
@@ -609,7 +610,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsEnabled: Bool = false,
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
-        enterToSend: Bool = false
+        enterToSend: Bool = false,
+        showReasoning: Bool = true
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -627,6 +629,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.ttsVoice = ttsVoice
         self.ttsAutoSpeak = ttsAutoSpeak
         self.enterToSend = enterToSend
+        self.showReasoning = showReasoning
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -646,6 +649,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case ttsVoice
         case ttsAutoSpeak
         case enterToSend
+        case showReasoning
     }
 
     init(from decoder: Decoder) throws {
@@ -674,6 +678,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsVoice = try container.decodeIfPresent(String.self, forKey: .ttsVoice) ?? "Mia"
         ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
+        showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -694,6 +699,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(ttsVoice, forKey: .ttsVoice)
         try container.encode(ttsAutoSpeak, forKey: .ttsAutoSpeak)
         try container.encode(enterToSend, forKey: .enterToSend)
+        try container.encode(showReasoning, forKey: .showReasoning)
     }
 
     func applyingEnvironmentPolicy(
