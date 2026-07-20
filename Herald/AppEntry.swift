@@ -1,7 +1,8 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
-final class HeraldAppDelegate: NSObject, UIApplicationDelegate {
+final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -14,6 +15,9 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate {
 
         // Register for remote (silent push) notifications
         application.registerForRemoteNotifications()
+
+        // Set up notification center delegate for foreground banners and tap handling
+        UNUserNotificationCenter.current().delegate = self
 
         Task { @MainActor in
             await AppContainer.sharedDefault().handleSystemLaunch()
@@ -48,6 +52,39 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate {
             let container = AppContainer.sharedDefault()
             await container.handleRemoteNotificationWake()
             completionHandler(.newData)
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    // Show banner + sound while app is in the foreground
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        let settings = await AppContainer.sharedDefault().settingsStore.settings
+        guard settings.notificationsEnabled else { return [] }
+        return [.banner, .list, .sound, .badge]
+    }
+
+    // Handle tap on notification — deep-link into the conversation
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let info = response.notification.request.content.userInfo
+        guard let convID = info["conversationId"] as? String else { return }
+        await MainActor.run {
+            let container = AppContainer.sharedDefault()
+            container.router.activeSheet = nil
+            container.router.popToRoot()
+            container.router.selectedTab = .chat
+            // Conversation ID maps to a session — load it
+            if let uuid = UUID(uuidString: convID) {
+                Task {
+                    await container.sessionStore.selectSession(id: uuid)
+                }
+            }
         }
     }
 }

@@ -14,7 +14,11 @@ struct MessageBubble: View, Equatable {
     /// messages lets `.equatable()` in the list skip re-rendering unchanged
     /// bubbles while the streaming tail appends.
     nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
-        lhs.message == rhs.message
+        // Always re-render streaming messages — the equatable optimization
+        // must not skip the active streaming tail, whose content mutates
+        // at 30fps via delta coalescing.
+        guard !lhs.message.isStreaming && !rhs.message.isStreaming else { return false }
+        return lhs.message == rhs.message
     }
 
     private var isUser: Bool { message.sender == .user || message.sender == .voiceUser }

@@ -113,6 +113,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, clientMessageID, sender, content, timestamp, jobID, status, attachments
         case reasoning, reasoningDuration
+        case toolActivities
     }
 
     init(from decoder: Decoder) throws {
@@ -127,8 +128,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         attachments = try container.decodeIfPresent([MessageAttachment].self, forKey: .attachments) ?? []
         reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning) ?? ""
         reasoningDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .reasoningDuration)
+        toolActivities = try container.decodeIfPresent([ToolActivity].self, forKey: .toolActivities) ?? []
         toolActivity = nil
-        toolActivities = []
         codeDiff = nil
         isStreaming = false
         voiceSessionDuration = nil
@@ -150,5 +151,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
             try container.encode(reasoning, forKey: .reasoning)
         }
         try container.encodeIfPresent(reasoningDuration, forKey: .reasoningDuration)
+        if !toolActivities.isEmpty {
+            try container.encode(toolActivities, forKey: .toolActivities)
+        }
     }
 }

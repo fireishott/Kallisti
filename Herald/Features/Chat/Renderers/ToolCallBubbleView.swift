@@ -9,6 +9,9 @@ struct ToolCallBubbleView: View {
     @State private var isExpanded = false
 
     private var hasDetail: Bool { args != nil || result != nil }
+    private var displayName: String {
+        name.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,7 +27,7 @@ struct ToolCallBubbleView: View {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Design.Brand.accent)
-                    Text(name)
+                    Text(displayName)
                         .font(.system(.caption, design: .monospaced, weight: .semibold))
                         .foregroundStyle(Design.Colors.foreground)
                     Spacer()

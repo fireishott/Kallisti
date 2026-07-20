@@ -83,6 +83,8 @@ final class AttachmentService {
         return UIImage(data: data)
     }
 
+    func accessToken() async -> String? { await accessTokenProvider() }
+
     private func cacheKey(for attachment: MessageAttachment) -> String? {
         guard let messageID = attachment.messageID, let index = attachment.remoteIndex else {
             return nil

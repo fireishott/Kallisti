@@ -89,9 +89,6 @@ struct ChatScreen: View {
             scrollToBottom()
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
-            if let new, old == nil {
-                scrollToResponseTop(new)
-            }
             if old != nil && new == nil {
                 // Streaming just ended — scroll to the last message so the
                 // user sees the full response, not the user message they sent.
@@ -264,25 +261,30 @@ struct ChatScreen: View {
         Group {
             if let firstMessage = chatStore.conversation?.messages.first {
                 let startTime = firstMessage.timestamp
-                TimelineView(.periodic(from: startTime, by: 60)) { context in
+                TimelineView(.periodic(from: .now, by: 30)) { context in
                     let elapsed = context.date.timeIntervalSince(startTime)
-                    Text(formatSessionDuration(elapsed))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Design.Colors.tertiaryForeground)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Design.Colors.surface))
+                    if elapsed >= 0 {
+                        Text(formatSessionDuration(elapsed))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Design.Colors.surface))
+                    }
                 }
             }
         }
     }
 
     private func formatSessionDuration(_ interval: TimeInterval) -> String {
-        let minutes = Int(interval) / 60
+        let totalSeconds = Int(max(interval, 0))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        if minutes == 0 { return "\(seconds)s" }
         if minutes < 60 { return "\(minutes)m" }
         let hours = minutes / 60
         let remaining = minutes % 60
-        return "\(hours)h \(remaining)m"
+        return remaining == 0 ? "\(hours)h" : "\(hours)h \(remaining)m"
     }
 
     // MARK: - Compact chip: 🟢 model-name [ring%]
@@ -807,7 +809,14 @@ struct ChatScreen: View {
             try await chatStore.clearConversation()
             showStatusCard = false
         } catch {
-            // Conversation unchanged on failure — user can retry
+            let reason: String
+            if (error as? URLError)?.code == .userAuthenticationRequired
+                || "\(error)".contains("401") {
+                reason = "Session expired — please re-pair your device"
+            } else {
+                reason = error.localizedDescription
+            }
+            appendSystemMessage("Couldn't start a new session — \(reason)")
         }
     }
 

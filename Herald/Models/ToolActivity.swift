@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Tool activities are accumulated on the ``Message`` during streaming so the UI
 /// can show a compact, expandable timeline of what Herald did.
-struct ToolActivity: Identifiable, Hashable, Sendable {
+struct ToolActivity: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let label: String
     let startedAt: Date

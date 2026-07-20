@@ -6,6 +6,7 @@ enum MarkdownSegment: Identifiable {
     case prose(id: UUID = UUID(), text: String)
     case codeBlock(id: UUID = UUID(), language: String?, code: String)
     case image(id: UUID = UUID(), url: URL, altText: String)
+    case video(id: UUID = UUID(), url: URL, altText: String)
     case thinking(id: UUID = UUID(), content: String)
     case toolCall(id: UUID = UUID(), name: String, args: String?, result: String?)
     case table(id: UUID = UUID(), rows: [[String]])
@@ -15,6 +16,7 @@ enum MarkdownSegment: Identifiable {
         case .prose(let id, _): return id
         case .codeBlock(let id, _, _): return id
         case .image(let id, _, _): return id
+        case .video(let id, _, _): return id
         case .thinking(let id, _): return id
         case .toolCall(let id, _, _, _): return id
         case .table(let id, _): return id
@@ -27,12 +29,20 @@ enum MarkdownSegment: Identifiable {
 nonisolated(unsafe) private let markdownImagePattern = /!\[([^\]]*)\]\(([^)]+)\)/
 // HTML img tags: <img src="url"> or <img src="url"/> or <img src="url"></img>
 nonisolated(unsafe) private let htmlImagePattern = /<img\s+src=["']?(https?:\/\/[^\s"'<>]+)["']?\s*\/?\s*>(\s*<\/img>)?/
+// HTML video tags: <video src="url"> or <video src="url"></video>
+nonisolated(unsafe) private let htmlVideoPattern = /<video[^>]+src=["']?(https?:\/\/[^\s"'<>]+)["']?[^>]*\/?\s*>/
 
 /// Image file extensions the parser recognizes.
 private let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg"]
 
 /// Known image hosting domains (always treated as images regardless of extension).
 private let imageHostPatterns: [String] = ["fal.media", "fal-cdn", "replicate.delivery", "oaidalleapiprodscus"]
+
+/// Video file extensions.
+private let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "webm", "mkv"]
+
+/// Known video hosting URL patterns.
+private let videoHostPatterns: [String] = ["youtube.com/watch", "youtu.be/", "vimeo.com/"]
 
 /// Returns true if the URL looks like an image.
 private func isImageURL(_ urlString: String) -> Bool {
@@ -48,33 +58,58 @@ private func isImageURL(_ urlString: String) -> Bool {
     return false
 }
 
-/// An image match found in prose text.
-private struct ImageMatch: Comparable {
+/// Returns true if the URL looks like a video.
+private func isVideoURL(_ urlString: String) -> Bool {
+    let lower = urlString.lowercased()
+    if let ext = URL(string: lower)?.pathExtension, videoExtensions.contains(ext) {
+        return true
+    }
+    for host in videoHostPatterns {
+        if lower.contains(host) { return true }
+    }
+    return false
+}
+
+/// A media match (image or video) found in prose text.
+private struct MediaMatch: Comparable {
     let range: Range<String.Index>
     let url: String
     let alt: String
+    let isVideo: Bool
 
-    static func < (lhs: ImageMatch, rhs: ImageMatch) -> Bool {
+    static func < (lhs: MediaMatch, rhs: MediaMatch) -> Bool {
         lhs.range.lowerBound < rhs.range.lowerBound
     }
 }
 
-/// Splits prose text into interleaved prose and image segments, preserving order.
-/// Handles both markdown ![alt](url) and HTML <img src="url"> syntax.
-private func splitProseAndImages(_ text: String) -> [MarkdownSegment] {
-    // Collect all image matches from both patterns
-    var imageMatches: [ImageMatch] = []
+/// Splits prose text into interleaved prose, image, and video segments.
+/// Handles markdown ![alt](url), HTML <img>/<video> tags, and bare video URLs.
+private func splitProseAndMedia(_ text: String) -> [MarkdownSegment] {
+    var matches: [MediaMatch] = []
 
     for match in text.matches(of: markdownImagePattern) {
-        imageMatches.append(ImageMatch(range: match.range, url: String(match.2), alt: String(match.1)))
+        matches.append(MediaMatch(range: match.range, url: String(match.2), alt: String(match.1), isVideo: false))
     }
     for match in text.matches(of: htmlImagePattern) {
-        imageMatches.append(ImageMatch(range: match.range, url: String(match.1), alt: ""))
+        matches.append(MediaMatch(range: match.range, url: String(match.1), alt: "", isVideo: false))
+    }
+    for match in text.matches(of: htmlVideoPattern) {
+        matches.append(MediaMatch(range: match.range, url: String(match.1), alt: "", isVideo: true))
     }
 
-    imageMatches.sort()
+    // Detect bare video URLs (a line that is just a youtube/vimeo URL)
+    let lines = text.components(separatedBy: "\n")
+    for line in lines {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("http") && isVideoURL(trimmed),
+           let lineRange = text.range(of: line) {
+            matches.append(MediaMatch(range: lineRange, url: trimmed, alt: "", isVideo: true))
+        }
+    }
 
-    guard !imageMatches.isEmpty else {
+    matches.sort()
+
+    guard !matches.isEmpty else {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? [] : [.prose(text: trimmed)]
     }
@@ -82,31 +117,29 @@ private func splitProseAndImages(_ text: String) -> [MarkdownSegment] {
     var segments: [MarkdownSegment] = []
     var lastEnd = text.startIndex
 
-    for img in imageMatches {
-        // Skip overlapping matches
-        guard img.range.lowerBound >= lastEnd else { continue }
+    for media in matches {
+        guard media.range.lowerBound >= lastEnd else { continue }
 
-        // Emit prose before this image
-        let before = String(text[lastEnd..<img.range.lowerBound])
+        let before = String(text[lastEnd..<media.range.lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !before.isEmpty {
             segments.append(.prose(text: before))
         }
 
-        // If it's in image syntax (![alt](url) or <img src="url">), treat it
-        // as an image unconditionally. AsyncImage handles the load; if the URL
-        // isn't actually an image, the failure state shows alt text gracefully.
-        if let url = URL(string: img.url), url.scheme == "http" || url.scheme == "https" {
-            segments.append(.image(url: url, altText: img.alt))
+        if let url = URL(string: media.url), url.scheme == "http" || url.scheme == "https" {
+            if media.isVideo || isVideoURL(media.url) {
+                segments.append(.video(url: url, altText: media.alt))
+            } else {
+                segments.append(.image(url: url, altText: media.alt))
+            }
         } else {
-            let raw = String(text[img.range])
+            let raw = String(text[media.range])
             segments.append(.prose(text: raw))
         }
 
-        lastEnd = img.range.upperBound
+        lastEnd = media.range.upperBound
     }
 
-    // Emit prose after the last image
     let after = String(text[lastEnd...]).trimmingCharacters(in: .whitespacesAndNewlines)
     if !after.isEmpty {
         segments.append(.prose(text: after))
@@ -208,7 +241,7 @@ private func extractTables(from prose: String, isStreaming: Bool = false) -> [Ma
             // Flush accumulated prose
             let text = textAccumulator.joined(separator: "\n")
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                result.append(contentsOf: splitProseAndImages(text))
+                result.append(contentsOf: splitProseAndMedia(text))
             }
             textAccumulator = []
             // Collect table lines
@@ -237,7 +270,7 @@ private func extractTables(from prose: String, isStreaming: Bool = false) -> [Ma
     }
     let remaining = textAccumulator.joined(separator: "\n")
     if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        result.append(contentsOf: splitProseAndImages(remaining))
+        result.append(contentsOf: splitProseAndMedia(remaining))
     }
     return result
 }

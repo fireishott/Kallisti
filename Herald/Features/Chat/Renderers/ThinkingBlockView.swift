@@ -63,5 +63,18 @@ struct ThinkingBlockView: View {
             RoundedRectangle(cornerRadius: Design.CornerRadius.md)
                 .stroke(Design.Colors.border, lineWidth: 1)
         )
+        .onAppear {
+            if isStreaming {
+                isExpanded = false
+                withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+        }
+        .onChange(of: isStreaming) { _, streaming in
+            if !streaming {
+                withAnimation(Design.Motion.standard) { isExpanded = false }
+            }
+        }
     }
 }

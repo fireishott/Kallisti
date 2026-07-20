@@ -1,3 +1,4 @@
+import AVKit
 import Photos
 import SwiftUI
 
@@ -42,6 +43,8 @@ struct MarkdownContentView: View {
                         CodeBlockView(language: language, code: code)
                     case .image(_, let url, let altText):
                         inlineImageView(url: url, altText: altText, segment: segment)
+                    case .video(_, let url, let altText):
+                        inlineVideoView(url: url, altText: altText)
                     case .thinking(_, let thinkContent):
                         ThinkingBlockView(content: thinkContent, isStreaming: isStreaming)
                     case .toolCall(_, let name, let args, let result):
@@ -105,7 +108,7 @@ struct MarkdownContentView: View {
         Button {
             fullscreenImage = segment
         } label: {
-            AsyncImage(url: url) { phase in
+            AuthenticatedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
                     image
@@ -141,6 +144,41 @@ struct MarkdownContentView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Inline Video
+
+    @ViewBuilder
+    private func inlineVideoView(url: URL, altText: String) -> some View {
+        let isYouTube = url.host?.contains("youtube") == true
+            || url.host?.contains("youtu.be") == true
+            || url.host?.contains("vimeo") == true
+        if isYouTube {
+            Link(destination: url) {
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Design.Brand.accent)
+                    VStack(alignment: .leading) {
+                        Text(altText.isEmpty ? "Watch Video" : altText)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Text(url.host ?? "Video")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                }
+                .padding(Design.Spacing.sm)
+                .background(Design.Colors.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+                .overlay(RoundedRectangle(cornerRadius: Design.CornerRadius.md).stroke(Design.Colors.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        } else {
+            VideoPlayerView(url: url)
+                .frame(maxWidth: 300, maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+        }
     }
 }
 
