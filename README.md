@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.3.3-FF6B00?style=flat-square" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.7.1-FF6B00?style=flat-square" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-26+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 26+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
@@ -137,12 +137,11 @@ HERALD uses APNs with silent push to wake the app when your agent has something 
 <td valign="top">
 
 ### AVFoundation and Speech
-Voice mode uses OpenAI Realtime API over WebSockets with full-duplex audio.
+Voice mode uses MiMo ASR for speech recognition and MiMo TTS for synthesis, with Hermes processing.
 
-- OpenAI Realtime voice via WebSocket
-- Full-duplex audio streaming
-- Voice Activity Detection (VAD)
-- Push-to-talk mode
+- MiMo ASR for streaming speech-to-text
+- MiMo TTS for text-to-speech synthesis
+- Push-to-talk mode via HermesTalkCoordinator
 - Audio session management (speaker, receiver, Bluetooth)
 - Voice transcript display with live streaming
 
@@ -278,12 +277,14 @@ Herald/
 │   │   └── Renderers/      # Code, thinking, tool call, table views
 │   ├── Canvas/             # Canvas panel for code artifacts
 │   ├── Sidebar/            # iPad right panel
-│   ├── Voice/              # Voice mode (OpenAI Realtime + Mimo TTS)
+│   ├── Talk/               # Voice mode (MiMo ASR/TTS + Hermes)
 │   ├── Sessions/           # Session management
 │   └── Settings/           # App settings
 ├── Models/                 # Data models (Message, Artifact, etc.)
 ├── Stores/                 # State management (ChatStore, etc.)
-├── Services/               # API clients, push notifications, sensors
+├── Services/
+│   ├── Live/               # HermesTalkCoordinator, MimoASRService, MimoTTSService
+│   └── Protocols/          # Service protocols
 ├── Widgets/                # Home Screen widgets + Live Activities
 └── Resources/              # Assets, entitlements, Info.plist
 relay/                      # Python relay server
