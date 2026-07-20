@@ -4,6 +4,12 @@ All notable changes to Hermes iOS are documented here.
 
 ## [1.7.1] - 2026-07-20
 
+### Fix: Terminal result plumbing from coordinator to client
+
+- **Add TerminalResult to RunResult** (`Herald/Services/Live/JobStreamCoordinator.swift`): Extended `RunResult` to carry terminal payload (text, usage tokens, error) from the done event. This allows the caller to pass terminal data into `resolveFinalMessage` instead of always supplying `nil`.
+
+- **Pass terminal payload to resolveFinalMessage** (`Herald/Services/Live/LiveHeraldClient.swift`): The terminal result from the coordinator is now converted to a `StreamDonePayload` and passed to `resolveFinalMessage`, enabling proper error display and usage reporting.
+
 ### Fix: Talk API key reads from Keychain instead of UserDefaults (T2)
 
 - **Add APIKeyHolder** (`Herald/Stores/AppContainer.swift`): Added a MainActor-safe cached holder that reads the MiMo API key from Keychain once and caches it. Refreshes when Settings writes/deletes the key.

@@ -4,9 +4,18 @@ import os
 /// Coordinates a single job's SSE event stream with cursor-based resume.
 /// Replaces the one-shot `streamJobEvents` that could not reconnect.
 actor JobStreamCoordinator {
+    /// Terminal payload extracted from the done event.
+    struct TerminalResult: Sendable {
+        let text: String?
+        let promptTokens: Int?
+        let completionTokens: Int?
+        let totalTokens: Int?
+        let error: String?
+    }
+
     enum RunResult: Sendable {
-        case completed
-        case failed
+        case completed(TerminalResult?)
+        case failed(TerminalResult?)
         case cancelled
         case error(String)
     }
@@ -116,11 +125,12 @@ actor JobStreamCoordinator {
 
                     // Terminal events end the stream
                     if envelope.type.isTerminal {
+                        let terminalResult = self.extractTerminalResult(from: envelope)
                         switch envelope.type {
-                        case .runCompleted: return .completed
-                        case .runFailed: return .failed
+                        case .runCompleted: return .completed(terminalResult)
+                        case .runFailed: return .failed(terminalResult)
                         case .runCancelled: return .cancelled
-                        default: return .completed
+                        default: return .completed(terminalResult)
                         }
                     }
                 }
@@ -134,9 +144,9 @@ actor JobStreamCoordinator {
                 if let status = await jobStatusProvider(jobId) {
                     switch status.status {
                     case "completed":
-                        return .completed
+                        return .completed(nil)
                     case "failed":
-                        return .failed
+                        return .failed(nil)
                     case "cancelled":
                         return .cancelled
                     case "queued", "running":
@@ -340,6 +350,25 @@ actor JobStreamCoordinator {
             return .cancelled
         case .runRequeued:
             return .reconnecting
+        }
+    }
+
+    private func extractTerminalResult(from envelope: JobEventEnvelope) -> TerminalResult {
+        switch envelope.payload {
+        case .runCompleted(let p):
+            return TerminalResult(
+                text: p.text,
+                promptTokens: p.usage?.promptTokens,
+                completionTokens: p.usage?.completionTokens,
+                totalTokens: p.usage?.totalTokens,
+                error: nil
+            )
+        case .runFailed(let p):
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.error)
+        case .runCancelled(let p):
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.reason)
+        default:
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: nil)
         }
     }
 }

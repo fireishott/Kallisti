@@ -239,14 +239,35 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     let result = await coordinator.run(continuation: continuation)
 
                     switch result {
-                    case .completed, .failed:
+                    case .completed(let terminalResult), .failed(let terminalResult):
+                        // Build a StreamDonePayload from the terminal result
+                        let donePayload: StreamDonePayload?
+                        if let terminalResult {
+                            let usage: TokenUsage? = {
+                                guard let prompt = terminalResult.promptTokens,
+                                      let completion = terminalResult.completionTokens,
+                                      let total = terminalResult.totalTokens else { return nil }
+                                return TokenUsage(promptTokens: prompt, completionTokens: completion, totalTokens: total)
+                            }()
+                            donePayload = StreamDonePayload(
+                                jobId: jobId,
+                                status: terminalResult.error != nil ? "failed" : "completed",
+                                usage: usage,
+                                diff: nil,
+                                error: terminalResult.error,
+                                message: nil
+                            )
+                        } else {
+                            donePayload = nil
+                        }
+
                         let refreshedConversation = await self.reloadConversationForStreaming()
                         let finalMessage = self.resolveFinalMessage(
                             jobId: jobId,
-                            donePayload: nil,
+                            donePayload: donePayload,
                             conversation: refreshedConversation ?? self.currentConversation
                         )
-                        let usage: TokenUsage? = refreshedConversation?.latestUsage
+                        let usage: TokenUsage? = donePayload?.usage ?? refreshedConversation?.latestUsage
                         continuation.yield(.finished(finalMessage, usage, nil))
                     case .cancelled:
                         break // Coordinator already yielded .cancelled
