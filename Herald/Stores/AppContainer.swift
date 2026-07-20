@@ -486,7 +486,7 @@ final class AppContainer {
         // Read action or default tap — navigate to chat tab
         router.activeSheet = nil
         router.popToRoot()
-        router.selectedTab = .chat
+        router.switchToTab(.chat)
 
         guard let conversationID = route.conversationID else {
             Logger.app.info("Notification route: no conversation ID, staying on current chat")
@@ -866,7 +866,7 @@ final class AppContainer {
         talkStore.reset()
         sensorUploadService?.stop()
         sensorUploadService?.resetOutbox()
-        router.selectedTab = .chat
+        router.switchToTab(.chat)
         router.activeSheet = nil
         router.resetAll()
         chatStore.reset()

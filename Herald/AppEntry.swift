@@ -156,11 +156,11 @@ struct HeraldApp: App {
         case "chat":
             container.router.activeSheet = nil
             container.router.popToRoot()
-            container.router.selectedTab = .chat
+            container.router.switchToTab(.chat)
         case "health":
             container.router.activeSheet = nil
             container.router.popToRoot()
-            container.router.selectedTab = .chat
+            container.router.switchToTab(.chat)
             container.router.navigate(to: .permissions)
         case "voice":
             container.router.isVoiceOverlayPresented = true

@@ -111,4 +111,14 @@ final class TabRouter {
     func dismissSheet() {
         activeSheet = nil
     }
+
+    /// Switch to a tab, bridging to iPad section switching when the adaptive
+    /// root view is installed. Use this instead of setting `selectedTab` directly
+    /// when the change should be reflected in the iPad sidebar.
+    func switchToTab(_ tab: AppTab) {
+        selectedTab = tab
+        if let switcher = oniPadSectionSwitch {
+            switcher(SidebarSection(rawValue: tab.rawValue) ?? .chat)
+        }
+    }
 }

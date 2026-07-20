@@ -4,11 +4,13 @@ All notable changes to Hermes iOS are documented here.
 
 ## [1.3.3] - 2026-07-20
 
-### Fixed - APNs Push Notifications
+### Fixed - APNs Push Notifications + iPad Notification Routing
 
 - **Bundle ID mismatch** (`relay/app/config.py`, `relay/app/apns.py`, `relay/.env.example`): Changed default APNs bundle ID from `net.fihonline.herald` to `net.fihonline.herald` to match the actual app bundle identifier. The wrong topic caused Apple to reject every push notification (`TopicDisallowed`/`BadDeviceToken`).
 
 - **APNs environment default** (`relay/app/config.py`, `relay/.env.example`): Changed default APNs environment from `development` to `production` to match TestFlight builds. Development tokens sent to the production gateway caused `BadEnvironmentKeyInToken` silent failures.
+
+- **iPad notification tap routing** (`Herald/Core/Router.swift`, `Herald/Stores/AppContainer.swift`, `Herald/AppEntry.swift`): Added `switchToTab(_:)` method to `TabRouter` that bridges `selectedTab` changes to `oniPadSectionSwitch` on iPad. Notification taps, deeplinks, and pairing removal now correctly switch the iPad sidebar section instead of silently setting `selectedTab` without updating the visible column.
 
 ## [1.3.2] - 2026-07-20
 
