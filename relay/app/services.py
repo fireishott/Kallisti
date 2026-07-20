@@ -1565,13 +1565,16 @@ def append_job_event(
     job_id: str,
     event_type: str,
     payload: dict,
-    source_seq: int,
+    source_seq: int | None,
     attempt: int,
 ) -> dict | None:
     """Append an event to the durable job event log in a single transaction.
 
     Returns the created event dict (with assigned seq) or None if duplicate/rejected.
     Invariants: 2 (one ordered log), 3 (append before fan-out), 4 (at-least-once, exactly-once projection).
+
+    Deduplication is only performed when source_seq is provided (not None).
+    Missing source_seq from legacy connectors means append without source dedupe.
     """
     job = db.get(MessageJob, job_id)
     if job is None:
@@ -1583,15 +1586,16 @@ def append_job_event(
     if job.attempt != attempt:
         return None
 
-    existing = db.scalar(
-        select(JobEvent).where(
-            JobEvent.job_id == job_id,
-            JobEvent.attempt == attempt,
-            JobEvent.source_seq == source_seq,
+    if source_seq is not None:
+        existing = db.scalar(
+            select(JobEvent).where(
+                JobEvent.job_id == job_id,
+                JobEvent.attempt == attempt,
+                JobEvent.source_seq == source_seq,
+            )
         )
-    )
-    if existing is not None:
-        return None
+        if existing is not None:
+            return None
 
     max_seq = db.scalar(
         select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)

@@ -2,6 +2,16 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.1] - 2026-07-20
+
+### Fix: Relay source sequencing (S1)
+
+- **Pass sourceSeq from connector through relay** (`relay/app/main.py`): The connector sends `sourceSeq` on `job.started`, `job.heartbeat`, and `job.progress` frames, but the relay was looking for `eventId` which never existed. Now `sourceSeq` flows through to `publish_job_event` when present.
+
+- **Deduplicate only when source_seq is provided** (`relay/app/services.py`, `relay/app/models.py`): Changed `source_seq` column to nullable and made `append_job_event` skip source-based deduplication when `source_seq is None`. This prevents legacy connectors without sequencing from having all their events collide at sequence 0.
+
+- **Fix SSE delta coalescing** (`relay/app/main.py`): Moved delta flush logic into `emit_db_event` so adjacent text_delta events are properly coalesced before being yielded. Previously the flush happened before every event, causing each text_delta to be flushed individually instead of being merged with adjacent ones.
+
 ## [1.7.0] - 2026-07-20
 
 ### Deprecated - Legacy OpenAI Realtime Talk (Phase B-T6)

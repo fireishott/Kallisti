@@ -292,7 +292,7 @@ class JobEvent(Base):
     job_id: Mapped[str] = mapped_column(String(36), ForeignKey("message_jobs.id"), nullable=False)
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

@@ -275,7 +275,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             event_type = event.get("event", "progress")
             payload = event.get("data", {})
-            source_seq = event.get("eventId", 0)
+            source_seq = event.get("sourceSeq")
+            if source_seq is None:
+                logger.warning("Legacy unsequenced event for job %s: %s", job_id, event_type)
             with database.session() as db:
                 job = get_message_job(db, job_id=job_id)
                 attempt = job.attempt if job is not None else 0
@@ -2397,18 +2399,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload = {"jobId": delta_job_id or job_id, "kind": "text_delta", "delta": merged}
                 return f"event: text_delta\ndata: {json.dumps(jsonable_encoder(payload))}\n\n"
 
-            def emit_db_event(evt: dict) -> str | None:
-                """Format a DB event dict as an SSE frame with id: line."""
+            def emit_db_event(evt: dict) -> list[str]:
+                """Format a DB event dict as one or more SSE frames with id: lines.
+
+                For text_delta events, buffers the delta and returns [].
+                For other events, flushes any buffered deltas first, then emits the event.
+                """
                 nonlocal last_seq
                 event_type = evt.get("type", "progress")
                 seq = evt.get("seq", 0)
                 last_seq = seq
                 if event_type == "text_delta":
                     drain_delta(evt.get("payload", {}) or {})
-                    return None
+                    return []
+                frames: list[str] = []
+                flushed = flushed_delta_frame()
+                if flushed is not None:
+                    frames.append(flushed)
                 payload = evt.get("payload", {})
                 data = json.dumps(jsonable_encoder(payload))
-                return f"id: {seq}\nevent: {event_type}\ndata: {data}\n\n"
+                frames.append(f"id: {seq}\nevent: {event_type}\ndata: {data}\n\n")
+                return frames
 
             def build_terminal_event(status_val: str, job_row) -> str:
                 """Build a terminal SSE frame (completed/failed/cancelled)."""
@@ -2446,16 +2457,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 persisted = get_job_events_after(replay_db, job_id, after_seq=cursor)
 
             for evt in persisted:
-                flushed = flushed_delta_frame()
-                if flushed is not None:
-                    yield flushed
-                frame = emit_db_event(evt)
-                if frame is not None:
+                for frame in emit_db_event(evt):
                     yield frame
                 if evt.get("type") in ("completed", "failed", "cancelled"):
-                    flushed = flushed_delta_frame()
-                    if flushed is not None:
-                        yield flushed
                     return
 
             # --- Phase 1b: If job already terminal, emit terminal event and close ---
@@ -2491,11 +2495,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         new_events = get_job_events_after(live_db, job_id, after_seq=last_seq)
 
                     for evt in new_events:
-                        flushed = flushed_delta_frame()
-                        if flushed is not None:
-                            yield flushed
-                        frame = emit_db_event(evt)
-                        if frame is not None:
+                        for frame in emit_db_event(evt):
                             yield frame
 
                     # Check if job became terminal
@@ -2506,11 +2506,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             with database.session() as drain_db:
                                 remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
                             for evt in remaining:
-                                flushed = flushed_delta_frame()
-                                if flushed is not None:
-                                    yield flushed
-                                frame = emit_db_event(evt)
-                                if frame is not None:
+                                for frame in emit_db_event(evt):
                                     yield frame
                             flushed = flushed_delta_frame()
                             if flushed is not None:
@@ -2761,25 +2757,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             if message_type == "job.started" and incoming.get("jobId") == claimed_job.id:
                                 with database.session() as db:
                                     renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
-                                publish_job_event(claimed_job.id, {
+                                started_event: dict = {
                                     "event": "started",
                                     "data": {
                                         "jobId": claimed_job.id,
                                         "phase": incoming.get("phase", "starting"),
                                     },
-                                })
+                                }
+                                if "sourceSeq" in incoming:
+                                    started_event["sourceSeq"] = incoming["sourceSeq"]
+                                publish_job_event(claimed_job.id, started_event)
                                 continue
 
                             if message_type == "job.heartbeat" and incoming.get("jobId") == claimed_job.id:
                                 with database.session() as db:
                                     renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
-                                publish_job_event(claimed_job.id, {
+                                heartbeat_event: dict = {
                                     "event": "heartbeat",
                                     "data": {
                                         "jobId": claimed_job.id,
                                         "phase": incoming.get("phase", "unknown"),
                                     },
-                                })
+                                }
+                                if "sourceSeq" in incoming:
+                                    heartbeat_event["sourceSeq"] = incoming["sourceSeq"]
+                                publish_job_event(claimed_job.id, heartbeat_event)
                                 continue
 
                             if message_type == "sensor.ack":
@@ -2801,7 +2803,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             if message_type == "job.progress" and incoming.get("jobId") == claimed_job.id:
                                 with database.session() as db:
                                     renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
-                                publish_job_event(claimed_job.id, {
+                                progress_event: dict = {
                                     "event": incoming.get("kind", "progress"),
                                     "data": {
                                         "jobId": claimed_job.id,
@@ -2809,7 +2811,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         "delta": incoming.get("delta"),
                                         "label": incoming.get("label"),
                                     },
-                                })
+                                }
+                                if "sourceSeq" in incoming:
+                                    progress_event["sourceSeq"] = incoming["sourceSeq"]
+                                publish_job_event(claimed_job.id, progress_event)
                                 continue
 
                             if message_type == "job.result" and incoming.get("jobId") == claimed_job.id:
