@@ -2,6 +2,30 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.1] - 2026-07-20
+
+### Fixed - Streaming watchdog, scroll, iPad swipe, /new command, MCP
+
+- **Bug B — False "tap to retry" during multi-tool/multiagent work** (connector + relay + app): The streaming pipeline went silent during tool execution and subagent fan-out because the connector only parsed `delta.content` and ignored `delta.tool_calls`. A 120s client watchdog misfired on that silence, showing "Herald didn't respond" while Hermes was still working.
+  - `connector/src/herald_connector/herald_api_executor.py`: Now handles `delta.tool_calls` — emits `tool_activity` StreamEvent for each tool function name. Also emits `keepalive` events when the upstream SSE sends a chunk with no user-visible content (role-only deltas, empty content during subagent work).
+  - `connector/src/herald_connector/client.py`: Forwards `keepalive` events to the relay as `job.progress` with `kind: "keepalive"`.
+  - `Herald/Models/StreamingUpdate.swift`: New `.keepalive` case.
+  - `Herald/Services/Live/LiveHeraldClient.swift`: Handles `"keepalive"` SSE events from the relay.
+  - `Herald/Stores/ChatStore.swift`: `.keepalive` resets the watchdog timer via `progressContinuation`. `failStalledMessage` now preserves the placeholder ID so a late `.finished` can find and replace the error message with the actual response. Post-failure polling task refreshes the conversation after 15s to pick up server-side completion.
+
+- **Bug A — Sent message not scrolled into view** (`ChatScreen.swift`): Removed the `streamingMessageID == nil` guard from the `pendingMessageSentAt` onChange handler. User messages now always scroll into view on send, even when streaming starts immediately.
+
+- **Bug C — iPad swipe for logs panel** (`AdaptiveRootView.swift`): Added a `DragGesture` to the iPad detail content — swipe left opens the right panel (logs), swipe right closes it. Matches the existing iPhone drawer gesture pattern.
+
+- **Bug D — `/new` starts new session without confirmation** (`ChatScreen.swift`, `SlashCommand.swift`): Split `/new` from `/clear`. `/new` now calls `performClear()` immediately without the destructive confirmation dialog. `/clear` retains the confirmation. Marked `/new` as `isDestructive: false`.
+
+- **Bug F — MCP `hermes_mobile` stale command path** (`connector/src/herald_connector/client.py`): Added `register_native_mcp_server()` call on every connector connect, not just at enroll/setup. Self-heals stale `herald-mcp` paths in `~/.hermes/config.yaml` when the connector venv moves or is reinstalled.
+
+### Notes
+
+- Bug B fix requires all three components (connector + relay + app) deployed together. Ship connector changes before or with the app change so an older app safely ignores unknown `keepalive` events.
+- The relay forwards arbitrary `kind` values through `publish_job_event` — no relay code change was needed for `keepalive`.
+
 ## [1.1.0] - 2026-07-19
 
 ### Added - Mimo TTS + Bug Fixes
