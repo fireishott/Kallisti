@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "title": "Q3 Planning Meeting Notes",
+  "markdown": "# Q3 Planning Meeting Notes\n\n## Summary\n\nKey decisions from the Q3 planning session covering budget allocation, Project Phoenix timeline, and cloud migration vendor selection.\n\n## Research: Cloud Migration Vendors\n\nBased on current market analysis, the leading cloud migration vendors for enterprise workloads are:\n\n1. **AWS Migration Hub** — Comprehensive tooling, broadest service portfolio\n2. **Azure Migrate** — Strong hybrid-cloud integration, existing Microsoft license benefits\n3. **Google Cloud Migration Center** — Competitive pricing, strong in data analytics workloads\n\nKey factors for evaluation: migration cost, downtime tolerance, data sovereignty requirements, and existing vendor relationships.\n\n## Action Items\n\n- [ ] Sarah: Prepare budget proposal for new hires (due: Friday)\n- [ ] Mike: Schedule vendor demos for cloud migration\n- [ ] Team: Review vendor comparison matrix after demos",
+  "sections": [
+    {
+      "kind": "summary",
+      "title": "Summary",
+      "markdown": "Key decisions from the Q3 planning session covering budget allocation, Project Phoenix timeline, and cloud migration vendor selection."
+    },
+    {
+      "kind": "command_result",
+      "title": "Research: Cloud Migration Vendors",
+      "markdown": "Based on current market analysis, the leading cloud migration vendors for enterprise workloads are:\n\n1. **AWS Migration Hub** — Comprehensive tooling, broadest service portfolio\n2. **Azure Migrate** — Strong hybrid-cloud integration, existing Microsoft license benefits\n3. **Google Cloud Migration Center** — Competitive pricing, strong in data analytics workloads\n\nKey factors for evaluation: migration cost, downtime tolerance, data sovereignty requirements, and existing vendor relationships."
+    },
+    {
+      "kind": "command_result",
+      "title": "Action Items",
+      "markdown": "- [ ] Sarah: Prepare budget proposal for new hires (due: Friday)\n- [ ] Mike: Schedule vendor demos for cloud migration\n- [ ] Team: Review vendor comparison matrix after demos"
+    }
+  ],
+  "commandResults": [
+    {
+      "directiveId": "dir-001",
+      "status": "completed",
+      "sectionIndex": 1
+    },
+    {
+      "directiveId": "dir-002",
+      "status": "completed",
+      "sectionIndex": 2
+    }
+  ],
+  "citations": [
+    {
+      "title": "AWS Migration Hub",
+      "url": "https://aws.amazon.com/migration-hub/",
+      "accessedAt": "2026-07-20T14:30:00Z"
+    },
+    {
+      "title": "Azure Migrate",
+      "url": "https://azure.microsoft.com/en-us/products/azure-migrate/",
+      "accessedAt": "2026-07-20T14:30:00Z"
+    },
+    {
+      "title": "Google Cloud Migration Center",
+      "url": "https://cloud.google.com/migration-center",
+      "accessedAt": "2026-07-20T14:30:00Z"
+    }
+  ],
+  "warnings": []
+}

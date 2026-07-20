@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "noteId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "clientRunId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "sourceDrawingRevision": 12,
+  "sourceTextRevision": 8,
+  "recognizedText": "Meeting notes from Q3 planning\n\nKey topics:\n- Budget allocation for new hires\n- Timeline for Project Phoenix\n- Vendor selection for cloud migration\n\n#research cloud migration vendors comparison\n\nAction items:\n- Sarah to prepare budget proposal by Friday\n- Mike to schedule vendor demos\n\n#actions",
+  "directives": [
+    {
+      "id": "dir-001",
+      "command": "research",
+      "arguments": "cloud migration vendors comparison",
+      "sourceRange": {
+        "location": 143,
+        "length": 42
+      }
+    },
+    {
+      "id": "dir-002",
+      "command": "actions",
+      "arguments": "",
+      "sourceRange": {
+        "location": 245,
+        "length": 8
+      }
+    }
+  ],
+  "locale": "en-US",
+  "timezone": "America/Los_Angeles"
+}

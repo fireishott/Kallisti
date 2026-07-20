@@ -2,6 +2,30 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.2] - 2026-07-20
+
+### Feature: iPad Notes (PencilKit + Hermes Enrichment) — Phase 1–3
+
+- **Local-first Notes with PencilKit canvas** (`Herald/Models/HeraldNote.swift`, `Herald/Features/Notes/`): New `SidebarSection.notes` case, `NotesStore`, `NotesRepository` (atomic file writes, SHA-256 hash verification), `PencilCanvasRepresentable` (PKCanvasView + PKToolPicker), `NoteEditorView` with debounced persistence (300–750ms settle + background/resign-active hooks). Notes are iPad-only in v1; iPhone read-only tab deferred to Phase 4.
+
+- **On-device handwriting recognition** (`Herald/Services/Live/VisionHandwritingRecognizer.swift`): Vision framework `VNRecognizeTextRequest` with `.accurate` and `.fast` levels. `NoteRecognitionCoordinator` actor manages per-note recognition lifecycle, cancels stale tasks, drops results from superseded drawing revisions.
+
+- **Directive parser** (`Herald/Features/Notes/NoteDirectiveParser.swift`): Pure, deterministic, Sendable parser for `#command` directives in recognized text. v1 allowlist: `#research`, `#search`, `#talkingpoints`, `#summary`, `#actions`, `#questions`. Unknown tags are data, never sent as intent. Stable fingerprints prevent duplicate execution across OCR churn.
+
+- **Relay Notes API** (`relay/app/notes.py`, `relay/app/models.py`): New tables (`notes`, `note_blobs`, `note_recognitions`, `note_runs`, `note_run_events`, `enriched_note_revisions`). CRUD endpoints with ownership checks, If-Match optimistic concurrency, blob upload with SHA-256 verification and 25 MB cap, run lifecycle (queued→claimed→completed/failed/cancelled), cursor-based event replay. Registered via `app.include_router(notes_router)`.
+
+- **Connector note.enrich RPC** (`connector/src/herald_connector/client.py`, `connector/src/herald_connector/note_contract.py`): New `note.enrich` RPC method dispatches to Hermes via the existing runtime adapter pipeline (API streaming or CLI fallback). Enrichment request/response schema-validated in both directions. v1 command allowlist enforced relay-side before prompt dispatch.
+
+- **Run lifecycle services** (`relay/app/services.py`): `requeue_expired_note_runs()`, `claim_next_note_run()`, `complete_note_run()` with revision fence (stale results preserved as history), `fail_note_run()`, `append_note_run_event()`. Same lease/requeue semantics as `message_jobs`.
+
+- **SDK availability note**: `PKStrokeRecognizer` is NOT in the public iOS SDK 26.5 headers. Recognition uses Vision framework exclusively. Documented in `docs/NOTES_CONTRACT_V1.md`.
+
+- **Contract and fixtures** (`docs/NOTES_CONTRACT_V1.md`, tri-location fixtures): Enrichment request/response schemas, directive grammar, recognition strategy, relay schema, API endpoints, run lifecycle, invariants. Fixtures byte-identical across `HeraldTests/Fixtures/Notes/`, `relay/tests/fixtures/notes/`, `connector/tests/fixtures/notes/`.
+
+### Fix: Version reconciliation
+
+- **Align version across all targets** (`project.yml:80-81,140-141`, `README.md:14`): Both app and widget targets now consistently report `1.7.2 / 38`. Previous `1147c68` landed under `1.7.1` without a version bump.
+
 ## [1.7.1] - 2026-07-20
 
 ### Fix: Talk startup crash and production wiring

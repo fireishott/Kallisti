@@ -2726,4 +2726,51 @@ struct NotificationReplyTests {
         #expect(route.replyText == expectedText)
         #expect(route.conversationID == conversationID)
     }
+
+    // MARK: - Notes Navigation
+
+    @Test("SidebarSection includes .notes case")
+    func sidebarSectionIncludesNotes() {
+        let allCases = SidebarSection.allCases
+        #expect(allCases.contains(.notes))
+    }
+
+    @Test("SidebarSection .notes has correct title and icon")
+    func notesSectionMetadata() {
+        #expect(SidebarSection.notes.title == "Notes")
+        #expect(SidebarSection.notes.icon == "pencil.and.outline")
+    }
+
+    @Test("NotesStore starts with empty state")
+    @MainActor
+    func notesStoreInitialState() {
+        let store = NotesStore()
+        #expect(store.notes.isEmpty)
+        #expect(store.selectedNoteId == nil)
+        #expect(store.isLoading == false)
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test("NotesStore activeNotes excludes deleted")
+    @MainActor
+    func notesStoreActiveExcludesDeleted() {
+        let store = NotesStore()
+        store.notes = [
+            HeraldNote(title: "Active"),
+            HeraldNote(title: "Deleted", deletedAt: .now),
+        ]
+        #expect(store.activeNotes.count == 1)
+        #expect(store.activeNotes.first?.title == "Active")
+    }
+
+    @Test("NotesStore activeNotes sorts pinned first")
+    @MainActor
+    func notesStorePinnedFirst() {
+        let store = NotesStore()
+        store.notes = [
+            HeraldNote(title: "Normal"),
+            HeraldNote(title: "Pinned", pinned: true),
+        ]
+        #expect(store.activeNotes.first?.title == "Pinned")
+    }
 }

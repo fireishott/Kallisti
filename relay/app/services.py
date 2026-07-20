@@ -17,6 +17,7 @@ from .models import (
     AuthSession,
     Conversation,
     Device,
+    EnrichedNoteRevision,
     HeraldHost,
     HostEnrollmentInvite,
     InboxAction,
@@ -24,6 +25,8 @@ from .models import (
     JobEvent,
     Message,
     MessageJob,
+    NoteRun,
+    NoteRunEvent,
     PairingInvite,
     PhonePairingCode,
     PushRegistration,
@@ -1866,3 +1869,178 @@ def build_connector_websocket_url(public_base_url: str) -> str:
     parsed = urlparse(public_base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     return urlunparse((scheme, parsed.netloc, f"{parsed.path}/hosts/ws", "", "", ""))
+
+
+# ---------------------------------------------------------------------------
+# Note Run Lifecycle (Phase 3)
+# ---------------------------------------------------------------------------
+
+_NOTE_RUN_LEASE_SECONDS = 300  # 5 minutes
+
+
+def requeue_expired_note_runs(db: Session) -> None:
+    """Requeue note runs whose lease has expired. Accepted-but-slow is not failure."""
+    now = utcnow()
+    expired = db.scalars(
+        select(NoteRun)
+        .where(
+            NoteRun.status == "claimed",
+            NoteRun.lease_expires_at.is_not(None),
+            NoteRun.lease_expires_at < now,
+        )
+    ).all()
+
+    max_attempts = 3
+    for run in expired:
+        if run.attempt >= max_attempts:
+            run.status = "failed"
+            run.error_text = f"Max attempts ({max_attempts}) exhausted"
+            run.completed_at = now
+        else:
+            run.status = "queued"
+            run.lease_expires_at = None
+    db.commit()
+
+
+def claim_next_note_run(
+    db: Session,
+    *,
+    user_id: str,
+    host_id: str,
+) -> NoteRun | None:
+    """Claim the next queued note run for a connector host."""
+    requeue_expired_note_runs(db)
+
+    run = db.scalar(
+        select(NoteRun)
+        .where(
+            NoteRun.user_id == user_id,
+            NoteRun.status == "queued",
+        )
+        .order_by(NoteRun.created_at.asc())
+    )
+    if run is None:
+        return None
+
+    now = utcnow()
+    lease_expires_at = now + timedelta(seconds=_NOTE_RUN_LEASE_SECONDS)
+    result = db.execute(
+        update(NoteRun)
+        .where(
+            NoteRun.id == run.id,
+            NoteRun.status == "queued",
+        )
+        .values(
+            status="claimed",
+            lease_expires_at=lease_expires_at,
+            updated_at=now,
+            attempt=NoteRun.attempt + 1,
+        )
+    )
+    db.commit()
+
+    if result.rowcount != 1:
+        return None
+
+    return db.get(NoteRun, run.id)
+
+
+def complete_note_run(
+    db: Session,
+    *,
+    run_id: str,
+    result: dict,
+    source_drawing_revision: int,
+    source_text_revision: int,
+) -> EnrichedNoteRevision:
+    """Complete a note run and apply the revision fence."""
+    run = db.get(NoteRun, run_id)
+    if run is None:
+        raise RuntimeError(f"Note run {run_id} not found")
+
+    now = utcnow()
+    run.status = "completed"
+    run.result = result
+    run.completed_at = now
+
+    # Revision fence: apply only if source revisions still match
+    from .models import Note
+    note = db.get(Note, run.note_id)
+    is_stale = False
+    if note is not None:
+        is_stale = (
+            run.source_drawing_revision != note.current_drawing_revision
+            or run.source_text_revision != note.current_text_revision
+        )
+
+    revision = EnrichedNoteRevision(
+        note_id=run.note_id,
+        run_id=run.id,
+        source_drawing_revision=run.source_drawing_revision,
+        source_text_revision=run.source_text_revision,
+        title=result.get("title", ""),
+        markdown=result.get("markdown", ""),
+        structured_sections=result.get("sections", []),
+        citations=result.get("citations"),
+        command_results=result.get("commandResults"),
+        is_stale=is_stale,
+    )
+    db.add(revision)
+    db.commit()
+    return revision
+
+
+def fail_note_run(
+    db: Session,
+    *,
+    run_id: str,
+    error_text: str,
+) -> None:
+    """Mark a note run as failed."""
+    run = db.get(NoteRun, run_id)
+    if run is None:
+        return
+
+    run.status = "failed"
+    run.error_text = error_text
+    run.completed_at = utcnow()
+    db.commit()
+
+
+def append_note_run_event(
+    db: Session,
+    *,
+    run_id: str,
+    event_type: str,
+    payload: dict,
+    attempt: int,
+    source_seq: int | None = None,
+) -> NoteRunEvent | None:
+    """Append an event to the note run event log."""
+    run = db.get(NoteRun, run_id)
+    if run is None:
+        return None
+
+    if run.status in ("completed", "failed", "cancelled"):
+        return None
+
+    if run.attempt != attempt:
+        return None
+
+    # Get next seq
+    max_seq = db.scalar(
+        select(func.max(NoteRunEvent.seq))
+        .where(NoteRunEvent.run_id == run_id)
+    ) or 0
+
+    event = NoteRunEvent(
+        run_id=run_id,
+        seq=max_seq + 1,
+        attempt=attempt,
+        source_seq=source_seq,
+        type=event_type,
+        payload_json=payload,
+    )
+    db.add(event)
+    db.commit()
+    return event

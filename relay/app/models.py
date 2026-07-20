@@ -372,3 +372,108 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Notes (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class Note(Base):
+    __tablename__ = "notes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    folder_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    current_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_text_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NoteBlob(Base):
+    __tablename__ = "note_blobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hex
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("note_id", "drawing_revision", name="uq_note_blob_revision"),
+    )
+
+
+class NoteRecognition(Base):
+    __tablename__ = "note_recognitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    engine: Mapped[str] = mapped_column(Text, nullable=False)  # "vn_accurate" | "vn_fast"
+    engine_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    languages: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array of ISO codes
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    user_corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class NoteRun(Base):
+    __tablename__ = "note_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    client_run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_directives: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_run_id", name="uq_note_run_client_id"),
+        {"extend_existing": True},
+    )
+
+
+class NoteRunEvent(Base):
+    __tablename__ = "note_run_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("note_runs.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class EnrichedNoteRevision(Base):
+    __tablename__ = "enriched_note_revisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("note_runs.id"), nullable=False)
+    source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_sections: Mapped[dict] = mapped_column(JSON, nullable=False)
+    citations: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    command_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

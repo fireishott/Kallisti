@@ -129,6 +129,8 @@ struct AdaptiveRootView: View {
                 }
         case .talk:
             TalkModeScreen()
+        case .notes:
+            NotesWorkspaceView()
         case .settings:
             NavigationStack(path: router.pathBinding()) {
                 SettingsScreen()

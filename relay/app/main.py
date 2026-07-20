@@ -260,6 +260,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.connector_sessions: dict[str, ConnectorSession] = {}
     app.state.sensor_delivery_waiters: dict[str, asyncio.Future[bool]] = {}
     app.state.connector_rpc_waiters: dict[str, asyncio.Future[dict]] = {}
+
+    # Notes API router (Phase 3)
+    from .notes import router as notes_router
+    app.include_router(notes_router)
     app.state.event_fanout = EventFanout()
 
     async def subscribe_job_events(job_id: str) -> asyncio.Queue:
