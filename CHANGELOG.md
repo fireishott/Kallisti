@@ -4,6 +4,14 @@ All notable changes to Hermes iOS are documented here.
 
 ## [1.7.1] - 2026-07-20
 
+### Fix: SSE stream simplification and terminal event persistence (S2)
+
+- **Remove SSE-layer delta coalescing** (`relay/app/main.py`): Removed the delta coalescing logic that was consuming durable sequence positions while hiding their cursors. Each event is now emitted directly as it comes from the DB, preserving the 1:1 relationship between durable log entries and SSE frames.
+
+- **Persist terminal event before emitting** (`relay/app/main.py`): The terminal done event is now persisted through `append_job_event` before being emitted to SSE subscribers. This ensures replays return the same terminal sequence and payload, and prevents synthesizing `last_seq + 1` on each connection.
+
+- **Update streaming test** (`relay/tests/test_streaming.py`): Updated test to expect individual text_delta events instead of coalesced ones.
+
 ### Fix: Relay source sequencing (S1)
 
 - **Pass sourceSeq from connector through relay** (`relay/app/main.py`): The connector sends `sourceSeq` on `job.started`, `job.heartbeat`, and `job.progress` frames, but the relay was looking for `eventId` which never existed. Now `sourceSeq` flows through to `publish_job_event` when present.

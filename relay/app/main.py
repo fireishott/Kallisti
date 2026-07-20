@@ -2379,86 +2379,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def event_stream():
             last_seq = cursor
 
-            # --- Helpers for delta coalescing ---
-            delta_buffer: list[str] = []
-            delta_job_id: str | None = None
-            delta_flush_window = 0.04
-
-            def drain_delta(data: dict) -> None:
-                delta_buffer.append(str(data.get("delta") or ""))
-                nonlocal delta_job_id
-                delta_job_id = data.get("jobId") or delta_job_id
-
-            def flushed_delta_frame() -> str | None:
-                if not delta_buffer:
-                    return None
-                merged = "".join(delta_buffer)
-                delta_buffer.clear()
-                if not merged:
-                    return None
-                payload = {"jobId": delta_job_id or job_id, "kind": "text_delta", "delta": merged}
-                return f"event: text_delta\ndata: {json.dumps(jsonable_encoder(payload))}\n\n"
-
-            def emit_db_event(evt: dict) -> list[str]:
-                """Format a DB event dict as one or more SSE frames with id: lines.
-
-                For text_delta events, buffers the delta and returns [].
-                For other events, flushes any buffered deltas first, then emits the event.
-                """
+            def emit_db_event(evt: dict) -> str:
+                """Format a DB event dict as an SSE frame with id: line."""
                 nonlocal last_seq
                 event_type = evt.get("type", "progress")
                 seq = evt.get("seq", 0)
                 last_seq = seq
-                if event_type == "text_delta":
-                    drain_delta(evt.get("payload", {}) or {})
-                    return []
-                frames: list[str] = []
-                flushed = flushed_delta_frame()
-                if flushed is not None:
-                    frames.append(flushed)
                 payload = evt.get("payload", {})
                 data = json.dumps(jsonable_encoder(payload))
-                frames.append(f"id: {seq}\nevent: {event_type}\ndata: {data}\n\n")
-                return frames
+                return f"id: {seq}\nevent: {event_type}\ndata: {data}\n\n"
 
             def build_terminal_event(status_val: str, job_row) -> str:
-                """Build a terminal SSE frame (completed/failed/cancelled)."""
+                """Build a terminal SSE frame (completed/failed/cancelled).
+
+                Persists the terminal event to the durable log before emitting,
+                ensuring replays return the same terminal sequence and payload.
+                """
                 nonlocal last_seq
-                terminal_seq = last_seq + 1
-                last_seq = terminal_seq
-                done_data: dict = {"jobId": job_id, "status": status_val}
+
+                # Persist terminal event through append_job_event
+                terminal_payload: dict = {"jobId": job_id, "status": status_val}
                 if status_val == "completed":
                     if job_row.usage_data:
-                        done_data["usage"] = job_row.usage_data
+                        terminal_payload["usage"] = job_row.usage_data
                     if job_row.diff_data:
-                        done_data["diff"] = job_row.diff_data
+                        terminal_payload["diff"] = job_row.diff_data
                     if job_row.result_message_id:
                         with database.session() as db2:
                             result_msg = db2.get(Message, job_row.result_message_id)
                             if result_msg is not None:
-                                done_data["message"] = serialize_message(result_msg, job=job_row)
+                                terminal_payload["message"] = serialize_message(result_msg, job=job_row)
                 elif status_val == "failed":
                     if job_row.error_text:
-                        done_data["error"] = job_row.error_text
+                        terminal_payload["error"] = job_row.error_text
                     if job_row.diff_data:
-                        done_data["diff"] = job_row.diff_data
+                        terminal_payload["diff"] = job_row.diff_data
                     if job_row.result_message_id:
                         with database.session() as db2:
                             result_msg = db2.get(Message, job_row.result_message_id)
                             if result_msg is not None:
-                                done_data["message"] = serialize_message(result_msg, job=job_row)
+                                terminal_payload["message"] = serialize_message(result_msg, job=job_row)
                 elif status_val == "cancelled":
                     if job_row.error_text:
-                        done_data["error"] = job_row.error_text
-                return f"id: {terminal_seq}\nevent: done\ndata: {json.dumps(jsonable_encoder(done_data))}\n\n"
+                        terminal_payload["error"] = job_row.error_text
+
+                # Persist the terminal event
+                with database.session() as db:
+                    result = append_job_event(
+                        db,
+                        job_id=job_id,
+                        event_type=status_val,
+                        payload=terminal_payload,
+                        source_seq=None,
+                        attempt=job_row.attempt,
+                    )
+                    db.commit()
+                    if result is not None:
+                        terminal_seq = result["seq"]
+                    else:
+                        # Already persisted (e.g. race) — read the existing seq
+                        terminal_seq = get_job_last_seq(db, job_id)
+
+                last_seq = terminal_seq
+                return f"id: {terminal_seq}\nevent: done\ndata: {json.dumps(jsonable_encoder(terminal_payload))}\n\n"
 
             # --- Phase 1: Replay persisted events from DB ---
             with database.session() as replay_db:
                 persisted = get_job_events_after(replay_db, job_id, after_seq=cursor)
 
             for evt in persisted:
-                for frame in emit_db_event(evt):
-                    yield frame
+                yield emit_db_event(evt)
                 if evt.get("type") in ("completed", "failed", "cancelled"):
                     return
 
@@ -2466,9 +2456,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             with database.session() as check_db:
                 current_job = get_message_job(check_db, job_id=job_id)
                 if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
-                    flushed = flushed_delta_frame()
-                    if flushed is not None:
-                        yield flushed
                     yield build_terminal_event(current_job.status, current_job)
                     return
 
@@ -2477,17 +2464,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             try:
                 while True:
-                    timeout = delta_flush_window if delta_buffer else float(settings.sse_keepalive_seconds)
                     try:
-                        await asyncio.wait_for(wake_queue.get(), timeout=timeout)
+                        await asyncio.wait_for(wake_queue.get(), timeout=float(settings.sse_keepalive_seconds))
                     except asyncio.TimeoutError:
-                        # Timeout — flush deltas or send keepalive
-                        if delta_buffer:
-                            flushed = flushed_delta_frame()
-                            if flushed is not None:
-                                yield flushed
-                        else:
-                            yield ": keepalive\n\n"
+                        yield ": keepalive\n\n"
                         continue
 
                     # Got a signal — query DB for new events
@@ -2495,8 +2475,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         new_events = get_job_events_after(live_db, job_id, after_seq=last_seq)
 
                     for evt in new_events:
-                        for frame in emit_db_event(evt):
-                            yield frame
+                        yield emit_db_event(evt)
 
                     # Check if job became terminal
                     with database.session() as check_db:
@@ -2506,11 +2485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             with database.session() as drain_db:
                                 remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
                             for evt in remaining:
-                                for frame in emit_db_event(evt):
-                                    yield frame
-                            flushed = flushed_delta_frame()
-                            if flushed is not None:
-                                yield flushed
+                                yield emit_db_event(evt)
                             yield build_terminal_event(current_job.status, current_job)
                             return
             finally:
