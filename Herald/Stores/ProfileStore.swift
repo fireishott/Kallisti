@@ -65,10 +65,14 @@ final class ProfileStore {
                 path: "profiles",
                 accessToken: token
             )
+            // Only replace profiles after new data arrives — never set
+            // profiles = [] as an intermediate step, which would cause the
+            // profile/model chips to vanish mid-session.
             profiles = response.profiles
             activeProfileName = response.activeProfile?.name
             lastLoadedAt = .now
         } catch {
+            // Keep existing profiles on transient errors so chips don't vanish.
             errorMessage = error.localizedDescription
         }
     }

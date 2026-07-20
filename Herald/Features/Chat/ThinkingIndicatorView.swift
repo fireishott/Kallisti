@@ -4,7 +4,7 @@ struct ThinkingIndicatorView: View {
     let startTime: Date
     var toolActivity: String? = nil
 
-    @State private var showElapsedTime = false
+    @State private var showDetail = false
     @State private var isPulsing = false
 
     var body: some View {
@@ -18,14 +18,18 @@ struct ThinkingIndicatorView: View {
                 } else {
                     thinkingDots
                 }
-                elapsedTimeLabel
+                // Always show elapsed time while thinking
+                TimelineView(.periodic(from: startTime, by: 1)) { context in
+                    let elapsed = context.date.timeIntervalSince(startTime)
+                    Text("Thinking… \(formatElapsed(elapsed))")
+                        .brandEyebrow(Design.Colors.tertiaryForeground)
+                }
             }
 
             Spacer(minLength: Design.Spacing.xxl)
         }
         .padding(.horizontal, Design.Spacing.md)
         .contentShape(Rectangle())
-        .onTapGesture { showElapsedTime.toggle() }
         .onAppear {
             withAnimation(Design.Motion.breathe) {
                 isPulsing = true
@@ -61,17 +65,6 @@ struct ThinkingIndicatorView: View {
             }
         }
         .padding(.vertical, Design.Spacing.sm)
-    }
-
-    @ViewBuilder
-    private var elapsedTimeLabel: some View {
-        if showElapsedTime {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let elapsed = context.date.timeIntervalSince(startTime)
-                Text(formatElapsed(elapsed))
-                    .brandEyebrow(Design.Colors.tertiaryForeground)
-            }
-        }
     }
 
     private func formatElapsed(_ interval: TimeInterval) -> String {

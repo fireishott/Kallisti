@@ -165,6 +165,7 @@ struct ChatScreen: View {
                     .buttonStyle(.plain)
                 }
                 profileChip
+                sessionTimerChip
                 modelStatusChip
             }
         }
@@ -246,6 +247,32 @@ struct ChatScreen: View {
                 }
             }
         }
+    }
+
+    // MARK: - Session timer chip
+
+    private var sessionTimerChip: some View {
+        Group {
+            if let firstMessage = chatStore.conversation?.messages.first {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    let elapsed = context.date.timeIntervalSince(firstMessage.timestamp)
+                    Text(formatSessionDuration(elapsed))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Design.Colors.tertiaryForeground)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Design.Colors.surface))
+                }
+            }
+        }
+    }
+
+    private func formatSessionDuration(_ interval: TimeInterval) -> String {
+        let minutes = Int(interval) / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        let remaining = minutes % 60
+        return "\(hours)h \(remaining)m"
     }
 
     // MARK: - Compact chip: 🟢 model-name [ring%]
@@ -521,7 +548,7 @@ struct ChatScreen: View {
             .scrollDismissesKeyboard(.interactively)
             .redacted(reason: chatStore.isLoading ? .placeholder : [])
             .onTapGesture {
-                isComposerFocused = true
+                isComposerFocused = false
             }
             .onAppear { scrollProxy = proxy }
         }

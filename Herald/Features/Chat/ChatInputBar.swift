@@ -198,6 +198,8 @@ struct ChatInputBar: View {
                     .stroke(Design.Colors.border, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
+            .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
+            .onTapGesture { isFocused.wrappedValue = true }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.md)
         }

@@ -171,10 +171,21 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     self.currentConversation = self.mapConversation(response.conversation)
                     self.connectionStatus = .connected
 
-                    // If the reply is already complete (synchronous response), yield finished immediately
+                    Self.logger.info("POST /messages replyState: \(response.replyState)")
+
+                    // If the reply is already complete (synchronous response), simulate
+                    // streaming by yielding the content as textDelta chunks so the UI
+                    // renders it progressively instead of popping in all at once.
                     if response.replyState != "pending" {
                         if let msg = response.message {
-                            continuation.yield(.finished(self.mapMessage(msg), response.usage, response.diff))
+                            let mapped = self.mapMessage(msg)
+                            // Yield content word-by-word to simulate streaming
+                            let words = mapped.content.split(separator: " ", omittingEmptySubsequences: false)
+                            for (i, word) in words.enumerated() {
+                                let suffix = i < words.count - 1 ? " " : ""
+                                continuation.yield(.textDelta(String(word) + suffix))
+                            }
+                            continuation.yield(.finished(mapped, response.usage, response.diff))
                         } else {
                             continuation.yield(.finished(
                                 Message(sender: .system, content: "Herald did not return a message.", status: .failed),
