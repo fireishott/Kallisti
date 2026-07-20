@@ -120,7 +120,8 @@ struct ChatScreen: View {
             // ModelStore.switchModel(to:provider:) and only calls back on
             // success; nothing further to do here.
             ModelSelectorSheet { _, _ in }
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large, .medium])
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showCanvas) {
             CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
@@ -232,7 +233,7 @@ struct ChatScreen: View {
                     .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
                 }
-                .popover(isPresented: $showProfileSelector) {
+                .sheet(isPresented: $showProfileSelector) {
                     ProfileSelectorSheet(
                         profiles: profileStore.profiles,
                         activeProfileName: profileStore.activeProfileName
@@ -240,7 +241,8 @@ struct ChatScreen: View {
                         profileStore.markActive(name)
                         Task { await chatStore.sendMessage("/profile \(name)") }
                     }
-                    .presentationDetents([.medium])
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
                 }
             }
         }

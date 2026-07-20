@@ -14,6 +14,7 @@ struct ChatInputBar: View {
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(ProfileStore.self) private var profileStore
+    @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
 
     @State private var speechService = LiveSpeechService()
@@ -108,9 +109,9 @@ struct ChatInputBar: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .lineLimit(1...5)
                     .focused(isFocused)
-                    .submitLabel(.send)
+                    .submitLabel(settingsStore.settings.enterToSend ? .send : .return)
                     .onSubmit {
-                        if canSend {
+                        if settingsStore.settings.enterToSend, canSend {
                             handlePrimaryAction()
                         }
                     }
@@ -120,8 +121,9 @@ struct ChatInputBar: View {
                         }
                         if canSend {
                             handlePrimaryAction()
+                            return .handled
                         }
-                        return .handled
+                        return .ignored
                     }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)

@@ -14,10 +14,10 @@ final class ChatStore {
     private var streamingTask: Task<Void, Never>?
     private(set) var streamingMessageID: UUID?
 
-    /// If no progress event (text/reasoning delta, tool activity, or finish)
-    /// arrives within this window of job submission, the job is treated as
+    /// After `messageSent`, if no real progress (text/reasoning delta, tool
+    /// activity, or finish) arrives within this window, the job is treated as
     /// silently stalled/dropped — see `runStreamingAttempt`.
-    private static let watchdogTimeout: Duration = .seconds(30)
+    private static let watchdogTimeout: Duration = .seconds(120)
     private static let maxAutoRetries = 1
     /// Tracks how many times a stalled job has been auto-retried, keyed by
     /// the user message's clientMessageID. Cleared once the send completes
@@ -221,6 +221,7 @@ final class ChatStore {
                 case .messageSent(let jobID):
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
+                    progressContinuation?.yield(())
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
