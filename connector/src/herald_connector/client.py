@@ -638,7 +638,7 @@ class HeraldConnector:
             "lastValidatedAt": config.last_validated_at,
             "lastValidationError": config.last_validation_error,
             "blockedReason": blocked_reason,
-            "mcpReadiness": native_mcp_readiness_message(hermes_command=runtime.hermes_command),
+            "mcpReadiness": native_mcp_readiness_message(hermes_command=runtime.herald_command),
             "voiceContextUpdatedAt": state.voice_context_snapshot.updated_at if state.voice_context_snapshot else None,
         }
 
