@@ -125,6 +125,9 @@ targets:
           - group.net.fihonline.herald
     info:
       path: HeraldWidgets/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
