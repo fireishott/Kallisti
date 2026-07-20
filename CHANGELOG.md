@@ -2,6 +2,52 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.3.2] - 2026-07-20
+
+### Fixed - MCP Revival, Live Connector Delivery, and Responsive UI
+
+- **MCP rename compatibility** (`connector/pyproject.toml`, `connector/src/herald_connector/`): restored the legacy `hermes-mobile-mcp` and `hermes-mobile` entrypoints as aliases to the Herald implementation, and retained compatibility imports for gateways and extensions created before the rename. Cached Hermes MCP commands no longer crash by importing the deleted `hermes_mobile_connector` package after reinstall.
+
+- **Live MCP revival loop** (host deployment): restarted the six-day-old Hermes WebUI process that still generated the removed `mcp_stdio_watchdog.py --create-time` argument. Its in-memory caller now matches the installed watchdog, eliminating the five-minute `TaskGroup` reconnect cycle.
+
+- **Persisted connector runtime** (`connector/src/herald_connector/herald_runner.py`): map persisted `ConnectorRuntimeConfig.hermes_*` fields into the Herald-named runtime adapter correctly. The connector now reconnects after service restarts instead of remaining active with a hidden attribute error.
+
+- **Relay WebSocket lease crash** (`relay/app/main.py`): imported the lease clock and normalized SQLite timestamps before comparing them. Active connector jobs no longer lose their WebSocket to `NameError` or offset-naive/offset-aware datetime exceptions.
+
+- **Awaited job heartbeats** (`connector/src/herald_connector/client.py`): async heartbeat senders are now awaited, so long-running jobs actually renew their relay lease instead of silently creating an un-awaited coroutine.
+
+- **Lower live-delivery latency** (`relay/app/config.py`, `relay/.env.example`): reduced connector idle job polling from 1 second to 100 ms and connector reconnect delay from 3 seconds to 1 second.
+
+- **Herald notification identity** (`relay/app/main.py`): completion notifications and inbox records now use the Herald product name.
+
+- **iPhone landscape layout** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): all iPhones now use `MainTabView` in both orientations. Removed `verticalSizeClass == .compact` check that was routing landscape iPhones into the iPad `NavigationSplitView` shell.
+
+- **iPad inspector workspace** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): replaced three-column `NavigationSplitView` with two-column split + optional trailing inspector that is genuinely inserted/removed from layout. Added drag-handle divider for resizing with width budgeting (chat minimum 420pt).
+
+- **Width-aware toolbar** (`Herald/Features/Chat/ChatScreen.swift`): replaced `DeviceClass.isPhone` toolbar check with `ViewThatFits` adaptive composition. Eliminates synthesized `…` overflow on narrow iPad columns.
+
+- **Truthful inspector labels** (`Herald/Features/Sidebar/iPadRightPanelView.swift`): renamed "Logs" → "Activity", "Tools" → "Usage", terminal clearly labeled as preview. Log-level filter chips are now functional.
+
+- **Canvas close/clear separation** (`Herald/Features/Canvas/CanvasView.swift`): X button now only dismisses; explicit trash button with confirmation dialog for artifact deletion.
+
+- **Buffered tool-marker parser** (`connector/src/herald_connector/herald_api_executor.py`): tool markers now parsed from accumulated buffer instead of per-delta, handling split/combined SSE chunk boundaries correctly.
+
+- **Drawer width responsiveness** (`Herald/Features/Sidebar/iPhoneSessionDrawer.swift`): drawer width now uses `GeometryReader` instead of static `UIScreen.main.bounds`.
+
+- **MCP rename compatibility** (`connector/pyproject.toml`, `connector/src/herald_connector/`): restored the legacy `hermes-mobile-mcp` and `hermes-mobile` entrypoints as aliases to the Herald implementation, and retained compatibility imports for gateways and extensions created before the rename. Cached Hermes MCP commands no longer crash by importing the deleted `hermes_mobile_connector` package after reinstall.
+
+- **Live MCP revival loop** (host deployment): restarted the six-day-old Hermes WebUI process that still generated the removed `mcp_stdio_watchdog.py --create-time` argument. Its in-memory caller now matches the installed watchdog, eliminating the five-minute `TaskGroup` reconnect cycle.
+
+- **Persisted connector runtime** (`connector/src/herald_connector/herald_runner.py`): map persisted `ConnectorRuntimeConfig.hermes_*` fields into the Herald-named runtime adapter correctly. The connector now reconnects after service restarts instead of remaining active with a hidden attribute error.
+
+- **Relay WebSocket lease crash** (`relay/app/main.py`): imported the lease clock and normalized SQLite timestamps before comparing them. Active connector jobs no longer lose their WebSocket to `NameError` or offset-naive/offset-aware datetime exceptions.
+
+- **Awaited job heartbeats** (`connector/src/herald_connector/client.py`): async heartbeat senders are now awaited, so long-running jobs actually renew their relay lease instead of silently creating an un-awaited coroutine.
+
+- **Lower live-delivery latency** (`relay/app/config.py`, `relay/.env.example`): reduced connector idle job polling from 1 second to 100 ms and connector reconnect delay from 3 seconds to 1 second.
+
+- **Herald notification identity** (`relay/app/main.py`): completion notifications and inbox records now use the Herald product name.
+
 ## [1.2.7] - 2026-07-20
 
 ### Changed - iPad Three-Panel Layout

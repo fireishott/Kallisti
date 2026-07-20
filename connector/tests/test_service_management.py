@@ -21,13 +21,13 @@ from herald_connector.state import ConnectorRuntimeConfig, ConnectorState, Conne
 def make_executor(command: str = "env-hermes") -> HeraldCLIExecutor:
     return HeraldCLIExecutor(
         ConnectorHeraldSettings(
-            hermes_command=command,
+            herald_command=command,
             herald_workdir="/tmp/env-workdir",
             herald_provider="env-provider",
-            hermes_model="env-model",
-            hermes_toolsets="env-tools",
-            hermes_source="tool",
-            hermes_history_limit=20,
+            herald_model="env-model",
+            herald_toolsets="env-tools",
+            herald_source="tool",
+            herald_history_limit=20,
         )
     )
 
@@ -38,8 +38,8 @@ def make_runtime_config(tmp_path: Path) -> ConnectorRuntimeConfig:
         state_dir=str(tmp_path / "connector-state"),
         relay_url="https://relay.example.com/v1",
         hermes_command="/opt/hermes/bin/hermes",
-        herald_workdir="/srv/hermes-project",
-        herald_provider="openai-codex",
+        hermes_workdir="/srv/hermes-project",
+        hermes_provider="openai-codex",
         hermes_model="gpt-5.4",
         hermes_toolsets="native-mcp",
         hermes_source="tool",
@@ -82,7 +82,7 @@ def test_connector_prefers_persisted_runtime_config_over_env_settings(tmp_path):
 
     settings = connector.settings_for_state(store.load())
 
-    assert settings.hermes_command == "/opt/hermes/bin/hermes"
+    assert settings.herald_command == "/opt/hermes/bin/hermes"
     assert settings.herald_workdir == "/srv/hermes-project"
     assert settings.herald_provider == "openai-codex"
 

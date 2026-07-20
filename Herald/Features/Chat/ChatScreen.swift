@@ -156,13 +156,16 @@ struct ChatScreen: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if DeviceClass.isPhone {
+            // iPhone: always uses the compact phone toolbar
             iPhoneToolbarContent
         } else {
-            iPadToolbarContent
+            // iPad/Mac: width-adaptive — picks wide or compact based on
+            // the chat column's available width, not the device idiom.
+            adaptiveToolbarContent
         }
     }
 
-    // iPhone: hamburger only on leading; bounded status chip as principal; Canvas only on trailing
+    // iPhone: hamburger on leading; bounded status chip as principal; Canvas on trailing
     @ToolbarContentBuilder
     private var iPhoneToolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
@@ -182,49 +185,61 @@ struct ChatScreen: View {
             compactStatusControl
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                showCanvas = true
-            } label: {
-                Image(systemName: "rectangle.on.rectangle")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(canvasStore.activeArtifact != nil
-                        ? Design.Brand.accent
-                        : Design.Colors.secondaryForeground)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open canvas")
+            canvasButton
         }
     }
 
-    // iPad: richer profile/model/timer presentation; Settings gear is useful since no tab bar
+    /// Width-adaptive toolbar for iPad/Mac.
+    /// When the chat column is wide enough, shows the full profile/model/timer
+    /// arrangement. Under width pressure, collapses to the compact status chip
+    /// so SwiftUI never synthesizes a `…` overflow menu.
     @ToolbarContentBuilder
-    private var iPadToolbarContent: some ToolbarContent {
+    private var adaptiveToolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: Design.Spacing.sm) {
-                profileChip
-                modelStatusChip
-                sessionTimerChip
+            ViewThatFits(in: .horizontal) {
+                // Wide: profile + model + timer
+                HStack(spacing: Design.Spacing.sm) {
+                    profileChip
+                    modelStatusChip
+                    sessionTimerChip
+                }
+                // Medium: model + timer (drops profile chip)
+                HStack(spacing: Design.Spacing.sm) {
+                    modelStatusChip
+                    sessionTimerChip
+                }
+                // Compact: same bounded chip as iPhone
+                compactStatusControl
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            HStack(spacing: Design.Spacing.sm) {
-                Button {
-                    showCanvas = true
-                } label: {
-                    Image(systemName: "rectangle.on.rectangle")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(canvasStore.activeArtifact != nil
-                            ? Design.Brand.accent
-                            : Design.Colors.secondaryForeground)
+            ViewThatFits(in: .horizontal) {
+                // Wide: Canvas + Settings
+                HStack(spacing: Design.Spacing.sm) {
+                    canvasButton
+                    GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
+                        router.presentSheet(.settings)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open canvas")
-
-                GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
-                    router.presentSheet(.settings)
-                }
+                // Compact: Canvas only (Settings accessible via sidebar)
+                canvasButton
             }
         }
+    }
+
+    /// Canvas action button — shared across all toolbar compositions.
+    private var canvasButton: some View {
+        Button {
+            showCanvas = true
+        } label: {
+            Image(systemName: "rectangle.on.rectangle")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(canvasStore.activeArtifact != nil
+                    ? Design.Brand.accent
+                    : Design.Colors.secondaryForeground)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open canvas")
     }
 
     /// Compact status control for iPhone principal toolbar slot.

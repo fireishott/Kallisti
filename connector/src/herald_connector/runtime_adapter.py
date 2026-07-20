@@ -104,7 +104,6 @@ class HeraldAPIRuntimeAdapter:
             session_id=result.session_id,
             usage=result.usage,
         )
-
     async def send_text_message_streaming(
         self,
         *,
@@ -143,3 +142,8 @@ class HeraldAPIRuntimeAdapter:
             session_id=result.session_id,
             usage=result.usage,
         )
+
+
+# Compatibility names for pre-Herald connector integrations.
+HermesRuntimeAdapter = HeraldRuntimeAdapter
+HermesAPIRuntimeAdapter = HeraldAPIRuntimeAdapter

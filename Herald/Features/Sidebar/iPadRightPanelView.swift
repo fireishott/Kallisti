@@ -1,14 +1,16 @@
 import SwiftUI
 
 /// Right-side inspector panel for iPad.
-/// Shows Herald engine logs, terminal output, and tool activity —
+/// Shows Herald engine logs, terminal output, and usage —
 /// similar to the right panel in Herald Desktop.
+/// Width is owned by the parent workspace; this view fills its allocation.
 struct iPadRightPanelView: View {
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(HeraldCanvasStore.self) private var canvasStore
     @Binding var isOpen: Bool
     @Binding var selectedTab: RightPanelTab
+    @State private var selectedLogLevel: LogLevel? = nil
 
     var body: some View {
         if !isOpen { return AnyView(EmptyView()) }
@@ -24,12 +26,10 @@ struct iPadRightPanelView: View {
                 case .canvas:   CanvasView(store: canvasStore)
                 }
             }
-            .frame(width: panelWidth)
+            .frame(maxWidth: .infinity)
             .background(Design.Colors.surface)
         )
     }
-
-    private let panelWidth: CGFloat = 300
 
     // MARK: - Tab Bar
 
@@ -68,17 +68,23 @@ struct iPadRightPanelView: View {
 
     // MARK: - Logs
 
+    private var filteredLogEntries: [LogEntry] {
+        guard let level = selectedLogLevel else { return chatStore.logEntries }
+        return chatStore.logEntries.filter { $0.level == level }
+    }
+
     private var logsContent: some View {
         VStack(spacing: 0) {
             logFilterBar
 
-            if chatStore.logEntries.isEmpty {
+            let entries = filteredLogEntries
+            if entries.isEmpty {
                 emptyState(icon: "terminal", message: "No log entries yet",
                            detail: "Logs appear here when Herald processes messages, runs tools, or executes commands.")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(chatStore.logEntries) { entry in
+                        ForEach(entries) { entry in
                             logEntryRow(entry)
                         }
                     }
@@ -89,13 +95,19 @@ struct iPadRightPanelView: View {
 
     private var logFilterBar: some View {
         HStack(spacing: Design.Spacing.xs) {
+            // "All" toggle
+            filterChip(
+                label: "ALL",
+                color: Design.Colors.foreground,
+                isActive: selectedLogLevel == nil
+            ) { selectedLogLevel = nil }
+
             ForEach(LogLevel.allCases, id: \.self) { level in
-                Text(level.label)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(level.color)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(level.color.opacity(0.12))
-                    .clipShape(Capsule())
+                filterChip(
+                    label: level.label,
+                    color: level.color,
+                    isActive: selectedLogLevel == level
+                ) { selectedLogLevel = selectedLogLevel == level ? nil : level }
             }
             Spacer()
             Button { chatStore.logEntries.removeAll() } label: {
@@ -110,6 +122,26 @@ struct iPadRightPanelView: View {
         .overlay(alignment: .bottom) {
             Divider().background(Design.Colors.divider)
         }
+    }
+
+    private func filterChip(
+        label: String, color: Color, isActive: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(isActive ? color : Design.Colors.secondaryForeground)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(isActive ? color.opacity(0.12) : Color.clear)
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule().stroke(
+                        isActive ? color.opacity(0.3) : Design.Colors.secondaryForeground.opacity(0.2),
+                        lineWidth: 1
+                    )
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private func logEntryRow(_ entry: LogEntry) -> some View {
@@ -128,52 +160,52 @@ struct iPadRightPanelView: View {
         .background(entry.id == chatStore.logEntries.last?.id ? Design.Brand.accent.opacity(0.06) : Color.clear)
     }
 
-    // MARK: - Terminal
+    // MARK: - Terminal (Preview — not yet functional)
 
     private var terminalContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Circle().fill(.red).frame(width: 8, height: 8)
-                Circle().fill(.yellow).frame(width: 8, height: 8)
-                Circle().fill(.green).frame(width: 8, height: 8)
-                Spacer()
-                Text("herald — bash")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+        VStack(spacing: 0) {
+            // Preview banner
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                Text("Preview — Terminal integration is not yet active")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.orange)
                 Spacer()
             }
-            .padding(.horizontal, Design.Spacing.sm).padding(.vertical, 6)
-            .background(Color.black.opacity(0.25))
+            .padding(.horizontal, Design.Spacing.sm)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.08))
+            .overlay(alignment: .bottom) {
+                Divider().background(Design.Colors.divider)
+            }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("$ hermes agent --version")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
-                    Text("Hermes Agent v2.1.0 — Nous Research")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)
-                    Text("")
-                    Text("$ tail -f ~/.herald/logs/agent.log")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.green)
-                    Text("Connected to relay · Host: \(hostStore.currentHost?.displayName ?? "unknown")")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Design.Colors.foreground)
-                    Text("")
-                    Text("Terminal integration coming soon.")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
-                    Spacer()
-                }
-                .padding(Design.Spacing.sm)
-                .textSelection(.enabled)
+            VStack(spacing: Design.Spacing.md) {
+                Spacer()
+                Image(systemName: "apple.terminal")
+                    .font(.system(size: 32))
+                    .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.4))
+                Text("Terminal Coming Soon")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                Text("Interactive terminal access to your Herald host will be available in a future update.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Design.Spacing.xl)
+                Spacer()
             }
+            .frame(maxWidth: .infinity)
         }
         .background(Design.Colors.background)
     }
 
-    // MARK: - Tools
+    // MARK: - Usage
 
     private var toolsContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("TOOL ACTIVITY")
+            Text("TOKEN USAGE")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .padding(.horizontal, Design.Spacing.sm)
@@ -181,8 +213,8 @@ struct iPadRightPanelView: View {
             Divider().background(Design.Colors.divider)
 
             if chatStore.conversation?.latestUsage == nil {
-                emptyState(icon: "hammer", message: "No tool activity yet",
-                           detail: "Tool calls and execution results from the Herald agent appear here.")
+                emptyState(icon: "chart.bar", message: "No usage data yet",
+                           detail: "Token usage from the latest Herald response appears here.")
             } else if let usage = chatStore.conversation?.latestUsage {
                 VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                     usageRow("Prompt tokens", value: usage.promptTokens)
@@ -231,9 +263,9 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .logs: "Logs"
-        case .terminal: "Term"
-        case .tools: "Tools"
+        case .logs: "Activity"
+        case .terminal: "Terminal"
+        case .tools: "Usage"
         case .canvas: "Canvas"
         }
     }
@@ -242,7 +274,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
         switch self {
         case .logs: "list.bullet.rectangle"
         case .terminal: "apple.terminal"
-        case .tools: "hammer"
+        case .tools: "chart.bar"
         case .canvas: "rectangle.on.rectangle"
         }
     }

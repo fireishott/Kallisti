@@ -4,6 +4,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -183,6 +184,10 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
     return None
 from .git_diff import capture_diff, capture_snapshot
 from .herald_api_executor import HeraldAPIExecutor
+
+# Compatibility symbol retained for tests and extensions written before the
+# product rename. Internal code continues to use HeraldAPIExecutor.
+HermesAPIExecutor = HeraldAPIExecutor
 from .herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
 from .mcp_registration import (
     inspect_native_mcp_registration,
@@ -365,7 +370,7 @@ class HeraldConnector:
         state_store: ConnectorStateStore | None = None,
         executor: HeraldCLIExecutor | None = None,
         heartbeat_interval_seconds: float = 10.0,
-        reconnect_delay_seconds: float = 3.0,
+        reconnect_delay_seconds: float = 1.0,
     ) -> None:
         self.state_store = state_store or ConnectorStateStore()
         self.executor = executor or HeraldCLIExecutor()
@@ -897,13 +902,15 @@ class HeraldConnector:
         async def _heartbeat_loop() -> None:
             try:
                 while True:
-                    await asyncio.sleep(10.0)
+                    await asyncio.sleep(self.heartbeat_interval_seconds)
                     phase = self._job_phases.get(job_id, "starting")
-                    enqueue({
+                    pending_send = enqueue({
                         "type": "job.heartbeat",
                         "jobId": job_id,
                         "phase": phase,
                     })
+                    if inspect.isawaitable(pending_send):
+                        await pending_send
             except asyncio.CancelledError:
                 pass
         self._job_heartbeat_tasks[job_id] = asyncio.create_task(_heartbeat_loop())
@@ -1813,7 +1820,12 @@ class HeraldConnector:
         base_url = _provider_base_url(config, provider)
 
         # Look up context_length from the provider's model list in config
-        context_length = _context_length_from_config(config, model_name, provider)
+        context_length = None
+        raw_model_context = model_section.get("context_length")
+        if isinstance(raw_model_context, (int, float)):
+            context_length = int(raw_model_context)
+        if context_length is None:
+            context_length = _context_length_from_config(config, model_name, provider)
 
         # Fall back to cached / metadata only if config didn't specify one
         if context_length is None:
@@ -2424,3 +2436,8 @@ class HeraldConnector:
     def apply_runtime_environment(self, state: ConnectorState) -> None:
         if state.runtime_config is not None and state.runtime_config.hermes_home:
             os.environ["HERMES_HOME"] = state.runtime_config.hermes_home
+
+
+# Public compatibility name retained for clients installed before the Herald
+# product rename. New code should import HeraldConnector.
+HermesMobileConnector = HeraldConnector

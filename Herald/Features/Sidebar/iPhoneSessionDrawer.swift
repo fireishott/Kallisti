@@ -8,9 +8,15 @@ struct iPhoneSessionDrawer: View {
     @Binding var isOpen: Bool
     @State private var dragOffset: CGFloat = 0
 
-    private let drawerWidth: CGFloat = min(UIScreen.main.bounds.width * 0.82, 340)
-
     var body: some View {
+        GeometryReader { geometry in
+            let drawerWidth = min(geometry.size.width * 0.82, 340)
+            drawerBody(drawerWidth: drawerWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func drawerBody(drawerWidth: CGFloat) -> some View {
         ZStack(alignment: .leading) {
             // Backdrop
             if isOpen {

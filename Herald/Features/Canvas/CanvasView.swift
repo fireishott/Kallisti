@@ -2,12 +2,14 @@ import SwiftUI
 
 /// Editable canvas panel for AI-generated code artifacts.
 /// Shown as a sheet on iPhone, tab on iPad.
+/// Close (X) dismisses without deleting. Clear/Delete removes the artifact.
 struct CanvasView: View {
     @Bindable var store: HeraldCanvasStore
     var onDismiss: (() -> Void)? = nil
 
     @State private var editedContent: String = ""
     @State private var copied = false
+    @State private var showClearConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,14 +30,28 @@ struct CanvasView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(copied ? .green : Design.Colors.secondaryForeground)
                 }
+                .accessibilityLabel("Copy content")
+
+                if store.activeArtifact != nil {
+                    Button {
+                        showClearConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .accessibilityLabel("Clear artifact")
+                }
+
                 Button {
-                    store.clear()
+                    // Close only — does not delete the artifact
                     onDismiss?()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Design.Colors.secondaryForeground)
                 }
+                .accessibilityLabel("Close canvas")
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.vertical, Design.Spacing.sm)
@@ -74,6 +90,19 @@ struct CanvasView: View {
         }
         .onChange(of: store.activeArtifact?.id) { _, _ in
             editedContent = store.activeArtifact?.content ?? ""
+        }
+        .confirmationDialog(
+            "Clear Artifact",
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear", role: .destructive) {
+                store.clear()
+                onDismiss?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete the artifact from this session.")
         }
     }
 }

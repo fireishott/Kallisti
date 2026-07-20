@@ -23,6 +23,7 @@ from herald_connector.client import HermesMobileConnector
 from herald_connector.hermes_api_executor import (
     TOOL_PROGRESS_RE,
     StreamEvent,
+    _could_be_marker_prefix,
 )
 from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
 from herald_connector.runtime_adapter import (
@@ -92,13 +93,74 @@ def test_tool_progress_regex_rejects_normal_text():
 
 
 # --------------------------------------------------------------------------
+# Buffered marker parser (_could_be_marker_prefix)
+# --------------------------------------------------------------------------
+
+
+def test_could_be_marker_prefix():
+    """Buffer ending with newline or backtick could be the start of a marker."""
+    assert _could_be_marker_prefix("Hello\n") is True
+    assert _could_be_marker_prefix("Hello`") is True
+    assert _could_be_marker_prefix("Hello world") is False
+    assert _could_be_marker_prefix("Hello\n`") is True
+
+
+def test_tool_progress_regex_search_finds_marker_in_buffer():
+    """The regex should find a marker embedded in surrounding text."""
+    buffer = "Some text\n`🔍 Searching`\nMore text"
+    m = TOOL_PROGRESS_RE.search(buffer)
+    assert m is not None
+    assert m.group(1) == "🔍 Searching"
+    assert m.start() == 9
+    assert m.end() == 24
+
+
+def test_tool_progress_regex_finds_multiple_markers():
+    """Multiple markers in a single buffer should all be findable."""
+    buffer = "\n`🔍 First`\nSome text\n`📝 Second`\n"
+    matches = list(TOOL_PROGRESS_RE.finditer(buffer))
+    assert len(matches) == 2
+    assert matches[0].group(1) == "🔍 First"
+    assert matches[1].group(1) == "📝 Second"
+
+
+# --------------------------------------------------------------------------
 # _handle_job_streaming
 # --------------------------------------------------------------------------
 
 
+def test_job_heartbeat_awaits_async_sender(tmp_path):
+    store = ConnectorStateStore(state_dir=tmp_path / "async-heartbeat")
+    connector = HermesMobileConnector(
+        state_store=store,
+        executor=make_executor(),
+        heartbeat_interval_seconds=0.01,
+    )
+    sent = []
+
+    async def exercise():
+        async def send(payload):
+            sent.append(payload)
+
+        connector._job_phases["job-heartbeat"] = "thinking"  # noqa: SLF001
+        connector._start_job_heartbeat("job-heartbeat", send)  # noqa: SLF001
+        await asyncio.sleep(0.025)
+        connector._stop_job_heartbeat("job-heartbeat")  # noqa: SLF001
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    assert sent
+    assert sent[0] == {
+        "type": "job.heartbeat",
+        "jobId": "job-heartbeat",
+        "phase": "thinking",
+    }
+
+
 def test_handle_job_streaming_sends_progress_and_result(tmp_path):
-    """Verifies the full streaming pipeline: text_delta + tool_activity + finish
-    → WebSocket gets job.progress messages and a final job.result."""
+    """Verifies the full streaming pipeline: job.started + text_delta + tool_activity + finish
+    → WebSocket gets job.started, job.progress messages, and a final job.result."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-happy")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
@@ -131,35 +193,39 @@ def test_handle_job_streaming_sends_progress_and_result(tmp_path):
 
     asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))  # noqa: SLF001
 
-    # Should have: tool_activity progress, two text_delta progress, and one job.result
-    assert len(ws.sent) == 4
+    # Should have: job.started, tool_activity progress, two text_delta progress, and one job.result
+    assert len(ws.sent) == 5
 
-    # First: tool_activity
-    assert ws.sent[0]["type"] == "job.progress"
-    assert ws.sent[0]["kind"] == "tool_activity"
-    assert ws.sent[0]["label"] == "🔍 Reading file"
+    # First: job.started
+    assert ws.sent[0]["type"] == "job.started"
     assert ws.sent[0]["jobId"] == "job-123"
 
-    # Second + third: text_deltas
+    # Second: tool_activity
     assert ws.sent[1]["type"] == "job.progress"
-    assert ws.sent[1]["kind"] == "text_delta"
-    assert ws.sent[1]["delta"] == "Hello "
+    assert ws.sent[1]["kind"] == "tool_activity"
+    assert ws.sent[1]["label"] == "🔍 Reading file"
+    assert ws.sent[1]["jobId"] == "job-123"
 
+    # Third + fourth: text_deltas
     assert ws.sent[2]["type"] == "job.progress"
     assert ws.sent[2]["kind"] == "text_delta"
-    assert ws.sent[2]["delta"] == "world!"
+    assert ws.sent[2]["delta"] == "Hello "
 
-    # Fourth: job.result
-    assert ws.sent[3]["type"] == "job.result"
-    assert ws.sent[3]["jobId"] == "job-123"
-    assert ws.sent[3]["text"] == "Hello world!"
-    assert ws.sent[3]["sessionId"] == "session-abc"
-    assert ws.sent[3]["usage"]["total_tokens"] == 125
+    assert ws.sent[3]["type"] == "job.progress"
+    assert ws.sent[3]["kind"] == "text_delta"
+    assert ws.sent[3]["delta"] == "world!"
+
+    # Fifth: job.result
+    assert ws.sent[4]["type"] == "job.result"
+    assert ws.sent[4]["jobId"] == "job-123"
+    assert ws.sent[4]["text"] == "Hello world!"
+    assert ws.sent[4]["sessionId"] == "session-abc"
+    assert ws.sent[4]["usage"]["total_tokens"] == 125
 
 
 def test_handle_job_streaming_sends_failed_on_empty_response(tmp_path):
     """If the streaming yields a finish event but no text was accumulated,
-    the handler should send job.failed."""
+    the handler should send job.failed (preceded by job.started)."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-empty")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
@@ -175,10 +241,12 @@ def test_handle_job_streaming_sends_failed_on_empty_response(tmp_path):
 
     asyncio.run(connector._handle_job_streaming(ws, job, FakeEmptyAdapter()))  # noqa: SLF001
 
-    assert len(ws.sent) == 1
-    assert ws.sent[0]["type"] == "job.failed"
-    assert ws.sent[0]["jobId"] == "job-empty"
-    assert "empty" in ws.sent[0]["error"].lower()
+    # job.started + job.failed
+    assert len(ws.sent) == 2
+    assert ws.sent[0]["type"] == "job.started"
+    assert ws.sent[1]["type"] == "job.failed"
+    assert ws.sent[1]["jobId"] == "job-empty"
+    assert "empty" in ws.sent[1]["error"].lower()
 
 
 def test_handle_job_streaming_sends_failed_on_exception(tmp_path):
@@ -199,13 +267,14 @@ def test_handle_job_streaming_sends_failed_on_exception(tmp_path):
 
     asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))  # noqa: SLF001
 
-    # Should have one text_delta progress and then job.failed
-    assert len(ws.sent) == 2
-    assert ws.sent[0]["type"] == "job.progress"
-    assert ws.sent[0]["delta"] == "partial "
-    assert ws.sent[1]["type"] == "job.failed"
-    assert "API server gone" in ws.sent[1]["error"]
-    assert ws.sent[1]["retryable"] is False
+    # Should have: job.started, one text_delta progress, and then job.failed
+    assert len(ws.sent) == 3
+    assert ws.sent[0]["type"] == "job.started"
+    assert ws.sent[1]["type"] == "job.progress"
+    assert ws.sent[1]["delta"] == "partial "
+    assert ws.sent[2]["type"] == "job.failed"
+    assert "API server gone" in ws.sent[2]["error"]
+    assert ws.sent[2]["retryable"] is False
 
 
 def test_handle_job_streaming_marks_transport_failures_retryable(tmp_path):
@@ -226,9 +295,11 @@ def test_handle_job_streaming_marks_transport_failures_retryable(tmp_path):
 
     asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))  # noqa: SLF001
 
-    assert len(ws.sent) == 1
-    assert ws.sent[0]["type"] == "job.failed"
-    assert ws.sent[0]["retryable"] is True
+    # job.started + job.failed
+    assert len(ws.sent) == 2
+    assert ws.sent[0]["type"] == "job.started"
+    assert ws.sent[1]["type"] == "job.failed"
+    assert ws.sent[1]["retryable"] is True
 
 
 def test_handle_job_streaming_passes_history_and_session(tmp_path):
@@ -307,7 +378,9 @@ def test_handle_job_cli_materializes_attachments_for_tool_access(tmp_path):
 
     asyncio.run(connector._handle_job_cli(ws, job, FakeCLIRuntime()))  # noqa: SLF001
 
-    assert ws.sent[0]["type"] == "job.result"
+    # job.started precedes job.result
+    assert ws.sent[0]["type"] == "job.started"
+    result = next(m for m in ws.sent if m["type"] == "job.result")
     assert "vision_analyze" in captured["latest_user_message"]
     assert "read_file" in captured["latest_user_message"]
     assert "screen.png" in captured["latest_user_message"]
@@ -588,6 +661,8 @@ def test_handle_job_streaming_no_diff_when_no_workdir(tmp_path):
 
     result = next(m for m in ws.sent if m["type"] == "job.result")
     assert "diff" not in result
+    # Verify job.started was sent first
+    assert ws.sent[0]["type"] == "job.started"
 
 
 def test_handle_job_streaming_no_diff_when_no_changes(tmp_path):

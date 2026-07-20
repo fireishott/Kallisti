@@ -29,7 +29,7 @@ from .app_attest_trust import AppAttestTrustAnchorError, load_bundled_app_attest
 from .config import Settings
 from .database import Database
 from .herald_adapter import build_herald_adapter
-from .models import Conversation, HeraldHost, Message, PushRegistration
+from .models import Conversation, HeraldHost, Message, PushRegistration, utcnow
 from .pairing import HostSetupCodePayload, format_phone_pairing_code, build_host_setup_code
 from .push_broker import create_push_broker_challenge, serialize_push_broker_challenge
 from .push_broker import (
@@ -65,7 +65,7 @@ from .schemas import (
     RefreshRequest,
     VoiceTurnCreateRequest,
 )
-from .security import AuthContext, get_auth_context, get_db, get_settings, require_internal_key
+from .security import AuthContext, get_auth_context, get_db, get_settings, normalize_datetime, require_internal_key
 from .services import (
     activate_herald_host_connection,
     append_message,
@@ -429,7 +429,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     sent = await sender(
                         registration=registration,
-                        title="Hermes",
+                        title="Herald",
                         body=preview,
                         conversation_id=conversation_id,
                         message_id=message_id,
@@ -451,7 +451,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_info["jobId"] = job_id
             result = await apns_client.send_alert_push(
                 registration.apns_token,
-                title="Hermes",
+                title="Herald",
                 body=preview,
                 category=category,
                 bundle_id=registration.bundle_id,
@@ -471,7 +471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_id=user_id,
             device_id=None,
             kind="notification",
-            title="Hermes",
+            title="Herald",
             body=preview,
             priority="normal",
             payload={"conversationId": conversation_id, "messageId": message_id},
@@ -2709,7 +2709,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     # Job was completed/failed externally
                                     in_flight_job_id = None
                                     break
-                                if current_job.lease_expires_at and utcnow() >= current_job.lease_expires_at:
+                                if (
+                                    current_job.lease_expires_at
+                                    and utcnow() >= normalize_datetime(current_job.lease_expires_at)
+                                ):
                                     fail_stuck_job("Hermes host stopped responding.")
                                     await websocket.close(code=1011)
                                     return
