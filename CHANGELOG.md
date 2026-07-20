@@ -2,6 +2,20 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.7] - 2026-07-20
+
+### Changed - iPad Three-Panel Layout
+
+- **Adaptive root mounted** (`Herald/Features/Onboarding/AppRootView.swift`): `AppRootView` now renders `AdaptiveRootView()` after onboarding instead of `MainTabView()`. `AdaptiveRootView` is responsible for choosing `MainTabView` on iPhone.
+
+- **Three-column layout** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): iPad now uses a proper three-column `NavigationSplitView` with sidebar, content, and detail columns. The right panel is no longer an overlay — it's a genuine detail column.
+
+- **Router synchronization** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): `oniPadSectionSwitch` binding is installed/removed with the adaptive view lifecycle. Router tab changes are synchronized with sidebar section selection.
+
+- **Panel placeholder**: When the detail panel is closed, a placeholder view is shown instead of empty space.
+
+- **Accessibility**: Added accessibility label to the detail panel toggle button.
+
 ## [1.2.6] - 2026-07-20
 
 ### Changed - iPhone Toolbar Cleanup

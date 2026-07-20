@@ -16,7 +16,7 @@ struct AppRootView: View {
                     } else if container.pairingStore.needsPermissionsOnboarding {
                         OnboardingFlowView(initialStep: .permissions)
                     } else {
-                        MainTabView()
+                        AdaptiveRootView()
                     }
                 }
                 .transition(.opacity)
