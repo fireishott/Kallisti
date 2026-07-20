@@ -4,7 +4,7 @@ options:
   # for a private deployment with your own signing/bundle identifiers.
   bundleIdPrefix: net.fihonline
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
   xcodeVersion: "26.3"
   defaultConfig: Debug
   generateEmptyDirectories: true
@@ -15,7 +15,7 @@ settings:
   base:
     SWIFT_VERSION: "6.2"
     SWIFT_STRICT_CONCURRENCY: complete
-    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     INFOPLIST_KEY_UILaunchScreen_Generation: true
     INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -78,7 +78,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
         MARKETING_VERSION: "1.2.1"
-        CURRENT_PROJECT_VERSION: "7"
+        CURRENT_PROJECT_VERSION: "8"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -135,7 +135,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
         MARKETING_VERSION: "1.2.1"
-        CURRENT_PROJECT_VERSION: "7"
+        CURRENT_PROJECT_VERSION: "8"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

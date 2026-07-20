@@ -9,6 +9,7 @@ import OSLog
 /// This uses the modern iOS 26 Speech analyzer/transcriber stack instead of the
 /// older `SFSpeechRecognizer` live-audio callback path. The newer APIs are a much
 /// better fit for Swift concurrency and are less fragile around queue ownership.
+@available(iOS 26.0, *)
 @MainActor
 @Observable
 final class LiveSpeechService {
@@ -178,6 +179,7 @@ final class LiveSpeechService {
     }
 }
 
+@available(iOS 26.0, *)
 private actor DictationController {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "net.fihonline.herald",

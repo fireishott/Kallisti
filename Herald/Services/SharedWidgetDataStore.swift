@@ -12,7 +12,7 @@ enum SharedWidgetDataStore {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
         }
-        return "group.net.fihonline.heraldApp"
+        return "group.net.fihonline.herald"
     }()
     private static let dataKey = "herald.widget.data"
 

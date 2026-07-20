@@ -1,6 +1,29 @@
 import Speech
 import SwiftUI
 
+/// Protocol for speech dictation service, allowing use without iOS 26 availability constraint.
+@MainActor
+protocol SpeechDictationService: AnyObject, Sendable {
+    var isListening: Bool { get }
+    var transcript: String { get }
+    var onAutoStop: ((String) -> Void)? { get set }
+    var onTranscriptChange: ((String) -> Void)? { get set }
+    func startListening() async throws
+    func stopListening()
+}
+
+@available(iOS 26.0, *)
+extension LiveSpeechService: SpeechDictationService {}
+
+/// Creates a speech dictation service if the current iOS version supports it.
+@MainActor
+func createSpeechDictationService() -> (any SpeechDictationService)? {
+    if #available(iOS 26.0, *) {
+        return LiveSpeechService()
+    }
+    return nil
+}
+
 struct ChatInputBar: View {
     @Binding var text: String
     @Binding var pendingAttachments: [PendingAttachment]
@@ -17,7 +40,7 @@ struct ChatInputBar: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
 
-    @State private var speechService = LiveSpeechService()
+    @State private var speechService: (any SpeechDictationService)? = createSpeechDictationService()
     @State private var dictationBaseText = ""
 
     private var canSend: Bool {
@@ -99,7 +122,7 @@ struct ChatInputBar: View {
 
                 // Text input area
                 TextField(
-                    speechService.isListening ? "Listening..." : placeholderText,
+                    speechService?.isListening == true ? "Listening..." : placeholderText,
                     text: $text,
                     axis: .vertical
                 )
@@ -145,18 +168,18 @@ struct ChatInputBar: View {
                         Button {
                             toggleDictation()
                         } label: {
-                            Image(systemName: speechService.isListening ? "stop.fill" : "mic")
+                            Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
-                                .foregroundStyle(speechService.isListening ? .red : Design.Colors.secondaryForeground)
+                                .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
                                 .frame(width: 36, height: 36)
-                                .background(speechService.isListening ? Design.Colors.surface : .clear)
+                                .background(speechService?.isListening == true ? Design.Colors.surface : .clear)
                                 .clipShape(Circle())
                         }
-                        .accessibilityLabel(speechService.isListening ? "Stop dictation" : "Start dictation")
+                        .accessibilityLabel(speechService?.isListening == true ? "Stop dictation" : "Start dictation")
                     }
 
                     // Talk mode button (right side, before send)
-                    if !isStreaming && !speechService.isListening && !canSend {
+                    if !isStreaming && speechService?.isListening != true && !canSend {
                         Button {
                             router.isVoiceOverlayPresented = true
                         } label: {
@@ -192,10 +215,10 @@ struct ChatInputBar: View {
         .animation(Design.Motion.quickResponse, value: isStreaming)
         .animation(Design.Motion.quickResponse, value: canSend)
         .onAppear {
-            speechService.onTranscriptChange = { partialTranscript in
+            speechService?.onTranscriptChange = { partialTranscript in
                 text = mergedDictationText(partialTranscript)
             }
-            speechService.onAutoStop = { finalTranscript in
+            speechService?.onAutoStop = { finalTranscript in
                 text = mergedDictationText(finalTranscript)
                 dictationBaseText = ""
             }
@@ -299,15 +322,15 @@ struct ChatInputBar: View {
     // MARK: - Dictation
 
     private func toggleDictation() {
-        if speechService.isListening {
-            speechService.stopListening()
-            text = mergedDictationText(speechService.transcript)
+        if speechService?.isListening == true {
+            speechService?.stopListening()
+            text = mergedDictationText(speechService?.transcript ?? "")
             dictationBaseText = ""
         } else {
             Task {
                 do {
                     dictationBaseText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    try await speechService.startListening()
+                    try await speechService?.startListening()
                 } catch {
                     dictationBaseText = ""
                 }
@@ -316,9 +339,9 @@ struct ChatInputBar: View {
     }
 
     private func handlePrimaryAction() {
-        if speechService.isListening {
-            speechService.stopListening()
-            text = mergedDictationText(speechService.transcript)
+        if speechService?.isListening == true {
+            speechService?.stopListening()
+            text = mergedDictationText(speechService?.transcript ?? "")
             dictationBaseText = ""
         }
         onSend()

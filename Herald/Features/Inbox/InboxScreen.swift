@@ -43,7 +43,7 @@ struct InboxScreen: View {
             .padding(.vertical, Design.Spacing.sm)
         }
         .redacted(reason: inboxStore.isLoading ? .placeholder : [])
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .modifier(ScrollEdgeEffectModifier())
     }
 
     // MARK: - Empty State
@@ -66,6 +66,16 @@ struct InboxScreen: View {
                 Text("\(inboxStore.unreadCount) new")
                     .brandEyebrow()
             }
+        }
+    }
+}
+
+private struct ScrollEdgeEffectModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            content
         }
     }
 }
