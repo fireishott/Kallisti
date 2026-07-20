@@ -106,8 +106,93 @@ struct SettingsScreen: View {
                     title: "Auto-Connect",
                     isOn: autoConnectBinding
                 )
+
+                sectionDivider
+
+                restartConnectionRow
             }
         }
+    }
+
+    @State private var isRestarting = false
+    @State private var restartResult: RestartResult?
+
+    private enum RestartResult {
+        case success
+        case failed(String)
+    }
+
+    private var restartConnectionRow: some View {
+        Button {
+            Task { await restartConnection() }
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                if isRestarting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Design.Brand.accent)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Design.Brand.accent)
+                        .frame(width: 20)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isRestarting ? "Reconnecting…" : "Restart Connection")
+                        .font(Design.Typography.body)
+                        .foregroundStyle(isRestarting ? Design.Colors.secondaryForeground : Design.Colors.foreground)
+
+                    if let result = restartResult {
+                        switch result {
+                        case .success:
+                            Text("Reconnected successfully")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.success)
+                        case .failed(let msg):
+                            Text(msg)
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.danger)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                if !isRestarting {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRestarting)
+    }
+
+    private func restartConnection() async {
+        isRestarting = true
+        restartResult = nil
+
+        do {
+            // Reload conversation from relay to verify connection
+            _ = await chatStore.loadConversation()
+            await hostStore.refresh()
+
+            if chatStore.connectionStatus == .connected || hostStore.isHostOnline {
+                restartResult = .success
+            } else {
+                restartResult = .failed("Host is \(hostStore.isHostOnline ? "online" : "offline")")
+            }
+        }
+
+        isRestarting = false
+        // Clear result after 3 seconds
+        try? await Task.sleep(for: .seconds(3))
+        restartResult = nil
     }
 
     // MARK: - Environment
