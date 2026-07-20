@@ -92,8 +92,17 @@ struct ChatScreen: View {
             if let new, old == nil {
                 scrollToResponseTop(new)
             }
-            if old != nil && new == nil && settingsStore.settings.hapticFeedbackEnabled {
-                HapticEngine.responseReceived()
+            if old != nil && new == nil {
+                // Streaming just ended — scroll to the last message so the
+                // user sees the full response, not the user message they sent.
+                if let lastID = chatStore.conversation?.messages.last?.id {
+                    withAnimation(Design.Motion.standard) {
+                        scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+                if settingsStore.settings.hapticFeedbackEnabled {
+                    HapticEngine.responseReceived()
+                }
             }
         }
         .confirmationDialog(
@@ -166,6 +175,7 @@ struct ChatScreen: View {
                 }
                 profileChip
                 modelStatusChip
+                sessionTimerChip
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -253,8 +263,9 @@ struct ChatScreen: View {
     private var sessionTimerChip: some View {
         Group {
             if let firstMessage = chatStore.conversation?.messages.first {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    let elapsed = context.date.timeIntervalSince(firstMessage.timestamp)
+                let startTime = firstMessage.timestamp
+                TimelineView(.periodic(from: startTime, by: 60)) { context in
+                    let elapsed = context.date.timeIntervalSince(startTime)
                     Text(formatSessionDuration(elapsed))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(Design.Colors.tertiaryForeground)

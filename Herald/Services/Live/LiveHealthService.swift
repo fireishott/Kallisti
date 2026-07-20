@@ -35,6 +35,8 @@ final class LiveHealthService: HealthServiceProtocol {
         let newAnchor: HKQueryAnchor?
     }
 
+    private static let healthAuthRequestedKey = "herald.healthkit.authorizationRequested"
+
     private(set) var authorizationStatus: PermissionStatus
     private(set) var backgroundDeliveryEnabled = false
     var onHealthUpdate: (@MainActor (Set<String>) -> Void)?
@@ -72,6 +74,7 @@ final class LiveHealthService: HealthServiceProtocol {
                 read: Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
             )
             authorizationStatus = .authorized
+            UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
             await configureBackgroundDeliveryIfNeeded()
         } catch {
             authorizationStatus = .denied
@@ -90,18 +93,25 @@ final class LiveHealthService: HealthServiceProtocol {
         // Apple's privacy model: authorizationStatus(for:) only works for
         // write (share) access. For read access, the system always returns
         // .notDetermined to prevent apps from learning what the user denied.
-        // The correct check: attempt a sample query and see if data comes back.
-        // If requestAuthorization was previously called, we trust that result.
+        // We persist a flag in UserDefaults when the user grants access so
+        // we remember across app launches.
         // See: https://developer.apple.com/documentation/healthkit/hkhealthstore/authorizationstatus(for:)
-        let requestStatus = store.authorizationStatus(for: HKQuantityType(.stepCount))
-        if requestStatus == .sharingDenied {
-            // User explicitly denied write access — implies they saw the prompt
-            // but we only care about read. Check if we got data previously.
-            authorizationStatus = authorizationStatus == .authorized ? .authorized : .notDetermined
+        let previouslyRequested = UserDefaults.standard.bool(forKey: Self.healthAuthRequestedKey)
+
+        if previouslyRequested {
+            // User previously granted access — keep it authorized.
+            // Apple does not revoke read access programmatically; the user
+            // must go to Settings to revoke, which we cannot detect for
+            // read-only types. Trust the persisted state.
+            authorizationStatus = .authorized
         } else {
-            // If we previously got authorized via requestAuthorization, keep it.
-            // Otherwise stay at current state — we can't distinguish denied from not-asked for read.
-            if authorizationStatus != .authorized {
+            // Never requested — check if the system thinks we asked.
+            let requestStatus = store.authorizationStatus(for: HKQuantityType(.stepCount))
+            if requestStatus == .sharingDenied {
+                // User saw the prompt and denied write — but we only read.
+                // If we got here without our flag, they may have denied.
+                authorizationStatus = .notDetermined
+            } else {
                 authorizationStatus = .notDetermined
             }
         }
