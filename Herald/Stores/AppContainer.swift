@@ -387,6 +387,10 @@ final class AppContainer {
         await permissionsStore.reloadCapabilities()
         await sessionStore.bootstrap()
         guard sessionStore.state.connectionStatus == .connected else { return }
+
+        // Register notification categories before remote notifications can be acted on
+        notificationService?.registerCategories()
+
         await hostStore.refresh()
         lastKnownHostOnline = hostStore.isHostOnline
         await chatStore.loadConversationIfNeeded()
@@ -408,7 +412,8 @@ final class AppContainer {
         conversationID: UUID?,
         messageID: String?,
         jobID: String?,
-        action: String?
+        action: String?,
+        replyText: String? = nil
     ) {
         let route = PendingNotificationRoute(
             conversationID: conversationID,
@@ -419,7 +424,7 @@ final class AppContainer {
 
         if isInitialized {
             // Already initialized — process immediately
-            Task { await processRoute(route) }
+            Task { await processRoute(route, replyText: replyText) }
         } else {
             // Store for processing after initialization completes
             pendingNotificationRoute = route
@@ -432,8 +437,53 @@ final class AppContainer {
         await processRoute(route)
     }
 
-    private func processRoute(_ route: PendingNotificationRoute) async {
-        // Navigate to chat tab
+    private func processRoute(_ route: PendingNotificationRoute, replyText: String? = nil) async {
+        // Handle actions that don't require navigation
+        switch route.action {
+        case NotificationActionID.reply:
+            guard let conversationID = route.conversationID,
+                  let text = replyText, !text.isEmpty else {
+                Logger.app.warning("Notification reply: missing conversation ID or empty text")
+                return
+            }
+            let clientMessageID = UUID()
+            do {
+                _ = try await chatStore.heraldClient.sendMessage(text, conversationID: conversationID, clientMessageID: clientMessageID)
+                Logger.app.info("Notification reply: sent to conversation \(conversationID.uuidString.prefix(8))")
+            } catch {
+                Logger.app.warning("Notification reply failed: \(error.localizedDescription)")
+            }
+            return
+
+        case NotificationActionID.stop:
+            guard let jobIDString = route.jobID, let jobID = UUID(uuidString: jobIDString) else {
+                Logger.app.warning("Notification stop: missing or invalid job ID")
+                return
+            }
+            // TODO: Implement cancelJob in HeraldClientProtocol
+            Logger.app.info("Notification stop: requested for job \(jobID.uuidString.prefix(8))")
+            return
+
+        case NotificationActionID.nudge:
+            guard let conversationID = route.conversationID else {
+                Logger.app.warning("Notification nudge: missing conversation ID")
+                return
+            }
+            let nudgeText = "Continue, and give me a concise status update."
+            let clientMessageID = UUID()
+            do {
+                _ = try await chatStore.heraldClient.sendMessage(nudgeText, conversationID: conversationID, clientMessageID: clientMessageID)
+                Logger.app.info("Notification nudge: sent to conversation \(conversationID.uuidString.prefix(8))")
+            } catch {
+                Logger.app.warning("Notification nudge failed: \(error.localizedDescription)")
+            }
+            return
+
+        default:
+            break
+        }
+
+        // Read action or default tap — navigate to chat tab
         router.activeSheet = nil
         router.popToRoot()
         router.selectedTab = .chat
@@ -454,6 +504,8 @@ final class AppContainer {
             // The user will see the chat tab with whatever conversation was last loaded
         }
     }
+
+    func handleAppDidBecomeActive() async {
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }
 

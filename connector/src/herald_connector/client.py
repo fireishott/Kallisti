@@ -1198,6 +1198,8 @@ class HeraldConnector:
                 result = await self._rpc_memories_list()
             elif method == "tools.list":
                 result = await self._rpc_tools_list()
+            elif method == "jobs.cancel":
+                result = await self._rpc_jobs_cancel(params)
             else:
                 raise RuntimeError(f"Unsupported RPC method: {method}")
             return {
@@ -1742,6 +1744,38 @@ class HeraldConnector:
             return {"tools": tools}
         except Exception:  # noqa: BLE001
             return {"tools": []}
+
+    async def _rpc_jobs_cancel(self, params: dict) -> dict:
+        """Cancel a running job by ID."""
+        job_id = params.get("jobId")
+        if not job_id:
+            raise RuntimeError("jobId is required")
+
+        task = self._active_jobs.get(job_id)
+        if task is None:
+            # Job not found — may have already completed
+            return {"jobId": job_id, "status": "not_found"}
+
+        if task.done():
+            return {"jobId": job_id, "status": "already_completed"}
+
+        # Cancel the task and wait for it to finish
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+        # Clean up heartbeat
+        self._stop_job_heartbeat(job_id)
+
+        # Clean up staged attachments
+        staging_dir = self.state_store.state_dir / "attachment_staging" / job_id
+        if staging_dir.exists():
+            import shutil
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        return {"jobId": job_id, "status": "cancelled"}
 
     @staticmethod
     def _read_active_model(hermes_home: Path) -> dict | None:

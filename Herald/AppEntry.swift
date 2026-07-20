@@ -84,13 +84,21 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         let jobID = info["jobId"] as? String
         let action = response.actionIdentifier
 
+        // Extract reply text for Reply action
+        var replyText: String?
+        if action == NotificationActionID.reply,
+           let textResponse = response as? UNTextInputNotificationResponse {
+            replyText = textResponse.userText
+        }
+
         await MainActor.run {
             let container = AppContainer.sharedDefault()
             container.handleNotificationRoute(
                 conversationID: conversationID,
                 messageID: messageID,
                 jobID: jobID,
-                action: action
+                action: action,
+                replyText: replyText
             )
         }
     }

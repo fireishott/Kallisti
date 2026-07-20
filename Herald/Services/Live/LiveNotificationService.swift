@@ -37,6 +37,48 @@ final class LiveNotificationService: NotificationServiceProtocol {
         authorizationStatus = mapStatus(settings.authorizationStatus)
     }
 
+    func registerCategories() {
+        // HERALD_MESSAGE_READY: completed chat reply
+        let readAction = UNNotificationAction(
+            identifier: NotificationActionID.read,
+            title: "Read",
+            options: .foreground
+        )
+        let replyAction = UNTextInputNotificationAction(
+            identifier: NotificationActionID.reply,
+            title: "Reply",
+            options: [],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Type your reply..."
+        )
+        let nudgeAction = UNNotificationAction(
+            identifier: NotificationActionID.nudge,
+            title: "Nudge",
+            options: []
+        )
+        let messageReadyCategory = UNNotificationCategory(
+            identifier: NotificationCategoryID.messageReady,
+            actions: [readAction, replyAction, nudgeAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // HERALD_JOB_ACTIVE: job is still running
+        let stopAction = UNNotificationAction(
+            identifier: NotificationActionID.stop,
+            title: "Stop",
+            options: [.destructive]
+        )
+        let jobActiveCategory = UNNotificationCategory(
+            identifier: NotificationCategoryID.jobActive,
+            actions: [readAction, stopAction, nudgeAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([messageReadyCategory, jobActiveCategory])
+    }
+
     private func mapStatus(_ status: UNAuthorizationStatus) -> PermissionStatus {
         switch status {
         case .notDetermined: .notDetermined

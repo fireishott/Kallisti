@@ -2,6 +2,24 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.5] - 2026-07-20
+
+### Added - Lock-Screen Notification Actions
+
+- **Notification categories** (`Herald/Services/Protocols/NotificationServiceProtocol.swift`, `Herald/Services/Live/LiveNotificationService.swift`): Registered `HERALD_MESSAGE_READY` (Read, Reply, Nudge) and `HERALD_JOB_ACTIVE` (Read, Stop, Nudge) categories with stable action identifiers.
+
+- **Reply action** (`Herald/Stores/AppContainer.swift`): `UNTextInputNotificationAction` sends typed text to the notification's `conversationId` using a fresh `clientMessageId`. Works regardless of currently displayed conversation.
+
+- **Nudge action** (`Herald/Stores/AppContainer.swift`): Sends fixed follow-up text "Continue, and give me a concise status update." to the correct conversation.
+
+- **Stop action** (`Herald/Stores/AppContainer.swift`, `relay/app/main.py`, `connector/src/herald_connector/client.py`): Cancels `jobId` end to end via new `POST /v1/jobs/{job_id}/cancel` endpoint and `jobs.cancel` connector RPC. Idempotent for already-completed jobs.
+
+- **Job action handling** (`Herald/AppEntry.swift`): Notification handler extracts reply text from `UNTextInputNotificationResponse` and delegates to `AppContainer`.
+
+- **Relay cancel endpoint** (`relay/app/main.py`): New `POST /v1/jobs/{job_id}/cancel` verifies job ownership, dispatches connector RPC for running jobs, and publishes terminal `cancelled` SSE event.
+
+- **Connector cancel RPC** (`connector/src/herald_connector/client.py`): New `jobs.cancel` RPC method cancels the running asyncio task, cleans up staged attachments, and returns `{jobId, status: "cancelled"}`.
+
 ## [1.2.4] - 2026-07-20
 
 ### Fixed - Notification Metadata + Crash-Safe Routing

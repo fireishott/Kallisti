@@ -2304,6 +2304,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result["diff"] = job.diff_data
         return success_response(result)
 
+    @app.post("/v1/jobs/{job_id}/cancel")
+    async def cancel_job(
+        job_id: str,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ):
+        """Cancel a running or queued job."""
+        from .models import MessageJob
+
+        job = get_message_job(db, job_id=job_id)
+        if job is None or job.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+        # Already terminal — return idempotent success
+        if job.status in ("completed", "failed", "cancelled"):
+            return success_response({"jobId": job_id, "status": job.status})
+
+        # If queued, cancel directly without connector dispatch
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.error_text = "Cancelled by user"
+            job.updated_at = utcnow()
+            db.commit()
+            publish_job_event(job_id, {
+                "event": "done",
+                "data": {"jobId": job_id, "status": "cancelled", "error": "Cancelled by user", "message": None},
+            })
+            return success_response({"jobId": job_id, "status": "cancelled"})
+
+        # If running, dispatch connector RPC to cancel
+        if job.status == "running":
+            # Try to dispatch cancel to connector
+            connector_session = connector_session_for_user(auth.user.id)
+            if connector_session is not None:
+                try:
+                    rpc_result = await send_connector_rpc(
+                        auth.user.id,
+                        method="jobs.cancel",
+                        params={"jobId": job_id},
+                    )
+                    if rpc_result and rpc_result.get("status") == "cancelled":
+                        job.status = "cancelled"
+                        job.error_text = "Cancelled by user"
+                        job.updated_at = utcnow()
+                        db.commit()
+                        publish_job_event(job_id, {
+                            "event": "done",
+                            "data": {"jobId": job_id, "status": "cancelled", "error": "Cancelled by user", "message": None},
+                        })
+                        return success_response({"jobId": job_id, "status": "cancelled"})
+                except Exception:
+                    logger.warning("Failed to dispatch cancel RPC for job %s", job_id, exc_info=True)
+
+            # If connector dispatch failed or no connector, mark as cancelled in DB
+            # The connector will see the job is cancelled when it tries to complete it
+            job.status = "cancelled"
+            job.error_text = "Cancelled by user"
+            job.updated_at = utcnow()
+            db.commit()
+            publish_job_event(job_id, {
+                "event": "done",
+                "data": {"jobId": job_id, "status": "cancelled", "error": "Cancelled by user", "message": None},
+            })
+            return success_response({"jobId": job_id, "status": "cancelled"})
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Cannot cancel job in status: {job.status}")
+
     # ------------------------------------------------------------------
     # Job Events SSE
     # ------------------------------------------------------------------
