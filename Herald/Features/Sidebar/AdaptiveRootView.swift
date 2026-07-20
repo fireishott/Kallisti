@@ -25,23 +25,24 @@ struct AdaptiveRootView: View {
     // MARK: - iPad Layout
 
     private var iPadLayout: some View {
-        HStack(spacing: 0) {
-            NavigationSplitView {
-                iPadSidebarView(
-                    selectedSection: $selectedSection,
-                    isRightPanelOpen: $isRightPanelOpen
-                )
-            } detail: {
-                detailContent
-            }
-
-            // Right-side inspector panel
-            if isRightPanelOpen {
-                iPadRightPanelView(
-                    isOpen: $isRightPanelOpen,
-                    selectedTab: $rightPanelTab
-                )
-            }
+        NavigationSplitView {
+            iPadSidebarView(
+                selectedSection: $selectedSection,
+                isRightPanelOpen: $isRightPanelOpen
+            )
+        } detail: {
+            detailContent
+                .overlay(alignment: .trailing) {
+                    if isRightPanelOpen {
+                        iPadRightPanelView(
+                            isOpen: $isRightPanelOpen,
+                            selectedTab: $rightPanelTab
+                        )
+                        .frame(width: 300)
+                        .background(Design.Colors.surface)
+                        .transition(.move(edge: .trailing))
+                    }
+                }
         }
     }
 

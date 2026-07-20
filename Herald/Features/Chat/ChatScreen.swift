@@ -165,7 +165,6 @@ struct ChatScreen: View {
                     .buttonStyle(.plain)
                 }
                 profileChip
-                sessionTimerChip
                 modelStatusChip
             }
         }
@@ -888,8 +887,10 @@ struct ChatScreen: View {
 
     private func scrollToBottom() {
         let targetID: UUID
-        if chatStore.pendingMessageSentAt != nil {
-            targetID = thinkingIndicatorID
+        // Prefer the last user message so the view lands on what the user
+        // just sent, not at the thinking indicator in empty space.
+        if let lastUser = chatStore.conversation?.messages.last(where: { $0.sender == .user }) {
+            targetID = lastUser.id
         } else if let lastID = chatStore.conversation?.messages.last?.id {
             targetID = lastID
         } else {

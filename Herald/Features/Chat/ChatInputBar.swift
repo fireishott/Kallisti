@@ -121,21 +121,6 @@ struct ChatInputBar: View {
                         }
                         return .ignored
                     }
-                    .toolbar {
-                        ToolbarItemGroup(placement: .keyboard) {
-                            if settingsStore.settings.enterToSend {
-                                Spacer()
-                                Button {
-                                    if canSend { handlePrimaryAction() }
-                                } label: {
-                                    Text("Send")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(canSend ? Design.Brand.accent : Design.Colors.tertiaryForeground)
-                                }
-                                .disabled(!canSend)
-                            }
-                        }
-                    }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
                     .padding(.bottom, Design.Spacing.xs)
