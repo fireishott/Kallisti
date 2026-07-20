@@ -86,6 +86,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let text: String
         let clientMessageId: UUID
         let attachments: [AttachmentPayload]?
+        let reasoningEffort: String?
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -95,6 +96,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
     private let accessTokenProvider: @MainActor () async -> String?
     private let accessTokenRefresher: @MainActor () async -> String?
     private let allowDemoFallback: Bool
+    var reasoningEffortProvider: (@MainActor () -> ReasoningEffort)?
 
     init(
         apiClient: RelayAPIClient,
@@ -185,18 +187,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
 
-                    // If the reply is already complete (synchronous response), simulate
-                    // streaming by yielding the content as textDelta chunks so the UI
-                    // renders it progressively instead of popping in all at once.
+                    // Synchronous (non-pending) reply — yield as completed without
+                    // fake word-by-word deltas. Real streaming requires replyState=pending
+                    // and an SSE job event stream.
                     if response.replyState != "pending" {
                         if let msg = response.message {
                             let mapped = self.mapMessage(msg)
-                            // Yield content word-by-word to simulate streaming
-                            let words = mapped.content.split(separator: " ", omittingEmptySubsequences: false)
-                            for (i, word) in words.enumerated() {
-                                let suffix = i < words.count - 1 ? " " : ""
-                                continuation.yield(.textDelta(String(word) + suffix))
-                            }
                             continuation.yield(.finished(mapped, response.usage, response.diff))
                         } else {
                             continuation.yield(.finished(
@@ -239,14 +235,35 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     let result = await coordinator.run(continuation: continuation)
 
                     switch result {
-                    case .completed, .failed:
+                    case .completed(let terminalResult), .failed(let terminalResult):
+                        // Build a StreamDonePayload from the terminal result
+                        let donePayload: StreamDonePayload?
+                        if let terminalResult {
+                            let usage: TokenUsage? = {
+                                guard let prompt = terminalResult.promptTokens,
+                                      let completion = terminalResult.completionTokens,
+                                      let total = terminalResult.totalTokens else { return nil }
+                                return TokenUsage(promptTokens: prompt, completionTokens: completion, totalTokens: total)
+                            }()
+                            donePayload = StreamDonePayload(
+                                jobId: jobId,
+                                status: terminalResult.error != nil ? "failed" : "completed",
+                                usage: usage,
+                                diff: nil,
+                                error: terminalResult.error,
+                                message: nil
+                            )
+                        } else {
+                            donePayload = nil
+                        }
+
                         let refreshedConversation = await self.reloadConversationForStreaming()
                         let finalMessage = self.resolveFinalMessage(
                             jobId: jobId,
-                            donePayload: nil,
+                            donePayload: donePayload,
                             conversation: refreshedConversation ?? self.currentConversation
                         )
-                        let usage: TokenUsage? = refreshedConversation?.latestUsage
+                        let usage: TokenUsage? = donePayload?.usage ?? refreshedConversation?.latestUsage
                         continuation.yield(.finished(finalMessage, usage, nil))
                     case .cancelled:
                         break // Coordinator already yielded .cancelled
@@ -322,11 +339,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 thumbnailData: att.thumbnailBase64
             )
         }
+        let effort = reasoningEffortProvider?()
         let body = MessageCreateBody(
             conversationId: currentConversation?.id,
             text: text,
             clientMessageId: clientMessageID,
-            attachments: payloads
+            attachments: payloads,
+            reasoningEffort: effort?.rawValue
         )
         try validateRequestBodySize(for: body)
         return body
@@ -788,11 +807,13 @@ extension LiveHeraldClient {
     }
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+        let effort = reasoningEffortProvider?()
         let body = MessageCreateBody(
             conversationId: conversationID,
             text: text,
             clientMessageId: clientMessageID,
-            attachments: nil
+            attachments: nil,
+            reasoningEffort: effort?.rawValue
         )
         struct MessageResponse: Decodable {
             let message: RelayMessage?

@@ -2,6 +2,68 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.1] - 2026-07-20
+
+### Fix: Talk startup crash and production wiring
+
+- **Prevent microphone startup crash** (`Herald/Services/Live/TalkAudioCapture.swift`, `Herald/Services/Live/HermesTalkCoordinator.swift`): Talk now resolves microphone permission before recording, rejects zero-rate or zero-channel input formats before installing an audio tap, and prepares the audio engine before starting it. Missing permission or input now produces a recoverable, visible error instead of terminating the app after the orb becomes active.
+
+- **Wire the production Hermes Talk pipeline** (`Herald/Stores/AppContainer.swift`, `Herald/Stores/TalkStore.swift`): The production container now constructs and attaches capture, MiMo ASR/TTS, Hermes turn streaming, and PCM playback dependencies. Readiness reports missing coordinator or MiMo credentials instead of silently accepting Start Talking.
+
+- **Reset failed Talk sessions** (`Herald/Stores/TalkStore.swift`): Capture failures return the UI to an inactive failed state so Start Talking does not leave a misleading connected orb or an unendable session.
+
+### Fix: Production connectivity and app recovery
+
+- **Use the hosted production relay by default** (`project.yml`, `Herald/Resources/Info.plist`, `Herald/Models/UserSettings.swift`): v1.7.1 points new installs at `https://hermes-relay.fihonline.net/v1` and migrates the stale DEBUG localhost default without replacing intentional custom relay choices.
+
+- **Remove runtime mock fallback outside UI tests** (`Herald/Stores/AppContainer.swift`, `Herald/Stores/AppSessionStore.swift`): Failed production pairing and network calls can no longer be masked by demo data. Bootstrap also repairs sessions left in mock mode.
+
+- **Refresh the active connector profile** (`Herald/Features/Chat/ChatScreen.swift`): Chat forces a profile refresh when it becomes active, preventing stale pre-pairing profile names after reconnects.
+
+- **Restore iPad Settings navigation and notification replies** (`Herald/Features/Sidebar/AdaptiveRootView.swift`, `Herald/Stores/AppContainer.swift`): iPad Settings destinations route correctly, and notification reply text survives cold-launch routing.
+
+### Feature: Reasoning effort selection
+
+- **Add a user-facing reasoning selector** (`Herald/Models/UserSettings.swift`, `Herald/Features/Settings/SettingsScreen.swift`): Users can choose Off, Low, Medium, or High reasoning effort, with Medium used for older saved settings.
+
+- **Persist and relay the selected effort** (`Herald/Services/Live/LiveHeraldClient.swift`, `relay/app/models.py`, `relay/app/schemas.py`, `relay/app/services.py`, `relay/app/main.py`): The setting is captured with each job and forwarded to the connector execution frame.
+
+### Fix: Relay database compatibility
+
+- **Repair legacy SQLite schemas** (`relay/app/database.py`, `relay/app/services.py`): Startup repairs foreign keys left on the pre-rebrand host table, adds the reasoning-effort column, normalizes naive timestamps during orphan cleanup, and supplies collision-free surrogate source sequences for older NOT NULL event tables.
+
+- **Report only genuine streaming** (`Herald/Services/Live/LiveHeraldClient.swift`): Already-completed synchronous replies are no longer split into fake word-by-word deltas.
+
+### Fix: Terminal result plumbing from coordinator to client
+
+- **Add TerminalResult to RunResult** (`Herald/Services/Live/JobStreamCoordinator.swift`): Extended `RunResult` to carry terminal payload (text, usage tokens, error) from the done event. This allows the caller to pass terminal data into `resolveFinalMessage` instead of always supplying `nil`.
+
+- **Pass terminal payload to resolveFinalMessage** (`Herald/Services/Live/LiveHeraldClient.swift`): The terminal result from the coordinator is now converted to a `StreamDonePayload` and passed to `resolveFinalMessage`, enabling proper error display and usage reporting.
+
+### Fix: Talk API key reads from Keychain instead of UserDefaults (T2)
+
+- **Add APIKeyHolder** (`Herald/Stores/AppContainer.swift`): Added a MainActor-safe cached holder that reads the MiMo API key from Keychain once and caches it. Refreshes when Settings writes/deletes the key.
+
+- **Fix TTS service key source** (`Herald/Stores/AppContainer.swift`): Changed `MimoTTSService` to read the API key from Keychain via `APIKeyHolder` instead of reading directly from UserDefaults. This prevents Settings from removing the only value the provider reads.
+
+- **Add apiKeyHolder to TalkStore** (`Herald/Stores/TalkStore.swift`): Added `apiKeyHolder` property so TalkStore can refresh the cached key after Settings changes.
+
+### Fix: SSE stream simplification and terminal event persistence (S2)
+
+- **Remove SSE-layer delta coalescing** (`relay/app/main.py`): Removed the delta coalescing logic that was consuming durable sequence positions while hiding their cursors. Each event is now emitted directly as it comes from the DB, preserving the 1:1 relationship between durable log entries and SSE frames.
+
+- **Persist terminal event before emitting** (`relay/app/main.py`): The terminal done event is now persisted through `append_job_event` before being emitted to SSE subscribers. This ensures replays return the same terminal sequence and payload, and prevents synthesizing `last_seq + 1` on each connection.
+
+- **Update streaming test** (`relay/tests/test_streaming.py`): Updated test to expect individual text_delta events instead of coalesced ones.
+
+### Fix: Relay source sequencing (S1)
+
+- **Pass sourceSeq from connector through relay** (`relay/app/main.py`): The connector sends `sourceSeq` on `job.started`, `job.heartbeat`, and `job.progress` frames, but the relay was looking for `eventId` which never existed. Now `sourceSeq` flows through to `publish_job_event` when present.
+
+- **Deduplicate only when source_seq is provided** (`relay/app/services.py`, `relay/app/models.py`): Changed `source_seq` column to nullable and made `append_job_event` skip source-based deduplication when `source_seq is None`. This prevents legacy connectors without sequencing from having all their events collide at sequence 0.
+
+- **Fix SSE delta coalescing** (`relay/app/main.py`): Moved delta flush logic into `emit_db_event` so adjacent text_delta events are properly coalesced before being yielded. Previously the flush happened before every event, causing each text_delta to be flushed individually instead of being merged with adjacent ones.
+
 ## [1.7.0] - 2026-07-20
 
 ### Deprecated - Legacy OpenAI Realtime Talk (Phase B-T6)

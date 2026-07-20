@@ -754,7 +754,7 @@ struct AppStoresTests {
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
-            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func loadConversation(id: UUID) async throws -> Conversation { await loadConversation() }
             func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
@@ -838,6 +838,11 @@ struct AppStoresTests {
                 """.data(using: .utf8)!
                 return (response, data)
 
+            case "https://relay.example.com/v1/jobs/\(jobID.uuidString.lowercased())":
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                let data = #"{"data":{"jobId":"\#(jobID.uuidString.lowercased())","status":"completed","conversationId":"\#(conversationID.uuidString)","attempt":0,"lastSeq":0}}"#.data(using: .utf8)!
+                return (response, data)
+
             case "https://relay.example.com/v1/conversations/current":
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 let data = #"""
@@ -906,7 +911,7 @@ struct AppStoresTests {
             }.last
         )
         #expect(finishedMessage.content == "Recovered after refresh")
-        #expect(requestCount.value == 3)
+        #expect(requestCount.value == 4)
     }
 
     @Test @MainActor
@@ -1611,6 +1616,45 @@ struct AppStoresTests {
         #expect(configuration.connectionMode == .selfHostedRelay)
         #expect(configuration.connectionMode.reliesOnOfficialPushRelay == false)
         #expect(configuration.activeBaseURLString == "https://relay.example.com/v1")
+    }
+
+    @Test
+    func relayConfigurationDefaultsToConfiguredManagedRelay() throws {
+        let buildConfiguration = AppBuildConfiguration(infoDictionary: [
+            "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
+            "APP_HOSTED_RELAY_ENABLED": true,
+        ])
+
+        let configuration = RelayConfiguration.defaultValue(
+            buildConfiguration: buildConfiguration,
+            environmentPolicy: AppEnvironmentPolicy(allowsEnvironmentOverrides: true)
+        )
+
+        #expect(configuration.connectionMode == .managedRelay)
+        #expect(configuration.activeBaseURLString == "https://hermes-relay.fihonline.net/v1")
+    }
+
+    @Test
+    func productionSettingsMigrateOldDebugLocalhostDefaultToManagedRelay() throws {
+        let buildConfiguration = AppBuildConfiguration(infoDictionary: [
+            "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
+            "APP_HOSTED_RELAY_ENABLED": true,
+        ])
+        let settings = UserSettings(
+            environment: .production,
+            relayConfiguration: RelayConfiguration(
+                connectionMode: .selfHostedRelay,
+                customRelayBaseURL: AppEnvironment.development.baseURLString
+            )
+        )
+
+        let migrated = settings.applyingEnvironmentPolicy(
+            AppEnvironmentPolicy(allowsEnvironmentOverrides: true),
+            buildConfiguration: buildConfiguration
+        )
+
+        #expect(migrated.relayConfiguration.connectionMode == .managedRelay)
+        #expect(migrated.relayConfiguration.activeBaseURLString == "https://hermes-relay.fihonline.net/v1")
     }
 
     @Test
@@ -2631,4 +2675,55 @@ private final class AlwaysFailingBootstrapService: SessionBootstrapServiceProtoc
     }
 
     func revokeCurrentSession(accessToken: String?) async throws {}
+}
+
+// MARK: - Notification Reply Cold-Launch Tests
+
+@Suite(.serialized)
+struct NotificationReplyTests {
+
+    @Test @MainActor
+    func pendingNotificationRoutePreservesReplyText() {
+        let route = AppContainer.PendingNotificationRoute(
+            conversationID: UUID(),
+            messageID: "msg-123",
+            jobID: "job-456",
+            action: NotificationActionID.reply,
+            replyText: "Hello from notification"
+        )
+
+        #expect(route.replyText == "Hello from notification")
+        #expect(route.conversationID != nil)
+        #expect(route.action == NotificationActionID.reply)
+    }
+
+    @Test @MainActor
+    func pendingNotificationRouteStoresNilReplyText() {
+        let route = AppContainer.PendingNotificationRoute(
+            conversationID: UUID(),
+            messageID: nil,
+            jobID: nil,
+            action: NotificationActionID.reply,
+            replyText: nil
+        )
+
+        #expect(route.replyText == nil)
+    }
+
+    @Test @MainActor
+    func pendingNotificationRoutePreservesReplyTextAcrossColdLaunch() {
+        let conversationID = UUID()
+        let expectedText = "Reply from lock screen"
+
+        let route = AppContainer.PendingNotificationRoute(
+            conversationID: conversationID,
+            messageID: "msg-789",
+            jobID: nil,
+            action: NotificationActionID.reply,
+            replyText: expectedText
+        )
+
+        #expect(route.replyText == expectedText)
+        #expect(route.conversationID == conversationID)
+    }
 }

@@ -181,6 +181,7 @@ class MessageCreateRequest(BaseModel):
     text: str = Field(default="")
     clientMessageId: UUID | None = None
     attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
+    reasoningEffort: str | None = None
 
     @model_validator(mode="after")
     def _require_text_or_attachments(self) -> "MessageCreateRequest":

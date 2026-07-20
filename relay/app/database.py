@@ -65,6 +65,27 @@ class Database:
             ]:
                 _exec_safe(f"ALTER TABLE herald_hosts RENAME COLUMN {old_col} TO {new_col}")
         elif "hermes_hosts" in table_names and "herald_hosts" in table_names:
+            if self.is_sqlite:
+                # SQLite cannot DROP/ADD foreign-key constraints with ALTER
+                # TABLE. Older rebrand builds therefore left dependent tables
+                # referencing the now-obsolete hermes_hosts table. Repair only
+                # those dependent CREATE statements; never rewrite the
+                # hermes_hosts table's own declaration.
+                with self.engine.begin() as connection:
+                    schema_version = connection.execute(text("PRAGMA schema_version")).scalar_one()
+                    connection.execute(text("PRAGMA writable_schema=ON"))
+                    connection.execute(
+                        text(
+                            "UPDATE sqlite_master "
+                            "SET sql = replace(sql, 'REFERENCES hermes_hosts', 'REFERENCES herald_hosts') "
+                            "WHERE type = 'table' AND name != 'hermes_hosts' "
+                            "AND instr(sql, 'REFERENCES hermes_hosts') > 0"
+                        )
+                    )
+                    connection.execute(text(f"PRAGMA schema_version={schema_version + 1}"))
+                    connection.execute(text("PRAGMA writable_schema=OFF"))
+                inspector = inspect(self.engine)
+
             # Both exist — drop FKs, drop old table, re-add FKs
             for q in [
                 "ALTER TABLE host_enrollment_invites DROP CONSTRAINT IF EXISTS host_enrollment_invites_redeemed_host_id_fkey",
@@ -219,6 +240,9 @@ class Database:
             _exec_safe("CREATE INDEX IF NOT EXISTS ix_job_events_job_seq ON job_events(job_id, seq)")
             if "attempt" not in job_columns:
                 _exec_safe("ALTER TABLE message_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+
+            if "reasoning_effort" not in job_columns:
+                _exec_safe("ALTER TABLE message_jobs ADD COLUMN reasoning_effort TEXT")
 
     @contextmanager
     def session(self) -> Iterator[Session]:

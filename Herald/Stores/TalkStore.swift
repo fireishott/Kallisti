@@ -34,6 +34,9 @@ final class TalkStore {
     /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
     @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
 
+    /// Cached API key holder for Keychain access. Set by AppContainer.
+    @ObservationIgnored var apiKeyHolder: APIKeyHolder?
+
     private let liveActivity = LiveActivityService()
     private var lastSpokenItemID: UUID?
 
@@ -98,6 +101,8 @@ final class TalkStore {
             statusMessage = "Interrupted"
         case .failed(let msg):
             voiceState = .disconnected
+            connectionState = .failed
+            isSessionActive = false
             statusMessage = msg
             blockedReason = msg
         case .ending:
@@ -124,7 +129,18 @@ final class TalkStore {
     }
 
     func refreshReadiness() async {
-        // No-op: readiness is now managed by the Hermes coordinator.
+        guard hermesCoordinator != nil else {
+            canStartSession = false
+            blockedReason = "Talk coordinator not available"
+            return
+        }
+        guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
+            canStartSession = false
+            blockedReason = "Mimo API key required"
+            return
+        }
+        canStartSession = true
+        blockedReason = nil
     }
 
     /// Re-sync Live Activity state when returning from background.
@@ -134,11 +150,21 @@ final class TalkStore {
 
     /// Start without a prior readiness check — goes straight to session create.
     func startSessionDirectly() async {
-        startListening()
+        await startSession()
     }
 
     func startSession() async {
-        startListening()
+        guard let coordinator = hermesCoordinator else {
+            blockedReason = "Talk coordinator not available"
+            statusMessage = "Not ready"
+            canStartSession = false
+            onSessionStateChanged?()
+            return
+        }
+        isSessionActive = true
+        connectionState = .connected
+        voiceSessionID = coordinator.conversationId
+        await coordinator.startListeningWithVAD()
     }
 
     func endSession() async {

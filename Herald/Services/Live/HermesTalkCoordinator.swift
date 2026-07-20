@@ -83,6 +83,12 @@ final class HermesTalkCoordinator {
         state = .preparing
         notifyState()
 
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            state = .failed("Microphone access is required. Enable it in Settings.")
+            notifyState()
+            return
+        }
+
         do {
             try configureAudioSessionForRecording()
             try capture.startRecording()
@@ -109,6 +115,11 @@ final class HermesTalkCoordinator {
         notifyState()
 
         do {
+            guard await ensureMicrophonePermission() else {
+                state = .failed("Microphone access is required. Enable it in Settings.")
+                notifyState()
+                return
+            }
             try configureAudioSessionForRecording()
             try capture.startRecording()
             state = .listening
@@ -399,6 +410,19 @@ final class HermesTalkCoordinator {
     }
 
     // MARK: - Audio Session (sole owner during Talk)
+
+    private func ensureMicrophonePermission() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            return await AVAudioApplication.requestRecordPermission()
+        @unknown default:
+            return false
+        }
+    }
 
     private func configureAudioSessionForRecording() throws {
         let session = AVAudioSession.sharedInstance()

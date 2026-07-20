@@ -4,9 +4,18 @@ import os
 /// Coordinates a single job's SSE event stream with cursor-based resume.
 /// Replaces the one-shot `streamJobEvents` that could not reconnect.
 actor JobStreamCoordinator {
+    /// Terminal payload extracted from the done event.
+    struct TerminalResult: Sendable {
+        let text: String?
+        let promptTokens: Int?
+        let completionTokens: Int?
+        let totalTokens: Int?
+        let error: String?
+    }
+
     enum RunResult: Sendable {
-        case completed
-        case failed
+        case completed(TerminalResult?)
+        case failed(TerminalResult?)
         case cancelled
         case error(String)
     }
@@ -116,11 +125,12 @@ actor JobStreamCoordinator {
 
                     // Terminal events end the stream
                     if envelope.type.isTerminal {
+                        let terminalResult = self.extractTerminalResult(from: envelope)
                         switch envelope.type {
-                        case .runCompleted: return .completed
-                        case .runFailed: return .failed
+                        case .runCompleted: return .completed(terminalResult)
+                        case .runFailed: return .failed(terminalResult)
                         case .runCancelled: return .cancelled
-                        default: return .completed
+                        default: return .completed(terminalResult)
                         }
                     }
                 }
@@ -134,9 +144,9 @@ actor JobStreamCoordinator {
                 if let status = await jobStatusProvider(jobId) {
                     switch status.status {
                     case "completed":
-                        return .completed
+                        return .completed(nil)
                     case "failed":
-                        return .failed
+                        return .failed(nil)
                     case "cancelled":
                         return .cancelled
                     case "queued", "running":
@@ -211,36 +221,88 @@ actor JobStreamCoordinator {
         guard let data = sseEvent.data.data(using: .utf8) else { return nil }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
 
-        let eventType: JobEventType
-        switch sseEvent.event {
-        case "text_delta": eventType = .textDelta
-        case "reasoning_delta": eventType = .reasoningDelta
-        case "tool_activity": eventType = .toolProgress
-        case "started": eventType = .runStarted
-        case "heartbeat": eventType = .commentary
-        case "done":
-            if let status = json["status"] as? String {
-                switch status {
-                case "completed": eventType = .runCompleted
-                case "failed": eventType = .runFailed
-                default: return nil
-                }
-            } else {
-                eventType = .runCompleted
-            }
-        default: return nil
+        // Use the coordinator's known jobId when the legacy payload omits it
+        let envelopeJobId = (json["jobId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? self.jobId.uuidString.lowercased()
+
+        // For legacy frames without id:, assign a local next sequence
+        // rather than passing seq=0 into duplicate/gap logic
+        let seq: Int
+        if let idString = sseEvent.id, let parsedSeq = Int(idString), parsedSeq > 0 {
+            seq = parsedSeq
+        } else {
+            // Assign a compatibility-local sequence that advances past lastAppliedSeq
+            self.lastAppliedSeq += 1
+            seq = self.lastAppliedSeq
         }
 
-        let seq = Int(sseEvent.id ?? "0") ?? 0
+        let eventType: JobEventType
+        let payload: JobEventPayload
+
+        switch sseEvent.event {
+        case "text_delta":
+            eventType = .textDelta
+            let delta = json["delta"] as? String ?? ""
+            payload = .textDelta(TextDeltaPayload(delta: delta, segmentId: ""))
+
+        case "reasoning_delta":
+            eventType = .reasoningDelta
+            let delta = json["delta"] as? String ?? ""
+            payload = .reasoningDelta(ReasoningDeltaPayload(delta: delta, segmentId: ""))
+
+        case "tool_activity":
+            eventType = .toolProgress
+            let label = json["label"] as? String ?? "Working..."
+            payload = .toolProgress(ToolProgressPayload(toolCallId: "", label: label))
+
+        case "started":
+            eventType = .runStarted
+            let phase = json["phase"] as? String ?? "starting"
+            payload = .runStarted(RunStartedPayload(phase: phase, attempt: 0))
+
+        case "heartbeat":
+            eventType = .commentary
+            let phase = json["phase"] as? String ?? "unknown"
+            payload = .commentary(CommentaryPayload(text: phase))
+
+        case "done":
+            let status = json["status"] as? String ?? "completed"
+            switch status {
+            case "completed":
+                eventType = .runCompleted
+                let text = json["message"] as? String ?? json["text"] as? String ?? ""
+                let usageDict = json["usage"] as? [String: Any]
+                let usage = usageDict.map { Usage(
+                    promptTokens: $0["prompt_tokens"] as? Int,
+                    completionTokens: $0["completion_tokens"] as? Int,
+                    totalTokens: $0["total_tokens"] as? Int
+                )}
+                payload = .runCompleted(RunCompletedPayload(messageId: "", text: text, usage: usage, diff: nil))
+            case "failed":
+                eventType = .runFailed
+                let error = json["error"] as? String ?? "Unknown error"
+                payload = .runFailed(RunFailedPayload(error: error, retryable: false))
+            case "cancelled":
+                eventType = .runCancelled
+                let reason = json["error"] as? String ?? "Cancelled"
+                payload = .runCancelled(RunCancelledPayload(reason: reason))
+            default:
+                return nil
+            }
+
+        default:
+            return nil
+        }
+
         return JobEventEnvelope(
             contractVersion: 1,
-            jobId: json["jobId"] as? String ?? "",
+            jobId: envelopeJobId,
             conversationId: "",
             attempt: 0,
             seq: seq,
             type: eventType,
             timestamp: Date(),
-            payload: .commentary(CommentaryPayload(text: ""))
+            payload: payload
         )
     }
 
@@ -288,6 +350,25 @@ actor JobStreamCoordinator {
             return .cancelled
         case .runRequeued:
             return .reconnecting
+        }
+    }
+
+    private func extractTerminalResult(from envelope: JobEventEnvelope) -> TerminalResult {
+        switch envelope.payload {
+        case .runCompleted(let p):
+            return TerminalResult(
+                text: p.text,
+                promptTokens: p.usage?.promptTokens,
+                completionTokens: p.usage?.completionTokens,
+                totalTokens: p.usage?.totalTokens,
+                error: nil
+            )
+        case .runFailed(let p):
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.error)
+        case .runCancelled(let p):
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.reason)
+        default:
+            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: nil)
         }
     }
 }

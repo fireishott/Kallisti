@@ -68,7 +68,11 @@ struct ChatScreen: View {
             chatStore.setPollingEnabled(true)
             await hostStore.refresh()
             await chatStore.loadConversationIfNeeded()
-            await profileStore.loadProfiles()
+            // The active profile belongs to the connector, not the local chat
+            // session cache. Refresh it whenever Chat becomes active so a
+            // stale pre-pairing value such as ".hermes" is never retained in
+            // the composer after the host reconnects or changes profile.
+            await profileStore.loadProfiles(force: true)
         }
         .task {
             while !Task.isCancelled {

@@ -77,8 +77,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
-        MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "36"
+        MARKETING_VERSION: "1.7.1"
+        CURRENT_PROJECT_VERSION: "37"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -98,6 +98,8 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Herald uses your location in the background to provide contextual awareness and proactive suggestions."
         NSMotionUsageDescription: "Herald uses motion data to understand your current activity for contextual awareness."
         NSSpeechRecognitionUsageDescription: "Herald uses speech recognition for voice commands and local transcription."
+        APP_HOSTED_RELAY_URL: "https://hermes-relay.fihonline.net/v1"
+        APP_HOSTED_RELAY_ENABLED: true
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false
@@ -135,8 +137,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
-        MARKETING_VERSION: "1.7.0"
-        CURRENT_PROJECT_VERSION: "36"
+        MARKETING_VERSION: "1.7.1"
+        CURRENT_PROJECT_VERSION: "37"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

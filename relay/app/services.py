@@ -1102,6 +1102,7 @@ def create_message_job(
     conversation_id: str,
     user_message_id: str,
     session_id_snapshot: str | None,
+    reasoning_effort: str | None = None,
 ) -> MessageJob:
     job = MessageJob(
         user_id=user_id,
@@ -1110,6 +1111,7 @@ def create_message_job(
         session_id_snapshot=session_id_snapshot,
         status="queued",
         retryable=True,
+        reasoning_effort=reasoning_effort,
     )
     db.add(job)
     db.commit()
@@ -1186,7 +1188,7 @@ def log_stale_queued_jobs(db: Session, settings: Settings) -> None:
 
         if host is None or host.revoked_at is not None:
             # Genuine orphan: no host or revoked host
-            if job.created_at < orphan_threshold:
+            if normalize_datetime(job.created_at) < orphan_threshold:
                 # Transition to terminal failed state
                 job.status = "failed"
                 job.error_text = "No active host available to process this message."
@@ -1565,13 +1567,16 @@ def append_job_event(
     job_id: str,
     event_type: str,
     payload: dict,
-    source_seq: int,
+    source_seq: int | None,
     attempt: int,
 ) -> dict | None:
     """Append an event to the durable job event log in a single transaction.
 
     Returns the created event dict (with assigned seq) or None if duplicate/rejected.
     Invariants: 2 (one ordered log), 3 (append before fan-out), 4 (at-least-once, exactly-once projection).
+
+    Deduplication is only performed when source_seq is provided (not None).
+    Missing source_seq from legacy connectors means append without source dedupe.
     """
     job = db.get(MessageJob, job_id)
     if job is None:
@@ -1583,26 +1588,32 @@ def append_job_event(
     if job.attempt != attempt:
         return None
 
-    existing = db.scalar(
-        select(JobEvent).where(
-            JobEvent.job_id == job_id,
-            JobEvent.attempt == attempt,
-            JobEvent.source_seq == source_seq,
+    if source_seq is not None:
+        existing = db.scalar(
+            select(JobEvent).where(
+                JobEvent.job_id == job_id,
+                JobEvent.attempt == attempt,
+                JobEvent.source_seq == source_seq,
+            )
         )
-    )
-    if existing is not None:
-        return None
+        if existing is not None:
+            return None
 
     max_seq = db.scalar(
         select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)
     )
     new_seq = max_seq + 1
+    # The first durable-log schema shipped source_seq as NOT NULL while the
+    # legacy connector legitimately emits unsequenced events. Store a stable,
+    # per-job negative surrogate for those events so older SQLite databases can
+    # append them without colliding with real (non-negative) source sequences.
+    stored_source_seq = source_seq if source_seq is not None else -new_seq
 
     event = JobEvent(
         job_id=job_id,
         seq=new_seq,
         attempt=attempt,
-        source_seq=source_seq,
+        source_seq=stored_source_seq,
         type=event_type,
         payload_json=payload,
     )

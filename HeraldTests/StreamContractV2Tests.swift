@@ -4,10 +4,8 @@ import Testing
 
 // MARK: - Helpers
 
-private let fixtureDirectory = Bundle.module.url(
-    forResource: "Fixtures/StreamContractV2",
-    withExtension: nil
-)!
+private final class StreamFixtureBundleToken {}
+private let streamFixtureBundle = Bundle(for: StreamFixtureBundleToken.self)
 
 private let decoder: JSONDecoder = {
     let d = JSONDecoder()
@@ -16,7 +14,11 @@ private let decoder: JSONDecoder = {
 }()
 
 private func loadFixture(named name: String) throws -> [JobEventEnvelope] {
-    let url = fixtureDirectory.appendingPathComponent(name)
+    let resourceName = (name as NSString).deletingPathExtension
+    let fileExtension = (name as NSString).pathExtension
+    guard let url = streamFixtureBundle.url(forResource: resourceName, withExtension: fileExtension) else {
+        throw CocoaError(.fileNoSuchFile)
+    }
     let data = try Data(contentsOf: url)
     return try decoder.decode([JobEventEnvelope].self, from: data)
 }
@@ -133,9 +135,6 @@ struct StreamContractV2Tests {
     @Test("fixture has 3-8 events", arguments: fixtureFiles)
     func eventCountInRange(filename: String) throws {
         let events = try loadFixture(named: filename)
-        #expect(
-            events.count >= 3 && events.count <= 8,
-            "Expected 3-8 events, got \(events.count)"
-        }
+        #expect(events.count >= 3 && events.count <= 8)
     }
 }

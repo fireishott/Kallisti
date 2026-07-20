@@ -331,7 +331,17 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         buildConfiguration: AppBuildConfiguration = .current(),
         environmentPolicy: AppEnvironmentPolicy = .currentBuild
     ) -> RelayConfiguration {
-        RelayConfiguration(
+        if buildConfiguration.hostedRelayEnabled,
+           buildConfiguration.hostedRelayBaseURL != nil {
+            return RelayConfiguration(
+                connectionMode: .managedRelay,
+                customRelayBaseURL: "",
+                hostedRelayBaseURL: buildConfiguration.hostedRelayBaseURL,
+                hostedRelayEnabled: true
+            )
+        }
+
+        return RelayConfiguration(
             connectionMode: .selfHostedRelay,
             customRelayBaseURL: environmentPolicy.allowsEnvironmentOverrides ? AppEnvironment.development.baseURLString : "",
             hostedRelayBaseURL: buildConfiguration.hostedRelayBaseURL,
@@ -575,6 +585,22 @@ enum ChatWallpaper: Codable, Equatable, Hashable, Identifiable, Sendable {
     }
 }
 
+enum ReasoningEffort: String, Codable, CaseIterable, Hashable, Sendable {
+    case off
+    case low
+    case medium
+    case high
+
+    var displayLabel: String {
+        switch self {
+        case .off: "Off"
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        }
+    }
+}
+
 struct UserSettings: Codable, Hashable, Sendable {
     var userName: String
     var avatarInitials: String
@@ -593,6 +619,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsAutoSpeak: Bool
     var enterToSend: Bool
     var showReasoning: Bool
+    var reasoningEffort: ReasoningEffort
 
     init(
         userName: String = "User",
@@ -611,7 +638,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
         enterToSend: Bool = false,
-        showReasoning: Bool = true
+        showReasoning: Bool = true,
+        reasoningEffort: ReasoningEffort = .medium
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -630,6 +658,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.ttsAutoSpeak = ttsAutoSpeak
         self.enterToSend = enterToSend
         self.showReasoning = showReasoning
+        self.reasoningEffort = reasoningEffort
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -650,6 +679,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case ttsAutoSpeak
         case enterToSend
         case showReasoning
+        case reasoningEffort
     }
 
     init(from decoder: Decoder) throws {
@@ -679,6 +709,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
+        reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
     }
 
     func encode(to encoder: Encoder) throws {
@@ -700,6 +731,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(ttsAutoSpeak, forKey: .ttsAutoSpeak)
         try container.encode(enterToSend, forKey: .enterToSend)
         try container.encode(showReasoning, forKey: .showReasoning)
+        try container.encode(reasoningEffort, forKey: .reasoningEffort)
     }
 
     func applyingEnvironmentPolicy(
@@ -708,6 +740,15 @@ struct UserSettings: Codable, Hashable, Sendable {
     ) -> UserSettings {
         var sanitized = policy.sanitize(self)
         sanitized.relayConfiguration.applyBuildConfiguration(buildConfiguration)
+        // Repair the old DEBUG default (production environment paired with the
+        // localhost development URL) without overriding intentional custom or
+        // paired relay URLs.
+        if sanitized.environment == .production,
+           sanitized.relayConfiguration.connectionMode == .selfHostedRelay,
+           sanitized.relayConfiguration.customRelayBaseURL == AppEnvironment.development.baseURLString,
+           sanitized.relayConfiguration.canUseHosted {
+            sanitized.relayConfiguration.updateConnectionMode(.managedRelay)
+        }
         return sanitized
     }
 }

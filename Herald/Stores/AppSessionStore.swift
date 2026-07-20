@@ -61,6 +61,7 @@ final class AppSessionStore {
             || !state.deviceRegistered
             || state.deviceID == nil
             || accessTokenBeforeBootstrap == nil
+            || (state.isMockMode && state.deviceRegistered)
 
         do {
             if needsRegistration {
