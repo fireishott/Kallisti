@@ -1457,19 +1457,29 @@ class HeraldConnector:
 
     async def _rpc_profiles_list(self) -> dict:
         hermes_home = self._resolve_hermes_home()
-        profiles_dir = hermes_home / "profiles"
+        # HERMES_HOME points at a specific profile dir (e.g. ~/.hermes/profiles/ignyte).
+        # Sibling profiles live in the parent. Fall back to the legacy nested path.
+        parent_dir = hermes_home.parent
+        if (parent_dir / hermes_home.name).is_dir() and any(
+            (parent_dir / d).is_dir() for d in [hermes_home.name]
+        ):
+            profiles_dir = parent_dir
+        else:
+            profiles_dir = hermes_home / "profiles"
         if not profiles_dir.is_dir():
             return {"activeProfile": None, "profiles": []}
 
-        # Read active profile from config
-        active_name = None
+        # Active profile: basename of HERMES_HOME (the currently loaded profile).
+        active_name: str | None = hermes_home.name
         config_path = hermes_home / "config.yaml"
         if config_path.is_file():
             try:
                 import yaml
                 with open(config_path, encoding="utf-8") as f:
                     config = yaml.safe_load(f) or {}
-                active_name = (config.get("profile") or {}).get("default")
+                override = (config.get("profile") or {}).get("default")
+                if override:
+                    active_name = override
             except Exception:  # noqa: BLE001
                 pass
 

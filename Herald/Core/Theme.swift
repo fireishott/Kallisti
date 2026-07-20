@@ -201,16 +201,17 @@ struct ChatWallpaperBackground: View {
     private var defaultBackground: some View {
         ZStack {
             Color(.systemBackground)
-            // App icon as a faint silhouette watermark
+            // App icon as a faint silhouette watermark.
+            // No blend mode — .multiply is invisible on dark backgrounds.
             GeometryReader { geo in
                 let markSize = min(geo.size.width * 1.2, 500)
                 Image("AppIconImage")
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: markSize, height: markSize)
-                    .opacity(0.06)
+                    .opacity(0.07)
+                    .colorMultiply(Color(.label).opacity(0.15))
                     .offset(x: geo.size.width * 0.2, y: -40)
-                    .blendMode(.multiply)
             }
             RadialGradient(
                 colors: [tint.opacity(0.04), .clear],
