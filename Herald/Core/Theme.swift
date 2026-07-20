@@ -209,8 +209,8 @@ struct ChatWallpaperBackground: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: markSize, height: markSize)
-                    .opacity(0.07)
-                    .colorMultiply(Color(.label).opacity(0.15))
+                    .opacity(0.12)
+                    .colorMultiply(Color(.label).opacity(0.25))
                     .offset(x: geo.size.width * 0.2, y: -40)
             }
             RadialGradient(

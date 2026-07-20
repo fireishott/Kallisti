@@ -280,7 +280,8 @@ private struct WelcomeStepView: View {
                     Text("HERALD · iOS")
                         .brandEyebrow(Design.Colors.foreground)
                     Spacer()
-                    Text("v1.0.0")
+                    let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+                    Text("v\(appVersion)")
                         .brandEyebrow()
                 }
                 .padding(.horizontal, Design.Spacing.md)
