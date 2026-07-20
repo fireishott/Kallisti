@@ -1,4 +1,9 @@
 import Foundation
+import os
+
+extension Logger {
+    static let app = Logger(subsystem: "net.fihonline.herald", category: "app")
+}
 
 @MainActor
 @Observable
@@ -34,8 +39,18 @@ final class AppContainer {
     private let secureStore: (any SecureStoreProtocol)?
     private var didMigrateLegacyAPNsToken = false
     private var isInitialized = false
+    private var isInitializing = false
     private var lastCommandCatalogRefreshAt: Date?
     private var lastKnownHostOnline = false
+
+    // Notification routing: stores a pending route while initialization is incomplete
+    struct PendingNotificationRoute: Sendable {
+        let conversationID: UUID?
+        let messageID: String?
+        let jobID: String?
+        let action: String?
+    }
+    private var pendingNotificationRoute: PendingNotificationRoute?
 
     private static let commandCatalogRefreshInterval: TimeInterval = 60
 
@@ -354,7 +369,16 @@ final class AppContainer {
 
     func initialize() async {
         guard pairingStore.isPaired else { return }
-        guard !isInitialized else { return }
+        guard !isInitialized else {
+            // Already initialized — process any pending notification route immediately
+            await processPendingNotificationRoute()
+            return
+        }
+        // Single-flight protection: prevent concurrent initialization
+        guard !isInitializing else { return }
+        isInitializing = true
+        defer { isInitializing = false }
+
         guard await sessionStore.currentAccessToken() != nil else {
             await pairingStore.clearLocalPairing()
             return
@@ -375,9 +399,61 @@ final class AppContainer {
         reconcileLiveActivities()
         updateWidgetData()
         isInitialized = true
+
+        // Process any notification route that arrived during initialization
+        await processPendingNotificationRoute()
     }
 
-    func handleAppDidBecomeActive() async {
+    func handleNotificationRoute(
+        conversationID: UUID?,
+        messageID: String?,
+        jobID: String?,
+        action: String?
+    ) {
+        let route = PendingNotificationRoute(
+            conversationID: conversationID,
+            messageID: messageID,
+            jobID: jobID,
+            action: action
+        )
+
+        if isInitialized {
+            // Already initialized — process immediately
+            Task { await processRoute(route) }
+        } else {
+            // Store for processing after initialization completes
+            pendingNotificationRoute = route
+        }
+    }
+
+    private func processPendingNotificationRoute() async {
+        guard let route = pendingNotificationRoute else { return }
+        pendingNotificationRoute = nil
+        await processRoute(route)
+    }
+
+    private func processRoute(_ route: PendingNotificationRoute) async {
+        // Navigate to chat tab
+        router.activeSheet = nil
+        router.popToRoot()
+        router.selectedTab = .chat
+
+        guard let conversationID = route.conversationID else {
+            Logger.app.info("Notification route: no conversation ID, staying on current chat")
+            return
+        }
+
+        // Load the specific conversation by ID — never fall back to "current" conversation
+        do {
+            let conversation = try await chatStore.heraldClient.loadConversation(id: conversationID)
+            chatStore.conversation = conversation
+            Logger.app.info("Notification route: loaded conversation \(conversationID.uuidString.prefix(8))")
+        } catch {
+            Logger.app.warning("Notification route: failed to load conversation \(conversationID.uuidString.prefix(8)): \(error.localizedDescription)")
+            // Show a recoverable error state rather than crashing
+            // The user will see the chat tab with whatever conversation was last loaded
+        }
+    }
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }
 

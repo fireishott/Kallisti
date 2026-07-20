@@ -143,6 +143,11 @@ class PushBrokerSendRequest(BaseModel):
     pushType: str = Field(pattern="^(alert|silent)$")
     title: str | None = None
     body: str | None = None
+    # Notification metadata for deep-linking and actions
+    conversationId: str | None = None
+    messageId: str | None = None
+    jobId: str | None = None
+    category: str | None = None
     # Replay defense: `nonce` is a random token unique per request, and `iat`
     # is the Unix epoch seconds at which the signer produced the request. The
     # broker rejects requests whose `iat` falls outside a small skew window

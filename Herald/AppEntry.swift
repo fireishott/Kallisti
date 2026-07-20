@@ -72,27 +72,26 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     // Handle tap on notification — deep-link into the conversation.
     // nonisolated because UNNotificationResponse is not Sendable.
+    // Extracts primitive strings only, then delegates to AppContainer.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         let info = response.notification.request.content.userInfo
-        let convID = info["conversationId"] as? String
-        let uuid = convID.flatMap { UUID(uuidString: $0) }
+        let conversationIDString = info["conversationId"] as? String
+        let conversationID = conversationIDString.flatMap { UUID(uuidString: $0) }
+        let messageID = info["messageId"] as? String
+        let jobID = info["jobId"] as? String
+        let action = response.actionIdentifier
+
         await MainActor.run {
             let container = AppContainer.sharedDefault()
-            container.router.activeSheet = nil
-            container.router.popToRoot()
-            container.router.selectedTab = .chat
-            if let uuid {
-                let sessionStore = container.sessionListStore
-                if let session = sessionStore.recentSessions.first(where: { $0.id == uuid })
-                    ?? sessionStore.pinnedSessions.first(where: { $0.id == uuid }) {
-                    Task { await sessionStore.switchToSession(session) }
-                } else {
-                    Task { await container.chatStore.loadConversation() }
-                }
-            }
+            container.handleNotificationRoute(
+                conversationID: conversationID,
+                messageID: messageID,
+                jobID: jobID,
+                action: action
+            )
         }
     }
 }

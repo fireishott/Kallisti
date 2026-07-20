@@ -2,6 +2,22 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.4] - 2026-07-20
+
+### Fixed - Notification Metadata + Crash-Safe Routing
+
+- **Push broker metadata** (`relay/app/schemas.py`, `relay/app/main.py`): Push broker request now carries `conversationId`, `messageId`, `jobId`, and `category` fields through the signed payload. Both direct APNs and managed broker transport produce identical notification payloads.
+
+- **Notification category** (`relay/app/main.py`): Message completion pushes now use `HERALD_MESSAGE_READY` category identifier for lock-screen action support.
+
+- **Crash-safe notification routing** (`Herald/Stores/AppContainer.swift`): New `handleNotificationRoute` method processes notification taps through a single entry point. Pending routes are stored during cold launch and processed exactly once after initialization.
+
+- **Direct load-by-ID** (`Herald/AppEntry.swift`): Notification handler now extracts primitive strings from `UNNotificationResponse` and delegates to `AppContainer`. The no-argument `loadConversation()` fallback is removed — notifications either load the exact conversation by ID or show a recoverable error.
+
+- **Single-flight initialization** (`Herald/Stores/AppContainer.swift`): `initialize()` now guards against concurrent callers to prevent competing state writers during cold launch.
+
+- **Push broker test updated** (`relay/tests/test_push_broker.py`): Test now asserts `category: "HERALD_MESSAGE_READY"` and metadata fields (`conversationId`, `messageId`, `jobId`) are forwarded to APNs.
+
 ## [1.2.3] - 2026-07-20
 
 ### Changed - Resumable Live Job Connection

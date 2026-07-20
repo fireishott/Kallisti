@@ -305,6 +305,10 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
             "pushType": "alert",
             "title": "Herald",
             "body": "Ready.",
+            "conversationId": "conv-123",
+            "messageId": "msg-456",
+            "jobId": "job-789",
+            "category": "HERALD_MESSAGE_READY",
             "nonce": nonce,
             "iat": iat,
         }
@@ -320,9 +324,14 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
             "token": "abcd1234efef5678",
             "title": "Herald",
             "body": "Ready.",
-            "category": None,
+            "category": "HERALD_MESSAGE_READY",
             "bundle_id": "net.fihonline.herald",
             "environment": "production",
+            "user_info": {
+                "conversationId": "conv-123",
+                "messageId": "msg-456",
+                "jobId": "job-789",
+            },
         }]
 
 

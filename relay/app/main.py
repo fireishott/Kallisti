@@ -357,7 +357,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         app.state.connector_sessions.pop(user_id, None)
 
-    async def default_push_broker_sender(*, registration: PushRegistration, title: str, body: str) -> bool:
+    async def default_push_broker_sender(
+        *,
+        registration: PushRegistration,
+        title: str,
+        body: str,
+        conversation_id: str | None = None,
+        message_id: str | None = None,
+        job_id: str | None = None,
+        category: str | None = None,
+    ) -> bool:
         import secrets as _secrets
         import time as _time
 
@@ -375,6 +384,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "nonce": _secrets.token_urlsafe(24),
             "iat": int(_time.time()),
         }
+        # Include notification metadata if provided
+        if conversation_id is not None:
+            payload["conversationId"] = conversation_id
+        if message_id is not None:
+            payload["messageId"] = message_id
+        if job_id is not None:
+            payload["jobId"] = job_id
+        if category is not None:
+            payload["category"] = category
         signature = sign_relay_payload(identity, payload)
         response = await app.state.push_broker_http_client.post(
             f"{broker_base_url}/push-broker/send",
@@ -391,6 +409,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conversation_id: str,
         message_id: str,
         message_text: str,
+        job_id: str | None = None,
+        category: str | None = None,
     ) -> None:
         apns_client = app.state.apns_client
         if apns_client is None:
@@ -407,7 +427,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if registration.transport == "relay":
                 sender = app.state.push_broker_sender
                 try:
-                    sent = await sender(registration=registration, title="Hermes", body=preview)
+                    sent = await sender(
+                        registration=registration,
+                        title="Hermes",
+                        body=preview,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        job_id=job_id,
+                        category=category,
+                    )
                 except Exception:
                     logger.warning("Push broker delivery failed for device %s", device.id, exc_info=True)
                     continue
@@ -415,16 +443,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.warning("Push broker delivery not accepted for device %s", device.id)
                 continue
 
+            user_info: dict = {
+                "conversationId": conversation_id,
+                "messageId": message_id,
+            }
+            if job_id is not None:
+                user_info["jobId"] = job_id
             result = await apns_client.send_alert_push(
                 registration.apns_token,
                 title="Hermes",
                 body=preview,
+                category=category,
                 bundle_id=registration.bundle_id,
                 environment=registration.push_environment,
-                user_info={
-                    "conversationId": conversation_id,
-                    "messageId": message_id,
-                },
+                user_info=user_info,
             )
             if result == PushResult.TOKEN_INVALID:
                 registration.is_active = False
@@ -759,6 +791,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "nonce": payload.nonce,
             "iat": payload.iat,
         }
+        # Include metadata fields in signed payload if present
+        if payload.conversationId is not None:
+            signed_payload["conversationId"] = payload.conversationId
+        if payload.messageId is not None:
+            signed_payload["messageId"] = payload.messageId
+        if payload.jobId is not None:
+            signed_payload["jobId"] = payload.jobId
+        if payload.category is not None:
+            signed_payload["category"] = payload.category
         try:
             registration = verify_push_broker_send_request(
                 db,
@@ -791,12 +832,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 environment=registration.apns_environment,
             )
         else:
+            user_info: dict = {}
+            if payload.conversationId is not None:
+                user_info["conversationId"] = payload.conversationId
+            if payload.messageId is not None:
+                user_info["messageId"] = payload.messageId
+            if payload.jobId is not None:
+                user_info["jobId"] = payload.jobId
             result = await apns_client.send_alert_push(
                 registration.apns_token,
                 title=payload.title or "Hermes",
                 body=payload.body or "",
+                category=payload.category,
                 bundle_id=registration.bundle_id,
                 environment=registration.apns_environment,
+                user_info=user_info if user_info else None,
             )
         sent = getattr(result, "value", result) == "sent"
         return success({"sent": sent, "relayHandle": registration.relay_handle})
@@ -2189,6 +2239,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         conversation_id=conversation.id,
                         message_id=result_message.id,
                         message_text=result_message.text,
+                        job_id=job.id,
+                        category="HERALD_MESSAGE_READY",
                     )
 
         db.expire_all()
@@ -2696,6 +2748,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 conversation_id=completed.conversation_id,
                                                 message_id=completed_message.id,
                                                 message_text=completed_message.text,
+                                                job_id=claimed_job.id,
+                                                category="HERALD_MESSAGE_READY",
                                             )
                                 done_event_data: dict = {
                                     "jobId": claimed_job.id,

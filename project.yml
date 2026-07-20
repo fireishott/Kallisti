@@ -77,8 +77,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
-        MARKETING_VERSION: "1.2.3"
-        CURRENT_PROJECT_VERSION: "15"
+        MARKETING_VERSION: "1.2.4"
+        CURRENT_PROJECT_VERSION: "16"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -134,8 +134,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
-        MARKETING_VERSION: "1.2.3"
-        CURRENT_PROJECT_VERSION: "15"
+        MARKETING_VERSION: "1.2.4"
+        CURRENT_PROJECT_VERSION: "16"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
