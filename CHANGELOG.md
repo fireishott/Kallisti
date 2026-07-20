@@ -2,6 +2,14 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.3.3] - 2026-07-20
+
+### Fixed - APNs Push Notifications
+
+- **Bundle ID mismatch** (`relay/app/config.py`, `relay/app/apns.py`, `relay/.env.example`): Changed default APNs bundle ID from `net.fihonline.herald` to `net.fihonline.herald` to match the actual app bundle identifier. The wrong topic caused Apple to reject every push notification (`TopicDisallowed`/`BadDeviceToken`).
+
+- **APNs environment default** (`relay/app/config.py`, `relay/.env.example`): Changed default APNs environment from `development` to `production` to match TestFlight builds. Development tokens sent to the production gateway caused `BadEnvironmentKeyInToken` silent failures.
+
 ## [1.3.2] - 2026-07-20
 
 ### Fixed - MCP Revival, Live Connector Delivery, and Responsive UI

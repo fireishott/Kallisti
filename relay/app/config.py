@@ -57,7 +57,7 @@ class Settings:
     apns_team_id: str | None = None
     push_broker_base_url: str | None = None
     apns_bundle_id: str = "net.fihonline.herald"
-    apns_environment: str = "development"
+    apns_environment: str = "production"
     app_presence_stale_seconds: int = 120
     push_broker_challenge_ttl_seconds: int = 300
     push_broker_grant_ttl_seconds: int = 60 * 60 * 24 * 30
@@ -100,7 +100,7 @@ class Settings:
             apns_team_id=os.getenv("APNS_TEAM_ID") or None,
             push_broker_base_url=os.getenv("PUSH_BROKER_BASE_URL") or None,
             apns_bundle_id=os.getenv("APNS_BUNDLE_ID", "net.fihonline.herald"),
-            apns_environment=os.getenv("APNS_ENVIRONMENT", "development"),
+            apns_environment=os.getenv("APNS_ENVIRONMENT", "production"),
             app_presence_stale_seconds=int(os.getenv("APP_PRESENCE_STALE_SECONDS", "120")),
             push_broker_challenge_ttl_seconds=int(os.getenv("PUSH_BROKER_CHALLENGE_TTL_SECONDS", "300")),
             push_broker_grant_ttl_seconds=int(os.getenv("PUSH_BROKER_GRANT_TTL_SECONDS", str(60 * 60 * 24 * 30))),

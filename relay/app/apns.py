@@ -55,7 +55,7 @@ class APNsClient:
         key_id: str,
         team_id: str,
         default_bundle_id: str = "net.fihonline.herald",
-        default_environment: str = "development",
+        default_environment: str = "production",
     ):
         self.key_id = key_id
         self.team_id = team_id
