@@ -460,8 +460,12 @@ final class AppContainer {
                 Logger.app.warning("Notification stop: missing or invalid job ID")
                 return
             }
-            // TODO: Implement cancelJob in HeraldClientProtocol
-            Logger.app.info("Notification stop: requested for job \(jobID.uuidString.prefix(8))")
+            do {
+                try await chatStore.heraldClient.cancelJob(jobID: jobID)
+                Logger.app.info("Notification stop: cancelled job \(jobID.uuidString.prefix(8))")
+            } catch {
+                Logger.app.warning("Notification stop failed: \(error.localizedDescription)")
+            }
             return
 
         case NotificationActionID.nudge:

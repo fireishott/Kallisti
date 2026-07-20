@@ -52,4 +52,7 @@ protocol HeraldClientProtocol {
     /// Send a message to a specific conversation with a specific client message ID.
     /// Used by notification actions where the target conversation may not be the current one.
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message
+
+    /// Cancel a running or queued job.
+    func cancelJob(jobID: UUID) async throws
 }

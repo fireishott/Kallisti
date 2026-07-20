@@ -165,4 +165,6 @@ extension MockHeraldClient {
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         Message(sender: .user, content: text, status: .sent)
     }
+
+    func cancelJob(jobID: UUID) async throws {}
 }

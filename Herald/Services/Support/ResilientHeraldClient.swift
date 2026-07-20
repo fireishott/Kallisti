@@ -117,4 +117,8 @@ extension ResilientHeraldClient {
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         try await primary.sendMessage(text, conversationID: conversationID, clientMessageID: clientMessageID)
     }
+
+    func cancelJob(jobID: UUID) async throws {
+        try await primary.cancelJob(jobID: jobID)
+    }
 }

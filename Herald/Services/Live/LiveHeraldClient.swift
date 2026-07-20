@@ -810,4 +810,20 @@ extension LiveHeraldClient {
         }
         return Message(sender: .user, content: text, status: .sent)
     }
+
+    func cancelJob(jobID: UUID) async throws {
+        struct CancelResponse: Decodable {
+            let data: CancelData?
+            struct CancelData: Decodable {
+                let jobId: String?
+                let status: String?
+            }
+        }
+        _ = try await performAuthorizedRequest { [self] token in
+            try await self.apiClient.post(
+                path: "jobs/\(jobID.uuidString.lowercased())/cancel",
+                accessToken: token
+            ) as CancelResponse
+        }
+    }
 }

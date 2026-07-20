@@ -14,6 +14,8 @@ All notable changes to Hermes iOS are documented here.
 
 - **Connector adapter logging** (`connector/src/herald_connector/client.py`): `runtime_adapter_for_state_async` now logs which adapter was chosen (API/streaming vs CLI) and, when the API health check fails, logs the failure reason. Streaming status is now diagnosable from connector logs instead of guessed.
 
+- **Stop notification action** (`Herald/Services/Protocols/HeraldClientProtocol.swift`, `Herald/Services/Live/LiveHeraldClient.swift`, `Herald/Services/Mocks/MockHeraldClient.swift`, `Herald/Services/Support/ResilientHeraldClient.swift`, `Herald/Stores/AppContainer.swift`): Added `cancelJob(jobID:)` to `HeraldClientProtocol` and wired the notification Stop action to call `POST /v1/jobs/{id}/cancel` on the relay. The Stop button on active-job notifications now actually cancels the running job end-to-end.
+
 ## [1.3.2] - 2026-07-20
 
 ### Fixed - MCP Revival, Live Connector Delivery, and Responsive UI
