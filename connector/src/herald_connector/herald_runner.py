@@ -48,13 +48,13 @@ class ConnectorHeraldSettings:
     @classmethod
     def from_runtime_config(cls, config: ConnectorRuntimeConfig) -> "ConnectorHeraldSettings":
         return cls(
-            herald_command=config.herald_command,
-            herald_workdir=config.herald_workdir,
-            herald_provider=config.herald_provider,
-            herald_model=config.herald_model,
-            herald_toolsets=config.herald_toolsets,
-            herald_source=config.herald_source,
-            herald_history_limit=config.herald_history_limit,
+            herald_command=config.hermes_command,
+            herald_workdir=config.hermes_workdir,
+            herald_provider=config.hermes_provider,
+            herald_model=config.hermes_model,
+            herald_toolsets=config.hermes_toolsets,
+            herald_source=config.hermes_source,
+            herald_history_limit=config.hermes_history_limit,
         )
 
 
