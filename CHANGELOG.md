@@ -12,6 +12,8 @@ All notable changes to Hermes iOS are documented here.
 
 - **iPad notification tap routing** (`Herald/Core/Router.swift`, `Herald/Stores/AppContainer.swift`, `Herald/AppEntry.swift`): Added `switchToTab(_:)` method to `TabRouter` that bridges `selectedTab` changes to `oniPadSectionSwitch` on iPad. Notification taps, deeplinks, and pairing removal now correctly switch the iPad sidebar section instead of silently setting `selectedTab` without updating the visible column.
 
+- **Connector adapter logging** (`connector/src/herald_connector/client.py`): `runtime_adapter_for_state_async` now logs which adapter was chosen (API/streaming vs CLI) and, when the API health check fails, logs the failure reason. Streaming status is now diagnosable from connector logs instead of guessed.
+
 ## [1.3.2] - 2026-07-20
 
 ### Fixed - MCP Revival, Live Connector Delivery, and Responsive UI

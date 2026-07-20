@@ -2440,10 +2440,14 @@ class HeraldConnector:
                 api_server_key=api_key,
             )
             if await executor.health_check():
+                logger.info("Runtime adapter: HeraldAPI (streaming) — api_server=%s", api_url or "http://localhost:8642")
                 adapter = HeraldAPIRuntimeAdapter(executor)
                 self._health_cache = (now, adapter)
                 return adapter
+            else:
+                logger.warning("Runtime adapter: API server health check failed — api_server=%s, falling back to CLI", api_url or "http://localhost:8642")
 
+        logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._health_cache = (now, cli_adapter)
         return cli_adapter
