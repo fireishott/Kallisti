@@ -155,21 +155,52 @@ struct ChatScreen: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if DeviceClass.isPhone {
+            iPhoneToolbarContent
+        } else {
+            iPadToolbarContent
+        }
+    }
+
+    // iPhone: hamburger only on leading; bounded status chip as principal; Canvas only on trailing
+    @ToolbarContentBuilder
+    private var iPhoneToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                withAnimation(Design.Motion.standard) {
+                    isSessionDrawerOpen.toggle()
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Design.Colors.foreground)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open session drawer")
+        }
+        ToolbarItem(placement: .principal) {
+            compactStatusControl
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showCanvas = true
+            } label: {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(canvasStore.activeArtifact != nil
+                        ? Design.Brand.accent
+                        : Design.Colors.secondaryForeground)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open canvas")
+        }
+    }
+
+    // iPad: richer profile/model/timer presentation; Settings gear is useful since no tab bar
+    @ToolbarContentBuilder
+    private var iPadToolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             HStack(spacing: Design.Spacing.sm) {
-                // Hamburger — only on iPhone (iPad has dedicated sidebar)
-                if DeviceClass.isPhone {
-                    Button {
-                        withAnimation(Design.Motion.standard) {
-                            isSessionDrawerOpen.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "line.3.horizontal")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Design.Colors.foreground)
-                    }
-                    .buttonStyle(.plain)
-                }
                 profileChip
                 modelStatusChip
                 sessionTimerChip
@@ -187,12 +218,48 @@ struct ChatScreen: View {
                             : Design.Colors.secondaryForeground)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Open canvas")
 
                 GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
                     router.presentSheet(.settings)
                 }
             }
         }
+    }
+
+    /// Compact status control for iPhone principal toolbar slot.
+    /// Shows connection dot + compact model name + context ring. Opens context popover on tap.
+    /// Width-bounded to prevent system overflow ellipsis.
+    private var compactStatusControl: some View {
+        Button {
+            showContextPopover.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(connectionIndicatorColor)
+                    .frame(width: 6, height: 6)
+
+                if let model = displayedModelName {
+                    Text(compactModelName(model))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Design.Colors.foreground)
+                        .lineLimit(1)
+                }
+
+                contextRing(progress: contextProgress)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Design.Colors.surface))
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
+        .popover(isPresented: $showContextPopover) {
+            contextPopoverContent
+                .presentationCompactAdaptation(.popover)
+        }
+        .accessibilityLabel("Model and connection status")
     }
 
     @State private var showContextPopover = false

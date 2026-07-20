@@ -2,6 +2,22 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.6] - 2026-07-20
+
+### Changed - iPhone Toolbar Cleanup
+
+- **Separate phone/pad toolbars** (`Herald/Features/Chat/ChatScreen.swift`): Toolbar now uses conditional compositions via `DeviceClass.isPhone` instead of trying to fit all controls into one layout.
+
+- **iPhone leading**: Hamburger/session drawer button only, with accessibility label.
+
+- **iPhone principal**: New `compactStatusControl` showing connection dot + compact model name + context ring. Width-bounded (no `fixedSize`) to prevent system overflow ellipsis.
+
+- **iPhone trailing**: Canvas only. Removed duplicate Settings gear (iPhone has Settings tab in bottom tab bar).
+
+- **iPad**: Retains richer profile/model/timer presentation. Settings gear remains since iPad has no tab bar.
+
+- **Accessibility**: Added accessibility labels to all icon-only toolbar controls.
+
 ## [1.2.5] - 2026-07-20
 
 ### Added - Lock-Screen Notification Actions
