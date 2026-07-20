@@ -2,6 +2,13 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.2.2] - 2026-07-20
+
+### Fixed - Build 12 & 13 Reconciliation
+
+- **Build 12** (`Services/Live/LiveHeraldClient.swift`): Fixed reasoning display — preserve reasoning content across metadata merge so chain-of-thought text survives conversation refresh.
+- **Build 13** (`AppEntry.swift`): Fixed Swift 6 strict concurrency for `UNUserNotificationCenterDelegate` methods — notification delegate data crossings now use primitive `Sendable` types only.
+
 ## [1.1.0] - 2026-07-19
 
 ### Added - Mimo TTS + Bug Fixes
