@@ -57,32 +57,40 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    // Show banner + sound while app is in the foreground
-    func userNotificationCenter(
+    // Show banner + sound while app is in the foreground.
+    // nonisolated because UNNotification is not Sendable.
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        let settings = await AppContainer.sharedDefault().settingsStore.settings
-        guard settings.notificationsEnabled else { return [] }
+        let enabled = await MainActor.run {
+            AppContainer.sharedDefault().settingsStore.settings.notificationsEnabled
+        }
+        guard enabled else { return [] }
         return [.banner, .list, .sound, .badge]
     }
 
-    // Handle tap on notification — deep-link into the conversation
-    func userNotificationCenter(
+    // Handle tap on notification — deep-link into the conversation.
+    // nonisolated because UNNotificationResponse is not Sendable.
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
         let info = response.notification.request.content.userInfo
-        guard let convID = info["conversationId"] as? String else { return }
+        let convID = info["conversationId"] as? String
+        let uuid = convID.flatMap { UUID(uuidString: $0) }
         await MainActor.run {
             let container = AppContainer.sharedDefault()
             container.router.activeSheet = nil
             container.router.popToRoot()
             container.router.selectedTab = .chat
-            // Conversation ID maps to a session — load it
-            if let uuid = UUID(uuidString: convID) {
-                Task {
-                    await container.sessionStore.selectSession(id: uuid)
+            if let uuid {
+                let sessionStore = container.sessionListStore
+                if let session = sessionStore.recentSessions.first(where: { $0.id == uuid })
+                    ?? sessionStore.pinnedSessions.first(where: { $0.id == uuid }) {
+                    Task { await sessionStore.switchToSession(session) }
+                } else {
+                    Task { await container.chatStore.loadConversation() }
                 }
             }
         }
