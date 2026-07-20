@@ -22,33 +22,17 @@ All notable changes to Hermes iOS are documented here.
 
 - **iPhone landscape layout** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): all iPhones now use `MainTabView` in both orientations. Removed `verticalSizeClass == .compact` check that was routing landscape iPhones into the iPad `NavigationSplitView` shell.
 
-- **iPad inspector workspace** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): replaced three-column `NavigationSplitView` with two-column split + optional trailing inspector that is genuinely inserted/removed from layout. Added drag-handle divider for resizing with width budgeting (chat minimum 420pt).
+- **iPad inspector workspace** (`Herald/Features/Sidebar/AdaptiveRootView.swift`): replaced three-column `NavigationSplitView` with two-column split + optional trailing inspector that is genuinely inserted/removed from layout. Added drag-handle divider for resizing with width budgeting (chat minimum 420pt). Swipe gesture preserved for opening/closing the inspector.
 
-- **Width-aware toolbar** (`Herald/Features/Chat/ChatScreen.swift`): replaced `DeviceClass.isPhone` toolbar check with `ViewThatFits` adaptive composition. Eliminates synthesized `…` overflow on narrow iPad columns.
+- **Width-aware toolbar** (`Herald/Features/Chat/ChatScreen.swift`): replaced `DeviceClass.isPhone` toolbar check with `ViewThatFits` adaptive composition. Eliminates synthesized `...` overflow on narrow iPad columns.
 
-- **Truthful inspector labels** (`Herald/Features/Sidebar/iPadRightPanelView.swift`): renamed "Logs" → "Activity", "Tools" → "Usage", terminal clearly labeled as preview. Log-level filter chips are now functional.
+- **Truthful inspector labels** (`Herald/Features/Sidebar/iPadRightPanelView.swift`): renamed "Logs" to "Activity", "Tools" to "Usage", terminal clearly labeled as preview. Log-level filter chips are now functional.
 
 - **Canvas close/clear separation** (`Herald/Features/Canvas/CanvasView.swift`): X button now only dismisses; explicit trash button with confirmation dialog for artifact deletion.
 
-- **Buffered tool-marker parser** (`connector/src/herald_connector/herald_api_executor.py`): tool markers now parsed from accumulated buffer instead of per-delta, handling split/combined SSE chunk boundaries correctly.
+- **Buffered tool-marker parser** (`connector/src/herald_connector/herald_api_executor.py`): tool markers now parsed from accumulated buffer instead of per-delta, handling split/combined SSE chunk boundaries correctly. Also handles `delta.tool_calls` to prevent silent tool-execution windows.
 
 - **Drawer width responsiveness** (`Herald/Features/Sidebar/iPhoneSessionDrawer.swift`): drawer width now uses `GeometryReader` instead of static `UIScreen.main.bounds`.
-
-- **MCP rename compatibility** (`connector/pyproject.toml`, `connector/src/herald_connector/`): restored the legacy `hermes-mobile-mcp` and `hermes-mobile` entrypoints as aliases to the Herald implementation, and retained compatibility imports for gateways and extensions created before the rename. Cached Hermes MCP commands no longer crash by importing the deleted `hermes_mobile_connector` package after reinstall.
-
-- **Live MCP revival loop** (host deployment): restarted the six-day-old Hermes WebUI process that still generated the removed `mcp_stdio_watchdog.py --create-time` argument. Its in-memory caller now matches the installed watchdog, eliminating the five-minute `TaskGroup` reconnect cycle.
-
-- **Persisted connector runtime** (`connector/src/herald_connector/herald_runner.py`): map persisted `ConnectorRuntimeConfig.hermes_*` fields into the Herald-named runtime adapter correctly. The connector now reconnects after service restarts instead of remaining active with a hidden attribute error.
-
-- **Relay WebSocket lease crash** (`relay/app/main.py`): imported the lease clock and normalized SQLite timestamps before comparing them. Active connector jobs no longer lose their WebSocket to `NameError` or offset-naive/offset-aware datetime exceptions.
-
-- **Awaited job heartbeats** (`connector/src/herald_connector/client.py`): async heartbeat senders are now awaited, so long-running jobs actually renew their relay lease instead of silently creating an un-awaited coroutine.
-
-- **Lower live-delivery latency** (`relay/app/config.py`, `relay/.env.example`): reduced connector idle job polling from 1 second to 100 ms and connector reconnect delay from 3 seconds to 1 second.
-
-- **Herald notification identity** (`relay/app/main.py`): completion notifications and inbox records now use the Herald product name.
-
-## [1.2.7] - 2026-07-20
 
 ### Changed - iPad Three-Panel Layout
 
@@ -140,6 +124,30 @@ All notable changes to Hermes iOS are documented here.
 
 - **Build 12** (`Services/Live/LiveHeraldClient.swift`): Fixed reasoning display — preserve reasoning content across metadata merge so chain-of-thought text survives conversation refresh.
 - **Build 13** (`AppEntry.swift`): Fixed Swift 6 strict concurrency for `UNUserNotificationCenterDelegate` methods — notification delegate data crossings now use primitive `Sendable` types only.
+
+## [1.2.1] - 2026-07-20
+
+### Fixed - Streaming watchdog, scroll, iPad swipe, /new command, MCP
+
+- **Bug B — False "tap to retry" during multi-tool/multiagent work** (connector + relay + app): The streaming pipeline went silent during tool execution and subagent fan-out because the connector only parsed `delta.content` and ignored `delta.tool_calls`. A 120s client watchdog misfired on that silence, showing "Herald didn't respond" while Hermes was still working.
+  - `connector/src/herald_connector/herald_api_executor.py`: Now handles `delta.tool_calls` — emits `tool_activity` StreamEvent for each tool function name. Also emits `keepalive` events when the upstream SSE sends a chunk with no user-visible content (role-only deltas, empty content during subagent work).
+  - `connector/src/herald_connector/client.py`: Forwards `keepalive` events to the relay as `job.progress` with `kind: "keepalive"`.
+  - `Herald/Models/StreamingUpdate.swift`: New `.keepalive` case.
+  - `Herald/Services/Live/LiveHeraldClient.swift`: Handles `"keepalive"` SSE events from the relay.
+  - `Herald/Stores/ChatStore.swift`: `.keepalive` resets the watchdog timer via `progressContinuation`. `failStalledMessage` now preserves the placeholder ID so a late `.finished` can find and replace the error message with the actual response. Post-failure polling task refreshes the conversation after 15s to pick up server-side completion.
+
+- **Bug A — Sent message not scrolled into view** (`ChatScreen.swift`): Removed the `streamingMessageID == nil` guard from the `pendingMessageSentAt` onChange handler. User messages now always scroll into view on send, even when streaming starts immediately.
+
+- **Bug C — iPad swipe for logs panel** (`AdaptiveRootView.swift`): Added a `DragGesture` to the iPad detail content — swipe left opens the right panel (logs), swipe right closes it. Matches the existing iPhone drawer gesture pattern.
+
+- **Bug D — `/new` starts new session without confirmation** (`ChatScreen.swift`, `SlashCommand.swift`): Split `/new` from `/clear`. `/new` now calls `performClear()` immediately without the destructive confirmation dialog. `/clear` retains the confirmation. Marked `/new` as `isDestructive: false`.
+
+- **Bug F — MCP `hermes_mobile` stale command path** (`connector/src/herald_connector/client.py`): Added `register_native_mcp_server()` call on every connector connect, not just at enroll/setup. Self-heals stale `herald-mcp` paths in `~/.hermes/config.yaml` when the connector venv moves or is reinstalled.
+
+### Notes
+
+- Bug B fix requires all three components (connector + relay + app) deployed together. Ship connector changes before or with the app change so an older app safely ignores unknown `keepalive` events.
+- The relay forwards arbitrary `kind` values through `publish_job_event` — no relay code change was needed for `keepalive`.
 
 ## [1.1.0] - 2026-07-19
 

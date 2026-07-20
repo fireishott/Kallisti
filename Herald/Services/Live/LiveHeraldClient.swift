@@ -477,6 +477,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         }
                     case "reconnecting":
                         continuation.yield(.reconnecting)
+                    case "keepalive":
+                        continuation.yield(.keepalive)
                     case "done":
                         return decode(StreamDonePayload.self, from: sseEvent.data)
                     default:

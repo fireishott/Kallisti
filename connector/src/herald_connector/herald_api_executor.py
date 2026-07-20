@@ -284,6 +284,11 @@ class HeraldAPIExecutor:
                     if chunk_usage:
                         accumulated_usage = chunk_usage
 
+                    # Track whether this chunk produced any user-visible event.
+                    # If not, we emit a keepalive so the client watchdog
+                    # doesn't fire during tool-execution / subagent windows.
+                    yielded_event = False
+
                     # Reasoning delta — models like mimo/deepseek/qwen/glm expose
                     # chain-of-thought under `reasoning_content` (vLLM/DeepSeek
                     # convention) or `reasoning` (OpenRouter). Stream it on a
@@ -295,11 +300,13 @@ class HeraldAPIExecutor:
                             type="reasoning_delta",
                             data=reasoning,
                         )
+                        yielded_event = True
 
                     # Content delta — accumulate in buffer for marker parsing
                     content = delta.get("content")
                     if content:
                         pending_text += content
+                        yielded_event = True
 
                     # Process the buffer: extract complete markers, emit preceding text
                     while True:
@@ -322,6 +329,28 @@ class HeraldAPIExecutor:
                     if pending_text and not _could_be_marker_prefix(pending_text):
                         yield StreamEvent(type="text_delta", data=pending_text)
                         pending_text = ""
+
+                    # Tool-call deltas — the model is invoking tools.  The
+                    # OpenAI-style stream sends these while the tool executes,
+                    # but the existing parser only read `content`, so the
+                    # entire tool-execution window was silent.
+                    tool_calls = delta.get("tool_calls")
+                    if tool_calls:
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            name = func.get("name", "")
+                            if name:
+                                yield StreamEvent(
+                                    type="tool_activity",
+                                    label=name,
+                                )
+                                yielded_event = True
+
+                    # Keepalive: the upstream sent a chunk (so the connection
+                    # is alive) but nothing user-visible was in it (e.g.
+                    # role-only delta, empty content during subagent work).
+                    if not yielded_event and finish_reason != "stop":
+                        yield StreamEvent(type="keepalive")
 
                     if finish_reason == "stop":
                         # Flush any remaining buffer text

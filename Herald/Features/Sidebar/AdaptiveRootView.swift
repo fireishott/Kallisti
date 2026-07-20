@@ -55,6 +55,20 @@ struct AdaptiveRootView: View {
                 .navigationSplitViewColumnWidth(
                     min: 280, ideal: 360, max: 400
                 )
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            if value.translation.width < -50 && !isRightPanelOpen {
+                                withAnimation(Design.Motion.standard) {
+                                    isRightPanelOpen = true
+                                }
+                            } else if value.translation.width > 50 && isRightPanelOpen {
+                                withAnimation(Design.Motion.standard) {
+                                    isRightPanelOpen = false
+                                }
+                            }
+                        }
+                )
 
                 // Inspector: genuinely inserted/removed from layout
                 if isRightPanelOpen {

@@ -9,6 +9,7 @@ enum StreamingUpdate: Sendable {
     case heartbeat(phase: String)
     case reconnecting
     case cancelled
+    case keepalive
     case finished(Message, TokenUsage?, CodeDiff?)
     case failed(String)
 }
