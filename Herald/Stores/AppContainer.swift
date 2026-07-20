@@ -5,6 +5,35 @@ extension Logger {
     static let app = Logger(subsystem: "net.fihonline.herald", category: "app")
 }
 
+/// Thread-safe cached holder for the MiMo API key.
+/// Reads from Keychain once on first access and caches the value.
+/// Call `refresh()` after Settings writes/deletes the key.
+@MainActor
+final class APIKeyHolder {
+    private let secureStore: (any SecureStoreProtocol)?
+    private var cachedKey: String?
+    private var hasLoaded = false
+
+    init(secureStore: (any SecureStoreProtocol)?) {
+        self.secureStore = secureStore
+    }
+
+    func get() -> String? {
+        if !hasLoaded {
+            // Synchronous return of cached value; first load happens in refresh()
+            return nil
+        }
+        return cachedKey
+    }
+
+    func refresh() async {
+        guard let secureStore else { return }
+        let key = await secureStore.retrieve(key: "mimo.apiKey")
+        cachedKey = key?.trimmingCharacters(in: .whitespacesAndNewlines)
+        hasLoaded = true
+    }
+}
+
 @MainActor
 @Observable
 final class AppContainer {
@@ -292,9 +321,13 @@ final class AppContainer {
             settingsStore: settingsStore,
             talkStore: {
                 let ts = TalkStore()
-                let tts = MimoTTSService(apiKeyProvider: { resolvedDefaults.string(forKey: "mimo.apiKey")?.trimmingCharacters(in: .whitespacesAndNewlines) })
+                let apiKeyHolder = APIKeyHolder(secureStore: secureStore)
+                // Load the key from Keychain
+                Task { await apiKeyHolder.refresh() }
+                let tts = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak) }
+                ts.apiKeyHolder = apiKeyHolder
                 return ts
             }(),
             sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore, persistence: persistence),

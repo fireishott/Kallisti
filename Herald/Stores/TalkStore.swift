@@ -34,6 +34,9 @@ final class TalkStore {
     /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
     @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
 
+    /// Cached API key holder for Keychain access. Set by AppContainer.
+    @ObservationIgnored var apiKeyHolder: APIKeyHolder?
+
     private let liveActivity = LiveActivityService()
     private var lastSpokenItemID: UUID?
 

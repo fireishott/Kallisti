@@ -4,6 +4,14 @@ All notable changes to Hermes iOS are documented here.
 
 ## [1.7.1] - 2026-07-20
 
+### Fix: Talk API key reads from Keychain instead of UserDefaults (T2)
+
+- **Add APIKeyHolder** (`Herald/Stores/AppContainer.swift`): Added a MainActor-safe cached holder that reads the MiMo API key from Keychain once and caches it. Refreshes when Settings writes/deletes the key.
+
+- **Fix TTS service key source** (`Herald/Stores/AppContainer.swift`): Changed `MimoTTSService` to read the API key from Keychain via `APIKeyHolder` instead of reading directly from UserDefaults. This prevents Settings from removing the only value the provider reads.
+
+- **Add apiKeyHolder to TalkStore** (`Herald/Stores/TalkStore.swift`): Added `apiKeyHolder` property so TalkStore can refresh the cached key after Settings changes.
+
 ### Fix: SSE stream simplification and terminal event persistence (S2)
 
 - **Remove SSE-layer delta coalescing** (`relay/app/main.py`): Removed the delta coalescing logic that was consuming durable sequence positions while hiding their cursors. Each event is now emitted directly as it comes from the DB, preserving the 1:1 relationship between durable log entries and SSE frames.
