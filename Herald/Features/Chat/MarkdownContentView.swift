@@ -10,6 +10,7 @@ struct MarkdownContentView: View {
     let content: String
     let isStreaming: Bool
     var showCursor: Bool = false
+    var showReasoning: Bool = true
     var toolActivities: [ToolActivity] = []
 
     @State private var fullscreenImage: MarkdownSegment?
@@ -46,7 +47,9 @@ struct MarkdownContentView: View {
                     case .video(_, let url, let altText):
                         inlineVideoView(url: url, altText: altText)
                     case .thinking(_, let thinkContent):
-                        ThinkingBlockView(content: thinkContent, isStreaming: isStreaming)
+                        if showReasoning {
+                            ThinkingBlockView(content: thinkContent, isStreaming: isStreaming)
+                        }
                     case .toolCall(_, let name, let args, let result):
                         ToolCallBubbleView(name: name, args: args, result: result)
                     case .table(_, let rows):

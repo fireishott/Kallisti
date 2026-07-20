@@ -269,7 +269,8 @@ struct MessageBubble: View, Equatable {
         MarkdownContentView(
             content: displayContent,
             isStreaming: message.isStreaming,
-            showCursor: message.isStreaming
+            showCursor: message.isStreaming,
+            showReasoning: settingsStore.settings.showReasoning
         )
         .foregroundStyle(Design.Colors.foreground)
         .padding(.vertical, Design.Spacing.xxs)
