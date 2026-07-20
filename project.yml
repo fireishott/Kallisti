@@ -86,8 +86,8 @@ targets:
       path: Herald/Resources/Info.plist
       properties:
         CFBundleDisplayName: Herald
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         NSLocationWhenInUseUsageDescription: "Herald uses your location to provide contextual recommendations and nearby suggestions."
         NSHealthShareUsageDescription: "Herald reads your health data to offer personalized wellness insights."
