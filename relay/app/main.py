@@ -841,7 +841,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_info["jobId"] = payload.jobId
             result = await apns_client.send_alert_push(
                 registration.apns_token,
-                title=payload.title or "Hermes",
+                title=payload.title or "Herald",
                 body=payload.body or "",
                 category=payload.category,
                 bundle_id=registration.bundle_id,

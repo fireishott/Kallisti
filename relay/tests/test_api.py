@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.hermes_adapter import HeraldChatResult
+from app.herald_adapter import HeraldChatResult
 from app.main import create_app
 
 
@@ -180,6 +180,7 @@ def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
                 "category": category,
                 "bundle_id": bundle_id,
                 "environment": environment,
+                "user_info": user_info,
             })
             return PushResult.SENT
 
@@ -227,7 +228,7 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
         def __init__(self) -> None:
             self.alerts = []
 
-        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None):
+        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None, user_info: dict | None = None):
             self.alerts.append({
                 "token": token,
                 "title": title,
@@ -235,17 +236,22 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
                 "category": category,
                 "bundle_id": bundle_id,
                 "environment": environment,
+                "user_info": user_info,
             })
             from app.apns import PushResult
             return PushResult.SENT
 
     broker_calls = []
 
-    async def stub_broker_sender(*, registration, title: str, body: str):
+    async def stub_broker_sender(*, registration, title: str, body: str, conversation_id: str | None = None, message_id: str | None = None, job_id: str | None = None, category: str | None = None):
         broker_calls.append({
             "registration_id": registration.id,
             "title": title,
             "body": body,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "job_id": job_id,
+            "category": category,
         })
         return True
 
@@ -287,11 +293,11 @@ def test_chat_reply_uses_broker_sender_for_relay_transport_registrations(tmp_pat
         )
         assert message_response.status_code == 200
 
-        assert broker_calls == [{
-            "registration_id": broker_calls[0]["registration_id"],
-            "title": "Herald",
-            "body": broker_calls[0]["body"],
-        }]
+        assert len(broker_calls) == 1
+        assert broker_calls[0]["title"] == "Herald"
+        assert "Hello Herald" in broker_calls[0]["body"]
+        assert broker_calls[0]["conversation_id"] is not None
+        assert broker_calls[0]["message_id"] is not None
         assert "Hello Herald" in broker_calls[0]["body"]
         assert client.app.state.apns_client.alerts == []
 
@@ -369,7 +375,7 @@ def test_chat_roundtrip_persists_herald_session_id_for_resume(tmp_path):
     stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.hermes_adapter = stub_adapter
+        client.app.state.herald_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
 
@@ -402,7 +408,7 @@ def test_chat_create_message_is_idempotent_for_client_message_id(tmp_path):
     stub_adapter = StubHeraldAdapter()
 
     with build_client(tmp_path) as client:
-        client.app.state.hermes_adapter = stub_adapter
+        client.app.state.herald_adapter = stub_adapter
         register_data = register_device(client)
         access_token = register_data["auth"]["accessToken"]
         client_message_id = "11111111-2222-3333-4444-555555555555"

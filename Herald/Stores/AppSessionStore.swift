@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 @MainActor
 @Observable
@@ -8,11 +9,15 @@ final class AppSessionStore {
         static let refreshToken = "session.refreshToken"
     }
 
+    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "session")
+
     var state: AppSessionState {
         didSet { persistence.saveSessionState(state) }
     }
     var isBootstrapping = false
     var lastErrorMessage: String?
+    /// Explicit launch outcome for UI to observe.
+    var launchState: LaunchState = .initializing
 
     private let bootstrapService: any SessionBootstrapServiceProtocol
     private let syncCoordinator: any SyncCoordinatorProtocol
@@ -43,6 +48,7 @@ final class AppSessionStore {
 
         isBootstrapping = true
         lastErrorMessage = nil
+        launchState = .initializing
         state.connectionStatus = .connecting
         state.syncStatus = .syncing
 
@@ -63,14 +69,41 @@ final class AppSessionStore {
             }
 
             try await loadAndApplySessionState(installationID: request.installationID)
+            launchState = .ready
         } catch {
+            // Attempt refresh and reload
             if await attemptRefreshAndReload(installationID: request.installationID) {
+                launchState = .ready
                 return
+            }
+
+            // If the error is unauthorized and we have a refresh token, try forced registration
+            if isUnauthorizedError(error) {
+                Self.logger.warning("Bootstrap received 401, attempting forced registration")
+                do {
+                    let response = try await bootstrapService.registerDevice(request)
+                    await applySessionState(response.state, tokens: response.tokens)
+                    try await loadAndApplySessionState(installationID: request.installationID)
+                    launchState = .ready
+                    return
+                } catch {
+                    Self.logger.error("Forced registration also failed: \(error.localizedDescription)")
+                    // Fall through to error handling
+                }
             }
 
             lastErrorMessage = error.localizedDescription
             state.connectionStatus = .error
             state.syncStatus = .error
+
+            // Classify error for UI
+            if isUnauthorizedError(error) {
+                launchState = .authFailure
+            } else if isNetworkError(error) {
+                launchState = .networkFailure(error.localizedDescription)
+            } else {
+                launchState = .networkFailure(error.localizedDescription)
+            }
         }
     }
 
@@ -172,5 +205,28 @@ final class AppSessionStore {
         var mergedState = state
         mergedState.installationID = installationID
         return mergedState
+    }
+
+    private func isUnauthorizedError(_ error: Error) -> Bool {
+        if let clientError = error as? RelayAPIClient.ClientError,
+           case .unauthorized = clientError {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == -1013 // 401
+    }
+
+    private func isNetworkError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        // Timeouts, DNS failures, cannot connect, etc.
+        let networkCodes: [Int] = [
+            -1001, // timedOut
+            -1003, // cannotFindHost
+            -1004, // cannotConnectToHost
+            -1005, // networkConnectionLost
+            -1009, // notConnectedToInternet
+            -1014, // badServerResponse
+        ]
+        return nsError.domain == NSURLErrorDomain && networkCodes.contains(nsError.code)
     }
 }

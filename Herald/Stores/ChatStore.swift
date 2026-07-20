@@ -97,12 +97,12 @@ final class ChatStore {
         restartPendingPollingIfNeeded()
     }
 
-    func sendMessage(_ content: String, attachments: [PendingAttachment] = []) async {
+    func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty || !attachments.isEmpty else { return }
         guard hasPendingDuplicateMessage(trimmedContent, attachments: attachments) == false else { return }
 
-        let clientMessageID = UUID()
+        let clientMessageID = clientMessageID ?? UUID()
         let displayContent = trimmedContent.isEmpty && !attachments.isEmpty
             ? "[\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")]"
             : trimmedContent
@@ -155,7 +155,7 @@ final class ChatStore {
 
     /// Drives one or more streaming attempts for a single outgoing message.
     ///
-    /// A ~30s watchdog guards each attempt (see `runStreamingAttempt`): if no
+    /// A ~120s watchdog guards each attempt (see `runStreamingAttempt`): if no
     /// progress event arrives in that window, the job is treated as silently
     /// dropped — the exact failure mode confirmed via device testing, where a
     /// job was claimed by the relay but never dispatched by the connector, with
@@ -203,7 +203,7 @@ final class ChatStore {
     }
 
     /// Runs a single streaming attempt, racing the update stream against a
-    /// ~30s watchdog. Returns `true` if the watchdog fired before any progress
+    /// ~120s watchdog. Returns `true` if the watchdog fired before any progress
     /// event (`.textDelta`, `.reasoningDelta`, `.toolActivity`, `.finished`)
     /// arrived — i.e. the job appears to have stalled/been silently dropped.
     /// `.messageSent` (the relay merely accepting the job) does NOT count as
@@ -606,7 +606,8 @@ final class ChatStore {
         let content = normalizedRetryContent(for: sourceMessage)
         guard !content.isEmpty || !attachments.isEmpty else { return }
 
-        await sendMessage(content, attachments: attachments)
+        // Reuse the original clientMessageId so the server can deduplicate
+        await sendMessage(content, attachments: attachments, clientMessageID: sourceMessage.clientMessageID)
     }
 
     func setPollingEnabled(_ isEnabled: Bool) {

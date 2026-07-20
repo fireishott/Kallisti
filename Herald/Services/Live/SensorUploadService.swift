@@ -282,7 +282,8 @@ final class SensorUploadService {
             }
 
             if !outboxState.pendingHealthSamples.isEmpty {
-                let delivered = await uploadHealth(outboxState.pendingHealthSamples)
+                let samplesToUpload = outboxState.pendingHealthSamples
+                let delivered = await uploadHealth(samplesToUpload)
                 guard delivered else {
                     noteUploadFailure()
                     return
@@ -366,19 +367,33 @@ final class SensorUploadService {
     }
 
     private func uploadHealth(_ samples: [SensorOutboxState.PendingHealthSample]) async -> Bool {
-        let body = SensorHealthBody(
-            samples: samples.map { sample in
-                SensorHealthBody.Sample(
-                    metric: sample.metric,
-                    value: sample.value,
-                    unit: sample.unit,
-                    startAt: iso8601Formatter.string(from: sample.startAt),
-                    endAt: sample.endAt.map { iso8601Formatter.string(from: $0) }
-                )
-            }
-        )
+        let batchSize = 100
+        let batches = stride(from: 0, to: samples.count, by: batchSize).map { start in
+            Array(samples[start..<min(start + batchSize, samples.count)])
+        }
 
-        return await performAuthorizedUpload(path: "device/sensor/health", body: body)
+        var deliveredCount = 0
+        for batch in batches {
+            let body = SensorHealthBody(
+                samples: batch.map { sample in
+                    SensorHealthBody.Sample(
+                        metric: sample.metric,
+                        value: sample.value,
+                        unit: sample.unit,
+                        startAt: iso8601Formatter.string(from: sample.startAt),
+                        endAt: sample.endAt.map { iso8601Formatter.string(from: $0) }
+                    )
+                }
+            )
+
+            let delivered = await performAuthorizedUpload(path: "device/sensor/health", body: body)
+            guard delivered else {
+                return false
+            }
+            deliveredCount += batch.count
+        }
+
+        return true
     }
 
     private func performAuthorizedUpload<Body: Encodable>(path: String, body: Body) async -> Bool {

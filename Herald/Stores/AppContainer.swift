@@ -135,7 +135,10 @@ final class AppContainer {
     /// background, continuous with the iOS launch image.
     var isLaunchReady: Bool {
         if !pairingStore.isPaired { return true }
-        return isInitialized && !sessionStore.isBootstrapping
+        // Launch is ready when initialization succeeded OR when we have a recoverable error
+        return (isInitialized && !sessionStore.isBootstrapping)
+            || sessionStore.launchState == .authFailure
+            || sessionStore.launchState == .networkFailure("")
     }
 
     static func makeDefault(
@@ -307,7 +310,7 @@ final class AppContainer {
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak) }
                 return ts
             }(),
-            sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore),
+            sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore, persistence: persistence),
             sensorUploadService: sensorUploadService,
             apiClient: apiClient,
             notificationService: notificationService,
@@ -368,7 +371,10 @@ final class AppContainer {
     }
 
     func initialize() async {
-        guard pairingStore.isPaired else { return }
+        guard pairingStore.isPaired else {
+            sessionStore.launchState = .unpaired
+            return
+        }
         guard !isInitialized else {
             // Already initialized — process any pending notification route immediately
             await processPendingNotificationRoute()
@@ -381,12 +387,18 @@ final class AppContainer {
 
         guard await sessionStore.currentAccessToken() != nil else {
             await pairingStore.clearLocalPairing()
+            sessionStore.launchState = .unpaired
             return
         }
 
         await permissionsStore.reloadCapabilities()
         await sessionStore.bootstrap()
-        guard sessionStore.state.connectionStatus == .connected else { return }
+
+        // Check if bootstrap succeeded
+        guard sessionStore.state.connectionStatus == .connected else {
+            // Launch state is already set by bootstrap()
+            return
+        }
 
         // Register notification categories before remote notifications can be acted on
         notificationService?.registerCategories()
@@ -403,6 +415,7 @@ final class AppContainer {
         reconcileLiveActivities()
         updateWidgetData()
         isInitialized = true
+        sessionStore.launchState = .ready
 
         // Process any notification route that arrived during initialization
         await processPendingNotificationRoute()
@@ -862,6 +875,20 @@ final class AppContainer {
             data.lastMessageAt = msg.timestamp
         }
         SharedWidgetDataStore.write(data)
+    }
+
+    /// Retry initialization after a network/server failure.
+    func retryInitialization() async {
+        isInitialized = false
+        await initialize()
+    }
+
+    /// Clear pairing and return to onboarding after an auth failure.
+    func repairFromAuthFailure() async {
+        await pairingStore.clearLocalPairing()
+        await sessionStore.clearSession()
+        isInitialized = false
+        sessionStore.launchState = .unpaired
     }
 
     private func handlePairingRemoved() async {

@@ -58,36 +58,67 @@ final class SessionListStore {
         set {
             guard newValue != settingsStore.settings.showAllDevices else { return }
             settingsStore.settings.showAllDevices = newValue
-            Task { await loadSessions() }
+            Task { await loadSessions(forceRefresh: true) }
         }
     }
 
     private let heraldClient: any HeraldClientProtocol
     private let chatStore: ChatStore
     private let settingsStore: SettingsStore
+    private let persistence: any AppPersistenceStoreProtocol
     private var searchTask: Task<Void, Never>?
     private var searchObservationTask: Task<Void, Never>?
+    private var loadTask: Task<Void, Never>?
 
-    init(heraldClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore) {
+    /// Timestamp of last successful load for freshness checking.
+    private var lastLoadAt: Date?
+    /// Freshness interval — skip network if loaded within this window.
+    private let freshnessInterval: TimeInterval = 30
+
+    init(heraldClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore, persistence: any AppPersistenceStoreProtocol) {
         self.heraldClient = heraldClient
         self.chatStore = chatStore
         self.settingsStore = settingsStore
+        self.persistence = persistence
         observeSearchQuery()
+        loadCachedSessions()
     }
 
     // MARK: - Load Sessions
 
-    func loadSessions() async {
+    func loadSessions(forceRefresh: Bool = false) async {
+        // Suppress in-flight loads unless forced
+        guard forceRefresh || loadTask == nil else { return }
+
+        // Check freshness unless forced
+        if !forceRefresh,
+           let lastLoadAt,
+           Date().timeIntervalSince(lastLoadAt) < freshnessInterval {
+            return
+        }
+
+        loadTask?.cancel()
+        loadTask = Task { await performLoad() }
+        await loadTask?.value
+    }
+
+    private func performLoad() async {
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            loadTask = nil
+        }
 
         do {
             let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
             currentOffset = response.sessions.count
             totalCount = response.total
             splitSessions(response.sessions)
+            lastLoadAt = Date()
+            saveCachedSessions()
         } catch {
+            // Don't clear existing sessions on error
             errorMessage = error.localizedDescription
         }
     }
@@ -103,6 +134,7 @@ final class SessionListStore {
             // Merge new sessions and re-split
             let allSessions = pinnedSessions + recentSessions + response.sessions
             splitSessions(allSessions)
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -133,6 +165,7 @@ final class SessionListStore {
             let session = try await heraldClient.createSession(title: title)
             recentSessions.insert(session, at: 0)
             await switchToSession(session)
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -158,6 +191,7 @@ final class SessionListStore {
             recentSessions.removeAll { $0.id == session.id }
             archivedSessions.removeAll { $0.id == session.id }
             searchResults?.removeAll { $0.id == session.id }
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -173,6 +207,7 @@ final class SessionListStore {
             var archivedCopy = session
             archivedCopy.isArchived = true
             archivedSessions.insert(archivedCopy, at: 0)
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -196,6 +231,7 @@ final class SessionListStore {
             if let idx = searchResults?.firstIndex(where: { $0.id == session.id }) {
                 searchResults?[idx] = updated
             }
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -213,6 +249,7 @@ final class SessionListStore {
             if let idx = searchResults?.firstIndex(where: { $0.id == session.id }) {
                 searchResults?[idx] = updated
             }
+            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -228,7 +265,7 @@ final class SessionListStore {
     /// All sessions grouped by source for platform sub-sections.
     var sessionsBySource: [(source: String, sessions: [SessionSummary])] {
         let all = recentSessions
-        let grouped = Dictionary(grouping: all) { $0.source ?? "hermes" }
+        let grouped = Dictionary(grouping: all) { $0.source ?? "herald" }
         return grouped
             .sorted { $0.key < $1.key }
             .map { (source: $0.key, sessions: $0.value) }
@@ -279,8 +316,11 @@ final class SessionListStore {
         errorMessage = nil
         totalCount = 0
         currentOffset = 0
+        lastLoadAt = nil
         searchTask?.cancel()
         searchTask = nil
+        loadTask?.cancel()
+        loadTask = nil
     }
 
     // MARK: - Private
@@ -307,5 +347,17 @@ final class SessionListStore {
                 await self.search()
             }
         }
+    }
+
+    // MARK: - Session Cache
+
+    private func loadCachedSessions() {
+        guard let cached = persistence.loadSessionCache() else { return }
+        splitSessions(cached)
+    }
+
+    private func saveCachedSessions() {
+        let allSessions = pinnedSessions + recentSessions + archivedSessions
+        persistence.saveSessionCache(allSessions)
     }
 }

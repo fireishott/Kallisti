@@ -16,7 +16,14 @@ struct AppRootView: View {
                     } else if container.pairingStore.needsPermissionsOnboarding {
                         OnboardingFlowView(initialStep: .permissions)
                     } else {
-                        AdaptiveRootView()
+                        switch container.sessionStore.launchState {
+                        case .authFailure:
+                            authFailureView
+                        case .networkFailure(let message):
+                            networkFailureView(message: message)
+                        default:
+                            AdaptiveRootView()
+                        }
                     }
                 }
                 .transition(.opacity)
@@ -32,7 +39,7 @@ struct AppRootView: View {
                         .symbolEffect(.pulse, options: .repeating)
 
                     VStack(spacing: Design.Spacing.xs) {
-                        Text("Connecting to Hermes…")
+                        Text("Connecting to Herald…")
                             .font(Design.Typography.sectionTitle)
                             .foregroundStyle(Design.Colors.foreground)
 
@@ -46,7 +53,7 @@ struct AppRootView: View {
                         .padding(.top, Design.Spacing.sm)
 
                     if showLongWait {
-                        Text("This is taking longer than usual.\nCheck that your Hermes host is online.")
+                        Text("This is taking longer than usual.\nCheck that your Herald host is online.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .multilineTextAlignment(.center)
@@ -62,11 +69,94 @@ struct AppRootView: View {
         .animation(Design.Motion.standard, value: container.pairingStore.isPaired)
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
+        .animation(Design.Motion.standard, value: container.sessionStore.launchState)
         .task {
             try? await Task.sleep(for: .seconds(5))
             if !container.isLaunchReady {
                 withAnimation { showLongWait = true }
             }
+        }
+    }
+
+    private var authFailureView: some View {
+        VStack(spacing: Design.Spacing.lg) {
+            Spacer()
+
+            Image(systemName: "exclamationmark.lock.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(Design.Colors.danger)
+
+            VStack(spacing: Design.Spacing.xs) {
+                Text("Authentication Failed")
+                    .font(Design.Typography.sectionTitle)
+                    .foregroundStyle(Design.Colors.foreground)
+
+                Text("Your session has expired and could not be renewed.")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: Design.Spacing.md) {
+                Button {
+                    Task { await container.repairFromAuthFailure() }
+                } label: {
+                    Text("Re-pair Device")
+                        .font(Design.Typography.body)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Design.Brand.accent)
+            }
+            .padding(.horizontal, Design.Spacing.xl)
+
+            Spacer()
+        }
+    }
+
+    private func networkFailureView(message: String) -> some View {
+        VStack(spacing: Design.Spacing.lg) {
+            Spacer()
+
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 48))
+                .foregroundStyle(Design.Colors.warning)
+
+            VStack(spacing: Design.Spacing.xs) {
+                Text("Connection Failed")
+                    .font(Design.Typography.sectionTitle)
+                    .foregroundStyle(Design.Colors.foreground)
+
+                Text(message)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Design.Spacing.xl)
+            }
+
+            VStack(spacing: Design.Spacing.md) {
+                Button {
+                    Task { await container.retryInitialization() }
+                } label: {
+                    Text("Retry")
+                        .font(Design.Typography.body)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Design.Brand.accent)
+
+                Button {
+                    Task { await container.repairFromAuthFailure() }
+                } label: {
+                    Text("Re-pair Device")
+                        .font(Design.Typography.body)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, Design.Spacing.xl)
+
+            Spacer()
         }
     }
 }

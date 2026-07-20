@@ -335,11 +335,10 @@ def test_live_streaming_progress_events_flow_through_event_bus(tmp_path):
         assert len(tool_events) == 1
         assert tool_events[0][1]["label"] == "Searching files..."
 
-        # Verify text_delta payloads
+        # Verify text_delta payloads (production coalesces adjacent deltas)
         text_events = [(t, d) for t, d in events if t == "text_delta"]
-        assert len(text_events) == 2
-        assert text_events[0][1]["delta"] == "Here is "
-        assert text_events[1][1]["delta"] == "the answer."
+        assert len(text_events) == 1
+        assert text_events[0][1]["delta"] == "Here is the answer."
 
         # Verify done event
         done_events = [(t, d) for t, d in events if t == "done"]

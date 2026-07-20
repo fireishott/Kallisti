@@ -234,34 +234,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         continuation.yield(.finished(finalMessage, donePayload?.usage, donePayload?.diff))
                         continuation.finish()
                     } catch is StreamInterruptionError {
-                        // SSE ended without a done event — check job status before giving up
+                        // SSE ended without a done event — check job status and poll if still running
                         Self.logger.warning("SSE stream interrupted for job \(jobId.uuidString.prefix(8)), checking status")
                         continuation.yield(.reconnecting)
-                        if let statusResponse = await self.getJobStatus(jobId) {
-                            switch statusResponse.status {
-                            case "completed":
-                                if let msg = statusResponse.message {
-                                    continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff))
-                                } else {
-                                    let refreshed = await self.reloadConversationForStreaming()
-                                    let finalMsg = self.resolveFinalMessage(
-                                        jobId: jobId,
-                                        donePayload: nil,
-                                        conversation: refreshed ?? self.currentConversation
-                                    )
-                                    continuation.yield(.finished(finalMsg, nil, nil))
-                                }
-                            case "failed":
-                                continuation.yield(.failed(statusResponse.error ?? "Job failed"))
-                            case "cancelled":
-                                continuation.yield(.cancelled)
-                            default:
-                                // Job still running/queued — the caller should handle reattachment
-                                continuation.yield(.failed("Stream interrupted — job still \(statusResponse.status)"))
-                            }
-                        } else {
-                            continuation.yield(.failed("Stream interrupted"))
-                        }
+                        await self.pollJobUntilTerminal(
+                            jobId: jobId,
+                            continuation: continuation
+                        )
                         continuation.finish()
                     } catch {
                         Self.logger.warning("SSE stream error: \(error.localizedDescription)")
@@ -825,5 +804,65 @@ extension LiveHeraldClient {
                 accessToken: token
             ) as CancelResponse
         }
+    }
+
+    /// Polls job status with bounded exponential backoff until it reaches a terminal state.
+    /// Used when SSE stream ends but job is still running/queued.
+    private func pollJobUntilTerminal(
+        jobId: UUID,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async {
+        let maxPolls = 10
+        var delayMs: Double = 500 // Start with500ms
+        let maxDelayMs: Double = 10_000 // Cap at10 seconds
+
+        for attempt in 0..<maxPolls {
+            if Task.isCancelled { break }
+
+            Self.logger.info("Polling job \(jobId.uuidString.prefix(8)) status (attempt \(attempt + 1))")
+            try? await Task.sleep(for: .milliseconds(delayMs))
+
+            if let statusResponse = await self.getJobStatus(jobId) {
+                switch statusResponse.status {
+                case "completed":
+                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) completed during polling")
+                    if let msg = statusResponse.message {
+                        continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff))
+                    } else {
+                        let refreshed = await self.reloadConversationForStreaming()
+                        let finalMsg = self.resolveFinalMessage(
+                            jobId: jobId,
+                            donePayload: nil,
+                            conversation: refreshed ?? self.currentConversation
+                        )
+                        continuation.yield(.finished(finalMsg, nil, nil))
+                    }
+                    return
+
+                case "failed":
+                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) failed during polling")
+                    continuation.yield(.failed(statusResponse.error ?? "Job failed"))
+                    return
+
+                case "cancelled":
+                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) cancelled during polling")
+                    continuation.yield(.cancelled)
+                    return
+
+                default:
+                    // Still running/queued — continue polling with exponential backoff
+                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) still \(statusResponse.status), continuing polling")
+                    delayMs = min(delayMs * 2, maxDelayMs)
+                }
+            } else {
+                // Could not get status — continue polling
+                Self.logger.warning("Could not get status for job \(jobId.uuidString.prefix(8)), retrying")
+                delayMs = min(delayMs * 2, maxDelayMs)
+            }
+        }
+
+        // Exhausted all poll attempts
+        Self.logger.error("Exhausted polling attempts for job \(jobId.uuidString.prefix(8))")
+        continuation.yield(.failed("Stream interrupted — job did not complete in time"))
     }
 }

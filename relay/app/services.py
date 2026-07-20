@@ -966,8 +966,8 @@ def get_or_create_current_conversation(db: Session, *, user_id: str, device_id: 
         conversation = Conversation(
             user_id=user_id,
             device_id=device_id,
-            title="Hermes",
-            source="hermes" if device_id is None else "ios",
+            title="Herald",
+            source="herald" if device_id is None else "ios",
         )
         db.add(conversation)
         db.commit()
@@ -1074,7 +1074,7 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
-    if role == "user" and conversation.title == "Hermes":
+    if role == "user" and conversation.title == "Herald":
         derived_title = derive_title_from_message(text)
         if derived_title:
             conversation.title = derived_title
@@ -1146,29 +1146,59 @@ _REQUEUE_INTERVAL: float = 30.0
 _STALE_QUEUED_JOB_THRESHOLD: timedelta = timedelta(seconds=60)
 
 
-def log_stale_queued_jobs(db: Session) -> None:
+def log_stale_queued_jobs(db: Session, settings: Settings) -> None:
     """Log a warning for jobs that have sat queued past a reasonable
-    threshold without ever being claimed.
+    threshold without ever being claimed, and transition genuine orphans
+    to a terminal failed state.
 
-    Unlike requeue_expired_message_jobs (which reclaims jobs whose lease
-    expired after being claimed), a job stuck in "queued" never had a
-    lease set at all — it was created but the connector's WebSocket claim
-    loop never picked it up. This doesn't fix that drop, but makes it
-    visible in relay logs instead of failing silently.
+    Distinguishes between:
+    - No host exists for the user (genuine orphan)
+    - Host was revoked (genuine orphan)
+    - Host exists but is temporarily offline (keep queued)
+    - Host is connected but hasn't claimed yet (keep queued)
     """
-    threshold = utcnow() - _STALE_QUEUED_JOB_THRESHOLD
+    warning_threshold = utcnow() - timedelta(seconds=settings.stale_job_warning_seconds)
+    orphan_threshold = utcnow() - timedelta(seconds=settings.orphaned_job_expiry_seconds)
+
     stale_jobs = db.scalars(
         select(MessageJob).where(
             MessageJob.status == "queued",
-            MessageJob.created_at < threshold,
+            MessageJob.created_at < warning_threshold,
         )
     ).all()
+
     for job in stale_jobs:
-        logger.warning(
-            "MessageJob %s has been queued since %s without being claimed "
-            "(host may be offline or the WebSocket connection dropped)",
-            job.id, job.created_at,
-        )
+        host = db.get(HeraldHost, job.host_id) if job.host_id else None
+
+        if host is None or host.revoked_at is not None:
+            # Genuine orphan: no host or revoked host
+            if job.created_at < orphan_threshold:
+                # Transition to terminal failed state
+                job.status = "failed"
+                job.error_text = "No active host available to process this message."
+                job.completed_at = utcnow()
+                db.flush()
+                logger.warning(
+                    "MessageJob %s orphaned (no active host), marked as failed",
+                    job.id,
+                )
+            else:
+                logger.warning(
+                    "MessageJob %s has no active host, will expire at orphan threshold",
+                    job.id,
+                )
+        elif host.active_connection_nonce is None:
+            # Host exists but is offline
+            logger.info(
+                "MessageJob %s waiting for host %s to come online (queued since %s)",
+                job.id, host.id, job.created_at,
+            )
+        else:
+            # Host is connected but hasn't claimed yet
+            logger.debug(
+                "MessageJob %s waiting to be claimed by connected host %s",
+                job.id, host.id,
+            )
 
 
 def claim_next_message_job(
@@ -1182,7 +1212,7 @@ def claim_next_message_job(
     now_mono = _time.monotonic()
     if now_mono - _last_requeue_at >= _REQUEUE_INTERVAL:
         requeue_expired_message_jobs(db)
-        log_stale_queued_jobs(db)
+        log_stale_queued_jobs(db, settings)
         _last_requeue_at = now_mono
 
     job = db.scalar(

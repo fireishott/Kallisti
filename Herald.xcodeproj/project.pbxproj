@@ -164,6 +164,7 @@
 		D43B6CDCF27E9BF1CFB45076 /* PendingAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5B53E8562C62901D062529 /* PendingAttachment.swift */; };
 		D6A82E83303B8CD032EF7E57 /* LiveInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */; };
 		D6C61F376FD28ADE372D6C1A /* iPadRightPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5284C9AE8B2A58A9B7F5C258 /* iPadRightPanelView.swift */; };
+		D6D11114DEEF2C25A0104DDA /* LaunchState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF3EE1C00C431CC2F12EC8B5 /* LaunchState.swift */; };
 		D6DF21F2BCA7F3612A20AAFC /* LiveHealthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E54757D0C6E7FEE9C422F61 /* LiveHealthService.swift */; };
 		D784039C81E632AE96747E13 /* ChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F63E8AF80786EE3EB03BB3B /* ChatScreen.swift */; };
 		D944774E5410FB2D28809CBC /* PairingRedeemResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E13B7CB146B640D2CE04B57 /* PairingRedeemResult.swift */; };
@@ -373,6 +374,7 @@
 		AAFA4AB484491EDD4A738392 /* HeraldActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldActivityAttributes.swift; sourceTree = "<group>"; };
 		ADC8FEFBC110F508FA4EFB63 /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
 		AF23852C2769061F9AF9939A /* SyncCoordinatorProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCoordinatorProtocol.swift; sourceTree = "<group>"; };
+		AF3EE1C00C431CC2F12EC8B5 /* LaunchState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchState.swift; sourceTree = "<group>"; };
 		AF801C53A55B09D67E7953A7 /* LiveCameraOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCameraOverlay.swift; sourceTree = "<group>"; };
 		B00DF4324FE1308E6E31A907 /* PushBrokerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushBrokerClient.swift; sourceTree = "<group>"; };
 		B0C23E7E8A2081D4B773D3E0 /* HeraldHostStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldHostStatus.swift; sourceTree = "<group>"; };
@@ -575,6 +577,7 @@
 				95B882729C3C40D34D8EA0BE /* InboxItemStatus.swift */,
 				990F347F42BDC922A71AEF77 /* InboxItemType.swift */,
 				FAAC85E4F93AD704A0A951B9 /* InboxLocalState.swift */,
+				AF3EE1C00C431CC2F12EC8B5 /* LaunchState.swift */,
 				ADC8FEFBC110F508FA4EFB63 /* Message.swift */,
 				61996BD68D8533169E0A7F24 /* MessageSender.swift */,
 				91C3EC13DA4272428D489B6E /* MessageStatus.swift */,
@@ -1113,6 +1116,7 @@
 				95A23F411FD6C90BDCE20BAE /* InboxStore.swift in Sources */,
 				6F3CB0BD6A7F1ABBD2D6C6E9 /* InlineDiffView.swift in Sources */,
 				07C84163EE42D21B9FF11F71 /* KeychainSecureStore.swift in Sources */,
+				D6D11114DEEF2C25A0104DDA /* LaunchState.swift in Sources */,
 				8E69DE4854343828EABE3E03 /* LiveActivityPreviews.swift in Sources */,
 				459CBF86DC1FF47474D65187 /* LiveActivityService.swift in Sources */,
 				4BB51FBF6AEC78F0B90BE508 /* LiveCameraOverlay.swift in Sources */,
@@ -1378,7 +1382,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1386,7 +1390,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.2;
+				MARKETING_VERSION = 1.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SDKROOT = iphoneos;
@@ -1473,7 +1477,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1481,7 +1485,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.2;
+				MARKETING_VERSION = 1.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 				SDKROOT = iphoneos;
@@ -1513,7 +1517,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1521,7 +1525,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.2;
+				MARKETING_VERSION = 1.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 				SDKROOT = iphoneos;
@@ -1534,7 +1538,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1542,7 +1546,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.2;
+				MARKETING_VERSION = 1.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SDKROOT = iphoneos;

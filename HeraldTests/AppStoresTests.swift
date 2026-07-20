@@ -201,7 +201,7 @@ struct AppStoresTests {
         var currentConversation: Conversation?
         var sendCallCount = 0
         var lastClientMessageID: UUID?
-        var nextResponse = Message(sender: .hermes, content: "Recorded response", status: .delivered)
+        var nextResponse = Message(sender: .herald, content: "Recorded response", status: .delivered)
 
         func connect() async {}
 
@@ -226,18 +226,56 @@ struct AppStoresTests {
         }
 
         func loadConversation() async -> Conversation {
-            currentConversation ?? Conversation(title: "Hermes")
+            currentConversation ?? Conversation(title: "Herald")
         }
 
         func clearConversation() async throws -> Conversation {
-            let conversation = Conversation(title: "Hermes")
+            let conversation = Conversation(title: "Herald")
             currentConversation = conversation
             return conversation
         }
 
         func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-            currentConversation ?? Conversation(title: "Hermes")
+            currentConversation ?? Conversation(title: "Herald")
         }
+
+        func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
+            SessionListResponse(sessions: [], total: 0)
+        }
+
+        func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] {
+            []
+        }
+
+        func createSession(title: String) async throws -> SessionSummary {
+            SessionSummary(id: UUID(), title: title)
+        }
+
+        func deleteSession(id: UUID) async throws {}
+
+        func archiveSession(id: UUID) async throws {}
+
+        func togglePinSession(id: UUID) async throws -> SessionSummary {
+            SessionSummary(id: id, title: "Test")
+        }
+
+        func renameSession(id: UUID, title: String) async throws -> SessionSummary {
+            SessionSummary(id: id, title: title)
+        }
+
+        func loadConversation(id: UUID) async throws -> Conversation {
+            currentConversation ?? Conversation(title: "Herald")
+        }
+
+        func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+            nil
+        }
+
+        func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+            nextResponse
+        }
+
+        func cancelJob(jobID: UUID) async throws {}
     }
 
     @MainActor
@@ -303,7 +341,7 @@ struct AppStoresTests {
         }
 
         func emitAssistantTurn(_ text: String) {
-            transcriptItems.append(TranscriptItem(speaker: .hermes, text: text, isPartial: false))
+            transcriptItems.append(TranscriptItem(speaker: .herald, text: text, isPartial: false))
         }
 
         private func publishSnapshot() {
@@ -485,7 +523,7 @@ struct AppStoresTests {
         #expect(heraldClient.lastClientMessageID != nil)
 
         chatStore.conversation = Conversation(
-            title: "Hermes",
+            title: "Herald",
             messages: [
                 Message(sender: .user, content: "Still waiting", status: .sending),
             ]
@@ -507,17 +545,17 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .hermes, content: "unused", status: .delivered)
+                Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 let jobID = UUID()
                 let finalMessageID = UUID()
                 currentConversation = Conversation(
-                    title: "Hermes",
+                    title: "Herald",
                     messages: [
                         Message(id: clientMessageID, sender: .user, content: message, status: .sent),
-                        Message(id: finalMessageID, sender: .hermes, content: "Patched answer", jobID: jobID, status: .delivered),
+                        Message(id: finalMessageID, sender: .herald, content: "Patched answer", jobID: jobID, status: .delivered),
                     ]
                 )
 
@@ -541,7 +579,7 @@ struct AppStoresTests {
                         continuation.yield(.finished(
                             Message(
                                 id: finalMessageID,
-                                sender: .hermes,
+                                sender: .herald,
                                 content: "Patched answer",
                                 jobID: jobID,
                                 status: .delivered
@@ -555,18 +593,30 @@ struct AppStoresTests {
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
 
             func clearConversation() async throws -> Conversation {
-                let conversation = Conversation(title: "Hermes")
+                let conversation = Conversation(title: "Herald")
                 currentConversation = conversation
                 return conversation
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let suiteName = "chat-store-stream-artifacts-\(UUID().uuidString)"
@@ -578,7 +628,7 @@ struct AppStoresTests {
 
         await chatStore.sendMessage("Fix the bug")
 
-        let heraldMessage = chatStore.conversation?.messages.last(where: { $0.sender == .hermes })
+        let heraldMessage = chatStore.conversation?.messages.last(where: { $0.sender == .herald })
         #expect(heraldMessage?.toolActivities.count == 1)
         #expect(heraldMessage?.codeDiff?.fileCount == 1)
         #expect(heraldMessage?.codeDiff?.summary == "1 file changed, 2 insertions(+), 1 deletion(-)")
@@ -594,7 +644,7 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .hermes, content: "unused", status: .delivered)
+                Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -606,16 +656,28 @@ struct AppStoresTests {
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Hermes")
+                Conversation(title: "Herald")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let suiteName = "chat-store-placeholder-refresh-\(UUID().uuidString)"
@@ -626,9 +688,9 @@ struct AppStoresTests {
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
         let userMessage = Message(sender: .user, content: "Waiting", status: .sending)
-        let placeholder = Message(sender: .hermes, content: "", status: .sending, isStreaming: true)
-        chatStore.conversation = Conversation(title: "Hermes", messages: [userMessage, placeholder])
-        heraldClient.currentConversation = Conversation(title: "Hermes", messages: [userMessage])
+        let placeholder = Message(sender: .herald, content: "", status: .sending, isStreaming: true)
+        chatStore.conversation = Conversation(title: "Herald", messages: [userMessage, placeholder])
+        heraldClient.currentConversation = Conversation(title: "Herald", messages: [userMessage])
 
         await chatStore.loadConversation()
 
@@ -646,7 +708,7 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .hermes, content: "unused", status: .delivered)
+                Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -654,23 +716,35 @@ struct AppStoresTests {
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
                         try? await Task.sleep(for: .milliseconds(50))
-                        continuation.yield(.finished(Message(sender: .hermes, content: "Done", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Done", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Hermes")
+                Conversation(title: "Herald")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let suiteName = "chat-store-pending-until-finished-\(UUID().uuidString)"
@@ -703,12 +777,12 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-                Message(sender: .hermes, content: "unused", status: .delivered)
+                Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
-                    title: "Hermes",
+                    title: "Herald",
                     messages: [
                         Message(id: userID, clientMessageID: clientMessageID, sender: .user, content: message, status: .sent),
                     ]
@@ -726,10 +800,10 @@ struct AppStoresTests {
             func loadConversation() async -> Conversation {
                 loadConversationCallCount += 1
                 let conversation = Conversation(
-                    title: "Hermes",
+                    title: "Herald",
                     messages: [
                         Message(id: userID, sender: .user, content: "Fix it", status: .delivered),
-                        Message(id: assistantID, sender: .hermes, content: "Recovered after polling", jobID: jobID, status: .delivered),
+                        Message(id: assistantID, sender: .herald, content: "Recovered after polling", jobID: jobID, status: .delivered),
                     ]
                 )
                 currentConversation = conversation
@@ -737,12 +811,24 @@ struct AppStoresTests {
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Hermes")
+                Conversation(title: "Herald")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let suiteName = "chat-store-stream-failure-\(UUID().uuidString)"
@@ -785,7 +871,7 @@ struct AppStoresTests {
                   "jobId":"\#(jobID.uuidString.lowercased())",
                   "conversation":{
                     "id":"\#(conversationID.uuidString)",
-                    "title":"Hermes",
+                    "title":"Herald",
                     "updatedAt":"2026-04-05T18:00:00Z",
                     "messages":[
                       {
@@ -829,7 +915,7 @@ struct AppStoresTests {
                 {"data":{
                   "conversation":{
                     "id":"\#(conversationID.uuidString)",
-                    "title":"Hermes",
+                    "title":"Herald",
                     "updatedAt":"2026-04-05T18:00:01Z",
                     "messages":[
                       {
@@ -905,7 +991,7 @@ struct AppStoresTests {
             requestCount.value += 1
             let url = try #require(request.url)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (response, #"{"data":{"conversation":{"id":"00000000-0000-0000-0000-000000000000","title":"Hermes","updatedAt":"2026-04-05T18:00:00Z","messages":[]}}}"#.data(using: .utf8)!)
+            return (response, #"{"data":{"conversation":{"id":"00000000-0000-0000-0000-000000000000","title":"Herald","updatedAt":"2026-04-05T18:00:00Z","messages":[]}}}"#.data(using: .utf8)!)
         }
 
         defer {
@@ -957,7 +1043,7 @@ struct AppStoresTests {
             func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
                 lastMessage = message
                 lastAttachments = attachments
-                return Message(sender: .hermes, content: "unused", status: .delivered)
+                return Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -966,23 +1052,35 @@ struct AppStoresTests {
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .hermes, content: "Retried", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Retried", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Hermes")
+                Conversation(title: "Herald")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-retry-\(UUID().uuidString).txt")
@@ -1003,7 +1101,7 @@ struct AppStoresTests {
             status: .failed,
             attachments: [MessageAttachment(from: attachment)]
         )
-        chatStore.conversation = Conversation(title: "Hermes", messages: [failedMessage])
+        chatStore.conversation = Conversation(title: "Herald", messages: [failedMessage])
 
         await chatStore.retryMessage(failedMessage)
 
@@ -1022,12 +1120,12 @@ struct AppStoresTests {
             func disconnect() async {}
 
             func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
-                Message(sender: .hermes, content: "unused", status: .delivered)
+                Message(sender: .herald, content: "unused", status: .delivered)
             }
 
             func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
-                    title: "Hermes",
+                    title: "Herald",
                     messages: [
                         Message(
                             id: UUID(),
@@ -1044,30 +1142,42 @@ struct AppStoresTests {
                                 )
                             }
                         ),
-                        Message(sender: .hermes, content: "I saw the attachment.", status: .delivered),
+                        Message(sender: .herald, content: "I saw the attachment.", status: .delivered),
                     ]
                 )
 
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .hermes, content: "I saw the attachment.", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "I saw the attachment.", status: .delivered), nil, nil))
                         continuation.finish()
                     }
                 }
             }
 
             func loadConversation() async -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
 
             func clearConversation() async throws -> Conversation {
-                Conversation(title: "Hermes")
+                Conversation(title: "Herald")
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-                currentConversation ?? Conversation(title: "Hermes")
+                currentConversation ?? Conversation(title: "Herald")
             }
+
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
         }
 
         let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { context in
@@ -1374,7 +1484,7 @@ struct AppStoresTests {
         #expect(voiceService.transcriptItems[0].speaker == .user)
         #expect(voiceService.transcriptItems[0].text == "What should I focus on today?")
         #expect(voiceService.transcriptItems[0].isPartial == false)
-        #expect(voiceService.transcriptItems[1].speaker == .hermes)
+        #expect(voiceService.transcriptItems[1].speaker == .herald)
         #expect(voiceService.transcriptItems[1].text == "Let me check that.")
     }
 
@@ -1431,7 +1541,7 @@ struct AppStoresTests {
             {"data":{
               "conversation":{
                 "id":"\#(conversationID.uuidString)",
-                "title":"Hermes",
+                "title":"Herald",
                 "updatedAt":"2026-04-03T21:15:00Z",
                 "messages":[]
               }
@@ -1883,7 +1993,7 @@ struct AppStoresTests {
     @Test
     func relayConnectionModesExposeModeAwareChatRecoveryCopy() throws {
         #expect(RelayConnectionMode.managedRelay.hostOfflineMessage == "Messages can queue while your Hermes host reconnects.")
-        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Hermes.")
+        #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Herald.")
         #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a Hermes host with this self-hosted relay before sending messages.")
     }
 
@@ -1891,7 +2001,7 @@ struct AppStoresTests {
     func relayConnectionModesExposeModeAwareUnreachableSendGuidance() throws {
         #expect(
             RelayConnectionMode.managedRelay.unreachableSendBlockedMessage ==
-            "Herald relay is unreachable. Check your connection and try again."
+            "Hermes relay is unreachable. Check your connection and try again."
         )
         #expect(
             RelayConnectionMode.tailscale.unreachableSendBlockedMessage ==
@@ -2331,10 +2441,10 @@ struct AppStoresTests {
     func chatStoreLoadsLatestUsageFromConversationMetadata() async {
         let heraldClient = RecordingHeraldClient()
         heraldClient.currentConversation = Conversation(
-            title: "Hermes",
+            title: "Herald",
             messages: [
                 Message(sender: .user, content: "Hello"),
-                Message(sender: .hermes, content: "Hi")
+                Message(sender: .herald, content: "Hi")
             ],
             latestUsage: TokenUsage(
                 promptTokens: 3200,
@@ -2360,4 +2470,262 @@ struct AppStoresTests {
         #expect(ChatStore.inferredContextWindow(for: "gpt-5.4-mini") == 128_000)
         #expect(ChatStore.inferredContextWindow(for: "claude-sonnet-4.6") == 1_000_000)
     }
+
+    // MARK: - Expired Token Recovery Tests
+
+    @Test @MainActor
+    func sessionBootstrapRecoversWithValidAccessToken() async throws {
+        let suiteName = "session-bootstrap-valid-token-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "valid-token")
+        await secureStore.store(key: "session.refreshToken", value: "valid-refresh")
+
+        let bootstrapService = RecordingSessionBootstrapService()
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrapService,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+
+        await sessionStore.bootstrap()
+
+        #expect(sessionStore.state.connectionStatus == .connected)
+        #expect(sessionStore.launchState == .ready)
+        #expect(bootstrapService.registerCallCount == 0)
+    }
+
+    @Test @MainActor
+    func sessionBootstrapRecoversExpiredAccessTokenViaRefresh() async throws {
+        let suiteName = "session-bootstrap-refresh-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "expired-token")
+        await secureStore.store(key: "session.refreshToken", value: "valid-refresh")
+
+        let bootstrapService = FailingThenSucceedingBootstrapService(
+            failWith: .unauthorized("Token expired"),
+            failLoadCount: 1
+        )
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrapService,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+
+        await sessionStore.bootstrap()
+
+        #expect(sessionStore.state.connectionStatus == .connected)
+        #expect(sessionStore.launchState == .ready)
+    }
+
+    @Test @MainActor
+    func sessionBootstrapForcesRegistrationWhenBothTokensExpired() async throws {
+        let suiteName = "session-bootstrap-force-register-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "expired-token")
+        await secureStore.store(key: "session.refreshToken", value: "expired-refresh")
+
+        let bootstrapService = AlwaysFailingBootstrapService(failWith: .unauthorized("Both tokens expired"))
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrapService,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+
+        await sessionStore.bootstrap()
+
+        // Should attempt registration after refresh fails
+        #expect(bootstrapService.registerCallCount == 1)
+    }
+
+    @Test @MainActor
+    func sessionBootstrapSetsAuthFailureStateWhenRecoveryImpossible() async throws {
+        let suiteName = "session-bootstrap-auth-failure-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "expired-token")
+        await secureStore.store(key: "session.refreshToken", value: "expired-refresh")
+
+        // Both loadSession and registerDevice fail with 401
+        let bootstrapService = AlwaysFailingBootstrapService(failWith: .unauthorized("Registration rejected"))
+        bootstrapService.alsoFailRegistration = true
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrapService,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+
+        await sessionStore.bootstrap()
+
+        #expect(sessionStore.launchState == .authFailure)
+        #expect(sessionStore.state.connectionStatus == .error)
+    }
+
+    @Test @MainActor
+    func sessionBootstrapSetsNetworkFailureStateForTimeout() async throws {
+        let suiteName = "session-bootstrap-timeout-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let secureStore = MockSecureStore()
+        await secureStore.store(key: "session.accessToken", value: "valid-token")
+        await secureStore.store(key: "session.refreshToken", value: "valid-refresh")
+
+        let timeoutError = NSError(domain: NSURLErrorDomain, code: -1001, userInfo: nil) // timedOut
+        let bootstrapService = AlwaysFailingBootstrapService(failWith: .requestFailed(timeoutError.localizedDescription))
+        let sessionStore = AppSessionStore(
+            bootstrapService: bootstrapService,
+            syncCoordinator: MockSyncCoordinator(),
+            secureStore: secureStore,
+            persistence: persistence,
+            notificationService: MockNotificationService(),
+            environmentProvider: { .development }
+        )
+
+        await sessionStore.bootstrap()
+
+        if case .networkFailure = sessionStore.launchState {
+            // Expected
+        } else {
+            Issue.record("Expected networkFailure state, got \(sessionStore.launchState)")
+        }
+    }
+}
+
+// MARK: - Test Doubles for Expired Token Recovery
+
+@MainActor
+private final class FailingThenSucceedingBootstrapService: SessionBootstrapServiceProtocol {
+    private let failWith: RelayAPIClient.ClientError
+    private var failLoadCount: Int
+    private var loadAttempts = 0
+
+    init(failWith: RelayAPIClient.ClientError, failLoadCount: Int) {
+        self.failWith = failWith
+        self.failLoadCount = failLoadCount
+    }
+
+    func registerDevice(_ request: DeviceRegistrationRequest) async throws -> SessionBootstrapResponse {
+        SessionBootstrapResponse(
+            state: AppSessionState(
+                deviceID: UUID(),
+                installationID: request.installationID,
+                deviceRegistered: true,
+                connectionStatus: .connected,
+                syncStatus: .synced,
+                isMockMode: false,
+                backendEndpoint: request.relayBaseURLString,
+                lastSyncAt: nil,
+                pushTokenRegistered: false
+            ),
+            tokens: AuthTokens(
+                accessToken: "new-access-token",
+                refreshToken: "new-refresh-token",
+                expiresAt: .distantFuture
+            )
+        )
+    }
+
+    func loadSession(accessToken: String?) async throws -> AppSessionState {
+        loadAttempts += 1
+        if loadAttempts <= failLoadCount {
+            throw failWith
+        }
+        return AppSessionState(
+            userID: UUID(),
+            displayName: "Test User",
+            deviceID: UUID(),
+            installationID: UUID(),
+            deviceRegistered: true,
+            connectionStatus: .connected,
+            syncStatus: .synced,
+            isMockMode: false,
+            backendEndpoint: "https://relay.example.com/v1",
+            lastSyncAt: .now,
+            pushTokenRegistered: false
+        )
+    }
+
+    func refreshAuth(refreshToken: String) async throws -> AuthTokens {
+        AuthTokens(
+            accessToken: "refreshed-access-token",
+            refreshToken: "refreshed-refresh-token",
+            expiresAt: .distantFuture
+        )
+    }
+
+    func revokeCurrentSession(accessToken: String?) async throws {}
+}
+
+@MainActor
+private final class AlwaysFailingBootstrapService: SessionBootstrapServiceProtocol {
+    private let failWith: RelayAPIClient.ClientError
+    var registerCallCount = 0
+    var alsoFailRegistration = false
+
+    init(failWith: RelayAPIClient.ClientError) {
+        self.failWith = failWith
+    }
+
+    func registerDevice(_ request: DeviceRegistrationRequest) async throws -> SessionBootstrapResponse {
+        registerCallCount += 1
+        if alsoFailRegistration {
+            throw failWith
+        }
+        return SessionBootstrapResponse(
+            state: AppSessionState(
+                deviceID: UUID(),
+                installationID: request.installationID,
+                deviceRegistered: true,
+                connectionStatus: .connected,
+                syncStatus: .synced,
+                isMockMode: false,
+                backendEndpoint: request.relayBaseURLString,
+                lastSyncAt: nil,
+                pushTokenRegistered: false
+            ),
+            tokens: AuthTokens(
+                accessToken: "new-access-token",
+                refreshToken: "new-refresh-token",
+                expiresAt: .distantFuture
+            )
+        )
+    }
+
+    func loadSession(accessToken: String?) async throws -> AppSessionState {
+        throw failWith
+    }
+
+    func refreshAuth(refreshToken: String) async throws -> AuthTokens {
+        throw failWith
+    }
+
+    func revokeCurrentSession(accessToken: String?) async throws {}
 }

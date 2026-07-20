@@ -38,19 +38,14 @@ struct AdaptiveRootView: View {
             )
 
             HStack(spacing: 0) {
-                // Main split: sidebar + content (detail is hidden/unused)
+                // True two-column split: sidebar + content (detail)
                 NavigationSplitView {
                     iPadSidebarView(
                         selectedSection: $selectedSection,
                         isRightPanelOpen: $isRightPanelOpen
                     )
-                } content: {
-                    contentColumn
                 } detail: {
-                    // Empty detail — the real inspector is a sibling HStack element,
-                    // not inside the split view. This keeps the split view two-column
-                    // in practice while satisfying iOS's three-column requirement.
-                    Color.clear
+                    contentColumn
                 }
                 .navigationSplitViewColumnWidth(
                     min: 280, ideal: 360, max: 400

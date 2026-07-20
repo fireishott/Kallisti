@@ -252,7 +252,7 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
         def __init__(self) -> None:
             self.alerts = []
 
-        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None):
+        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None, user_info: dict | None = None):
             self.alerts.append({
                 "token": token,
                 "title": title,
@@ -260,6 +260,7 @@ def test_push_broker_send_endpoint_accepts_valid_signed_grant(tmp_path):
                 "category": category,
                 "bundle_id": bundle_id,
                 "environment": environment,
+                "user_info": user_info,
             })
             return "sent"
 

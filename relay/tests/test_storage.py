@@ -296,3 +296,213 @@ def test_manually_renamed_conversation_is_not_overwritten(tmp_path):
         )
 
         assert conversation.title == "My custom title"
+
+
+def test_orphaned_job_with_no_host_is_marked_failed(tmp_path):
+    from app.models import MessageJob
+    from app.services import log_stale_queued_jobs
+
+    settings = Settings(
+        environment="test",
+        public_base_url="http://testserver/v1",
+        database_url=f"sqlite:///{tmp_path / 'orphan-test.db'}",
+        internal_api_key="test-internal-key",
+        orphaned_job_expiry_seconds=60,
+        stale_job_warning_seconds=30,
+    )
+    database = Database(settings.database_url)
+    database.create_all()
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        conversation = get_or_create_current_conversation(db, user_id=user.id)
+
+        # Create a message first
+        user_message = append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="Hello",
+            delivery_status="sent",
+        )
+
+        # Create a job with no host (host_id=None)
+        job = MessageJob(
+            user_id=user.id,
+            conversation_id=conversation.id,
+            user_message_id=user_message.id,
+            host_id=None,
+            status="queued",
+            created_at=utcnow() - timedelta(seconds=120),  # Old enough to be orphaned
+        )
+        db.add(job)
+        db.commit()
+
+        # Run orphan detection
+        log_stale_queued_jobs(db, settings)
+
+        # Job should be marked as failed
+        db.refresh(job)
+        assert job.status == "failed"
+        assert "No active host" in job.error_text
+        assert job.completed_at is not None
+
+
+def test_orphaned_job_with_revoked_host_is_marked_failed(tmp_path):
+    from app.models import MessageJob
+    from app.services import log_stale_queued_jobs
+
+    settings = Settings(
+        environment="test",
+        public_base_url="http://testserver/v1",
+        database_url=f"sqlite:///{tmp_path / 'orphan-revoked.db'}",
+        internal_api_key="test-internal-key",
+        orphaned_job_expiry_seconds=60,
+        stale_job_warning_seconds=30,
+    )
+    database = Database(settings.database_url)
+    database.create_all()
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        conversation = get_or_create_current_conversation(db, user_id=user.id)
+        host = HeraldHost(
+            user_id=user.id,
+            display_name="Test Host",
+            revoked_at=utcnow(),  # Host is revoked
+        )
+        db.add(host)
+        db.flush()
+
+        user_message = append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="Hello",
+            delivery_status="sent",
+        )
+
+        job = MessageJob(
+            user_id=user.id,
+            conversation_id=conversation.id,
+            user_message_id=user_message.id,
+            host_id=host.id,
+            status="queued",
+            created_at=utcnow() - timedelta(seconds=120),
+        )
+        db.add(job)
+        db.commit()
+
+        log_stale_queued_jobs(db, settings)
+
+        db.refresh(job)
+        assert job.status == "failed"
+        assert "No active host" in job.error_text
+
+
+def test_job_with_offline_host_stays_queued(tmp_path):
+    from app.models import MessageJob
+    from app.services import log_stale_queued_jobs
+
+    settings = Settings(
+        environment="test",
+        public_base_url="http://testserver/v1",
+        database_url=f"sqlite:///{tmp_path / 'offline-host.db'}",
+        internal_api_key="test-internal-key",
+        orphaned_job_expiry_seconds=60,
+        stale_job_warning_seconds=30,
+    )
+    database = Database(settings.database_url)
+    database.create_all()
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        conversation = get_or_create_current_conversation(db, user_id=user.id)
+        host = HeraldHost(
+            user_id=user.id,
+            display_name="Offline Host",
+            active_connection_nonce=None,  # Host is offline
+        )
+        db.add(host)
+        db.flush()
+
+        user_message = append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="Hello",
+            delivery_status="sent",
+        )
+
+        job = MessageJob(
+            user_id=user.id,
+            conversation_id=conversation.id,
+            user_message_id=user_message.id,
+            host_id=host.id,
+            status="queued",
+            created_at=utcnow() - timedelta(seconds=120),
+        )
+        db.add(job)
+        db.commit()
+
+        log_stale_queued_jobs(db, settings)
+
+        # Job should still be queued (host exists but offline)
+        db.refresh(job)
+        assert job.status == "queued"
+
+
+def test_job_with_connected_host_stays_queued(tmp_path):
+    from app.models import MessageJob
+    from app.services import log_stale_queued_jobs
+
+    settings = Settings(
+        environment="test",
+        public_base_url="http://testserver/v1",
+        database_url=f"sqlite:///{tmp_path / 'connected-host.db'}",
+        internal_api_key="test-internal-key",
+        orphaned_job_expiry_seconds=60,
+        stale_job_warning_seconds=30,
+    )
+    database = Database(settings.database_url)
+    database.create_all()
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        conversation = get_or_create_current_conversation(db, user_id=user.id)
+        host = HeraldHost(
+            user_id=user.id,
+            display_name="Connected Host",
+            active_connection_nonce="some-nonce",  # Host is connected
+        )
+        db.add(host)
+        db.flush()
+
+        user_message = append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="Hello",
+            delivery_status="sent",
+        )
+
+        job = MessageJob(
+            user_id=user.id,
+            conversation_id=conversation.id,
+            user_message_id=user_message.id,
+            host_id=host.id,
+            status="queued",
+            created_at=utcnow() - timedelta(seconds=120),
+        )
+        db.add(job)
+        db.commit()
+
+        log_stale_queued_jobs(db, settings)
+
+        # Job should still be queued (host is connected)
+        db.refresh(job)
+        assert job.status == "queued"

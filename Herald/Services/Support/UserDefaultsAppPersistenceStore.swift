@@ -10,6 +10,7 @@ final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
         static let sensorOutboxState = "herald.sensorOutboxState"
         static let conversationCache = "herald.conversationCache"
         static let healthAnchorPrefix = "herald.healthAnchor."
+        static let sessionCache = "herald.sessionCache"
     }
 
     private let defaults: UserDefaults
@@ -113,6 +114,14 @@ final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Keys.healthAnchorPrefix) {
             defaults.removeObject(forKey: key)
         }
+    }
+
+    func loadSessionCache() -> [SessionSummary]? {
+        load([SessionSummary].self, key: Keys.sessionCache)
+    }
+
+    func saveSessionCache(_ sessions: [SessionSummary]) {
+        save(sessions, key: Keys.sessionCache)
     }
 
     private func load<T: Decodable>(_ type: T.Type, key: String) -> T? {
