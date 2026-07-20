@@ -126,9 +126,9 @@ final class CarPlayVoiceManager {
         switch talkStore.voiceState {
         case .listening:
             return StateID.listening
-        case .thinking:
+        case .transcribing, .thinking:
             return StateID.thinking
-        case .speaking:
+        case .synthesizing, .speaking:
             return StateID.speaking
         case .interrupted:
             return StateID.listening

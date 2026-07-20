@@ -63,6 +63,7 @@ class Settings:
     push_broker_grant_ttl_seconds: int = 60 * 60 * 24 * 30
     orphaned_job_expiry_seconds: int = 300  # 5 minutes for jobs with no host
     stale_job_warning_seconds: int = 60  # Warning threshold for stale queued jobs
+    max_job_attempts: int = 3
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -106,4 +107,5 @@ class Settings:
             app_presence_stale_seconds=int(os.getenv("APP_PRESENCE_STALE_SECONDS", "120")),
             push_broker_challenge_ttl_seconds=int(os.getenv("PUSH_BROKER_CHALLENGE_TTL_SECONDS", "300")),
             push_broker_grant_ttl_seconds=int(os.getenv("PUSH_BROKER_GRANT_TTL_SECONDS", str(60 * 60 * 24 * 30))),
+            max_job_attempts=int(os.getenv("MAX_JOB_ATTEMPTS", "3")),
         )

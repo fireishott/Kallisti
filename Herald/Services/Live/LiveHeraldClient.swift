@@ -69,6 +69,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let error: String?
         let usage: TokenUsage?
         let diff: CodeDiff?
+        let attempt: Int?
+        let lastSeq: Int?
     }
 
     private struct AttachmentPayload: Encodable {
@@ -223,30 +225,35 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     continuation.yield(.messageSent(jobID: jobId))
 
-                    do {
-                        let donePayload = try await self.streamJobEvents(jobId: jobId, continuation: continuation)
+                    let conversationId = self.currentConversation?.id ?? UUID()
+                    let coordinator = JobStreamCoordinator(
+                        jobId: jobId,
+                        conversationId: conversationId,
+                        clientMessageId: clientMessageID,
+                        apiClient: self.apiClient,
+                        accessTokenProvider: { [weak self] in await self?.accessTokenProvider() },
+                        accessTokenRefresher: { [weak self] in await self?.accessTokenRefresher() },
+                        jobStatusProvider: { [weak self] jobId in await self?.getJobStatusSnapshot(jobId) }
+                    )
+
+                    let result = await coordinator.run(continuation: continuation)
+
+                    switch result {
+                    case .completed, .failed:
                         let refreshedConversation = await self.reloadConversationForStreaming()
                         let finalMessage = self.resolveFinalMessage(
                             jobId: jobId,
-                            donePayload: donePayload,
+                            donePayload: nil,
                             conversation: refreshedConversation ?? self.currentConversation
                         )
-                        continuation.yield(.finished(finalMessage, donePayload?.usage, donePayload?.diff))
-                        continuation.finish()
-                    } catch is StreamInterruptionError {
-                        // SSE ended without a done event — check job status and poll if still running
-                        Self.logger.warning("SSE stream interrupted for job \(jobId.uuidString.prefix(8)), checking status")
-                        continuation.yield(.reconnecting)
-                        await self.pollJobUntilTerminal(
-                            jobId: jobId,
-                            continuation: continuation
-                        )
-                        continuation.finish()
-                    } catch {
-                        Self.logger.warning("SSE stream error: \(error.localizedDescription)")
-                        continuation.yield(.failed("Stream interrupted"))
-                        continuation.finish()
+                        let usage: TokenUsage? = refreshedConversation?.latestUsage
+                        continuation.yield(.finished(finalMessage, usage, nil))
+                    case .cancelled:
+                        break // Coordinator already yielded .cancelled
+                    case .error:
+                        break // Coordinator already yielded .failed
                     }
+                    continuation.finish()
 
                 } catch {
                     self.connectionStatus = .error
@@ -741,6 +748,8 @@ extension LiveHeraldClient {
             let usage: TokenUsage?
             let diff: CodeDiff?
             let message: RelayMessage?
+            let attempt: Int?
+            let lastSeq: Int?
         }
         struct JobStatusAPIResponse: Decodable {
             let data: JobStatusData
@@ -759,12 +768,23 @@ extension LiveHeraldClient {
                 message: data.message.map { mapMessage($0) },
                 error: data.error,
                 usage: data.usage,
-                diff: data.diff
+                diff: data.diff,
+                attempt: data.attempt,
+                lastSeq: data.lastSeq
             )
         } catch {
             Self.logger.warning("Failed to get job status: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    func getJobStatusSnapshot(_ jobId: UUID) async -> JobStreamCoordinator.JobStatusSnapshot? {
+        guard let status = await getJobStatus(jobId) else { return nil }
+        return JobStreamCoordinator.JobStatusSnapshot(
+            status: status.status,
+            attempt: status.attempt ?? 0,
+            lastSeq: status.lastSeq ?? 0
+        )
     }
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {

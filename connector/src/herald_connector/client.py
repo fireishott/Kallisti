@@ -380,6 +380,7 @@ class HeraldConnector:
         self._voice_delegate_sessions: dict[str, str] = {}
         self._health_cache: tuple[float, HostRuntimeAdapter | None] = (0.0, None)
         self._HEALTH_CACHE_TTL: float = 30.0
+        self._active_adapter_mode: str = "unknown"
         # Connection-independent job tracking: survives across _run_once calls
         self._active_jobs: dict[str, asyncio.Task] = {}
         self._job_phases: dict[str, str] = {}
@@ -940,12 +941,15 @@ class HeraldConnector:
             accumulated_text = ""
             session_id: str | None = None
             usage: dict | None = None
+            attempt = job.get("attempt", 0)
+            source_seq = 0
 
             # Emit job.started immediately, before waiting for first token
             await websocket.send(json.dumps({
                 "type": "job.started",
                 "jobId": job_id,
                 "phase": "starting",
+                "attempt": attempt,
             }))
             self._job_phases[job_id] = "starting"
             self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
@@ -977,33 +981,45 @@ class HeraldConnector:
                 if event.type == "text_delta":
                     accumulated_text += event.data
                     self._job_phases[job_id] = "writing"
+                    source_seq += 1
                     await websocket.send(json.dumps({
                         "type": "job.progress",
                         "jobId": job_id,
                         "kind": "text_delta",
                         "delta": event.data,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
                     }))
                 elif event.type == "reasoning_delta":
                     self._job_phases[job_id] = "thinking"
+                    source_seq += 1
                     await websocket.send(json.dumps({
                         "type": "job.progress",
                         "jobId": job_id,
                         "kind": "reasoning_delta",
                         "delta": event.data,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
                     }))
                 elif event.type == "tool_activity":
                     self._job_phases[job_id] = "tool"
+                    source_seq += 1
                     await websocket.send(json.dumps({
                         "type": "job.progress",
                         "jobId": job_id,
                         "kind": "tool_activity",
                         "label": event.label,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
                     }))
                 elif event.type == "keepalive":
+                    source_seq += 1
                     await websocket.send(json.dumps({
                         "type": "job.progress",
                         "jobId": job["id"],
                         "kind": "keepalive",
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
                     }))
                 elif event.type == "finish":
                     session_id = event.session_id
@@ -1197,6 +1213,7 @@ class HeraldConnector:
             elif method == "talk.session.end":
                 result = self._rpc_talk_session_end(params)
             elif method in {"talk.delegate", "talk.hermes_delegate"}:
+                # DEPRECATED: Legacy OpenAI Realtime Talk delegation. Will be removed next release.
                 result = await self._rpc_talk_delegate(params)
             elif method == "commands.catalog":
                 result = self._rpc_commands_catalog()
@@ -2198,6 +2215,9 @@ class HeraldConnector:
             "voiceSessionId": voice_session_id,
         }
 
+    # DEPRECATED: Part of the legacy OpenAI Realtime Talk stack.
+    # Hermes-native Talk (ASR → Hermes → TTS) replaces this path.
+    # Retained for one release behind USE_LEGACY_REALTIME_TALK compatibility flag.
     def _create_openai_realtime_session(
         self,
         *,
@@ -2311,6 +2331,7 @@ class HeraldConnector:
             f"Background service: {service_status.summary}",
             f"Last connected: {state.last_connected_at or 'never'}",
             f"Last error: {state.last_error or 'none'}",
+            f"Active adapter: {getattr(self, '_active_adapter_mode', 'unknown')}",
         ]
         if state.connector_display_name:
             lines.insert(4, f"Host label: {state.connector_display_name}")
@@ -2443,6 +2464,7 @@ class HeraldConnector:
                 logger.info("Runtime adapter: HeraldAPI (streaming) — api_server=%s", api_url or "http://localhost:8642")
                 adapter = HeraldAPIRuntimeAdapter(executor)
                 self._health_cache = (now, adapter)
+                self._active_adapter_mode = "runs_v2"
                 return adapter
             else:
                 logger.warning("Runtime adapter: API server health check failed — api_server=%s, falling back to CLI", api_url or "http://localhost:8642")
@@ -2450,6 +2472,7 @@ class HeraldConnector:
         logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._health_cache = (now, cli_adapter)
+        self._active_adapter_mode = "openai_v1_fallback"
         return cli_adapter
 
     def apply_runtime_environment(self, state: ConnectorState) -> None:

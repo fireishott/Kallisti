@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -12,24 +11,9 @@ import httpx
 from .herald_runner import HeraldChatResult, HeraldConversationMessage
 
 
-# Tool progress markers injected by the API server's _on_tool_progress callback:
-#   f"\n`{emoji} {label}`\n"
-# We detect these from an accumulated buffer so split/combined chunks are handled.
-TOOL_PROGRESS_RE = re.compile(r"\n`([^\n]+)`\n")
-
 DEFAULT_API_SERVER_URL = "http://localhost:8642"
 CONNECT_TIMEOUT = 10.0
 READ_TIMEOUT = 300.0  # 5 minutes — long enough for Claude thinking, catches dead connections
-
-
-def _could_be_marker_prefix(text: str) -> bool:
-    """Return True if *text* could be the beginning of a tool-progress marker.
-
-    A marker looks like ``\\n`emoji label`\\n``.  If the buffer ends with a
-    newline or a backtick, the next chunk might complete a marker, so we
-    hold the text rather than flushing it prematurely.
-    """
-    return text.endswith("\n") or text.endswith("`")
 
 
 @dataclass(frozen=True)
@@ -242,7 +226,6 @@ class HeraldAPIExecutor:
         ) as client:
             result_session_id = session_id
             accumulated_usage: dict | None = None
-            pending_text = ""  # buffer for split tool markers
 
             async with client.stream(
                 "POST",
@@ -302,38 +285,13 @@ class HeraldAPIExecutor:
                         )
                         yielded_event = True
 
-                    # Content delta — accumulate in buffer for marker parsing
+                    # Content delta
                     content = delta.get("content")
                     if content:
-                        pending_text += content
+                        yield StreamEvent(type="text_delta", data=content)
                         yielded_event = True
 
-                    # Process the buffer: extract complete markers, emit preceding text
-                    while True:
-                        m = TOOL_PROGRESS_RE.search(pending_text)
-                        if m is None:
-                            break
-                        # Text before the marker
-                        before = pending_text[: m.start()]
-                        if before:
-                            yield StreamEvent(type="text_delta", data=before)
-                        # The marker itself
-                        yield StreamEvent(type="tool_activity", label=m.group(1))
-                        # Keep remainder for next iteration
-                        pending_text = pending_text[m.end() :]
-
-                    # If buffer has text but no marker yet, check if it could
-                    # still be the start of one (i.e. contains a backtick or
-                    # newline that might be part of a marker). Only flush text
-                    # that can't possibly be a marker prefix.
-                    if pending_text and not _could_be_marker_prefix(pending_text):
-                        yield StreamEvent(type="text_delta", data=pending_text)
-                        pending_text = ""
-
-                    # Tool-call deltas — the model is invoking tools.  The
-                    # OpenAI-style stream sends these while the tool executes,
-                    # but the existing parser only read `content`, so the
-                    # entire tool-execution window was silent.
+                    # Tool-call deltas — the model is invoking tools.
                     tool_calls = delta.get("tool_calls")
                     if tool_calls:
                         for tc in tool_calls:
@@ -353,10 +311,6 @@ class HeraldAPIExecutor:
                         yield StreamEvent(type="keepalive")
 
                     if finish_reason == "stop":
-                        # Flush any remaining buffer text
-                        if pending_text:
-                            yield StreamEvent(type="text_delta", data=pending_text)
-                            pending_text = ""
                         yield StreamEvent(
                             type="finish",
                             session_id=result_session_id,
@@ -364,9 +318,7 @@ class HeraldAPIExecutor:
                         )
                         return
 
-            # If we exited the stream without a finish event, flush and emit one
-            if pending_text:
-                yield StreamEvent(type="text_delta", data=pending_text)
+            # If we exited the stream without a finish event, emit one
             yield StreamEvent(
                 type="finish",
                 session_id=result_session_id,

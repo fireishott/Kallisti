@@ -190,7 +190,8 @@ final class RelayAPIClient {
     /// terminates when the server closes the connection.
     nonisolated func streamEvents(
         path: String,
-        accessToken: String?
+        accessToken: String?,
+        lastEventID: String? = nil
     ) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
@@ -202,6 +203,9 @@ final class RelayAPIClient {
                         body: nil
                     )
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if let lastEventID, !lastEventID.isEmpty {
+                        request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+                    }
                     request.timeoutInterval = 300
 
                     let (bytes, response) = try await session.bytes(for: request)

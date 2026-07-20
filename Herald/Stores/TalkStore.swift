@@ -31,20 +31,100 @@ final class TalkStore {
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
     @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool))?
 
-    private let voiceService: any VoiceSessionServiceProtocol
+    /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
+    @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
+
     private let liveActivity = LiveActivityService()
-    private var eventTask: Task<Void, Never>?
     private var lastSpokenItemID: UUID?
 
-    init(voiceService: any VoiceSessionServiceProtocol) {
-        self.voiceService = voiceService
-        applySnapshot(voiceService.snapshot)
-        subscribeToEvents()
+    init() {}
+
+    /// Attach a Hermes-native coordinator for push-to-talk mode.
+    func attachHermesCoordinator(_ coordinator: HermesTalkCoordinator) {
+        hermesCoordinator = coordinator
+        coordinator.onStateChange = { [weak self] state in
+            self?.applyHermesState(state)
+        }
+        coordinator.onTranscript = { [weak self] item in
+            self?.transcriptItems.append(item)
+            self?.onSessionStateChanged?()
+        }
+    }
+
+    /// Push-to-talk: start recording (user presses mic button).
+    func startListening() {
+        guard let coordinator = hermesCoordinator else { return }
+        isSessionActive = true
+        connectionState = .connected
+        voiceSessionID = coordinator.conversationId
+        coordinator.startListening()
+    }
+
+    /// Push-to-talk: stop recording and process (user releases mic button).
+    func stopListeningAndProcess() async {
+        guard let coordinator = hermesCoordinator else { return }
+        await coordinator.stopListeningAndProcess()
+    }
+
+    /// Map HermesTalkCoordinator.State to VoiceState.
+    private func applyHermesState(_ state: HermesTalkCoordinator.State) {
+        switch state {
+        case .idle:
+            voiceState = .idle
+            statusMessage = nil
+        case .preparing:
+            voiceState = .thinking
+            statusMessage = "Preparing..."
+        case .listening:
+            voiceState = .listening
+            statusMessage = "Listening"
+        case .endpointing:
+            voiceState = .transcribing
+            statusMessage = "Processing..."
+        case .transcribing:
+            voiceState = .transcribing
+            statusMessage = "Transcribing..."
+        case .thinking:
+            voiceState = .thinking
+            statusMessage = "Thinking..."
+        case .synthesizing:
+            voiceState = .synthesizing
+            statusMessage = "Preparing speech..."
+        case .speaking:
+            voiceState = .speaking
+            statusMessage = "Speaking"
+        case .interrupted:
+            voiceState = .interrupted
+            statusMessage = "Interrupted"
+        case .failed(let msg):
+            voiceState = .disconnected
+            statusMessage = msg
+            blockedReason = msg
+        case .ending:
+            voiceState = .idle
+            statusMessage = nil
+        }
+
+        // Update Live Activity on voice state changes
+        if isSessionActive {
+            let status: String
+            switch voiceState {
+            case .listening: status = "Listening"
+            case .thinking:  status = statusMessage ?? "Thinking..."
+            case .speaking:  status = "Speaking"
+            default:         status = statusMessage ?? "Connected"
+            }
+            let toolName = statusMessage?.contains("working") == true
+                ? statusMessage : nil
+            liveActivity.updateVoiceState(status, toolName: toolName)
+        }
+
+        onSessionStateChanged?()
+        autoSpeakLatestHermesResponse()
     }
 
     func refreshReadiness() async {
-        await voiceService.refreshReadiness()
-        applySnapshot(voiceService.snapshot)
+        // No-op: readiness is now managed by the Hermes coordinator.
     }
 
     /// Re-sync Live Activity state when returning from background.
@@ -54,64 +134,43 @@ final class TalkStore {
 
     /// Start without a prior readiness check — goes straight to session create.
     func startSessionDirectly() async {
-        canStartSession = true
-        connectionState = .connecting
-        voiceState = .thinking
-        statusMessage = "Connecting..."
-        await voiceService.startSession()
-        applySnapshot(voiceService.snapshot)
-        if isSessionActive {
-            liveActivity.startVoiceSession()
-        }
+        startListening()
     }
 
     func startSession() async {
-        await voiceService.startSession()
-        applySnapshot(voiceService.snapshot)
-        if isSessionActive {
-            liveActivity.startVoiceSession()
-        }
+        startListening()
     }
 
     func endSession() async {
-        // Capture session metadata before the service resets
-        let sessionId = voiceSessionID
-        let duration = sessionDuration
+        guard let coordinator = hermesCoordinator else { return }
         let turnCount = transcriptItems.filter { !$0.isPartial }.count
-
-        // End Live Activity
         liveActivity.endActivity()
-
-        await voiceService.endSession()
-        applySnapshot(voiceService.snapshot)
-
-        // Publish completed session for injection
-        if let sessionId, turnCount > 0 {
+        coordinator.endSession()
+        if turnCount > 0 {
             lastCompletedSession = CompletedVoiceSession(
-                voiceSessionId: sessionId,
-                duration: duration,
+                voiceSessionId: voiceSessionID ?? UUID(),
+                duration: sessionDuration,
                 turnCount: turnCount
             )
         }
+        isSessionActive = false
+        connectionState = .idle
     }
 
     func toggleMute() async {
-        await voiceService.toggleMute()
-        applySnapshot(voiceService.snapshot)
+        isMuted.toggle()
     }
 
     /// Manually interrupt assistant speech (e.g., from a stop button).
-    /// Unlike VAD-triggered interruption, this sends cancel + clear + truncate.
     func interruptAssistant() {
-        voiceService.manuallyInterruptAssistantOutput()
-        applySnapshot(voiceService.snapshot)
+        hermesCoordinator?.interrupt()
     }
 
-    /// Send an image to the Realtime model during an active voice session.
+    /// Send an image during an active voice session.
+    /// Not supported in Hermes-native Talk (no realtime vision).
     @discardableResult
     func sendImage(_ imageData: Data, triggerResponse: Bool = true) -> Bool {
-        guard isSessionActive else { return false }
-        return voiceService.sendImage(imageData, mimeType: "image/jpeg", triggerResponse: triggerResponse)
+        return false
     }
 
     func endSessionIfNeeded() async {
@@ -149,52 +208,6 @@ final class TalkStore {
         latencyMetrics = TalkLatencyMetrics()
         voiceSessionID = nil
         lastCompletedSession = nil
-    }
-
-    private func subscribeToEvents() {
-        eventTask?.cancel()
-        let stream = voiceService.events()
-        eventTask = Task { @MainActor [weak self] in
-            for await event in stream {
-                guard let self else { return }
-                switch event {
-                case .snapshot(let snapshot):
-                    self.applySnapshot(snapshot)
-                }
-            }
-        }
-    }
-
-    private func applySnapshot(_ snapshot: TalkSessionSnapshot) {
-        voiceState = snapshot.voiceState
-        connectionState = snapshot.connectionState
-        transcriptItems = snapshot.transcriptItems
-        sessionDuration = snapshot.sessionDuration
-        isMuted = snapshot.isMuted
-        blockedReason = snapshot.blockedReason
-        statusMessage = snapshot.statusMessage
-        canStartSession = snapshot.canStartSession
-        latencyMetrics = snapshot.latencyMetrics
-        voiceSessionID = snapshot.voiceSessionID
-        isSessionActive = connectionState == .connecting || connectionState == .connected
-
-        // Update Live Activity on voice state changes
-        if isSessionActive {
-            let status: String
-            switch snapshot.voiceState {
-            case .listening: status = "Listening"
-            case .thinking:  status = snapshot.statusMessage ?? "Thinking..."
-            case .speaking:  status = "Speaking"
-            default:         status = snapshot.statusMessage ?? "Connected"
-            }
-            // Extract tool name from status message if it mentions a tool
-            let toolName = snapshot.statusMessage?.contains("working") == true
-                ? snapshot.statusMessage : nil
-            liveActivity.updateVoiceState(status, toolName: toolName)
-        }
-
-        onSessionStateChanged?()
-        autoSpeakLatestHermesResponse()
     }
 
     private func autoSpeakLatestHermesResponse() {

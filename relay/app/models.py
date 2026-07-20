@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -280,8 +280,22 @@ class MessageJob(Base):
     retryable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     usage_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     diff_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class JobEvent(Base):
+    __tablename__ = "job_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("message_jobs.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class VoiceSession(Base):

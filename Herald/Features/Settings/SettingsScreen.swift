@@ -12,6 +12,7 @@ struct SettingsScreen: View {
     @Environment(TabRouter.self) private var router
     @State private var mimoAPIKey: String = ""
     @State private var showAPIKey: Bool = false
+    private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.herald.session")
     @Environment(ThemeManager.self) private var themeManager
 
     var body: some View {
@@ -528,7 +529,7 @@ struct SettingsScreen: View {
                                     .font(Design.Typography.callout.monospaced())
                                     .foregroundStyle(Design.Colors.foreground)
                                     .onChange(of: mimoAPIKey) { _, newValue in
-                                        UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "mimo.apiKey")
+                                        Task { await mimoKeychain.store(key: "mimo.apiKey", value: newValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
                                     }
                             } else {
                                 SecureField("Mimo API Key", text: $mimoAPIKey)
@@ -537,7 +538,7 @@ struct SettingsScreen: View {
                                     .font(Design.Typography.callout.monospaced())
                                     .foregroundStyle(Design.Colors.foreground)
                                     .onChange(of: mimoAPIKey) { _, newValue in
-                                        UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "mimo.apiKey")
+                                        Task { await mimoKeychain.store(key: "mimo.apiKey", value: newValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
                                     }
                             }
 
@@ -595,7 +596,15 @@ struct SettingsScreen: View {
                 }
             }
         }
-        .task { mimoAPIKey = UserDefaults.standard.string(forKey: "mimo.apiKey") ?? "" }
+        .task {
+            // Migrate from UserDefaults to Keychain (one-time)
+            if let legacy = UserDefaults.standard.string(forKey: "mimo.apiKey"),
+               await mimoKeychain.retrieve(key: "mimo.apiKey") == nil {
+                await mimoKeychain.store(key: "mimo.apiKey", value: legacy)
+                UserDefaults.standard.removeObject(forKey: "mimo.apiKey")
+            }
+            mimoAPIKey = await mimoKeychain.retrieve(key: "mimo.apiKey") ?? ""
+        }
     }
 
     // MARK: - Location

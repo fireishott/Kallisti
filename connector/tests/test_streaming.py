@@ -21,9 +21,7 @@ from typing import AsyncIterator
 
 from herald_connector.client import HermesMobileConnector
 from herald_connector.hermes_api_executor import (
-    TOOL_PROGRESS_RE,
     StreamEvent,
-    _could_be_marker_prefix,
 )
 from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
 from herald_connector.runtime_adapter import (
@@ -73,55 +71,6 @@ class FakeWebSocket:
 
     async def send(self, data: str) -> None:
         self.sent.append(json.loads(data))
-
-
-# --------------------------------------------------------------------------
-# Tool progress regex
-# --------------------------------------------------------------------------
-
-
-def test_tool_progress_regex_matches_hermes_api_format():
-    """The API server emits tool progress as \\n`emoji label`\\n."""
-    assert TOOL_PROGRESS_RE.match("\n`🔍 Searching files`\n") is not None
-    assert TOOL_PROGRESS_RE.match("\n`📝 Writing code`\n").group(1) == "📝 Writing code"
-
-
-def test_tool_progress_regex_rejects_normal_text():
-    assert TOOL_PROGRESS_RE.match("Hello world") is None
-    assert TOOL_PROGRESS_RE.match("`just backticks`") is None
-    assert TOOL_PROGRESS_RE.match("\nno backticks\n") is None
-
-
-# --------------------------------------------------------------------------
-# Buffered marker parser (_could_be_marker_prefix)
-# --------------------------------------------------------------------------
-
-
-def test_could_be_marker_prefix():
-    """Buffer ending with newline or backtick could be the start of a marker."""
-    assert _could_be_marker_prefix("Hello\n") is True
-    assert _could_be_marker_prefix("Hello`") is True
-    assert _could_be_marker_prefix("Hello world") is False
-    assert _could_be_marker_prefix("Hello\n`") is True
-
-
-def test_tool_progress_regex_search_finds_marker_in_buffer():
-    """The regex should find a marker embedded in surrounding text."""
-    buffer = "Some text\n`🔍 Searching`\nMore text"
-    m = TOOL_PROGRESS_RE.search(buffer)
-    assert m is not None
-    assert m.group(1) == "🔍 Searching"
-    assert m.start() == 9
-    assert m.end() == 24
-
-
-def test_tool_progress_regex_finds_multiple_markers():
-    """Multiple markers in a single buffer should all be findable."""
-    buffer = "\n`🔍 First`\nSome text\n`📝 Second`\n"
-    matches = list(TOOL_PROGRESS_RE.finditer(buffer))
-    assert len(matches) == 2
-    assert matches[0].group(1) == "🔍 First"
-    assert matches[1].group(1) == "📝 Second"
 
 
 # --------------------------------------------------------------------------

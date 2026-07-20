@@ -269,19 +269,6 @@ final class AppContainer {
             healthService: liveHealthService,
             motionService: liveMotionService
         )
-        let voiceService: any VoiceSessionServiceProtocol = if usesMockPairingService {
-            MockVoiceSessionService()
-        } else {
-            LiveVoiceSessionService(
-                apiClient: apiClient,
-                accessTokenProvider: { await sessionStore.currentAccessToken() },
-                accessTokenRefresher: {
-                    await sessionStore.refreshAccessTokenIfNeeded()
-                    return await sessionStore.currentAccessToken()
-                }
-            )
-        }
-
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
         let container = AppContainer(
@@ -304,7 +291,7 @@ final class AppContainer {
             ),
             settingsStore: settingsStore,
             talkStore: {
-                let ts = TalkStore(voiceService: voiceService)
+                let ts = TalkStore()
                 let tts = MimoTTSService(apiKeyProvider: { resolvedDefaults.string(forKey: "mimo.apiKey")?.trimmingCharacters(in: .whitespacesAndNewlines) })
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak) }

@@ -1,0 +1,7 @@
+{
+  "stream": [
+    {"type": "audio_delta", "audio": "base64encodedchunk1==", "format": "pcm16"},
+    {"type": "audio_delta", "audio": "base64encodedchunk2==", "format": "pcm16"},
+    {"type": "done", "total_duration_ms": 3000}
+  ]
+}

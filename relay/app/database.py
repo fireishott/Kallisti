@@ -199,6 +199,27 @@ class Database:
                 )
             )
 
+            # --- job_events table (Phase A-1a) ---
+            # NOTE: SQLite uses TEXT for JSON/DATETIME. Postgres deployment will
+            # use JSONB for payload_json and TIMESTAMPTZ for created_at.
+            _exec_safe("""
+                CREATE TABLE IF NOT EXISTS job_events (
+                    id            TEXT PRIMARY KEY,
+                    job_id        TEXT NOT NULL REFERENCES message_jobs(id),
+                    seq           BIGINT NOT NULL,
+                    attempt       INTEGER NOT NULL,
+                    source_seq    BIGINT NOT NULL,
+                    type          TEXT NOT NULL,
+                    payload_json  TEXT NOT NULL,
+                    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            _exec_safe("CREATE UNIQUE INDEX IF NOT EXISTS ux_job_events_job_seq ON job_events(job_id, seq)")
+            _exec_safe("CREATE UNIQUE INDEX IF NOT EXISTS ux_job_events_job_attempt_src ON job_events(job_id, attempt, source_seq)")
+            _exec_safe("CREATE INDEX IF NOT EXISTS ix_job_events_job_seq ON job_events(job_id, seq)")
+            if "attempt" not in job_columns:
+                _exec_safe("ALTER TABLE message_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         db = self.session_factory()

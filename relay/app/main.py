@@ -66,8 +66,10 @@ from .schemas import (
     VoiceTurnCreateRequest,
 )
 from .security import AuthContext, get_auth_context, get_db, get_settings, normalize_datetime, require_internal_key
+from .streaming import EventFanout
 from .services import (
     activate_herald_host_connection,
+    append_job_event,
     append_message,
     archive_current_conversation,
     archive_session,
@@ -90,6 +92,8 @@ from .services import (
     end_voice_session,
     ensure_default_user,
     fail_message_job,
+    get_job_events_after,
+    get_job_last_seq,
     get_session,
     get_inbox_item_for_user,
     get_message_job,
@@ -164,6 +168,8 @@ def reply_state_for_job(job_status: str) -> str:
         return "delivered"
     if job_status == "failed":
         return "failed"
+    if job_status == "cancelled":
+        return "failed"
     return "pending"
 
 
@@ -213,30 +219,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.apns_client = create_apns_client(settings)
         app.state.push_broker_http_client = httpx.AsyncClient(http2=broker_http2_supported(), timeout=30.0)
 
-        async def _cleanup_stale_job_queues():
-            """Periodically remove event queues for completed/failed jobs."""
-            while True:
-                await asyncio.sleep(60)
-                try:
-                    stale_ids = []
-                    with database.session() as db:
-                        for job_id in list(app.state.job_event_queues.keys()):
-                            job = get_message_job(db, job_id=job_id)
-                            if job is None or job.status in ("completed", "failed"):
-                                stale_ids.append(job_id)
-                    for job_id in stale_ids:
-                        app.state.job_event_queues.pop(job_id, None)
-                        app.state.job_event_buffers.pop(job_id, None)
-                    if stale_ids:
-                        logger.info("Cleaned up %d stale job event queues", len(stale_ids))
-                except Exception:
-                    logger.warning("Error in job queue cleanup", exc_info=True)
-
-        cleanup_task = asyncio.create_task(_cleanup_stale_job_queues())
         try:
             yield
         finally:
-            cleanup_task.cancel()
             await app.state.push_broker_http_client.aclose()
             if app.state.apns_client:
                 close_method = getattr(app.state.apns_client, "close", None)
@@ -275,54 +260,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.connector_sessions: dict[str, ConnectorSession] = {}
     app.state.sensor_delivery_waiters: dict[str, asyncio.Future[bool]] = {}
     app.state.connector_rpc_waiters: dict[str, asyncio.Future[dict]] = {}
-    app.state.job_event_queues: dict[str, list[asyncio.Queue]] = {}
-    app.state.job_event_buffers: dict[str, list[dict]] = {}
-    app.state.job_event_sequence: dict[str, int] = {}
+    app.state.event_fanout = EventFanout()
 
-    def subscribe_job_events(job_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
-        app.state.job_event_queues.setdefault(job_id, []).append(queue)
-        # Replay any events that were buffered before this subscriber connected.
-        for event in app.state.job_event_buffers.pop(job_id, []):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                break
-        return queue
+    async def subscribe_job_events(job_id: str) -> asyncio.Queue:
+        """Subscribe to wake signals via EventFanout (DB-backed replay)."""
+        return await app.state.event_fanout.subscribe(job_id)
 
-    def unsubscribe_job_events(job_id: str, queue: asyncio.Queue) -> None:
-        queues = app.state.job_event_queues.get(job_id, [])
-        if queue in queues:
-            queues.remove(queue)
-        if not queues:
-            app.state.job_event_queues.pop(job_id, None)
-
-    def ensure_job_event_buffer(job_id: str) -> None:
-        """Pre-create the event queue list so events are buffered even before SSE subscribes."""
-        app.state.job_event_queues.setdefault(job_id, [])
+    async def unsubscribe_job_events(job_id: str, queue: asyncio.Queue) -> None:
+        """Unsubscribe from EventFanout."""
+        await app.state.event_fanout.unsubscribe(job_id, queue)
 
     def publish_job_event(job_id: str, event: dict) -> None:
-        # Assign monotonically increasing event ID per job
-        seq = app.state.job_event_sequence.get(job_id, 0) + 1
-        app.state.job_event_sequence[job_id] = seq
-        event["eventId"] = seq
-        queues = app.state.job_event_queues.get(job_id, [])
-        if not queues:
-            # No subscribers yet — buffer the event on a replay list so late
-            # SSE subscribers can catch up.
-            buffer = app.state.job_event_buffers.setdefault(job_id, [])
-            if len(buffer) < 500:  # cap buffer to prevent unbounded memory growth
-                buffer.append(event)
-            return
-        for queue in queues:
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                logger.warning(
-                    "SSE event queue full for job %s, dropping %s event",
-                    job_id,
-                    event.get("event", "unknown"),
+        # Persist to durable DB log + wake EventFanout subscribers
+        try:
+            event_type = event.get("event", "progress")
+            payload = event.get("data", {})
+            source_seq = event.get("eventId", 0)
+            with database.session() as db:
+                job = get_message_job(db, job_id=job_id)
+                attempt = job.attempt if job is not None else 0
+                result = append_job_event(
+                    db,
+                    job_id=job_id,
+                    event_type=event_type,
+                    payload=payload if isinstance(payload, dict) else {},
+                    source_seq=source_seq,
+                    attempt=attempt,
                 )
+                db.commit()
+                if result is not None:
+                    event["eventId"] = result["seq"]
+        except Exception:
+            logger.warning("Failed to persist job event for %s", job_id, exc_info=True)
+
+        # Wake EventFanout subscribers
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(app.state.event_fanout.wake, job_id)
+        except RuntimeError:
+            pass
 
     def require_connector_host(
         authorization: str | None = Header(default=None),
@@ -338,7 +314,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         while asyncio.get_running_loop().time() < deadline:
             with database.session() as db:
                 job = get_message_job(db, job_id=job_id)
-                if job is None or job.status in {"completed", "failed"}:
+                if job is None or job.status in {"completed", "failed", "cancelled"}:
                     return job
             await asyncio.sleep(0.25)
         return None
@@ -665,6 +641,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         job_data: dict = {
             "id": job.id,
+            "attempt": job.attempt,
             "conversationId": job.conversation_id,
             "latestUserMessage": user_message.text,
             "history": regular_history,
@@ -2216,9 +2193,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
         if request_settings.herald_adapter == "connector":
-            # Pre-create the event buffer so streaming events are captured
-            # even before the iOS client opens its SSE connection.
-            ensure_job_event_buffer(job.id)
             host = current_herald_host_for_user(db, user_id=auth.user.id)
             if host is not None and herald_host_is_online(db, host=host, settings=request_settings):
                 await wait_for_job_completion(job.id, request_settings.connector_sync_wait_seconds)
@@ -2286,6 +2260,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "jobId": job.id,
             "status": job.status,
             "conversationId": job.conversation_id,
+            "attempt": job.attempt,
+            "lastSeq": get_job_last_seq(db, job.id),
             "createdAt": job.created_at.isoformat() if job.created_at else None,
             "claimedAt": job.claimed_at.isoformat() if job.claimed_at else None,
             "leaseExpiresAt": job.lease_expires_at.isoformat() if job.lease_expires_at else None,
@@ -2378,6 +2354,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/jobs/{job_id}/events")
     async def job_events_stream(
         job_id: str,
+        request: Request,
+        after: int = 0,
         auth: AuthContext = Depends(get_auth_context),
         db: Session = Depends(get_db),
     ):
@@ -2387,34 +2365,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job is None or job.user_id != auth.user.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
-        # Always subscribe first — this drains any buffered events that were
-        # published before the SSE connection opened.
-        queue = subscribe_job_events(job_id)
-
-        # Build the done event from DB (used if job already completed)
-        done_event_data: dict | None = None
-        if job.status in ("completed", "failed"):
-            done_event_data = {"jobId": job_id, "status": job.status}
-            if job.usage_data:
-                done_event_data["usage"] = job.usage_data
-            if job.diff_data:
-                done_event_data["diff"] = job.diff_data
-            if job.error_text:
-                done_event_data["error"] = job.error_text
-            if job.result_message_id:
-                result_message = db.get(Message, job.result_message_id)
-                if result_message is not None:
-                    done_event_data["message"] = serialize_message(result_message, job=job)
+        # Determine replay cursor from Last-Event-ID header or ?after= query param
+        cursor = after
+        last_event_id = request.headers.get("last-event-id")
+        if last_event_id is not None:
+            try:
+                cursor = int(last_event_id)
+            except (ValueError, TypeError):
+                pass
 
         async def event_stream():
-            # Coalesce streaks of text_delta events into a single outgoing SSE
-            # frame. On noisy connections each frame carries TLS + HTTP/2 framing
-            # overhead, so batching 5–20 deltas cuts bytes-on-wire and wakeups on
-            # the iOS side by an order of magnitude for long model outputs.
+            last_seq = cursor
+
+            # --- Helpers for delta coalescing ---
             delta_buffer: list[str] = []
             delta_job_id: str | None = None
-            # ~40ms is below human perception of streaming lag but wide enough
-            # to absorb the tokens-per-second cadence of GPT-4 class models.
             delta_flush_window = 0.04
 
             def drain_delta(data: dict) -> None:
@@ -2432,46 +2397,87 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload = {"jobId": delta_job_id or job_id, "kind": "text_delta", "delta": merged}
                 return f"event: text_delta\ndata: {json.dumps(jsonable_encoder(payload))}\n\n"
 
-            def emit_event(event: dict) -> str | None:
-                event_type = event.get("event", "progress")
+            def emit_db_event(evt: dict) -> str | None:
+                """Format a DB event dict as an SSE frame with id: line."""
+                nonlocal last_seq
+                event_type = evt.get("type", "progress")
+                seq = evt.get("seq", 0)
+                last_seq = seq
                 if event_type == "text_delta":
-                    drain_delta(event.get("data", {}) or {})
+                    drain_delta(evt.get("payload", {}) or {})
                     return None
-                data = json.dumps(jsonable_encoder(event.get("data", {})))
-                return f"event: {event_type}\ndata: {data}\n\n"
+                payload = evt.get("payload", {})
+                data = json.dumps(jsonable_encoder(payload))
+                return f"id: {seq}\nevent: {event_type}\ndata: {data}\n\n"
 
-            try:
-                # Replay any buffered events (text_delta, tool_activity, etc.)
-                # that landed before the SSE connection opened.
-                while not queue.empty():
-                    event = queue.get_nowait()
-                    frame = emit_event(event)
-                    if frame is not None:
-                        flushed = flushed_delta_frame()
-                        if flushed is not None:
-                            yield flushed
-                        yield frame
-                        if event.get("event") == "done":
-                            return
+            def build_terminal_event(status_val: str, job_row) -> str:
+                """Build a terminal SSE frame (completed/failed/cancelled)."""
+                nonlocal last_seq
+                terminal_seq = last_seq + 1
+                last_seq = terminal_seq
+                done_data: dict = {"jobId": job_id, "status": status_val}
+                if status_val == "completed":
+                    if job_row.usage_data:
+                        done_data["usage"] = job_row.usage_data
+                    if job_row.diff_data:
+                        done_data["diff"] = job_row.diff_data
+                    if job_row.result_message_id:
+                        with database.session() as db2:
+                            result_msg = db2.get(Message, job_row.result_message_id)
+                            if result_msg is not None:
+                                done_data["message"] = serialize_message(result_msg, job=job_row)
+                elif status_val == "failed":
+                    if job_row.error_text:
+                        done_data["error"] = job_row.error_text
+                    if job_row.diff_data:
+                        done_data["diff"] = job_row.diff_data
+                    if job_row.result_message_id:
+                        with database.session() as db2:
+                            result_msg = db2.get(Message, job_row.result_message_id)
+                            if result_msg is not None:
+                                done_data["message"] = serialize_message(result_msg, job=job_row)
+                elif status_val == "cancelled":
+                    if job_row.error_text:
+                        done_data["error"] = job_row.error_text
+                return f"id: {terminal_seq}\nevent: done\ndata: {json.dumps(jsonable_encoder(done_data))}\n\n"
 
+            # --- Phase 1: Replay persisted events from DB ---
+            with database.session() as replay_db:
+                persisted = get_job_events_after(replay_db, job_id, after_seq=cursor)
+
+            for evt in persisted:
                 flushed = flushed_delta_frame()
                 if flushed is not None:
                     yield flushed
-
-                # If job already completed, emit the done event after replaying buffer
-                if done_event_data is not None:
-                    yield f"event: done\ndata: {json.dumps(jsonable_encoder(done_event_data))}\n\n"
+                frame = emit_db_event(evt)
+                if frame is not None:
+                    yield frame
+                if evt.get("type") in ("completed", "failed", "cancelled"):
+                    flushed = flushed_delta_frame()
+                    if flushed is not None:
+                        yield flushed
                     return
 
-                # Live phase — drain events with short-timeout coalescing for
-                # text_delta streaks, long-timeout keepalive otherwise.
+            # --- Phase 1b: If job already terminal, emit terminal event and close ---
+            with database.session() as check_db:
+                current_job = get_message_job(check_db, job_id=job_id)
+                if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
+                    flushed = flushed_delta_frame()
+                    if flushed is not None:
+                        yield flushed
+                    yield build_terminal_event(current_job.status, current_job)
+                    return
+
+            # --- Phase 2: Subscribe to EventFanout for live events ---
+            wake_queue = await subscribe_job_events(job_id)
+
+            try:
                 while True:
-                    # If we're sitting on buffered deltas, use the short flush
-                    # window so we never hold a delta longer than ~40ms.
                     timeout = delta_flush_window if delta_buffer else float(settings.sse_keepalive_seconds)
                     try:
-                        event = await asyncio.wait_for(queue.get(), timeout=timeout)
+                        await asyncio.wait_for(wake_queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
+                        # Timeout — flush deltas or send keepalive
                         if delta_buffer:
                             flushed = flushed_delta_frame()
                             if flushed is not None:
@@ -2480,22 +2486,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             yield ": keepalive\n\n"
                         continue
 
-                    frame = emit_event(event)
-                    if frame is None:
-                        # Buffered a delta. Continue draining without yielding —
-                        # the next iteration's short timeout will flush it.
-                        continue
+                    # Got a signal — query DB for new events
+                    with database.session() as live_db:
+                        new_events = get_job_events_after(live_db, job_id, after_seq=last_seq)
 
-                    # Non-delta event: flush any pending delta first so order
-                    # is preserved, then emit this event.
-                    flushed = flushed_delta_frame()
-                    if flushed is not None:
-                        yield flushed
-                    yield frame
-                    if event.get("event") == "done":
-                        break
+                    for evt in new_events:
+                        flushed = flushed_delta_frame()
+                        if flushed is not None:
+                            yield flushed
+                        frame = emit_db_event(evt)
+                        if frame is not None:
+                            yield frame
+
+                    # Check if job became terminal
+                    with database.session() as check_db:
+                        current_job = get_message_job(check_db, job_id=job_id)
+                        if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
+                            # Drain any remaining events
+                            with database.session() as drain_db:
+                                remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
+                            for evt in remaining:
+                                flushed = flushed_delta_frame()
+                                if flushed is not None:
+                                    yield flushed
+                                frame = emit_db_event(evt)
+                                if frame is not None:
+                                    yield frame
+                            flushed = flushed_delta_frame()
+                            if flushed is not None:
+                                yield flushed
+                            yield build_terminal_event(current_job.status, current_job)
+                            return
             finally:
-                unsubscribe_job_events(job_id, queue)
+                await unsubscribe_job_events(job_id, wake_queue)
 
         return StreamingResponse(
             event_stream(),

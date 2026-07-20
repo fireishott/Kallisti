@@ -1,0 +1,85 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:35:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 2,
+    "type": "reasoning.delta",
+    "timestamp": "2026-07-20T14:35:00.500Z",
+    "payload": {
+      "delta": "Let me think about this step by step...",
+      "segmentId": "seg-r-001"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 3,
+    "type": "reasoning.delta",
+    "timestamp": "2026-07-20T14:35:01.000Z",
+    "payload": {
+      "delta": "The key insight is that we need to consider edge cases.",
+      "segmentId": "seg-r-001"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 4,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:35:01.500Z",
+    "payload": {
+      "delta": "After careful consideration, ",
+      "segmentId": "seg-002"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 5,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:35:01.900Z",
+    "payload": {
+      "delta": "the answer is nuanced.",
+      "segmentId": "seg-002"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "conversationId": "0f1e2d3c-4b5a-4697-8807-3b4c5d6e7f80",
+    "attempt": 1,
+    "seq": 6,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:35:02.300Z",
+    "payload": {
+      "messageId": "msg-002",
+      "text": "After careful consideration, the answer is nuanced.",
+      "usage": {
+        "prompt_tokens": 200,
+        "completion_tokens": 80,
+        "total_tokens": 280
+      }
+    }
+  }
+]

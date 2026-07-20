@@ -12,17 +12,16 @@ final class ChatStore {
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
-    private(set) var streamingMessageID: UUID?
+    private var activeStreams: [UUID: UUID] = [:]  // jobId → placeholderId
+    var streamingMessageID: UUID? {
+        activeStreams.values.first
+    }
 
     /// After `messageSent`, if no real progress (text/reasoning delta, tool
     /// activity, or finish) arrives within this window, the job is treated as
     /// silently stalled/dropped — see `runStreamingAttempt`.
-    private static let watchdogTimeout: Duration = .seconds(120)
-    private static let maxAutoRetries = 1
-    /// Tracks how many times a stalled job has been auto-retried, keyed by
-    /// the user message's clientMessageID. Cleared once the send completes
-    /// (success or final failure).
-    private var stallRetryCounts: [UUID: Int] = [:]
+    /// Mutable so tests can set it to milliseconds.
+    static var watchdogTimeout: Duration = .seconds(120)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas in an Array<String> (avoids O(n²) inline concat) and flush
@@ -131,17 +130,16 @@ final class ChatStore {
             isStreaming: true
         )
         conversation?.messages.append(placeholder)
-        streamingMessageID = placeholderID
+        // activeStreams entry is added in the .messageSent handler once jobId is known.
+        // streamingMessageID (computed) remains nil until then — that's correct.
         restartPendingPollingIfNeeded()
 
-        stallRetryCounts[clientMessageID] = 0
         await runAttemptLoop(
             content: trimmedContent,
             attachments: attachments,
             clientMessageID: clientMessageID,
             placeholderID: placeholderID
         )
-        stallRetryCounts.removeValue(forKey: clientMessageID)
 
         if !hasPendingMessages {
             pendingMessageSentAt = nil
@@ -153,52 +151,31 @@ final class ChatStore {
         }
     }
 
-    /// Drives one or more streaming attempts for a single outgoing message.
+    /// Drives a single streaming attempt for an outgoing message.
     ///
-    /// A ~120s watchdog guards each attempt (see `runStreamingAttempt`): if no
+    /// A ~120s watchdog guards the attempt (see `runStreamingAttempt`): if no
     /// progress event arrives in that window, the job is treated as silently
-    /// dropped — the exact failure mode confirmed via device testing, where a
-    /// job was claimed by the relay but never dispatched by the connector, with
-    /// no server error at all. The first stall triggers one automatic retry that
-    /// reuses the same message bubble (same clientMessageID/placeholderID, so no
-    /// duplicate appears); a second stall gives up with real error text and
-    /// leaves the existing manual "tap to retry" affordance for the user.
+    /// dropped. The relay now owns retries via leases, so the client never
+    /// resubmits the same message — it just shows a waiting state.
     private func runAttemptLoop(
         content: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
         placeholderID: UUID
     ) async {
-        while true {
-            let stalled = await runStreamingAttempt(
-                content: content,
-                attachments: attachments,
-                clientMessageID: clientMessageID,
-                placeholderID: placeholderID
-            )
-            guard stalled else { return }
+        let stalled = await runStreamingAttempt(
+            content: content,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            placeholderID: placeholderID
+        )
+        guard stalled else { return }
 
-            let attempt = stallRetryCounts[clientMessageID] ?? 0
-            if attempt < Self.maxAutoRetries {
-                stallRetryCounts[clientMessageID] = attempt + 1
-                continue // re-send with the same bubble/IDs, restart the watchdog
-            }
-
-            failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
-
-            // The job may still be running server-side.  Poll once after a
-            // short delay so a late completion replaces the error message
-            // instead of leaving "tap to retry" + spinning dots on screen.
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(15))
-                guard let self, !Task.isCancelled else { return }
-                let fresh = await self.refreshActiveConversation()
-                self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
-                if let latestUsage = self.conversation?.latestUsage {
-                    self.lastTokenUsage = latestUsage
-                }
-            }
-            return
+        // The watchdog fired — the coordinator will handle reconnection.
+        // If the job is truly dead, the coordinator will eventually emit
+        // .failed after exhausting retries. Show a waiting state.
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+            conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
     }
 
@@ -234,7 +211,10 @@ final class ChatStore {
                 case .messageSent(let jobID):
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
-                    progressContinuation?.yield(())
+                    self.activeStreams[jobID] = placeholderID
+                    // Do NOT yield progress — .messageSent is the relay accepting the job,
+                    // not the connector producing real progress. The watchdog must keep
+                    // waiting for actual content (text/tool/reasoning/terminal).
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
@@ -316,7 +296,7 @@ final class ChatStore {
                         self.lastTokenUsage = usage
                     }
                     self.detectProfileSwitch(in: finalMessage.content)
-                    self.streamingMessageID = nil
+                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     await self.autoTitleIfNeeded()
@@ -351,7 +331,7 @@ final class ChatStore {
                             status: .failed
                         )
                     }
-                    self.streamingMessageID = nil
+                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
@@ -375,7 +355,7 @@ final class ChatStore {
                             self.conversation?.messages.remove(at: idx)
                         }
                     }
-                    self.streamingMessageID = nil
+                    if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.chatLiveActivity.endActivity()
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
@@ -426,7 +406,7 @@ final class ChatStore {
             if let latestUsage = conversation?.latestUsage {
                 lastTokenUsage = latestUsage
             }
-            streamingMessageID = nil
+            activeStreams.removeAll()
             restartPendingPollingIfNeeded()
         }
 
@@ -454,7 +434,7 @@ final class ChatStore {
         if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
             conversation?.messages[idx].status = .failed
         }
-        streamingMessageID = nil
+        activeStreams.removeAll()
         pendingMessageSentAt = nil
         chatLiveActivity.endActivity()
     }
@@ -462,8 +442,7 @@ final class ChatStore {
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil
-        streamingMessageID = nil
-        stallRetryCounts.removeAll()
+        activeStreams.removeAll()
         chatLiveActivity.endActivity()
         let fresh = try await heraldClient.clearConversation()
         conversation = fresh
@@ -496,7 +475,7 @@ final class ChatStore {
             }
             conversation = conv
         }
-        streamingMessageID = nil
+        activeStreams.removeAll()
         pendingMessageSentAt = nil
 
         if let conversation {
@@ -644,8 +623,7 @@ final class ChatStore {
         pollingTask = nil
         streamingTask?.cancel()
         streamingTask = nil
-        streamingMessageID = nil
-        stallRetryCounts.removeAll()
+        activeStreams.removeAll()
         logEntries = []
         isPollingEnabled = false
         resetCommandCatalog()

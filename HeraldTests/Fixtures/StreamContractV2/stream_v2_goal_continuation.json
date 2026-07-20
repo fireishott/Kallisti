@@ -1,0 +1,53 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8091021324",
+    "conversationId": "6543210f-1e2d-4243-3463-910213243546",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T15:05:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8091021324",
+    "conversationId": "6543210f-1e2d-4243-3463-910213243546",
+    "attempt": 1,
+    "seq": 2,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T15:05:00.400Z",
+    "payload": {
+      "delta": "I've completed the first part of the task.",
+      "segmentId": "seg-008"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8091021324",
+    "conversationId": "6543210f-1e2d-4243-3463-910213243546",
+    "attempt": 1,
+    "seq": 3,
+    "type": "commentary",
+    "timestamp": "2026-07-20T15:05:00.800Z",
+    "payload": {
+      "text": "Goal requires continuation — scheduling next phase."
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8091021324",
+    "conversationId": "6543210f-1e2d-4243-3463-910213243546",
+    "attempt": 1,
+    "seq": 4,
+    "type": "run.requeued",
+    "timestamp": "2026-07-20T15:05:01.000Z",
+    "payload": {
+      "fromAttempt": 1,
+      "toAttempt": 2
+    }
+  }
+]

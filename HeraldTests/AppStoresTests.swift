@@ -278,77 +278,6 @@ struct AppStoresTests {
         func cancelJob(jobID: UUID) async throws {}
     }
 
-    @MainActor
-    private final class RecordingVoiceSessionService: VoiceSessionServiceProtocol {
-        var voiceState: VoiceState = .idle { didSet { publishSnapshot() } }
-        var connectionState: TalkConnectionState = .idle { didSet { publishSnapshot() } }
-        var transcriptItems: [TranscriptItem] = [] { didSet { publishSnapshot() } }
-        var sessionDuration: TimeInterval = 0 { didSet { publishSnapshot() } }
-        var isMuted = false { didSet { publishSnapshot() } }
-        var blockedReason: String? { didSet { publishSnapshot() } }
-        var statusMessage: String? { didSet { publishSnapshot() } }
-        var canStartSession = false { didSet { publishSnapshot() } }
-        var latencyMetrics = TalkLatencyMetrics() { didSet { publishSnapshot() } }
-
-        var snapshot: TalkSessionSnapshot {
-            TalkSessionSnapshot(
-                voiceState: voiceState,
-                connectionState: connectionState,
-                transcriptItems: transcriptItems,
-                sessionDuration: sessionDuration,
-                isMuted: isMuted,
-                blockedReason: blockedReason,
-                statusMessage: statusMessage,
-                canStartSession: canStartSession,
-                latencyMetrics: latencyMetrics,
-                voiceSessionID: nil
-            )
-        }
-
-        private let eventHub = TalkSessionEventHub()
-
-        func events() -> AsyncStream<TalkSessionEvent> {
-            eventHub.stream(initial: snapshot)
-        }
-
-        func refreshReadiness() async {
-            voiceState = .disconnected
-            connectionState = .blocked
-            blockedReason = "OpenAI Realtime is not configured on this Herald host."
-            statusMessage = blockedReason
-            canStartSession = false
-        }
-
-        func startSession() async {}
-
-        func endSession() async {
-            voiceState = .idle
-            connectionState = .idle
-        }
-
-        func toggleMute() async {
-            isMuted.toggle()
-        }
-
-        func manuallyInterruptAssistantOutput() {
-            voiceState = .listening
-            statusMessage = "Listening"
-        }
-
-        @discardableResult
-        func sendImage(_ imageData: Data, mimeType: String, triggerResponse: Bool) -> Bool {
-            true
-        }
-
-        func emitAssistantTurn(_ text: String) {
-            transcriptItems.append(TranscriptItem(speaker: .herald, text: text, isPartial: false))
-        }
-
-        private func publishSnapshot() {
-            eventHub.publish(snapshot: snapshot)
-        }
-    }
-
     private struct FakeAppAttestProof: Sendable {
         let keyId: String
         let attestationObject: String
@@ -1199,32 +1128,6 @@ struct AppStoresTests {
         let mergedAttachment = try #require(userMessage.attachments.first)
         #expect(mergedAttachment.thumbnailBase64 != nil)
         #expect(mergedAttachment.localStoragePath != nil)
-    }
-
-    @Test @MainActor
-    func talkStoreReflectsBlockedReadinessState() async throws {
-        let voiceService = RecordingVoiceSessionService()
-        let talkStore = TalkStore(voiceService: voiceService)
-
-        await talkStore.refreshReadiness()
-
-        #expect(talkStore.connectionState == .blocked)
-        #expect(talkStore.voiceState == .disconnected)
-        #expect(talkStore.canStartSession == false)
-        #expect(talkStore.blockedReason == "OpenAI Realtime is not configured on this Herald host.")
-    }
-
-    @Test @MainActor
-    func talkStoreUpdatesFromVoiceEventStream() async throws {
-        let voiceService = RecordingVoiceSessionService()
-        let talkStore = TalkStore(voiceService: voiceService)
-
-        try? await Task.sleep(for: .milliseconds(25))
-        voiceService.emitAssistantTurn("Event-driven reply")
-        try? await Task.sleep(for: .milliseconds(25))
-
-        #expect(talkStore.transcriptItems.count == 1)
-        #expect(talkStore.transcriptItems.first?.text == "Event-driven reply")
     }
 
     @Test @MainActor

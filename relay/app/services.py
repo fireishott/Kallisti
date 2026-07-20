@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -21,6 +21,7 @@ from .models import (
     HostEnrollmentInvite,
     InboxAction,
     InboxItem,
+    JobEvent,
     Message,
     MessageJob,
     PairingInvite,
@@ -1120,24 +1121,37 @@ def get_message_job(db: Session, *, job_id: str) -> MessageJob | None:
     return db.get(MessageJob, job_id)
 
 
-def requeue_expired_message_jobs(db: Session) -> None:
+def requeue_expired_message_jobs(db: Session, settings: Settings | None = None) -> None:
     now = utcnow()
-    db.execute(
-        update(MessageJob)
+    expired_jobs = db.scalars(
+        select(MessageJob)
         .where(
             MessageJob.status == "running",
             MessageJob.lease_expires_at.is_not(None),
             MessageJob.lease_expires_at < now,
         )
-        .values(
-            status="queued",
-            host_id=None,
-            claimed_connection_nonce=None,
-            claimed_at=None,
-            lease_expires_at=None,
-            updated_at=now,
-        )
-    )
+    ).all()
+
+    max_attempts = settings.max_job_attempts if settings is not None else 3
+    for job in expired_jobs:
+        if job.attempt >= max_attempts:
+            job.status = "failed"
+            job.error_text = f"Max attempts ({max_attempts}) exhausted"
+            job.completed_at = now
+            job.retryable = False
+            job.host_id = None
+            job.claimed_connection_nonce = None
+            job.claimed_at = None
+            job.lease_expires_at = None
+            job.updated_at = now
+        else:
+            job.status = "queued"
+            job.host_id = None
+            job.claimed_connection_nonce = None
+            job.claimed_at = None
+            job.lease_expires_at = None
+            job.updated_at = now
+
     db.commit()
 
 
@@ -1211,7 +1225,7 @@ def claim_next_message_job(
     global _last_requeue_at
     now_mono = _time.monotonic()
     if now_mono - _last_requeue_at >= _REQUEUE_INTERVAL:
-        requeue_expired_message_jobs(db)
+        requeue_expired_message_jobs(db, settings)
         log_stale_queued_jobs(db, settings)
         _last_requeue_at = now_mono
 
@@ -1241,6 +1255,7 @@ def claim_next_message_job(
             claimed_at=now,
             lease_expires_at=lease_expires_at,
             updated_at=now,
+            attempt=MessageJob.attempt + 1,
         )
     )
     db.commit()
@@ -1537,6 +1552,124 @@ def serialize_conversation(conversation: Conversation, messages: list[Message], 
     if latest_usage:
         result["latestUsage"] = latest_usage
     return result
+
+
+# ---------------------------------------------------------------------------
+# Job Event Append (Phase A-1a/1b)
+# ---------------------------------------------------------------------------
+
+
+def append_job_event(
+    db: Session,
+    *,
+    job_id: str,
+    event_type: str,
+    payload: dict,
+    source_seq: int,
+    attempt: int,
+) -> dict | None:
+    """Append an event to the durable job event log in a single transaction.
+
+    Returns the created event dict (with assigned seq) or None if duplicate/rejected.
+    Invariants: 2 (one ordered log), 3 (append before fan-out), 4 (at-least-once, exactly-once projection).
+    """
+    job = db.get(MessageJob, job_id)
+    if job is None:
+        return None
+
+    if job.status in ("completed", "failed", "cancelled"):
+        return None
+
+    if job.attempt != attempt:
+        return None
+
+    existing = db.scalar(
+        select(JobEvent).where(
+            JobEvent.job_id == job_id,
+            JobEvent.attempt == attempt,
+            JobEvent.source_seq == source_seq,
+        )
+    )
+    if existing is not None:
+        return None
+
+    max_seq = db.scalar(
+        select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)
+    )
+    new_seq = max_seq + 1
+
+    event = JobEvent(
+        job_id=job_id,
+        seq=new_seq,
+        attempt=attempt,
+        source_seq=source_seq,
+        type=event_type,
+        payload_json=payload,
+    )
+    db.add(event)
+
+    job.updated_at = utcnow()
+
+    return {
+        "id": event.id,
+        "jobId": job_id,
+        "seq": new_seq,
+        "attempt": attempt,
+        "sourceSeq": source_seq,
+        "type": event_type,
+        "payload": payload,
+    }
+
+
+def get_job_events_after(
+    db: Session,
+    job_id: str,
+    after_seq: int = 0,
+) -> list[dict]:
+    """Get all events for a job with seq > after_seq, ordered by seq."""
+    events = db.scalars(
+        select(JobEvent)
+        .where(JobEvent.job_id == job_id, JobEvent.seq > after_seq)
+        .order_by(JobEvent.seq)
+    ).all()
+    return [
+        {
+            "id": e.id,
+            "jobId": e.job_id,
+            "seq": e.seq,
+            "attempt": e.attempt,
+            "sourceSeq": e.source_seq,
+            "type": e.type,
+            "payload": e.payload_json,
+        }
+        for e in events
+    ]
+
+
+def get_job_last_seq(db: Session, job_id: str) -> int:
+    """Get the last seq for a job."""
+    return db.scalar(
+        select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)
+    ) or 0
+
+
+def cleanup_old_job_events(db: Session, retention_hours: int = 24) -> int:
+    """Delete job_events for terminal jobs completed before the retention cutoff.
+
+    Never expires events for non-terminal jobs. Returns the number of rows deleted.
+    """
+    from sqlalchemy import delete
+
+    cutoff = utcnow() - timedelta(hours=retention_hours)
+    terminal_job_ids = select(MessageJob.id).where(
+        MessageJob.status.in_(["completed", "failed", "cancelled"]),
+        MessageJob.completed_at < cutoff,
+    )
+    result = db.execute(
+        delete(JobEvent).where(JobEvent.job_id.in_(terminal_job_ids))
+    )
+    db.commit()
+    return result.rowcount
 
 
 # ---------------------------------------------------------------------------

@@ -6,10 +6,10 @@ import OSLog
 ///
 /// API: POST https://api.xiaomimimo.com/v1/chat/completions
 /// Model: mimo-v2.5-tts
-/// Auth: Bearer token (MIMO_API_KEY)
+/// Auth: `api-key` header (MIMO_API_KEY)
 /// Response: choices[0].message.audio.data = base64-encoded WAV
 @MainActor
-final class MimoTTSService: NSObject, TTSServiceProtocol {
+final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "io.hermesmobile.HermesMobile",
         category: "MimoTTS"
@@ -23,14 +23,22 @@ final class MimoTTSService: NSObject, TTSServiceProtocol {
 
     private let apiKeyProvider: @MainActor () -> String?
     private let session: URLSession
+    private let streamingSession: URLSession
     private let decoder = JSONDecoder()
     private var audioPlayer: AVAudioPlayer?
+    private var currentStreamingTask: Task<Void, Never>?
 
     init(apiKeyProvider: @escaping @MainActor () -> String?) {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = Self.sessionTimeout
         config.timeoutIntervalForResource = Self.sessionTimeout
         self.session = URLSession(configuration: config)
+
+        let streamingConfig = URLSessionConfiguration.default
+        streamingConfig.timeoutIntervalForRequest = 120
+        streamingConfig.timeoutIntervalForResource = 120
+        self.streamingSession = URLSession(configuration: streamingConfig)
+
         self.apiKeyProvider = apiKeyProvider
         super.init()
     }
@@ -64,7 +72,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(apiKey, forHTTPHeaderField: "api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -119,6 +127,130 @@ final class MimoTTSService: NSObject, TTSServiceProtocol {
         audioPlayer?.stop()
         audioPlayer = nil
         isPlaying = false
+    }
+
+    // MARK: - Streaming TTS
+
+    private var streamingCancelled = false
+
+    /// Stream PCM16 audio chunks for the given text.
+    /// Sends `stream: true` in the request and parses SSE audio deltas.
+    func audioStream(for text: String, voice: SpeechVoice, style: String?) -> AsyncThrowingStream<PCMChunk, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let apiKey = self.apiKeyProvider(), !apiKey.isEmpty else {
+                        throw TTSError.noAPIKey
+                    }
+
+                    guard let url = URL(string: "\(Self.baseURL)/chat/completions") else {
+                        throw TTSError.invalidURL
+                    }
+
+                    var messages: [[String: String]] = []
+                    if let style, !style.isEmpty {
+                        messages.append(["role": "user", "content": style])
+                    }
+                    messages.append(["role": "assistant", "content": text])
+
+                    let body: [String: Any] = [
+                        "model": Self.model,
+                        "messages": messages,
+                        "stream": true,
+                        "audio": [
+                            "format": "pcm16",
+                            "voice": voice.rawValue,
+                        ],
+                    ]
+
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue(apiKey, forHTTPHeaderField: "api-key")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                    Self.logger.info("Streaming TTS \(text.count, privacy: .public) chars, voice=\(voice.rawValue, privacy: .public)")
+
+                    let (bytes, response) = try await self.streamingSession.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          (200..<300).contains(httpResponse.statusCode) else {
+                        throw TTSError.httpError(
+                            statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                            message: "TTS streaming failed"
+                        )
+                    }
+
+                    var sequence = 0
+                    for try await line in bytes.lines {
+                        guard !Task.isCancelled else { break }
+                        guard line.hasPrefix("data: ") else { continue }
+                        let jsonString = String(line.dropFirst(6))
+                        guard jsonString != "[DONE]",
+                              let data = jsonString.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                            break
+                        }
+
+                        // Extract audio delta from choices[0].delta.audio.data
+                        guard let choices = json["choices"] as? [[String: Any]],
+                              let first = choices.first,
+                              let delta = first["delta"] as? [String: Any],
+                              let audio = delta["audio"] as? [String: Any],
+                              let b64Data = audio["data"] as? String,
+                              let pcmData = Data(base64Encoded: b64Data) else {
+                            continue
+                        }
+
+                        let chunk = PCMChunk(
+                            data: pcmData,
+                            sampleRate: 24000,
+                            channels: 1,
+                            format: .pcm16,
+                            sequence: sequence,
+                            isTerminal: false
+                        )
+                        continuation.yield(chunk)
+                        sequence += 1
+                    }
+
+                    // Yield terminal chunk
+                    if sequence > 0 {
+                        continuation.yield(PCMChunk(
+                            data: Data(),
+                            sampleRate: 24000,
+                            channels: 1,
+                            format: .pcm16,
+                            sequence: sequence,
+                            isTerminal: true
+                        ))
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch {
+                    Self.logger.error("TTS streaming failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.finish(throwing: error)
+                }
+            }
+            self.currentStreamingTask = task
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
+    func cancelStreaming() {
+        currentStreamingTask?.cancel()
+        currentStreamingTask = nil
+    }
+
+    // MARK: - SpeechSynthesizing
+
+    func audio(for text: String, voice: SpeechVoice, style: String?) -> AsyncThrowingStream<PCMChunk, Error> {
+        audioStream(for: text, voice: voice, style: style)
+    }
+
+    func cancel() {
+        stop()
+        cancelStreaming()
     }
 
     private func configureAudioSession() throws {

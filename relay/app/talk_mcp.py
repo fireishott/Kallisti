@@ -1,8 +1,13 @@
-"""MCP endpoint for voice mode tool delegation.
+"""MCP endpoint for voice mode tool delegation (DEPRECATED).
 
 Implements the MCP Streamable HTTP protocol directly for a single tool:
-``herald_delegate``.  OpenAI's Realtime API calls this server-side during
+``hermes_delegate``.  OpenAI's Realtime API calls this server-side during
 voice sessions to delegate requests to the Herald agent.
+
+.. deprecated::
+    This entire module is part of the legacy OpenAI Realtime Talk stack.
+    Hermes-native Talk (ASR → Hermes → TTS) replaces this path.
+    Will be removed in the next release.
 """
 
 from __future__ import annotations
@@ -24,13 +29,16 @@ logger = logging.getLogger(__name__)
 #  Tool definition
 # --------------------------------------------------------------------------- #
 
+# DEPRECATED: This tool is part of the legacy OpenAI Realtime Talk stack.
+# Will be removed in the next release when USE_LEGACY_REALTIME_TALK is retired.
 HERMES_DELEGATE_TOOL = {
     "name": "hermes_delegate",
     "description": (
-        "Delegate a voice request to the connected Herald host. "
+        "[DEPRECATED] Delegate a voice request to the connected Herald host. "
         "Use this when the user asks for something that requires "
         "tool access, file reads, memory lookups, or any action "
-        "beyond what your cached context provides."
+        "beyond what your cached context provides. "
+        "This tool is deprecated — Hermes-native Talk replaces this path."
     ),
     "inputSchema": {
         "type": "object",

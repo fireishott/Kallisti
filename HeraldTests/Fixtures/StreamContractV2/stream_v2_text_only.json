@@ -1,0 +1,72 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:30:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 2,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:30:01.200Z",
+    "payload": {
+      "delta": "Here is ",
+      "segmentId": "seg-001"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 3,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:30:01.450Z",
+    "payload": {
+      "delta": "your answer. ",
+      "segmentId": "seg-001"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 4,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:30:01.800Z",
+    "payload": {
+      "delta": "The result is 42.",
+      "segmentId": "seg-001"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 5,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:30:02.100Z",
+    "payload": {
+      "messageId": "msg-001",
+      "text": "Here is your answer. The result is 42.",
+      "usage": {
+        "prompt_tokens": 150,
+        "completion_tokens": 25,
+        "total_tokens": 175
+      }
+    }
+  }
+]

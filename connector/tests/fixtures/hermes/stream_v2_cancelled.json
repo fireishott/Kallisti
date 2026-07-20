@@ -1,0 +1,54 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f80910213",
+    "conversationId": "543210f1-e2d3-4132-2352-809102132435",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T15:00:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f80910213",
+    "conversationId": "543210f1-e2d3-4132-2352-809102132435",
+    "attempt": 1,
+    "seq": 2,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T15:00:00.600Z",
+    "payload": {
+      "delta": "Let me look into that for you...",
+      "segmentId": "seg-007"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f80910213",
+    "conversationId": "543210f1-e2d3-4132-2352-809102132435",
+    "attempt": 1,
+    "seq": 3,
+    "type": "tool.started",
+    "timestamp": "2026-07-20T15:00:01.000Z",
+    "payload": {
+      "toolCallId": "tc-200",
+      "name": "web_search",
+      "args": "{\"query\": \"latest Swift concurrency patterns\"}"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f80910213",
+    "conversationId": "543210f1-e2d3-4132-2352-809102132435",
+    "attempt": 1,
+    "seq": 4,
+    "type": "run.cancelled",
+    "timestamp": "2026-07-20T15:00:02.000Z",
+    "payload": {
+      "reason": "User requested cancellation via notification action"
+    }
+  }
+]

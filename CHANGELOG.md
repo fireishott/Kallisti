@@ -2,6 +2,210 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.0] - 2026-07-20
+
+### Deprecated - Legacy OpenAI Realtime Talk (Phase B-T6)
+
+- **Removed `useHermesNativeTalk` flag** (`Herald/Stores/TalkStore.swift`): The feature flag introduced in B-T1 is gone. `HermesTalkCoordinator` is now the sole Talk path. All session methods (`startSession`, `endSession`, `toggleMute`, `interruptAssistant`) route directly through the coordinator.
+
+- **Simplified `TalkStore` initializer** (`Herald/Stores/TalkStore.swift`, `Herald/Stores/AppContainer.swift`): `TalkStore` no longer accepts a `VoiceSessionServiceProtocol` dependency. The legacy event-subscription and snapshot-syncing code paths are removed.
+
+- **Deprecated `VoiceSessionServiceProtocol`** (`Herald/Services/Protocols/VoiceSessionServiceProtocol.swift`): Marked `@available(*, deprecated)` with guidance to use `HermesTalkCoordinator`.
+
+- **Deprecated `LiveVoiceSessionService`** (`Herald/Services/Live/LiveVoiceSessionService.swift`): The WebRTC-based OpenAI Realtime implementation is marked deprecated. Retained for one release behind `USE_LEGACY_REALTIME_TALK` compatibility flag.
+
+- **Deprecated `MockVoiceSessionService`** (`Herald/Services/Mocks/MockVoiceSessionService.swift`): Marked deprecated alongside the protocol.
+
+- **Deprecated `hermes_delegate` MCP tool** (`relay/app/talk_mcp.py`): The `hermes_delegate` tool and the `/v1/talk/mcp` endpoint are marked deprecated. Will be removed in the next release.
+
+- **Deprecated `_create_openai_realtime_session`** (`connector/src/herald_connector/client.py`): The OpenAI Realtime session creation function and `talk.delegate` RPC handler are marked deprecated.
+
+- **Removed legacy tests** (`HeraldTests/AppStoresTests.swift`): Removed `RecordingVoiceSessionService` test helper and two tests (`talkStoreReflectsBlockedReadinessState`, `talkStoreUpdatesFromVoiceEventStream`) that tested the removed legacy code paths.
+
+## [1.6.2] - 2026-07-20
+
+### Safe Early Speech Synthesis (Phase B-T3)
+
+- **Sentence boundary detection** (`Herald/Services/Live/SpeechTextRenderer.swift`): Added `SentenceBoundary` struct and `findSentenceBoundaries(in:)` method that identifies stable sentence boundaries (`.!?。！？` followed by whitespace or end-of-string) in streaming text. Also added `findAllSentences(in:)` for post-hoc divergence comparison.
+
+- **Early TTS synthesis** (`Herald/Services/Live/HermesTalkCoordinator.swift`): Modified the thinking state to start TTS synthesis as soon as a complete sentence is available, rather than waiting for the full canonical response. Segmentation halts when tool/reasoning boundaries are encountered (text instability).
+
+- **Divergence tracking** (`Herald/Services/Live/SpeechTextRenderer.swift`): Added `SpeechDivergenceMetrics` struct tracking sentences/characters spoken vs total, and `hadDivergence` flag. Logged when early-spoken text diverges from the final canonical response.
+
+- **Fallback path**: When no sentence boundary is found during streaming (e.g., single-sentence or tool-heavy responses), falls back to full-text synthesis after completion — no latency regression for short responses.
+
+## [1.6.1] - 2026-07-20
+
+### Automatic Turn-Taking + Barge-In (Phase B-T2)
+
+- **VAD endpointing** (`Herald/Services/Live/TalkAudioCapture.swift`): Added `startListeningWithVAD()` returning `AsyncStream<Void>` that fires when sustained silence (1.5s below -40 dBFS) is detected after speech. Configurable `silenceThreshold` and `silenceDuration`. Added `startBargeInMonitoring()` for detecting speech above -30 dBFS during playback.
+
+- **Auto turn-taking** (`Herald/Services/Live/HermesTalkCoordinator.swift`): After TTS playback drains, automatically resumes listening via VAD endpointing — no manual tap needed for continuous conversation. Controlled by `autoTurnTaking` flag (default `true`).
+
+- **Barge-in support** (`Herald/Services/HermesTalkCoordinator.swift`): During TTS playback, monitors mic energy for speech. When user speaks above -30 dBFS, playback is flushed and recording begins immediately. The barge-in utterance is processed via the full pipeline (ASR → Hermes → TTS) and auto-turn-taking resumes.
+
+- **Audio session hardening** (`Herald/Services/HermesTalkCoordinator.swift`): Changed audio mode from `.default` to `.voiceChat` for better echo cancellation. Added `handleAudioRouteChange()` for Bluetooth HFP connect/disconnect (interrupts on device unavailable, reconfigures on new device). Added `handleInterruption()` for phone calls and system audio interruptions. Observers registered/unregistered with session lifecycle.
+
+- **TalkAudioCapture cleanup** (`Herald/Services/Live/TalkAudioCapture.swift`): `cancel()` now stops VAD monitoring to prevent leaked tasks.
+
+## [1.6.0] - 2026-07-20
+
+### Hermes-Native Push-to-Talk (Phase B-T1)
+
+- **SpeechRecognizing protocol** (`Herald/Services/Protocols/SpeechRecognizing.swift`): New provider-neutral ASR protocol with `RecordedUtterance`, `SpeechLanguage`, and `TranscriptUpdate` types.
+
+- **SpeechSynthesizing protocol** (`Herald/Services/Protocols/SpeechSynthesizing.swift`): New provider-neutral streaming TTS protocol with `PCMChunk`, `AudioFormat`, and `SpeechVoice` types.
+
+- **TalkAudioCapture** (`Herald/Services/Live/TalkAudioCapture.swift`): Mic buffer capture via `AVAudioEngine` with push-to-talk endpointing, WAV finalization with resampling to 24 kHz mono int16, power metering for VoiceOrb, and 10 MB / 60s byte/duration caps.
+
+- **MimoASRService** (`Herald/Services/Live/MimoASRService.swift`): Streaming ASR via MiMo `mimo-v2.5-asr` model. Multipart form upload with SSE delta/final response parsing. Uses `api-key` header (T5 fix).
+
+- **MimoTTSService streaming** (`Herald/Services/Live/MimoTTSService.swift`): Added `audioStream(for:voice:style:)` for streaming PCM16 chunks via SSE. Auth header fixed from `Authorization: Bearer` to `api-key` (T5 fix). Conforms to `SpeechSynthesizing`.
+
+- **PCMPlaybackQueue** (`Herald/Services/Live/PCMPlaybackQueue.swift`): `AVAudioEngine` + `AVAudioPlayerNode` queue for scheduling PCM16 buffers at 24 kHz mono. Supports flush-on-cancel and drain completion callbacks.
+
+- **SpeechTextRenderer** (`Herald/Services/Live/SpeechTextRenderer.swift`): Converts canonical Hermes message text to speakable text by stripping code blocks, URLs, Markdown syntax, and raw JSON.
+
+- **TalkTurnClient** (`Herald/Services/Live/TalkTurnClient.swift`): Thin wrapper over `HeraldClientProtocol.sendStreaming()` that projects Hermes text/tool-activity into Talk transcript updates.
+
+- **HermesTalkCoordinator** (`Herald/Services/HermesTalkCoordinator.swift`): State machine orchestrating the full pipeline: capture → ASR → Hermes → TTS → playback. Sole `AVAudioSession` owner during Talk (T6 fix). States: idle → preparing → listening → endpointing → transcribing → thinking → synthesizing → speaking → idle.
+
+- **VoiceState additions** (`Herald/Models/VoiceState.swift`): Added `transcribing` and `synthesizing` states with display labels, icons, and colors.
+
+- **TalkStore Hermes integration** (`Herald/Stores/TalkStore.swift`): Added `useHermesNativeTalk` flag (default `true`). Added `attachHermesCoordinator()`, `startListening()`, `stopListeningAndProcess()` for push-to-talk flow. All session methods delegate to coordinator when flag is enabled; legacy Realtime path preserved behind flag.
+
+## [1.5.2] - 2026-07-20
+
+### Keychain Migration + Encryption Declaration (Phase B-T0 Security)
+
+- **MiMo API key moved to Keychain** (`Herald/Features/Settings/SettingsScreen.swift`): Replaced `UserDefaults` reads/writes for `mimo.apiKey` with `KeychainSecureStore`. Includes idempotent one-time migration from UserDefaults on first launch after update.
+
+- **Encryption declaration** (`Herald/Resources/Info.plist`): Added `ITSAppUsesNonExemptEncryption = false` — Herald uses standard encryption (TLS, CryptoKit SHA-256, WebRTC DTLS-SRTP) and qualifies for exemption.
+
+## [1.5.1] - 2026-07-20
+
+### MiMo Contract Spike + Fixtures (Phase B-T0)
+
+- **T5 auth header fix** (`Herald/Services/Live/MimoTTSService.swift:67`): Documented that MiMo API uses `api-key` header, not `Authorization: Bearer`. Fix deferred to Phase B implementation.
+
+- **MiMo API fixtures** (`HeraldTests/Fixtures/Mimo/`): Created ASR streaming, TTS streaming, and TTS error response fixtures for parser tests.
+
+- **Fixture tests** (`HeraldTests/MimoFixtureTests.swift`): Added tests validating JSON fixture parsing for ASR deltas, TTS audio events, and error responses.
+
+## [1.5.0] - 2026-07-20
+
+### Remove v1 Streaming (Phase A-4)
+
+- **Removed in-memory replay buffers** (`relay/app/main.py`): Deleted `app.state.job_event_buffers`, `app.state.job_event_sequence`, and `app.state.job_event_queues`. All event delivery now goes through the DB-backed `EventFanout` path exclusively.
+
+- **Removed v1 `subscribe_job_events` / `unsubscribe_job_events`** (`relay/app/main.py`): The legacy in-memory queue subscription functions are gone. `subscribe_job_events` now delegates to `EventFanout.subscribe()` (DB-backed replay).
+
+- **Removed `ensure_job_event_buffer`** (`relay/app/main.py`): No longer needed — events are persisted to DB by `publish_job_event` and replayed on SSE connect.
+
+- **Simplified `publish_job_event`** (`relay/app/main.py`): Removed the in-memory buffer fallback. Events are now always persisted to DB and wake `EventFanout` subscribers. The `eventId` is now assigned from the DB sequence instead of an in-memory counter.
+
+- **Simplified SSE endpoint** (`relay/app/main.py`): Removed the dual `asyncio.wait` pattern that raced legacy and v2 queues. Now waits on a single `EventFanout` wake queue.
+
+- **Removed stale queue cleanup task** (`relay/app/main.py`): The `_cleanup_stale_job_queues` periodic task is no longer needed.
+
+- **Removed `TOOL_PROGRESS_RE` marker parser** (`connector/src/herald_connector/herald_api_executor.py`): Deleted the `TOOL_PROGRESS_RE` regex, `_could_be_marker_prefix` helper, and `use_v1_marker_parser` field. Text deltas are now emitted directly without marker scraping.
+
+- **Deprecated `parseV1Fallback`** (`Herald/Services/Live/JobStreamCoordinator.swift`): Added deprecation comments. The v1 fallback decoder is kept temporarily for backward compat during rollout but will be removed once metrics confirm v1 usage is negligible.
+
+## [1.4.6] - 2026-07-20
+
+### Server-Owned Attempts + Lease Retry (Phase A-3.5)
+
+- **Atomic attempt increment** (`relay/app/services.py`): `claim_next_message_job()` now increments `MessageJob.attempt` atomically via `attempt=MessageJob.attempt + 1` in the UPDATE statement, so each lease claim is tracked server-side.
+
+- **`attempt` in execute frame** (`relay/app/main.py`): `build_job_execute_payload()` now includes `attempt` in the `job.execute` payload so connectors know which attempt they are executing.
+
+- **Max attempts cap** (`relay/app/config.py`, `relay/app/services.py`): New `max_job_attempts` setting (default 3). `requeue_expired_message_jobs()` now checks if a job has exhausted its attempts before requeuing — if so, the job is marked `failed` with a terminal error instead of being requeued.
+
+- **Lease fence validation** (`relay/app/services.py`): `append_job_event()` rejects events from expired attempts via `job.attempt != attempt` check, preventing stale connector events from corrupting the log.
+
+## [1.4.5] - 2026-07-20
+
+### Structured Hermes Connector Adapter (Phase A-3)
+
+- **`HermesGatewayExecutor`** (`connector/src/herald_connector/hermes_gateway_executor.py`): New executor that speaks the Hermes Desktop JSON-RPC WS protocol. Connects to the gateway via WebSocket, sends chat requests, and yields v2-adapted events. Falls back to the Runs API HTTP adapter when the gateway is unreachable.
+
+- **`HermesEventAdapter`** (`connector/src/herald_connector/hermes_gateway_executor.py`): Maps raw Hermes events to v2 `JobEventEnvelope`. Handles both gateway (JSON-RPC WS) and runs API (HTTP/SSE) sources, ensuring consistent v2 vocabulary output. Includes late-event fencing after terminal events and stable `toolCallId` correlation.
+
+- **`attempt` + `source_seq` on all frames** (`connector/src/herald_connector/client.py`): Every `job.progress` WebSocket frame now includes `attempt` and `sourceSeq` fields (fixes D9). Monotonically increasing `source_seq` per job execution.
+
+- **v1 marker parser flag** (`connector/src/herald_connector/herald_api_executor.py`): Added `use_v1_marker_parser` flag (default `False`). When disabled, text deltas are emitted directly without `TOOL_PROGRESS_RE` marker parsing (fixes D6). Enable only for legacy v1 compatibility.
+
+- **Active adapter diagnostics** (`connector/src/herald_connector/client.py`): `status_lines()` now reports which adapter is active: `gateway_v2` (Hermes Gateway JSON-RPC WS), `runs_v2` (Runs API HTTP/SSE with v2 events), or `openai_v1_fallback` (legacy OpenAI-compatible path).
+
+## [1.4.4] - 2026-07-20
+
+### Pure JobEventReducer + Watchdog Fix
+
+- **`JobEventReducer`** (`Services/Live/JobEventReducer.swift`): New pure, `Sendable` reducer that converts `JobEventEnvelope` events into a `JobProjection`. Same events always produce the same projection — no side effects, no I/O. Supports typed payloads from the v2 stream contract, seq-gap detection, attempt resets, and all 12 event types.
+
+- **Watchdog D3 fix** (`Stores/ChatStore.swift`): `.messageSent` no longer resets the watchdog deadline. The relay merely accepting a job is not real progress — the watchdog now waits for actual content (text/tool/reasoning/terminal) before extending the timeout.
+
+- **D7 fix — remove client-side retry** (`Stores/ChatStore.swift`): Removed `maxAutoRetries` and `stallRetryCounts`. The relay now owns retries via leases. The client runs a single streaming attempt; if the watchdog fires, it shows "Waiting for host..." instead of resubmitting the same `clientMessageID`.
+
+- **D11 partial — activeStreams map** (`Stores/ChatStore.swift`): Replaced the single `streamingMessageID` mutable slot with `activeStreams: [UUID: UUID]` (jobId → placeholderId). The computed `streamingMessageID` property provides backward compat for UI.
+
+- **Injectable watchdog timeout** (`Stores/ChatStore.swift`): `watchdogTimeout` is now `static var` so tests can set it to milliseconds.
+
+## [1.4.3] - 2026-07-20
+
+### Cursor-Aware SSE + JobStreamCoordinator
+
+- **`Last-Event-ID` header** (`RelayAPIClient.swift`): `streamEvents()` now accepts an optional `lastEventID` parameter and sends it as the `Last-Event-ID` HTTP header for cursor-based SSE replay (fixes D2).
+
+- **`JobStreamCoordinator` actor** (`Services/Live/JobStreamCoordinator.swift`): New resilient SSE consumer that replaces the one-shot `streamJobEvents`. Opens SSE with persisted cursor, decodes v2 `JobEventEnvelope` with v1 fallback, detects `seq` gaps and reconnects from last contiguous seq, bounded exponential backoff with jitter (capped at 60s), checks authoritative job status after EOF, and yields `RunResult` on completion (fixes D4 — never emits `.failed` for a live job).
+
+- **Keyed by `jobId`** (`LiveHeraldClient.swift`): Streaming is now keyed by `jobId` via `JobStreamCoordinator` instead of the single `streamingMessageID` slot (fixes D11).
+
+- **`JobStatusResponse` snapshot fields** (`LiveHeraldClient.swift`): Added `attempt` and `lastSeq` optional fields to `JobStatusResponse` for recovery and diagnostics. Added `getJobStatusSnapshot()` helper that maps to `JobStreamCoordinator.JobStatusSnapshot`.
+
+## [1.4.2] - 2026-07-20
+
+### Durable SSE Replay, `id:` Lines, `cancelled` Terminal, Snapshot Fields, Retention
+
+- **DB-backed SSE replay** (`relay/app/main.py`): Rewrote `GET /v1/jobs/{job_id}/events` to replay events from the `job_events` table instead of the destructive in-memory `pop()`-based buffer (fixes D5). Supports `Last-Event-ID` header and `?after=<seq>` query parameter for cursor-based reconnection.
+
+- **Real `id:` lines** (`relay/app/main.py`): Every SSE frame now includes `id: <seq>` so iOS clients can send `Last-Event-ID` on reconnect and resume without gaps (fixes D1).
+
+- **`cancelled` terminal status** (`relay/app/main.py`, `relay/app/services.py`): SSE endpoint, `wait_for_job_completion`, `reply_state_for_job`, and `append_job_event` now recognize `cancelled` as a terminal status alongside `completed` and `failed` (fixes D10).
+
+- **EventFanout integration** (`relay/app/main.py`): Wired `EventFanout` into the lifespan and `publish_job_event`. Each published event is now appended to the durable DB log and wakes EventFanout subscribers. Legacy in-memory queues preserved for backward compat.
+
+- **Snapshot fields** (`relay/app/main.py`): `GET /v1/jobs/{job_id}` now returns `attempt` and `lastSeq` fields for recovery and diagnostics.
+
+- **Retention cleanup** (`relay/app/services.py`): Added `cleanup_old_job_events()` to delete events for terminal jobs older than the retention window. Non-terminal job events are never expired.
+
+## [1.4.1] - 2026-07-20
+
+### Durable Event Log — job_events Table + Transactional Append
+
+- **JobEvent model** (`relay/app/models.py`): Added `JobEvent` SQLAlchemy model with `job_id`, `seq`, `attempt`, `source_seq`, `type`, `payload_json`, and `created_at` columns. Added `attempt` column to `MessageJob` for attempt-scoped event tracking.
+
+- **Idempotent DDL** (`relay/app/database.py`): Added `CREATE TABLE IF NOT EXISTS job_events` with unique indexes on `(job_id, seq)` and `(job_id, attempt, source_seq)`. Added `ALTER TABLE message_jobs ADD COLUMN IF NOT EXISTS attempt`. **Operator note**: run the DDL manually against field Postgres before deploying — the SQLite migration is automatic.
+
+- **EventFanout** (`relay/app/streaming.py`): Extracted in-memory fan-out for SSE subscribers into a standalone class. Uses async lock-protected subscribe/unsubscribe with wake-signal delivery. Replaces the destructive `pop()`-based buffer (to be fully removed in PR 3).
+
+- **Transactional append service** (`relay/app/services.py`): Added `append_job_event()` with dedup on `(job_id, attempt, source_seq)`, monotonic seq allocation via `COALESCE(MAX(seq), 0) + 1`, and terminal-job rejection. Added `get_job_events_after()` and `get_job_last_seq()` for SSE replay queries.
+
+## [1.4.0] - 2026-07-20
+
+### Stream Contract v2 — Golden Fixture Freeze
+
+- **Contract specification** (`docs/STREAM_CONTRACT_V2.md`): Defined the v2 event envelope with `contractVersion`, `jobId`, `conversationId`, `attempt`, `seq`, `type`, `timestamp`, and `payload` fields. Documented 12 event types including terminal events (`run.completed`, `run.failed`, `run.cancelled`) and new v2 additions (`run.requeued`, `commentary`, `approval.required`).
+
+- **Python Pydantic models** (`connector/src/herald_connector/stream_contract.py`): Added Pydantic v2 models for every v2 event type and a `JobEventEnvelope` discriminated union. Includes `TERMINAL_TYPES` constant for validation.
+
+- **Swift Codable types** (`Herald/Models/JobEvent.swift`): Added `JobEventEnvelope` struct with `JobEventType` enum and per-event payload structs. All types are `Sendable` for Swift 6.2 strict concurrency. Uses custom `Codable` implementation for type-safe payload decoding.
+
+- **Golden fixtures** (`connector/tests/fixtures/hermes/`, `HeraldTests/Fixtures/StreamContractV2/`): Created 8 canonical fixture files covering text-only, reasoning, multi-tool, commentary, approval, error, cancelled, and goal-continuation scenarios. Same JSON in both Python and Swift test locations.
+
+- **Contract tests** (`connector/tests/test_stream_contract.py`, `HeraldTests/StreamContractV2Tests.swift`): Validates every fixture against the envelope models, asserts seq ordering, terminal event rules, contractVersion=2, and jobId/conversationId consistency.
+
 ## [1.3.3] - 2026-07-20
 
 ### Fixed - APNs Push Notifications + iPad Notification Routing

@@ -1,0 +1,122 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:40:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 2,
+    "type": "tool.started",
+    "timestamp": "2026-07-20T14:40:00.300Z",
+    "payload": {
+      "toolCallId": "tc-001",
+      "name": "read_file",
+      "args": "{\"path\": \"src/main.py\"}"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 3,
+    "type": "tool.progress",
+    "timestamp": "2026-07-20T14:40:00.500Z",
+    "payload": {
+      "toolCallId": "tc-001",
+      "label": "Reading src/main.py"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 4,
+    "type": "tool.completed",
+    "timestamp": "2026-07-20T14:40:00.800Z",
+    "payload": {
+      "toolCallId": "tc-001",
+      "output": "def main():\n    print('hello')"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 5,
+    "type": "tool.started",
+    "timestamp": "2026-07-20T14:40:01.000Z",
+    "payload": {
+      "toolCallId": "tc-002",
+      "name": "write_file",
+      "args": "{\"path\": \"src/main.py\", \"content\": \"def main():\\n    print('hello world')\"}"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 6,
+    "type": "tool.completed",
+    "timestamp": "2026-07-20T14:40:01.300Z",
+    "payload": {
+      "toolCallId": "tc-002",
+      "output": "File written successfully"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 7,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:40:01.600Z",
+    "payload": {
+      "delta": "I've updated the file to print 'hello world'.",
+      "segmentId": "seg-003"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f",
+    "conversationId": "10f1e2d3-c4b5-4708-8918-4c5d6e7f8091",
+    "attempt": 1,
+    "seq": 8,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:40:02.000Z",
+    "payload": {
+      "messageId": "msg-003",
+      "text": "I've updated the file to print 'hello world'.",
+      "usage": {
+        "prompt_tokens": 300,
+        "completion_tokens": 50,
+        "total_tokens": 350
+      },
+      "diff": {
+        "files": [
+          {
+            "path": "src/main.py",
+            "status": "modified"
+          }
+        ],
+        "summary": "1 file changed"
+      }
+    }
+  }
+]

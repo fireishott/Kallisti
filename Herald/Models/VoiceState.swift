@@ -3,7 +3,9 @@ import SwiftUI
 enum VoiceState: String, Codable, Hashable, Sendable, CaseIterable {
     case idle
     case listening
+    case transcribing
     case thinking
+    case synthesizing
     case speaking
     case interrupted
     case disconnected
@@ -12,7 +14,9 @@ enum VoiceState: String, Codable, Hashable, Sendable, CaseIterable {
         switch self {
         case .idle: "Ready"
         case .listening: "Listening"
+        case .transcribing: "Transcribing"
         case .thinking: "Thinking"
+        case .synthesizing: "Preparing speech"
         case .speaking: "Speaking"
         case .interrupted: "Interrupted"
         case .disconnected: "Disconnected"
@@ -23,7 +27,9 @@ enum VoiceState: String, Codable, Hashable, Sendable, CaseIterable {
         switch self {
         case .idle: "mic.slash"
         case .listening: "mic.fill"
+        case .transcribing: "waveform"
         case .thinking: "brain"
+        case .synthesizing: "waveform"
         case .speaking: "speaker.wave.2.fill"
         case .interrupted: "pause.circle.fill"
         case .disconnected: "wifi.slash"
@@ -34,7 +40,9 @@ enum VoiceState: String, Codable, Hashable, Sendable, CaseIterable {
         switch self {
         case .idle: .secondary
         case .listening: .blue
+        case .transcribing: .cyan
         case .thinking: .purple
+        case .synthesizing: .teal
         case .speaking: .green
         case .interrupted: .orange
         case .disconnected: Color.white.opacity(0.15)
