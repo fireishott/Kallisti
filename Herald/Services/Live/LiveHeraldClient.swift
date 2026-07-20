@@ -241,7 +241,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             switch statusResponse.status {
                             case "completed":
                                 if let msg = statusResponse.message {
-                                    continuation.yield(.finished(self.mapMessage(msg), statusResponse.usage, statusResponse.diff))
+                                    continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff))
                                 } else {
                                     let refreshed = await self.reloadConversationForStreaming()
                                     let finalMsg = self.resolveFinalMessage(

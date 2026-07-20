@@ -22,4 +22,8 @@ final class MockNotificationService: NotificationServiceProtocol {
     func markPushTokenRegistered(_ registered: Bool) async {
         isPushTokenRegistered = registered
     }
+
+    func registerCategories() {
+        // No-op for mock
+    }
 }

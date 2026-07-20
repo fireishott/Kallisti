@@ -55,7 +55,7 @@ final class ChatStore {
     /// active profile name on the owning ProfileStore.
     var profileStore: ProfileStore?
 
-    private let heraldClient: any HeraldClientProtocol
+    let heraldClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 
@@ -316,7 +316,7 @@ final class ChatStore {
                     self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
 
                 case .reconnecting:
-                    self.appendLog(level: .warning, "Stream reconnecting...")
+                    self.appendLog(level: .warn, "Stream reconnecting...")
                     progressContinuation?.yield(())
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
