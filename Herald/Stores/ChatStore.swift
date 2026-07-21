@@ -212,16 +212,21 @@ final class ChatStore {
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.activeStreams[jobID] = placeholderID
+                    // Start Live Activity with "Thinking" phase — the agent is
+                    // processing but hasn't begun streaming content yet.
+                    self.chatLiveActivity.startThinking()
                     // Do NOT yield progress — .messageSent is the relay accepting the job,
                     // not the connector producing real progress. The watchdog must keep
                     // waiting for actual content (text/tool/reasoning/terminal).
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
+                    self.chatLiveActivity.updatePhase("Responding")
                     self.enqueueDelta(delta, placeholderID: placeholderID)
 
                 case .reasoningDelta(let delta):
                     progressContinuation?.yield(())
+                    self.chatLiveActivity.updatePhase("Thinking")
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {

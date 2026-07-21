@@ -170,6 +170,76 @@ actor NotesRepository {
         }
     }
 
+    // MARK: - Note Attachments
+
+    private func attachmentsMetadataURL(for noteId: UUID) -> URL {
+        noteDirectory(for: noteId).appendingPathComponent("attachments.json")
+    }
+
+    /// Load all attachments for a note.
+    func loadAttachments(noteId: UUID) throws -> [NoteAttachment] {
+        let url = attachmentsMetadataURL(for: noteId)
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([NoteAttachment].self, from: data)
+    }
+
+    /// Save attachment metadata index.
+    func saveAttachments(_ attachments: [NoteAttachment], noteId: UUID) throws {
+        let noteDir = noteDirectory(for: noteId)
+        try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(attachments)
+        try data.write(to: attachmentsMetadataURL(for: noteId), options: .atomic)
+    }
+
+    /// Save an attachment blob and register it in the metadata index.
+    func saveAttachmentBlob(
+        noteId: UUID,
+        data: Data,
+        type: NoteAttachmentType,
+        fileName: String,
+        mimeType: String
+    ) throws -> NoteAttachment {
+        let noteDir = noteDirectory(for: noteId)
+        try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
+
+        let contentHash = SHA256.hash(data: data)
+        let hashHex = contentHash.map { String(format: "%02x", $0) }.joined()
+
+        let blobURL = noteDir.appendingPathComponent("att-\(UUID().uuidString.prefix(8))-\(fileName)")
+        try data.write(to: blobURL, options: .atomic)
+
+        let attachment = NoteAttachment(
+            noteId: noteId,
+            type: type,
+            fileName: fileName,
+            mimeType: mimeType,
+            blobPath: blobURL.path,
+            contentHash: hashHex
+        )
+
+        var attachments = try loadAttachments(noteId: noteId)
+        attachments.append(attachment)
+        try saveAttachments(attachments, noteId: noteId)
+
+        return attachment
+    }
+
+    /// Delete an attachment blob and remove it from the metadata index.
+    func deleteAttachment(_ attachment: NoteAttachment) throws {
+        // Remove blob file
+        let blobURL = URL(fileURLWithPath: attachment.blobPath)
+        if fileManager.fileExists(atPath: blobURL.path) {
+            try fileManager.removeItem(at: blobURL)
+        }
+
+        // Remove from metadata index
+        var attachments = try loadAttachments(noteId: attachment.noteId)
+        attachments.removeAll { $0.id == attachment.id }
+        try saveAttachments(attachments, noteId: attachment.noteId)
+    }
+
     // MARK: - Helpers
 
     private func noteDirectory(for noteId: UUID) -> URL {

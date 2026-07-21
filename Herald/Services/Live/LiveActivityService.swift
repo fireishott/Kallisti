@@ -47,6 +47,42 @@ final class LiveActivityService {
         updateActivity(with: state)
     }
 
+    // MARK: - Chat Streaming
+
+    func startThinking() {
+        guard isAvailable else { return }
+        let now = Date.now
+        adoptExistingActivityIfNeeded()
+        let attributes = HeraldActivityAttributes(agentName: "Herald")
+        let state = HeraldActivityAttributes.ContentState(
+            status: "Thinking", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "chat"
+        )
+        if currentActivity != nil {
+            startedAt = now
+            updateActivity(with: state)
+            return
+        }
+        do {
+            currentActivity = try Activity.request(
+                attributes: attributes,
+                content: .init(state: state, staleDate: nil),
+                pushType: nil
+            )
+            startedAt = now
+        } catch {
+            // Live Activities not supported or disabled — silently ignore
+        }
+    }
+
+    func updatePhase(_ status: String) {
+        guard currentActivity != nil else { return }
+        let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
+        let state = HeraldActivityAttributes.ContentState(
+            status: status, toolName: nil, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat"
+        )
+        updateActivity(with: state)
+    }
+
     // MARK: - Chat / Tool Calls
 
     func startToolCall(toolName: String) {

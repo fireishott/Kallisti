@@ -23,7 +23,7 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
-    private let thinkingIndicatorID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
 
     var body: some View {
         ZStack {
@@ -620,13 +620,6 @@ struct ChatScreen: View {
                             .equatable()
                             .id(message.id)
                         }
-                    }
-
-                    if let sentAt = chatStore.pendingMessageSentAt,
-                       chatStore.streamingMessageID == nil {
-                        ThinkingIndicatorView(startTime: sentAt)
-                            .id(thinkingIndicatorID)
-                            .transition(.opacity)
                     }
 
                     if showStatusCard {

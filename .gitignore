@@ -53,3 +53,5 @@ build-log.md
 build-evidence.json
 AuthKey_*.p8
 *.p8
+relay/relay.db-shm
+relay/relay.db-wal

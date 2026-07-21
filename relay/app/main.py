@@ -405,6 +405,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         for device, registration in active_push_registrations_for_user(db, user_id=user_id):
             if device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
+                logger.info("Skipping push for device %s (foreground)", device.id)
                 continue
             if registration.transport == "relay":
                 sender = app.state.push_broker_sender
@@ -423,6 +424,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     continue
                 if not sent:
                     logger.warning("Push broker delivery not accepted for device %s", device.id)
+                else:
+                    logger.info("Push broker delivery sent to device %s", device.id)
                 continue
 
             user_info: dict = {
@@ -444,7 +447,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 registration.is_active = False
                 db.commit()
                 logger.info("Deactivated invalid APNs token for device %s", device.id)
-            elif result != PushResult.SENT:
+            elif result == PushResult.SENT:
+                logger.info("APNs delivery sent to device %s", device.id)
+            else:
                 logger.warning("APNs delivery %s for device %s", result.value, device.id)
 
         # Create inbox item so the app shows it in the inbox tab

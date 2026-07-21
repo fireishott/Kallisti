@@ -277,8 +277,23 @@ struct MessageBubble: View, Equatable {
     }
 
     private var streamingPlaceholder: some View {
-        TypingDotsView()
-            .padding(.vertical, Design.Spacing.sm)
+        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+            TypingDotsView()
+            TimelineView(.periodic(from: message.timestamp, by: 1)) { context in
+                let elapsed = context.date.timeIntervalSince(message.timestamp)
+                Text("Thinking… \(formatElapsed(elapsed))")
+                    .brandEyebrow(Design.Colors.tertiaryForeground)
+            }
+        }
+        .padding(.vertical, Design.Spacing.sm)
+    }
+
+    private func formatElapsed(_ interval: TimeInterval) -> String {
+        let seconds = Int(interval)
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        return "\(seconds / 60)m \(seconds % 60)s"
     }
 
     private func toolActivityPill(_ label: String) -> some View {

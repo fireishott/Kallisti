@@ -61,6 +61,7 @@ targets:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
         com.apple.developer.healthkit.background-delivery: true
+        com.apple.developer.aps-environment: development
         com.apple.security.application-groups:
           - group.net.fihonline.herald
     sources:

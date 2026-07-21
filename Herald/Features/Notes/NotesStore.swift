@@ -138,6 +138,57 @@ final class NotesStore {
         }
     }
 
+    // MARK: - Attachments
+
+    func loadAttachments(noteId: UUID) async -> [NoteAttachment] {
+        do {
+            return try await repository.loadAttachments(noteId: noteId)
+        } catch {
+            logger.error("Failed to load attachments: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func saveAttachment(
+        noteId: UUID,
+        data: Data,
+        type: NoteAttachmentType,
+        fileName: String,
+        mimeType: String
+    ) async -> NoteAttachment? {
+        do {
+            let attachment = try await repository.saveAttachmentBlob(
+                noteId: noteId,
+                data: data,
+                type: type,
+                fileName: fileName,
+                mimeType: mimeType
+            )
+            if let index = notes.firstIndex(where: { $0.id == noteId }) {
+                notes[index].updatedAt = .now
+                try await repository.updateNote(notes[index])
+            }
+            return attachment
+        } catch {
+            logger.error("Failed to save attachment: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func deleteAttachment(_ attachment: NoteAttachment) async {
+        do {
+            try await repository.deleteAttachment(attachment)
+            if let index = notes.firstIndex(where: { $0.id == attachment.noteId }) {
+                notes[index].updatedAt = .now
+                try await repository.updateNote(notes[index])
+            }
+        } catch {
+            logger.error("Failed to delete attachment: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Selection
 
     func selectNote(_ id: UUID?) {

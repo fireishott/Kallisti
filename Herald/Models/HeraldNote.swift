@@ -11,6 +11,7 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
     var pinned: Bool
     var currentDrawingRevision: Int
     var currentTextRevision: Int
+    var pageStyle: NotePageStyle
     var syncState: NoteSyncState
     let createdAt: Date
     var updatedAt: Date
@@ -23,6 +24,7 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
         pinned: Bool = false,
         currentDrawingRevision: Int = 0,
         currentTextRevision: Int = 0,
+        pageStyle: NotePageStyle = .linesMedium,
         syncState: NoteSyncState = .local,
         createdAt: Date = .now,
         updatedAt: Date = .now,
@@ -34,6 +36,7 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
         self.pinned = pinned
         self.currentDrawingRevision = currentDrawingRevision
         self.currentTextRevision = currentTextRevision
+        self.pageStyle = pageStyle
         self.syncState = syncState
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -41,6 +44,22 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
     }
 
     var isDeleted: Bool { deletedAt != nil }
+
+    /// Custom decoding to handle pre-existing JSON without `pageStyle`.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        folderId = try container.decodeIfPresent(UUID.self, forKey: .folderId)
+        pinned = try container.decode(Bool.self, forKey: .pinned)
+        currentDrawingRevision = try container.decode(Int.self, forKey: .currentDrawingRevision)
+        currentTextRevision = try container.decode(Int.self, forKey: .currentTextRevision)
+        pageStyle = try container.decodeIfPresent(NotePageStyle.self, forKey: .pageStyle) ?? .linesMedium
+        syncState = try container.decode(NoteSyncState.self, forKey: .syncState)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+    }
 
     /// Days remaining before hard-delete (30-day soft-delete window).
     var daysUntilPurge: Int? {
@@ -100,18 +119,72 @@ enum NoteSyncState: String, Codable, Sendable {
 
 // MARK: - Note Page Style
 
-enum NotePageStyle: String, Codable, Sendable {
-    case letter
-    case a4
+enum NotePageStyle: String, Codable, Sendable, CaseIterable {
+    // Legacy cases — mapped to new equivalents on decode
+    case letter    // → .linesMedium
+    case a4        // → .linesMedium
     case blank
+
+    // Ruled lines
+    case linesSmall
+    case linesMedium
+    case linesLarge
+
+    // Grid
+    case gridSmall
+    case gridMedium
+    case gridLarge
+
+    static var pickerCases: [NotePageStyle] {
+        [.blank, .linesSmall, .linesMedium, .linesLarge, .gridSmall, .gridMedium, .gridLarge]
+    }
+
+    var displayName: String {
+        switch self {
+        case .letter:      return "Letter"
+        case .a4:          return "A4"
+        case .blank:       return "Blank"
+        case .linesSmall:  return "Lines (Fine)"
+        case .linesMedium: return "Lines (Medium)"
+        case .linesLarge:  return "Lines (Wide)"
+        case .gridSmall:   return "Grid (Fine)"
+        case .gridMedium:  return "Grid (Medium)"
+        case .gridLarge:   return "Grid (Wide)"
+        }
+    }
 
     var size: CGSize {
         switch self {
-        case .letter: CGSize(width: 612, height: 792)  // US Letter at 72 PPI
-        case .a4:     CGSize(width: 595, height: 842)  // A4 at 72 PPI
-        case .blank:  CGSize(width: 612, height: 792)  // default to Letter
+        case .a4: CGSize(width: 595, height: 842)
+        default:  CGSize(width: 612, height: 792)
         }
     }
+
+    var lineSpacing: CGFloat {
+        switch self {
+        case .linesSmall, .gridSmall:   return 18
+        case .linesMedium, .gridMedium: return 24
+        case .linesLarge, .gridLarge:   return 32
+        case .a4:                       return 24
+        default:                        return 0
+        }
+    }
+
+    var showsRuledLines: Bool {
+        switch self {
+        case .linesSmall, .linesMedium, .linesLarge, .letter, .a4: return true
+        default: return false
+        }
+    }
+
+    var showsGrid: Bool {
+        switch self {
+        case .gridSmall, .gridMedium, .gridLarge: return true
+        default: return false
+        }
+    }
+
+    var showsMarginLine: Bool { showsRuledLines }
 }
 
 // MARK: - Note Folder
@@ -132,6 +205,44 @@ struct NoteFolder: Codable, Identifiable, Hashable, Sendable {
         self.id = id
         self.name = name
         self.color = color
+        self.createdAt = createdAt
+    }
+}
+
+// MARK: - Note Attachment
+
+enum NoteAttachmentType: String, Codable, Sendable {
+    case photo
+    case scan
+}
+
+struct NoteAttachment: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    let noteId: UUID
+    let type: NoteAttachmentType
+    let fileName: String
+    let mimeType: String
+    let blobPath: String
+    let contentHash: String
+    let createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        noteId: UUID,
+        type: NoteAttachmentType,
+        fileName: String,
+        mimeType: String,
+        blobPath: String,
+        contentHash: String,
+        createdAt: Date = .now
+    ) {
+        self.id = id
+        self.noteId = noteId
+        self.type = type
+        self.fileName = fileName
+        self.mimeType = mimeType
+        self.blobPath = blobPath
+        self.contentHash = contentHash
         self.createdAt = createdAt
     }
 }
