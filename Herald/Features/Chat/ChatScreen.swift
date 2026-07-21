@@ -73,6 +73,7 @@ struct ChatScreen: View {
             // stale pre-pairing value such as ".hermes" is never retained in
             // the composer after the host reconnects or changes profile.
             await profileStore.loadProfiles(force: true)
+            await modelStore.loadModels()
         }
         .task {
             while !Task.isCancelled {
@@ -383,11 +384,22 @@ struct ChatScreen: View {
                     .fill(connectionIndicatorColor)
                     .frame(width: 6, height: 6)
 
-                if let model = displayedModelName {
+                if modelStore.isLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else if let model = displayedModelName {
                     ViewThatFits(in: .horizontal) {
                         chipModelText(model)
                         chipModelText(compactModelName(model))
                     }
+                } else if modelStore.isError {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                } else {
+                    Text("No model")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
                 }
 
                 contextRing(progress: contextProgress)
@@ -441,11 +453,29 @@ struct ChatScreen: View {
                     .fill(connectionIndicatorColor)
                     .frame(width: 7, height: 7)
 
-                if let model = displayedModelName {
+                if modelStore.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading models...")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                } else if let model = displayedModelName {
                     Text(model)
                         .font(.system(.subheadline, design: .monospaced, weight: .semibold))
                         .foregroundStyle(Design.Colors.foreground)
                         .lineLimit(1)
+                } else if modelStore.isError {
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        Text(modelStore.errorMessage ?? "Failed to load models")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        Button {
+                            Task { await modelStore.loadModels(force: true) }
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(Design.Typography.callout)
+                        }
+                    }
                 } else {
                     Text("Model unavailable")
                         .font(Design.Typography.callout)

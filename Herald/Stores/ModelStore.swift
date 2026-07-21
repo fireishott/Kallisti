@@ -39,6 +39,9 @@ final class ModelStore {
     private(set) var activeModel: ActiveModel?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
+
+    var isError: Bool { errorMessage != nil }
+    var currentModel: ActiveModel? { activeModel }
     private var lastLoadedAt: Date?
 
     private static let refreshInterval: TimeInterval = 60
