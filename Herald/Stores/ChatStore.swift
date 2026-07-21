@@ -5,7 +5,15 @@ import os
 @Observable
 final class ChatStore {
     private static let logger = Logger(subsystem: "net.fihonline.herald", category: "ChatStore")
-    var conversation: Conversation?
+    var conversation: Conversation? {
+        didSet {
+            // Reset auto-title guard only when switching to a different conversation,
+            // not on in-place updates (merge, message appends) to the same conversation.
+            if oldValue?.id != conversation?.id {
+                autoTitleAttempted = false
+            }
+        }
+    }
     var isLoading = false
     var pendingMessageSentAt: Date?
     var lastTokenUsage: TokenUsage?
@@ -37,6 +45,11 @@ final class ChatStore {
     private var deltaBuffers: [UUID: DeltaBuffer] = [:]
     private static let deltaFlushInterval: Duration = .milliseconds(33)
     private static let deltaFlushByteThreshold = 4_096
+
+    /// Whether `autoTitleIfNeeded` has already been attempted for the current
+    /// conversation. Prevents re-attempting on every stream completion when
+    /// the title RPC fails and the title remains a default placeholder.
+    private var autoTitleAttempted = false
 
     var isStreaming: Bool { streamingMessageID != nil }
     var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
@@ -95,6 +108,7 @@ final class ChatStore {
             from: cachedConversation,
             into: await heraldClient.loadConversation()
         )
+        autoTitleAttempted = false
         if let latestUsage = conversation?.latestUsage {
             lastTokenUsage = latestUsage
         }
@@ -323,11 +337,11 @@ final class ChatStore {
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
-                    await self.autoTitleIfNeeded()
-                    // Notify SessionListStore if title changed (from server derivation or auto-rename)
+                    // Notify if merge changed the title (server-derived title)
                     if let conv = self.conversation, conv.title != oldTitle {
                         self.onTitleChanged?(conv.id, conv.title)
                     }
+                    await self.autoTitleIfNeeded()
 
                 case .started(let phase):
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
@@ -581,6 +595,7 @@ final class ChatStore {
         conversation?.title = title
         if let conversation {
             persistence.saveConversationCache(conversation)
+            onTitleChanged?(conversation.id, title)
             onConversationChanged?()
         }
     }
@@ -589,32 +604,79 @@ final class ChatStore {
         let defaultTitles: Set<String> = ["New Chat", "Herald"]
         guard let conv = conversation,
               defaultTitles.contains(conv.title),
+              !autoTitleAttempted,
               let firstUserMessage = conv.messages.first(where: { $0.sender == .user })
         else { return }
         let raw = firstUserMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
 
-        // Try LLM-generated title first
+        autoTitleAttempted = true
+
+        // Try LLM-generated title with timeout and retry
         let assistantContent = conv.messages.first(where: { $0.sender == .herald })?.content ?? ""
-        if let generated = try? await heraldClient.generateSessionTitle(
+        let generated = await generateTitleWithRetry(
             sessionId: conv.id,
             userMessage: String(raw.prefix(500)),
             assistantMessage: String(assistantContent.prefix(500))
-        ) {
-            conversation?.title = generated
-            onTitleChanged?(conv.id, generated)
+        )
+        if let generated {
+            // Re-verify title is still a default (user may have renamed during RPC)
+            if let current = conversation, defaultTitles.contains(current.title) {
+                conversation?.title = generated
+                onTitleChanged?(current.id, generated)
+            }
             return
         }
 
-        // Fallback: truncated first message
+        // Deterministic local fallback: truncated first message
         let title = raw.count > 60 ? String(raw.prefix(57)) + "..." : raw
         do {
             _ = try await heraldClient.renameSession(id: conv.id, title: title)
-            conversation?.title = title
-            onTitleChanged?(conv.id, title)
+            if let current = conversation, defaultTitles.contains(current.title) {
+                conversation?.title = title
+                onTitleChanged?(current.id, title)
+            }
         } catch {
-            appendLog(level: .warn, "Auto-title failed: \(error.localizedDescription)")
+            Self.logger.warning("Auto-title rename failed for session \(conv.id): \(error.localizedDescription)")
+            appendLog(level: .warn, "Auto-title rename failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Attempt to generate a title via RPC with a 5-second timeout and up to 2 attempts.
+    /// Returns nil on failure (all attempts exhausted or timeout).
+    private func generateTitleWithRetry(sessionId: UUID, userMessage: String, assistantMessage: String) async -> String? {
+        let maxAttempts = 2
+        let timeoutSeconds: TimeInterval = 5
+
+        for attempt in 1...maxAttempts {
+            let title: String? = await withCheckedContinuation { continuation in
+                let task = Task { @MainActor in
+                    do {
+                        let result = try await self.heraldClient.generateSessionTitle(
+                            sessionId: sessionId,
+                            userMessage: userMessage,
+                            assistantMessage: assistantMessage
+                        )
+                        guard !Task.isCancelled else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(returning: nil)
+                    }
+                }
+                // Timeout: cancel the RPC task if it hasn't completed
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(timeoutSeconds))
+                    task.cancel()
+                }
+            }
+            if let title { return title }
+            Self.logger.warning("Title RPC attempt \(attempt)/\(maxAttempts) failed for session \(sessionId)")
+        }
+        Self.logger.error("Title RPC failed after \(maxAttempts) attempts for session \(sessionId)")
+        return nil
     }
 
     func deleteMessage(_ message: Message) {
@@ -845,6 +907,14 @@ final class ChatStore {
     ) -> Conversation? {
         guard var refreshedConversation else { return localConversation }
         guard let localConversation else { return refreshedConversation }
+
+        // Preserve user-set titles — only accept the server's title if the local
+        // title is still a default placeholder. This prevents a late server-derived
+        // title from overwriting a user rename.
+        let defaultTitles: Set<String> = ["New Chat", "Herald"]
+        if !defaultTitles.contains(localConversation.title) {
+            refreshedConversation.title = localConversation.title
+        }
 
         if refreshedConversation.latestUsage == nil {
             refreshedConversation.latestUsage = localConversation.latestUsage
