@@ -2783,4 +2783,63 @@ struct NotificationReplyTests {
         ]
         #expect(store.activeNotes.first?.title == "Pinned")
     }
+
+    // MARK: - Profile-Aware Failure Copy (B3)
+
+    @Test("Failure copy uses active profile name")
+    @MainActor
+    func failureCopyUsesProfileName() {
+        let heraldClient = MockHeraldClient()
+        let suiteName = "failure-copy-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let profileStore = ProfileStore(apiClient: nil, accessTokenProvider: { nil })
+        profileStore.profiles = [
+            ProfileStore.HeraldProfile(name: "Atlas", description: "Test", skillCount: 0),
+        ]
+        profileStore.markActive("Atlas")
+
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.profileStore = profileStore
+
+        let message = chatStore.failureMessage()
+
+        #expect(message.contains("Atlas"))
+        #expect(!message.contains("Herald"))
+    }
+
+    @Test("Failure copy falls back to Herald when no profile active")
+    @MainActor
+    func failureCopyFallsBackToHerald() {
+        let heraldClient = MockHeraldClient()
+        let suiteName = "failure-copy-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let profileStore = ProfileStore(apiClient: nil, accessTokenProvider: { nil })
+
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.profileStore = profileStore
+
+        let message = chatStore.failureMessage()
+
+        #expect(message.contains("Herald"))
+    }
+
+    @Test("Failure copy falls back to Herald when profileStore is nil")
+    @MainActor
+    func failureCopyFallsBackWhenNoProfileStore() {
+        let heraldClient = MockHeraldClient()
+        let suiteName = "failure-copy-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+
+        let message = chatStore.failureMessage()
+
+        #expect(message.contains("Herald"))
+    }
 }

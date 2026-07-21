@@ -22,7 +22,7 @@ final class ProfileStore {
         let profiles: [HeraldProfile]
     }
 
-    private(set) var profiles: [HeraldProfile] = []
+    var profiles: [HeraldProfile] = []
     private(set) var activeProfileName: String?
     private(set) var isLoading = false
     private(set) var errorMessage: String?

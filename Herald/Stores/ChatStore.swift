@@ -443,6 +443,13 @@ final class ChatStore {
         return false
     }
 
+    /// The user-facing failure copy, using the active profile name when
+    /// available and falling back to "Herald".
+    func failureMessage() -> String {
+        let name = profileStore?.activeProfile?.name ?? "Herald"
+        return "\(name) didn't respond — tap to retry"
+    }
+
     /// Marks a message as failed with real, actionable error text after both
     /// the initial attempt and the automatic retry have stalled with zero
     /// progress. Mirrors the shape of the existing `.failed` stream-event
@@ -450,7 +457,7 @@ final class ChatStore {
     /// message flips to `.failed`) so the existing manual "tap to retry" flow
     /// (`retryMessage(_:)`, wired up in `MessageBubble`) keeps working unchanged.
     private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
-        let errorText = "Herald didn't respond — tap to retry"
+        let errorText = failureMessage()
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             // Replace with error message but keep the same ID so a late
             // .finished can still find and replace it with the actual response.
