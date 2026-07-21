@@ -862,90 +862,133 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
 
 def test_sse_comments_skipped_without_creating_events():
     """SSE comment lines (starting with ':') from the API server should be
-    skipped without producing StreamEvents."""
+    skipped without producing StreamEvents.
+
+    Exercises the real HeraldAPIExecutor.stream_message() with a mocked
+    httpx transport so SSE comment lines flow through the real parsing logic.
+    """
+    from unittest.mock import patch
+
     from herald_connector.herald_api_executor import HeraldAPIExecutor
 
-    # The stream_message method skips lines starting with ':'.
-    # We verify this by checking that comments in the SSE stream
-    # don't produce any events — only data lines do.
-
-    # Simulate SSE lines: comment, data, comment, data, done
-    lines = [
+    sse_lines = [
         ": keepalive",
         'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
         ": heartbeat",
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
     ]
 
-    events = []
+    class MockResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    class MockStreamContext:
+        async def __aenter__(self):
+            return MockResponse()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class MockClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return MockStreamContext()
+
+    mock_client_instance = MockClient()
 
     async def exercise():
-        executor = HeraldAPIExecutor()
+        with patch("httpx.AsyncClient", return_value=mock_client_instance):
+            executor = HeraldAPIExecutor()
+            events = []
+            async for event in executor.stream_message(
+                latest_user_message="test",
+            ):
+                events.append(event)
 
-        # Create a mock response that yields our SSE lines
-        class MockResponse:
-            status_code = 200
-            headers = {}
-
-            async def aiter_lines(self):
-                for line in lines:
-                    yield line
-
-            def raise_for_status(self):
-                pass
-
-        class MockClient:
-            def stream(self, method, url, headers=None, json=None):
-                return MockStreamContext()
-
-        class MockStreamContext:
-            async def __aenter__(self):
-                return MockResponse()
-
-            async def __aexit__(self, *args):
-                pass
-
-        # We can't easily mock httpx.AsyncClient, so test the logic directly:
-        # Comments start with ':' and should be skipped
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith(":"):
-                # This is the path the executor takes — skip
-                continue
-            if stripped == "data: [DONE]":
-                break
-            if not stripped.startswith("data: "):
-                continue
-            json_str = stripped[6:]
-            import json as json_mod
-            try:
-                chunk = json_mod.loads(json_str)
-                events.append(chunk)
-            except json_mod.JSONDecodeError:
-                continue
+        # Only the two data lines produce StreamEvents; comments are skipped
+        assert len(events) == 2
+        assert events[0].type == "text_delta"
+        assert events[0].data == "Hello"
+        assert events[1].type == "finish"
 
     asyncio.run(exercise())
 
-    # Only the two data lines should have been parsed, not the comments
-    assert len(events) == 2
-    assert events[0]["choices"][0]["delta"]["content"] == "Hello"
-    assert events[1]["choices"][0]["finish_reason"] == "stop"
-
 
 def test_sse_comment_lines_do_not_yield_keepalive():
-    """SSE comments should not generate keepalive StreamEvents — they are
-    connection-level signals, not semantic events."""
-    from herald_connector.herald_api_executor import StreamEvent
+    """SSE comments interspersed between data chunks should not generate
+    keepalive StreamEvents — only actual data lines produce events.
 
-    # The executor's logic: if a line starts with ':', skip it entirely.
-    # Comments should not count as 'yielded_event' and should not produce
-    # a keepalive StreamEvent.
+    Exercises the real HeraldAPIExecutor.stream_message() with a mocked
+    httpx transport so SSE comment lines flow through the real parsing logic.
+    """
+    from unittest.mock import patch
 
-    comment_lines = [": keepalive", ": heartbeat", ": ping"]
+    from herald_connector.herald_api_executor import HeraldAPIExecutor
 
-    for line in comment_lines:
-        stripped = line.strip()
-        # Verify the executor would skip this line
-        assert stripped.startswith(":"), f"Expected comment line, got: {stripped}"
+    sse_lines = [
+        ": keepalive",
+        'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+        ": heartbeat",
+        ": ping",
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    ]
+
+    class MockResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    class MockStreamContext:
+        async def __aenter__(self):
+            return MockResponse()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class MockClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return MockStreamContext()
+
+    mock_client_instance = MockClient()
+
+    async def exercise():
+        with patch("httpx.AsyncClient", return_value=mock_client_instance):
+            executor = HeraldAPIExecutor()
+            events = []
+            async for event in executor.stream_message(
+                latest_user_message="test",
+            ):
+                events.append(event)
+
+        assert len(events) == 2
+        assert events[0].type == "text_delta"
+        assert events[0].data == "Hello"
+        assert events[1].type == "finish"
+        # No keepalive events should appear — comments are silently skipped
+        assert all(e.type != "keepalive" for e in events)
+
+    asyncio.run(exercise())
