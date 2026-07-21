@@ -2,6 +2,36 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.3] - 2026-07-20
+
+### Fix: Double thinking indicator (F4)
+
+- **Single thinking indicator** (`ChatScreen.swift`, `MessageBubble.swift`): Removed standalone `ThinkingIndicatorView` from ChatScreen. Consolidated into the assistant placeholder bubble which now shows `TypingDotsView` + elapsed time ("Thinking… Ns") driven by `message.timestamp` via `TimelineView`. One indicator, anchored where the answer will appear.
+
+### Fix: Push notifications (F5a/F5b)
+
+- **aps-environment entitlement** (`Herald.entitlements`, `project.yml`): Added `com.apple.developer.aps-environment` to Herald target. Required for APNs delivery to registered device tokens.
+
+- **Push delivery logging** (`relay/app/main.py`): Added `logger.info` on all three push decision paths — foreground skip, relay broker delivery, and APNs delivery. Enables debugging push failures from container logs.
+
+### Feature: Live Activity phases (F5c)
+
+- **Phase-tracked Live Activity** (`LiveActivityService.swift`, `ChatStore.swift`): Dynamic Island / Lock Screen now shows progression: thinking → reasoning → responding → tool activity → done. Activity starts at `.messageSent` instead of only on `.toolActivity`.
+
+### Feature: Notes paper styles and scrolling (F6)
+
+- **Seven paper styles** (`HeraldNote.swift`, `NotePaperBackground.swift`): blank, lines (small/medium/large), grid (small/medium/large). Theme-aware ink (dark: white.opacity(0.12), light: systemGray3). Red margin line only for ruled styles. Style persists per note.
+
+- **Scrolling canvas** (`PencilCanvasRepresentable.swift`): Paper view installed behind PKCanvasView content at subview index 0. KVO observer on `contentSize` keeps paper sized to scroll content. Paper scrolls and zooms with ink — eliminates the shear bug.
+
+- **Photo/scan attachments** (`NoteEditorView.swift`, `NotesRepository.swift`, `NotesStore.swift`): PHPickerViewController for photo library, VNDocumentCameraViewController for document scanning. SHA-256 blob storage with atomic writes. Attachment strip above canvas with thumbnails and delete.
+
+### Infra: Deploy procedure (F1b)
+
+- **Deploy directory** (`deploy/`): Docker Compose for relay + Postgres sidecar, Dockerfile, deploy.sh with dry-run mode, Caddyfile.example, .env.example template.
+
+- **MAINTAINER_NOTES.md**: Full rewrite covering architecture, deploy procedures for relay/connector/iOS, schema change workflow, environment variables, known gotchas.
+
 ## [1.7.2] - 2026-07-20
 
 ### Feature: iPad Notes (PencilKit + Hermes Enrichment) — Phase 1–3
