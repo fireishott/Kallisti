@@ -31,11 +31,16 @@ actor JobStreamCoordinator {
     private let accessTokenRefresher: @Sendable () async -> String?
     private let jobStatusProvider: @Sendable (UUID) async -> JobStatusSnapshot?
 
-    private var lastAppliedSeq: Int = 0
+    private(set) var lastAppliedSeq: Int = 0
     private var lastAttempt: Int = 0
     private var isCancelled = false
     private var backoffSeconds: TimeInterval = 1.0
     private static let maxBackoff: TimeInterval = 60.0
+
+    /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
+    /// arrives within this window, the stream is considered dead.
+    private static let watchdogTimeoutSeconds: TimeInterval = 120.0
+    private var lastSSEDataTime: Date = .distantPast
 
     struct JobStatusSnapshot: Sendable {
         let status: String
@@ -87,13 +92,18 @@ actor JobStreamCoordinator {
                 )
 
                 var gotAnyEvent = false
+                var streamTimedOut = false
+                lastSSEDataTime = Date()
 
                 for try await sseEvent in stream {
                     if self.isCancelled || Task.isCancelled { return .cancelled }
                     gotAnyEvent = true
 
+                    // Reset watchdog on ANY SSE data, including comments/heartbeats
+                    lastSSEDataTime = Date()
+
                     guard let envelope = self.parseEnvelope(from: sseEvent) else {
-                        self.logger.warning("job=\(self.jobId.uuidString.prefix(8)) decode_error seq=\(sseEvent.id ?? "nil") event=\(sseEvent.event)")
+                        self.logger.debug("job=\(self.jobId.uuidString.prefix(8)) skipped event=\(sseEvent.event) id=\(sseEvent.id ?? "nil")")
                         continue
                     }
 
@@ -138,6 +148,14 @@ actor JobStreamCoordinator {
                     }
                 }
 
+                // Check if the stream was idle too long (heartbeat-aware watchdog).
+                // If no SSE data arrived within the timeout, log and reconnect.
+                let elapsed = Date().timeIntervalSince(lastSSEDataTime)
+                if elapsed >= Self.watchdogTimeoutSeconds {
+                    logger.warning("job=\(self.jobId.uuidString.prefix(8)) watchdog: no SSE data for \(elapsed)s, reconnecting")
+                    streamTimedOut = true
+                }
+
                 // EOF without terminal event — check job status
                 if gotAnyEvent {
                     continuation.yield(.reconnecting)
@@ -162,6 +180,11 @@ actor JobStreamCoordinator {
                         continuation.yield(.failed("Unexpected job status: \(status.status)"))
                         return .error("Unexpected job status: \(status.status)")
                     }
+                } else if streamTimedOut {
+                    // Watchdog fired and no job status available — reconnect
+                    try await Task.sleep(for: .seconds(backoffSeconds))
+                    backoffSeconds = min(backoffSeconds * 2, Self.maxBackoff)
+                    continue
                 } else {
                     continuation.yield(.failed("Could not fetch job status"))
                     return .error("Could not fetch job status")
@@ -193,17 +216,55 @@ actor JobStreamCoordinator {
 
     // MARK: - Parsing
 
+    /// Extract terminal text from the `message` field, which may be either
+    /// a plain string or a serialized message object with `content`/`role`.
+    static func parseTerminalText(from json: [String: Any]) -> String? {
+        guard let messageField = json["message"] else {
+            return json["text"] as? String
+        }
+
+        // Handle serialized message object: {"content": "...", "role": "assistant"}
+        if let messageDict = messageField as? [String: Any],
+           let content = messageDict["content"] as? String {
+            return content
+        }
+
+        // Handle legacy string form
+        if let messageString = messageField as? String {
+            return messageString
+        }
+
+        return json["text"] as? String
+    }
+
+    /// Extract terminal reasoning from the envelope, which may be a string
+    /// or nested inside a reasoning object.
+    static func parseTerminalReasoning(from json: [String: Any]) -> String? {
+        guard let reasoningField = json["reasoning"] else { return nil }
+        if let reasoningString = reasoningField as? String {
+            return reasoningString
+        }
+        if let reasoningDict = reasoningField as? [String: Any],
+           let content = reasoningDict["content"] as? String {
+            return content
+        }
+        return nil
+    }
+
     /// Parse an SSE event into a JobEventEnvelope.
     ///
     /// The relay's SSE wire format is:
     /// - `id:` = seq (integer)
-    /// - `event:` = event type (text_delta, reasoning_delta, tool_activity, started, heartbeat, done)
+    /// - `event:` = event type (text_delta, reasoning_delta, tool_activity, started, heartbeat, done, commentary)
     /// - `data:` = JSON payload (delta, label, status, message, usage, etc.)
     ///
     /// This is the canonical decoder for the relay→iOS contract. The relay strips
     /// the v2 envelope fields (contractVersion, jobId, conversationId, etc.) and
     /// sends only the payload in `data:`, with the type in `event:`.
-    private func parseEnvelope(from sseEvent: SSEEvent) -> JobEventEnvelope? {
+    ///
+    /// Returns `nil` for SSE comment keepalives (event == "comment" or empty data)
+    /// without advancing the sequence counter.
+    func parseEnvelope(from sseEvent: SSEEvent) -> JobEventEnvelope? {
         guard let data = sseEvent.data.data(using: .utf8) else { return nil }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
 
@@ -252,7 +313,7 @@ actor JobStreamCoordinator {
             switch status {
             case "completed":
                 eventType = .runCompleted
-                let text = json["message"] as? String ?? json["text"] as? String ?? ""
+                let text = Self.parseTerminalText(from: json) ?? ""
                 let usageDict = json["usage"] as? [String: Any]
                 let usage = usageDict.map { Usage(
                     promptTokens: $0["prompt_tokens"] as? Int,
@@ -271,6 +332,10 @@ actor JobStreamCoordinator {
             default:
                 return nil
             }
+
+        case "comment":
+            // SSE comment keepalive — do not advance sequence counter
+            return nil
 
         default:
             return nil
