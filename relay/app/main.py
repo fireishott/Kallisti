@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import inspect
 import logging
+import os
 import time
 import uuid
 
@@ -20,7 +21,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .apns import PushResult, create_apns_client
@@ -232,12 +233,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title=settings.service_name, version=settings.version, lifespan=lifespan)
 
+    # --- Request ID middleware ---
+    @app.middleware("http")
+    async def add_request_id(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+    def _error_response(status_code: int, code: str, message: str, request_id: str | None = None) -> JSONResponse:
+        return JSONResponse(
+            status_code=status_code,
+            content=jsonable_encoder({
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "requestId": request_id or str(uuid.uuid4()),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            }),
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", None)
         logging.getLogger("herald.relay").warning(
             "422 validation error on %s %s: %s", request.method, request.url.path, exc.errors()
         )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        return _error_response(422, "VALIDATION_ERROR", str(exc.errors()), request_id)
+
+    @app.exception_handler(HTTPException)
+    async def _structured_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", None)
+        # Map status codes to error codes
+        code_map = {
+            400: "BAD_REQUEST",
+            401: "UNAUTHORIZED",
+            403: "FORBIDDEN",
+            404: "NOT_FOUND",
+            409: "CONFLICT",
+            422: "VALIDATION_ERROR",
+            429: "RATE_LIMITED",
+            500: "INTERNAL_ERROR",
+            503: "SERVICE_UNAVAILABLE",
+        }
+        code = code_map.get(exc.status_code, "ERROR")
+        return _error_response(exc.status_code, code, str(exc.detail), request_id)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", None)
+        logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        return _error_response(500, "INTERNAL_ERROR", "An internal error occurred.", request_id)
 
     app.state.settings = settings
     app.state.database = database
@@ -672,16 +720,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/v1/health")
-    def health() -> dict:
-        return success({"status": "ok"})
+    def health(db: Session = Depends(get_db)) -> dict:
+        db_ok = False
+        try:
+            db.execute(text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            pass
+        return success({"status": "ok" if db_ok else "degraded", "database": db_ok})
 
     @app.get("/v1/version")
     def version(request_settings: Settings = Depends(get_settings)) -> dict:
+        git_sha = None
+        try:
+            import subprocess
+            git_sha = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=os.path.dirname(os.path.dirname(__file__)),
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            pass
         return success(
             {
                 "service": request_settings.service_name,
                 "version": request_settings.version,
                 "environment": request_settings.environment,
+                "gitSha": git_sha,
             }
         )
 

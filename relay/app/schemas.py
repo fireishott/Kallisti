@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Meta(BaseModel):
@@ -176,12 +176,22 @@ class AttachmentPayload(BaseModel):
     thumbnailData: str | None = Field(default=None, max_length=250_000)
 
 
+ALLOWED_REASONING_EFFORTS = {"low", "medium", "high"}
+
+
 class MessageCreateRequest(BaseModel):
     conversationId: UUID | None = None
     text: str = Field(default="")
     clientMessageId: UUID | None = None
     attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
     reasoningEffort: str | None = None
+
+    @field_validator("reasoningEffort")
+    @classmethod
+    def _validate_reasoning_effort(cls, v: str | None) -> str | None:
+        if v is not None and v not in ALLOWED_REASONING_EFFORTS:
+            raise ValueError(f"reasoningEffort must be one of {ALLOWED_REASONING_EFFORTS}, got '{v}'")
+        return v
 
     @model_validator(mode="after")
     def _require_text_or_attachments(self) -> "MessageCreateRequest":

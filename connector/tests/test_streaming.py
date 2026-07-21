@@ -642,3 +642,109 @@ def test_handle_job_streaming_no_diff_when_no_changes(tmp_path):
 
     result = next(m for m in ws.sent if m["type"] == "job.result")
     assert "diff" not in result
+
+
+# ---------------------------------------------------------------------------
+# InlineThinkParser tests
+# ---------------------------------------------------------------------------
+
+
+def test_inline_think_parser_no_think_tags():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Hello world")
+    assert text == "Hello world"
+    assert reasoning is None
+
+
+def test_inline_think_parser_simple_think_block():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Before <think>reasoning here</think> After")
+    assert text == "Before  After"
+    assert reasoning == "reasoning here"
+
+
+def test_inline_think_parser_think_at_start():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("<think>internal thoughts</think>Answer here")
+    assert text == "Answer here"
+    assert reasoning == "internal thoughts"
+
+
+def test_inline_think_parser_split_open_marker():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t1, r1 = parser.feed("Hello <th")
+    assert t1 == "Hello "
+    assert r1 is None
+
+    # Open tag completes — content enters think mode, accumulated until close
+    t2, r2 = parser.feed("ink>thinking...")
+    assert t2 is None
+    assert r2 is None  # no close tag yet
+
+    # Close tag arrives — full reasoning flushed
+    t3, r3 = parser.feed("</think>Answer")
+    assert t3 == "Answer"
+    assert r3 == "thinking..."
+
+
+def test_inline_think_parser_split_close_marker():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t0, r0 = parser.feed("<think>deep")
+    # No close tag yet — reasoning accumulated, not returned
+    assert t0 is None
+    assert r0 is None
+
+    # Close tag completes — full reasoning flushed
+    t1, r1 = parser.feed(" thought</think>")
+    assert r1 == "deep thought"
+    assert t1 is None
+
+    t2, r2 = parser.feed(" Answer")
+    assert t2 == " Answer"
+    assert r2 is None
+
+
+def test_inline_think_parser_missing_close_marker():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t1, r1 = parser.feed("Hello <think>unclosed reasoning")
+    assert t1 == "Hello "
+    # No close tag yet — reasoning accumulated
+    assert r1 is None
+
+    t2, r2 = parser.feed(" more")
+    assert t2 is None
+    assert r2 is None
+
+    # Flush returns all accumulated reasoning
+    remaining = parser.flush()
+    assert remaining == "unclosed reasoning more"
+
+
+def test_inline_think_parser_ordinary_angle_brackets():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Use <b>bold</b> and <i>italic</i>")
+    assert text == "Use <b>bold</b> and <i>italic</i>"
+    assert reasoning is None
+
+
+def test_inline_think_parser_empty_think_block():
+    from herald_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Before <think></think>After")
+    assert text == "Before After"
+    assert reasoning is None

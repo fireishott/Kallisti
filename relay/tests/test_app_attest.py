@@ -434,4 +434,4 @@ def test_push_broker_register_endpoint_rejects_tampered_signed_payload(tmp_path)
         )
 
         assert response.status_code == 401
-        assert "signature" in response.json()["detail"].lower()
+        assert "signature" in response.json()["error"]["message"].lower()

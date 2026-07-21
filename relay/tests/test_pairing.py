@@ -114,7 +114,7 @@ def test_pairing_redeem_rejects_used_invites(tmp_path):
             ),
         )
         assert second_response.status_code == 400
-        assert second_response.json()["detail"] == "This setup code has already been used."
+        assert second_response.json()["error"]["message"] == "This setup code has already been used."
 
 
 def test_pairing_redeem_rejects_expired_invites(tmp_path):
@@ -134,7 +134,7 @@ def test_pairing_redeem_rejects_expired_invites(tmp_path):
             ),
         )
         assert response.status_code == 400
-        assert response.json()["detail"] == "This setup code has expired."
+        assert response.json()["error"]["message"] == "This setup code has expired."
 
 
 def test_auth_revoke_invalidates_current_session(tmp_path):

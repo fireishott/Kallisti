@@ -160,6 +160,24 @@ final class SessionListStore {
 
     // MARK: - Session Actions
 
+    /// Update the title of a session in all local lists (pinned, recent, search, archived)
+    /// and persist the cache. Called when the server derives or renames a title.
+    func updateSessionTitle(id: UUID, newTitle: String) {
+        if let idx = pinnedSessions.firstIndex(where: { $0.id == id }) {
+            pinnedSessions[idx].title = newTitle
+        }
+        if let idx = recentSessions.firstIndex(where: { $0.id == id }) {
+            recentSessions[idx].title = newTitle
+        }
+        if let idx = archivedSessions.firstIndex(where: { $0.id == id }) {
+            archivedSessions[idx].title = newTitle
+        }
+        if let idx = searchResults?.firstIndex(where: { $0.id == id }) {
+            searchResults?[idx].title = newTitle
+        }
+        saveCachedSessions()
+    }
+
     func createNewSession(title: String = "New Chat") async {
         do {
             let session = try await heraldClient.createSession(title: title)

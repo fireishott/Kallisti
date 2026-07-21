@@ -298,6 +298,63 @@ def test_manually_renamed_conversation_is_not_overwritten(tmp_path):
         assert conversation.title == "My custom title"
 
 
+def test_new_chat_title_derives_from_first_message(tmp_path):
+    """iOS-created sessions start with title 'New Chat' — the relay must derive."""
+    from app.services import create_session
+
+    settings, database = make_database(tmp_path)
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        device = upsert_device(
+            db,
+            user=user,
+            platform="ios",
+            installation_id="install-new-chat",
+            device_name="Phone",
+            device_model="iPhone",
+            system_version="26.4",
+            app_version="1.7.3",
+            build_number="39",
+            bundle_id="net.fihonline.herald",
+            environment="development",
+        )
+        conversation = create_session(db, user_id=user.id, device_id=device.id)
+        assert conversation.title == "New Chat"
+
+        append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="Explain quantum computing",
+            delivery_status="sent",
+        )
+
+        assert conversation.title == "Explain quantum computing"
+
+
+def test_herald_title_derives_from_first_message(tmp_path):
+    """Relay-created sessions start with title 'Herald' — must also derive."""
+    settings, database = make_database(tmp_path)
+
+    with database.session() as db:
+        user = ensure_default_user(db, settings)
+        conversation = get_or_create_current_conversation(db, user_id=user.id)
+        assert conversation.title == "Herald"
+
+        append_message(
+            db,
+            conversation=conversation,
+            user_id=user.id,
+            role="user",
+            text="What is Rust?",
+            delivery_status="sent",
+        )
+
+        assert conversation.title == "What is Rust?"
+
+
 def test_orphaned_job_with_no_host_is_marked_failed(tmp_path):
     from app.models import MessageJob
     from app.services import log_stale_queued_jobs

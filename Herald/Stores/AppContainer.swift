@@ -402,6 +402,10 @@ final class AppContainer {
         container.chatStore.onConversationChanged = { [weak container] in
             container?.updateWidgetData()
         }
+        // Keep session list in sync when title is derived or renamed
+        container.chatStore.onTitleChanged = { [weak container] conversationID, newTitle in
+            container?.sessionListStore.updateSessionTitle(id: conversationID, newTitle: newTitle)
+        }
         container.talkStore.onSessionStateChanged = { [weak container] in
             container?.updateWidgetData()
         }

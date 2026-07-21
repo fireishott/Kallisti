@@ -24,12 +24,15 @@ final class ChatStore {
     static var watchdogTimeout: Duration = .seconds(120)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
-    // Buffer deltas in an Array<String> (avoids O(n²) inline concat) and flush
-    // onto the placeholder at ~30fps so every append triggers at most one
-    // @Observable notification per frame.
-    private var pendingDeltaChunks: [String] = []
-    private var pendingDeltaBytes: Int = 0
-    private var deltaFlushTask: Task<Void, Never>?
+    // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
+    // concat) and flush onto the placeholder at ~30fps so every append triggers
+    // at most one @Observable notification per frame.
+    private struct DeltaBuffer {
+        var chunks: [String] = []
+        var bytes: Int = 0
+        var flushTask: Task<Void, Never>?
+    }
+    private var deltaBuffers: [UUID: DeltaBuffer] = [:]
     private static let deltaFlushInterval: Duration = .milliseconds(33)
     private static let deltaFlushByteThreshold = 4_096
 
@@ -61,6 +64,10 @@ final class ChatStore {
     /// Called when conversation content changes (new message, streaming complete).
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
+
+    /// Called when the conversation title changes (server-derived or renamed).
+    /// Used by SessionListStore to update sidebar immediately.
+    var onTitleChanged: (@MainActor (_ conversationID: UUID, _ newTitle: String) -> Void)?
 
     init(heraldClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
         self.heraldClient = heraldClient
@@ -291,6 +298,7 @@ final class ChatStore {
                             self.conversation?.messages[idx].status = .delivered
                         }
                     }
+                    let oldTitle = self.conversation?.title
                     self.conversation = self.mergeConversationMetadata(
                         from: self.conversation,
                         into: self.heraldClient.currentConversation
@@ -305,6 +313,10 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     await self.autoTitleIfNeeded()
+                    // Notify SessionListStore if title changed (from server derivation or auto-rename)
+                    if let conv = self.conversation, conv.title != oldTitle {
+                        self.onTitleChanged?(conv.id, conv.title)
+                    }
 
                 case .started(let phase):
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
@@ -554,8 +566,9 @@ final class ChatStore {
     }
 
     private func autoTitleIfNeeded() async {
+        let defaultTitles: Set<String> = ["New Chat", "Herald"]
         guard let conv = conversation,
-              conv.title == "New Chat",
+              defaultTitles.contains(conv.title),
               let firstUserMessage = conv.messages.first(where: { $0.sender == .user })
         else { return }
         let raw = firstUserMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -660,34 +673,44 @@ final class ChatStore {
 
     private func enqueueDelta(_ delta: String, placeholderID: UUID) {
         guard !delta.isEmpty else { return }
-        pendingDeltaChunks.append(delta)
-        pendingDeltaBytes += delta.utf8.count
+        var buf = deltaBuffers[placeholderID] ?? DeltaBuffer()
+        buf.chunks.append(delta)
+        buf.bytes += delta.utf8.count
 
         // If we've buffered a lot, flush immediately so the UI doesn't fall
         // multiple frames behind during a burst.
-        if pendingDeltaBytes >= Self.deltaFlushByteThreshold {
+        if buf.bytes >= Self.deltaFlushByteThreshold {
+            deltaBuffers[placeholderID] = buf
             flushPendingDeltas(placeholderID: placeholderID)
             return
         }
 
-        guard deltaFlushTask == nil else { return }
-        deltaFlushTask = Task { [weak self, placeholderID] in
+        guard buf.flushTask == nil else {
+            deltaBuffers[placeholderID] = buf
+            return
+        }
+        buf.flushTask = Task { [weak self, placeholderID] in
             try? await Task.sleep(for: Self.deltaFlushInterval)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self?.flushPendingDeltas(placeholderID: placeholderID)
             }
         }
+        deltaBuffers[placeholderID] = buf
     }
 
     private func flushPendingDeltas(placeholderID: UUID) {
-        deltaFlushTask?.cancel()
-        deltaFlushTask = nil
+        guard var buf = deltaBuffers[placeholderID] else { return }
+        buf.flushTask?.cancel()
+        buf.flushTask = nil
 
-        guard !pendingDeltaChunks.isEmpty else { return }
-        let chunks = pendingDeltaChunks
-        pendingDeltaChunks = []
-        pendingDeltaBytes = 0
+        guard !buf.chunks.isEmpty else {
+            deltaBuffers.removeValue(forKey: placeholderID)
+            return
+        }
+        let chunks = buf.chunks
+        let totalBytes = buf.bytes
+        deltaBuffers.removeValue(forKey: placeholderID)
 
         guard var conv = conversation,
               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID })
@@ -695,7 +718,7 @@ final class ChatStore {
 
         // Single concat: O(sum(chunk sizes)) instead of O(n·chunks) across ticks.
         var buffer = conv.messages[idx].content
-        buffer.reserveCapacity(buffer.count + pendingDeltaBytes)
+        buffer.reserveCapacity(buffer.count + totalBytes)
         for chunk in chunks { buffer.append(chunk) }
         conv.messages[idx].content = buffer
 

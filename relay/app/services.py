@@ -40,6 +40,11 @@ from .security import generate_token, hash_token, issue_tokens, normalize_dateti
 
 logger = logging.getLogger("herald.relay")
 
+# Default conversation titles that should be replaced by derived titles
+# on the first user message. Both the relay ("Herald") and iOS ("New Chat")
+# use these as initial placeholders.
+DEFAULT_CONVERSATION_TITLES = {"Herald", "New Chat"}
+
 
 def ensure_default_user(db: Session, settings: Settings) -> User:
     user = db.scalar(select(User).limit(1))
@@ -973,6 +978,7 @@ def get_or_create_current_conversation(db: Session, *, user_id: str, device_id: 
             title="Herald",
             source="herald" if device_id is None else "ios",
         )
+
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -1078,7 +1084,7 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
-    if role == "user" and conversation.title == "Herald":
+    if role == "user" and conversation.title in DEFAULT_CONVERSATION_TITLES:
         derived_title = derive_title_from_message(text)
         if derived_title:
             conversation.title = derived_title

@@ -15,6 +15,83 @@ DEFAULT_API_SERVER_URL = "http://localhost:8642"
 CONNECT_TIMEOUT = 10.0
 READ_TIMEOUT = 300.0  # 5 minutes — long enough for Claude thinking, catches dead connections
 
+_OPEN_TAG = "<think>"
+_CLOSE_TAG = "</think>"
+
+
+class InlineThinkParser:
+    """Stateful parser that extracts inline <think>...</think> blocks from content deltas.
+
+    Handles markers that span chunk boundaries. When inside a think block,
+    content is routed to reasoning; outside, to text. If the stream ends
+    with an unclosed think block, the buffered text is emitted as reasoning.
+    """
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buf = ""
+        self._pending_reasoning = ""
+
+    def feed(self, chunk: str) -> tuple[str | None, str | None]:
+        """Process a content chunk. Returns (text_delta, reasoning_delta) — either may be None.
+
+        Reasoning is accumulated across chunks and only flushed when the close
+        tag arrives or the stream ends (via flush()). This ensures the caller
+        receives the complete reasoning block, not fragments.
+        """
+        self._buf += chunk
+        text_parts: list[str] = []
+        flushed_reasoning: str | None = None
+
+        while self._buf:
+            if self._in_think:
+                close_idx = self._buf.find(_CLOSE_TAG)
+                if close_idx != -1:
+                    self._pending_reasoning += self._buf[:close_idx]
+                    self._buf = self._buf[close_idx + len(_CLOSE_TAG):]
+                    self._in_think = False
+                    flushed_reasoning = self._pending_reasoning or None
+                    self._pending_reasoning = ""
+                    continue
+                # Check for partial close tag at the end
+                for i in range(len(_CLOSE_TAG) - 1, 0, -1):
+                    if self._buf.endswith(_CLOSE_TAG[:i]):
+                        self._pending_reasoning += self._buf[:-i]
+                        self._buf = self._buf[-i:]
+                        return "".join(text_parts) or None, flushed_reasoning
+                # No partial — accumulate all as reasoning
+                self._pending_reasoning += self._buf
+                self._buf = ""
+            else:
+                open_idx = self._buf.find(_OPEN_TAG)
+                if open_idx != -1:
+                    text_parts.append(self._buf[:open_idx])
+                    self._buf = self._buf[open_idx + len(_OPEN_TAG):]
+                    self._in_think = True
+                    continue
+                # Check for partial open tag at the end
+                for i in range(len(_OPEN_TAG) - 1, 0, -1):
+                    if self._buf.endswith(_OPEN_TAG[:i]):
+                        text_parts.append(self._buf[:-i])
+                        self._buf = self._buf[-i:]
+                        return "".join(text_parts) or None, flushed_reasoning
+                # No partial — flush all as text
+                text_parts.append(self._buf)
+                self._buf = ""
+
+        text = "".join(text_parts) or None
+        return text, flushed_reasoning
+
+    def flush(self) -> str | None:
+        """Flush any remaining buffer. Returns reasoning text if inside an unclosed think block."""
+        remaining = self._pending_reasoning + self._buf
+        self._pending_reasoning = ""
+        self._buf = ""
+        if self._in_think:
+            self._in_think = False
+            return remaining or None
+        return None
+
 
 @dataclass(frozen=True)
 class StreamEvent:
@@ -226,6 +303,7 @@ class HeraldAPIExecutor:
         ) as client:
             result_session_id = session_id
             accumulated_usage: dict | None = None
+            think_parser = InlineThinkParser()
 
             async with client.stream(
                 "POST",
@@ -285,11 +363,17 @@ class HeraldAPIExecutor:
                         )
                         yielded_event = True
 
-                    # Content delta
+                    # Content delta — pass through inline think parser to
+                    # separate any <think>...</think> blocks from answer text.
                     content = delta.get("content")
                     if content:
-                        yield StreamEvent(type="text_delta", data=content)
-                        yielded_event = True
+                        text_part, reason_part = think_parser.feed(content)
+                        if reason_part:
+                            yield StreamEvent(type="reasoning_delta", data=reason_part)
+                            yielded_event = True
+                        if text_part:
+                            yield StreamEvent(type="text_delta", data=text_part)
+                            yielded_event = True
 
                     # Tool-call deltas — the model is invoking tools.
                     tool_calls = delta.get("tool_calls")
@@ -311,6 +395,10 @@ class HeraldAPIExecutor:
                         yield StreamEvent(type="keepalive")
 
                     if finish_reason == "stop":
+                        # Flush any unclosed think block as reasoning
+                        remaining_reasoning = think_parser.flush()
+                        if remaining_reasoning:
+                            yield StreamEvent(type="reasoning_delta", data=remaining_reasoning)
                         yield StreamEvent(
                             type="finish",
                             session_id=result_session_id,
@@ -319,6 +407,9 @@ class HeraldAPIExecutor:
                         return
 
             # If we exited the stream without a finish event, emit one
+            remaining_reasoning = think_parser.flush()
+            if remaining_reasoning:
+                yield StreamEvent(type="reasoning_delta", data=remaining_reasoning)
             yield StreamEvent(
                 type="finish",
                 session_id=result_session_id,

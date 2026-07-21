@@ -66,7 +66,9 @@ final class RelayAPIClient {
         struct ErrorPayload: Decodable {
             let code: String
             let message: String
-            let retryable: Bool
+            let retryable: Bool?
+            let requestId: String?
+            let timestamp: String?
         }
 
         let error: ErrorPayload
@@ -98,15 +100,20 @@ final class RelayAPIClient {
         case unauthorized(String)
         case invalidURL(String)
         case requestFailed(String)
+        case serverError(code: String, message: String, requestId: String?, status: Int)
 
         var errorDescription: String? {
             switch self {
             case .unauthorized(let message):
-                message
+                return message
             case .invalidURL(let url):
-                "Invalid relay URL: \(url)"
+                return "Invalid relay URL: \(url)"
             case .requestFailed(let message):
-                message
+                return message
+            case .serverError(let code, let message, let requestId, _):
+                var desc = "[\(code)] \(message)"
+                if let requestId { desc += " (request: \(requestId))" }
+                return desc
             }
         }
     }
@@ -179,6 +186,8 @@ final class RelayAPIClient {
         if let accessToken, !accessToken.isEmpty {
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         }
+
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-ID")
 
         return request
     }
@@ -285,22 +294,29 @@ final class RelayAPIClient {
         }
 
         guard (200 ..< 300).contains(httpResponse.statusCode) else {
-            let makeError: (String) -> ClientError = { message in
-                if httpResponse.statusCode == 401 {
-                    return .unauthorized(message)
+            let status = httpResponse.statusCode
+
+            if status == 401 {
+                if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
+                    throw ClientError.unauthorized(envelope.error.message)
                 }
-                return .requestFailed(message)
+                throw ClientError.unauthorized("Unauthorized")
             }
 
-            if let errorEnvelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
-                throw makeError(errorEnvelope.error.message)
+            if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
+                throw ClientError.serverError(
+                    code: envelope.error.code,
+                    message: envelope.error.message,
+                    requestId: envelope.error.requestId,
+                    status: status
+                )
             }
 
-            if let errorEnvelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
-                throw makeError(errorEnvelope.detail)
+            if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
+                throw ClientError.requestFailed(envelope.detail)
             }
 
-            throw makeError("Relay request failed with status \(httpResponse.statusCode).")
+            throw ClientError.requestFailed("Relay request failed with status \(status).")
         }
 
         return try decoder.decode(Envelope<T>.self, from: data).data

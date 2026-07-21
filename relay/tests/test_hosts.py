@@ -136,7 +136,7 @@ def test_phone_pairing_rejects_reused_and_rate_limited_codes(tmp_path):
             json=phone_pairing_payload(pairing_code["displayCode"], "44444444-4444-4444-4444-444444444444"),
         )
         assert reused.status_code == 400
-        assert reused.json()["detail"] == "This phone pairing code has already been used."
+        assert reused.json()["error"]["message"] == "This phone pairing code has already been used."
 
         invalid_one = client.post(
             "/v1/phone-pairing/redeem",
@@ -154,7 +154,7 @@ def test_phone_pairing_rejects_reused_and_rate_limited_codes(tmp_path):
         assert invalid_one.status_code == 400
         assert invalid_two.status_code == 400
         assert limited.status_code == 429
-        assert limited.json()["detail"] == "Too many pairing attempts. Try again later."
+        assert limited.json()["error"]["message"] == "Too many pairing attempts. Try again later."
 
 
 def test_messages_return_pending_when_host_is_offline(tmp_path):
@@ -791,7 +791,7 @@ def test_talk_session_returns_conflict_when_connector_is_unconfigured(tmp_path):
             thread.join(timeout=5)
 
             assert response["payload"].status_code == 409
-            assert response["payload"].json()["detail"] == "OpenAI Realtime talk mode is not configured on this Hermes host."
+            assert response["payload"].json()["error"]["message"] == "OpenAI Realtime talk mode is not configured on this Hermes host."
 
 
 def test_sensor_delivery_returns_retry_offline_and_delivered_after_connector_ack(tmp_path):
@@ -980,7 +980,7 @@ def test_phone_pairing_rejects_expired_code(tmp_path):
         json=phone_pairing_payload(code=code, installation_id=str(uuid.uuid4())),
     )
     assert response.status_code == 400
-    assert "expired" in response.json()["detail"].lower()
+    assert "expired" in response.json()["error"]["message"].lower()
 
 
 def test_phone_pairing_allows_exact_attempt_limit_before_rate_limiting(tmp_path):
@@ -1018,13 +1018,13 @@ def test_phone_pairing_allows_exact_attempt_limit_before_rate_limiting(tmp_path)
     )
 
     assert first.status_code == 400
-    assert "expired" in first.json()["detail"].lower()
+    assert "expired" in first.json()["error"]["message"].lower()
     assert second.status_code == 400
-    assert "expired" in second.json()["detail"].lower()
+    assert "expired" in second.json()["error"]["message"].lower()
     assert third.status_code == 400
-    assert "expired" in third.json()["detail"].lower()
+    assert "expired" in third.json()["error"]["message"].lower()
     assert fourth.status_code == 429
-    assert "too many attempts" in fourth.json()["detail"].lower()
+    assert "too many attempts" in fourth.json()["error"]["message"].lower()
 
 
 def test_talk_readiness_returns_error_when_host_offline(tmp_path):
