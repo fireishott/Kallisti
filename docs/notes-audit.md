@@ -46,10 +46,10 @@ Audit of all Notes-related components for Herald 1.8.0 planning.
 | note_contract.py | V1_COMMAND_ALLOWLIST | ✅ Complete | 6 commands |
 | client.py | _rpc_note_enrich | ✅ Complete | Wired into dispatch |
 | **Tests** | | | |
-| NoteDirectiveParserTests.swift | 14 tests | ✅ Complete | All v1 commands covered |
-| NotesRepositoryTests.swift | 12 tests | ✅ Complete | CRUD, blobs, hash, recovery |
-| relay/tests/test_notes.py | 12 tests | ✅ Complete | Lifecycle, events, fence |
-| connector/tests/test_note_contract.py | 9 tests | ✅ Complete | Fixtures, validation |
+| NoteDirectiveParserTests.swift | 15 tests | ✅ Complete | All v1 commands covered |
+| NotesRepositoryTests.swift | 15 tests | ✅ Complete | CRUD, blobs, hash, recovery |
+| relay/tests/test_notes.py | 15 tests | ✅ Complete | Lifecycle, events, fence |
+| connector/tests/test_note_contract.py | 10 tests | ✅ Complete | Fixtures, validation |
 
 ## 2. Complete Behaviors (Ready for 1.8.0)
 
@@ -62,7 +62,7 @@ Audit of all Notes-related components for Herald 1.8.0 planning.
 - **Note list UI**: Search, sort (3 modes), pin, delete/restore, context menu
 - **Note editor UI**: Title editing, canvas, paper picker, attachment menu
 - **Connector enrichment**: Full request/response contract, validation, dispatch
-- **Test coverage**: 47 tests across iOS, relay, connector
+- **Test coverage**: 55 tests across iOS, relay, connector
 
 ## 3. Partial Behaviors (Need Completion)
 
