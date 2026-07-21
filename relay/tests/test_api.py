@@ -613,6 +613,92 @@ def test_push_send_routes_to_correct_apns_environment(tmp_path):
         assert stub_apns.sends[0]["environment"] == "development"
 
 
+def test_per_device_foreground_suppression(tmp_path):
+    """Push notifications must skip foreground devices but still deliver to
+    background devices for the same user."""
+    class StubAPNsClient:
+        def __init__(self) -> None:
+            self.sends = []
+
+        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None, user_info: dict | None = None):
+            from app.apns import PushResult
+            self.sends.append({"token": token, "environment": environment})
+            return PushResult.SENT
+
+    stub_apns = StubAPNsClient()
+
+    with build_client(tmp_path, herald_adapter="mock") as client:
+        client.app.state.apns_client = stub_apns
+
+        # Register two devices for the same user
+        device1_data = register_device(client)
+        access_token1 = device1_data["auth"]["accessToken"]
+
+        device2_resp = client.post(
+            "/v1/device/register",
+            json={
+                "device": {
+                    "platform": "ios",
+                    "deviceName": "Test iPad",
+                    "appVersion": "1.0.0",
+                    "buildNumber": "1",
+                    "bundleId": "net.fihonline.herald",
+                    "installationId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "deviceModel": "iPad16,3",
+                    "systemVersion": "26.4",
+                },
+                "client": {
+                    "environment": "development",
+                },
+            },
+        )
+        assert device2_resp.status_code == 200
+        device2_data = device2_resp.json()["data"]
+        access_token2 = device2_data["auth"]["accessToken"]
+        device2_id = device2_data["deviceId"]
+
+        # Register push tokens for both devices
+        for access_token, device_id, token in [
+            (access_token1, device1_data["deviceId"], "token-device1"),
+            (access_token2, device2_id, "token-device2"),
+        ]:
+            client.post(
+                "/v1/push/register",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={
+                    "deviceId": device_id,
+                    "apnsToken": token,
+                    "pushEnvironment": "development",
+                    "bundleId": "net.fihonline.herald",
+                },
+            )
+
+        # Set device 1 to foreground (should be skipped for push)
+        client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token1}"},
+            json={"state": "foreground"},
+        )
+
+        # Set device 2 to background (should receive push)
+        client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token2}"},
+            json={"state": "background"},
+        )
+
+        # Send a message from device 1 to trigger push
+        client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {access_token1}"},
+            json={"text": "hello from foreground device"},
+        )
+
+        # Only the background device should receive the push
+        assert len(stub_apns.sends) == 1
+        assert stub_apns.sends[0]["token"] == "token-device2"
+
+
 def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):
     # Regression test: POST /v1/messages previously ignored payload.conversationId
     # entirely and always resolved an arbitrary non-archived conversation via

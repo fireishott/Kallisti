@@ -255,4 +255,49 @@ struct PushRegistrationTests {
         #expect(body.contains("net.fihonline.herald"))
         #expect(body.contains("deadbeef"))
     }
+
+    @MainActor
+    @Test("Coordinator propagates relay error after APNs 410 Gone deactivation")
+    func testCoordinatorPropagates410GoneError() async throws {
+        // Simulate a relay that rejects registration with 410 Gone
+        // (e.g., APNs invalidated the token and relay deactivated the registration)
+        StubURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 410,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let errorJSON = try! JSONEncoder().encode([
+                "error": [
+                    "code": "TOKEN_INVALID",
+                    "message": "APNs token is permanently invalid (410 Gone)"
+                ] as [String: Any]
+            ])
+            return (response, errorJSON)
+        }
+
+        let (coordinator, _) = makeCoordinator()
+
+        do {
+            _ = try await coordinator.registerPushToken(
+                "expired-token",
+                relayConfiguration: RelayConfiguration(
+                    connectionMode: .selfHostedRelay,
+                    customRelayBaseURL: "https://relay.example.com/v1"
+                ),
+                accessToken: "test-token",
+                deviceID: UUID(),
+                installationID: UUID(),
+                bundleID: "net.fihonline.herald",
+                appVersion: "1.0.0",
+                pushEnvironment: "development"
+            )
+            Issue("Expected registration to throw on 410 Gone response")
+        } catch {
+            // The coordinator should propagate the error — not silently succeed.
+            // This ensures the app knows the registration failed and can retry
+            // on next launch (the short-circuit removal guarantees it always tries).
+        }
+    }
 }
