@@ -484,6 +484,135 @@ def test_rename_session_accepts_json_body(tmp_path):
         assert response.json()["data"]["session"]["title"] == "Renamed"
 
 
+def test_push_register_preserves_app_reported_environment(tmp_path):
+    """The relay must store the app-reported push environment per-registration,
+    not override it with the relay's global APNS_ENVIRONMENT setting."""
+    with build_client(tmp_path, apns_environment="production") as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        device_id = register_data["deviceId"]
+
+        # Register with "development" environment
+        push_response = client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "apnsToken": "deadbeef",
+                "pushEnvironment": "development",
+                "bundleId": "net.fihonline.herald",
+            },
+        )
+        assert push_response.status_code == 200
+
+        # Verify the stored registration uses the app-reported environment
+        from app.models import PushRegistration
+        from sqlalchemy import select
+        with client.app.state.database.session() as db:
+            reg = db.scalar(select(PushRegistration).where(PushRegistration.device_id == device_id))
+            assert reg is not None
+            assert reg.push_environment == "development"
+
+
+def test_push_register_reactivates_deactivated_registration(tmp_path):
+    """When a registration was deactivated (e.g. APNs 410 Gone), re-registering
+    with the same device should reactivate it."""
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        device_id = register_data["deviceId"]
+
+        # Initial registration
+        push_response = client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "apnsToken": "deadbeef",
+                "pushEnvironment": "development",
+                "bundleId": "net.fihonline.herald",
+            },
+        )
+        assert push_response.status_code == 200
+
+        # Deactivate the registration (simulating APNs 410 Gone)
+        from app.models import PushRegistration
+        from sqlalchemy import select
+        with client.app.state.database.session() as db:
+            reg = db.scalar(select(PushRegistration).where(PushRegistration.device_id == device_id))
+            reg.is_active = False
+            db.commit()
+
+        # Re-register with same device
+        push_response = client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "apnsToken": "deadbeef",
+                "pushEnvironment": "development",
+                "bundleId": "net.fihonline.herald",
+            },
+        )
+        assert push_response.status_code == 200
+
+        # Verify registration is active again
+        with client.app.state.database.session() as db:
+            reg = db.scalar(select(PushRegistration).where(PushRegistration.device_id == device_id))
+            assert reg.is_active is True
+
+
+def test_push_send_routes_to_correct_apns_environment(tmp_path):
+    """Push notifications must route to the correct APNs endpoint based on the
+    registration's stored environment, not a global default."""
+    class StubAPNsClient:
+        def __init__(self) -> None:
+            self.sends = []
+
+        async def send_alert_push(self, token: str, *, title: str, body: str, category: str | None = None, bundle_id: str | None = None, environment: str | None = None, user_info: dict | None = None):
+            from app.apns import PushResult
+            self.sends.append({"token": token, "environment": environment})
+            return PushResult.SENT
+
+    stub_apns = StubAPNsClient()
+
+    with build_client(tmp_path, herald_adapter="mock") as client:
+        client.app.state.apns_client = stub_apns
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+        device_id = register_data["deviceId"]
+
+        # Register with development environment
+        client.post(
+            "/v1/push/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "deviceId": device_id,
+                "apnsToken": "deadbeef",
+                "pushEnvironment": "development",
+                "bundleId": "net.fihonline.herald",
+            },
+        )
+
+        # Background the device
+        client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"state": "background"},
+        )
+
+        # Send a message to trigger push
+        client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"text": "test message"},
+        )
+
+        # Verify the push was sent with the registration's environment
+        assert len(stub_apns.sends) == 1
+        assert stub_apns.sends[0]["environment"] == "development"
+
+
 def test_message_uses_explicit_conversation_id_not_arbitrary_current(tmp_path):
     # Regression test: POST /v1/messages previously ignored payload.conversationId
     # entirely and always resolved an arbitrary non-archived conversation via

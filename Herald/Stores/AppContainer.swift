@@ -682,12 +682,6 @@ final class AppContainer {
             return
         }
 
-        if notificationService.isPushTokenRegistered,
-           notificationService.currentPushToken == normalizedToken {
-            sessionStore.state.pushTokenRegistered = true
-            return
-        }
-
         guard let deviceID = sessionStore.state.deviceID else {
             await notificationService.markPushTokenRegistered(false)
             sessionStore.state.pushTokenRegistered = false
