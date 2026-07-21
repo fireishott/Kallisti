@@ -584,7 +584,7 @@ final class ChatStore {
         guard !raw.isEmpty else { return }
 
         // Try LLM-generated title first
-        let assistantContent = conv.messages.first(where: { $0.sender == .assistant })?.content ?? ""
+        let assistantContent = conv.messages.first(where: { $0.sender == .herald })?.content ?? ""
         if let generated = try? await heraldClient.generateSessionTitle(
             sessionId: conv.id,
             userMessage: String(raw.prefix(500)),
