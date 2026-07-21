@@ -285,7 +285,7 @@ final class ChatStore {
                         // .dotMatchesLineSeparators handles multiline blocks reliably.
                         if let regex = try? NSRegularExpression(pattern: "<think>.*?</think>", options: [.dotMatchesLineSeparators]) {
                             let range = NSRange(resolved.content.startIndex..., in: resolved.content)
-                            resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, replacement: "")
+                            resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                         }
                         self.conversation?.messages[idx] = resolved
