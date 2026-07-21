@@ -178,12 +178,21 @@ final class ChatStore {
         )
         guard stalled else { return }
 
-        // The watchdog fired — the coordinator will handle reconnection.
-        // If the job is truly dead, the coordinator will eventually emit
-        // .failed after exhausting retries. Show a waiting state.
+        // Watchdog fired. Grace period for late responses.
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
+
+        try? await Task.sleep(for: .seconds(30))
+
+        // Check if answered during grace period
+        let refreshed = await refreshActiveConversation()
+        conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+        if let msg = conversation?.messages.first(where: { $0.id == placeholderID }),
+           msg.status == .delivered || !msg.content.isEmpty { return }
+
+        // No response — fail with tap-to-retry
+        failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
     }
 
     /// Runs a single streaming attempt, racing the update stream against a
@@ -352,6 +361,7 @@ final class ChatStore {
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = .delivered
                     }
+                    await self.autoTitleIfNeeded()
 
                 case .failed(let errorMessage):
                     // An explicit failure is a real signal, not silence — let it
@@ -380,6 +390,7 @@ final class ChatStore {
                     } else {
                         self.pendingMessageSentAt = nil
                     }
+                    await self.autoTitleIfNeeded()
                 }
             }
             progressContinuation?.finish()
@@ -571,12 +582,27 @@ final class ChatStore {
         else { return }
         let raw = firstUserMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
+
+        // Try LLM-generated title first
+        let assistantContent = conv.messages.first(where: { $0.sender == .assistant })?.content ?? ""
+        if let generated = try? await heraldClient.generateSessionTitle(
+            sessionId: conv.id,
+            userMessage: String(raw.prefix(500)),
+            assistantMessage: String(assistantContent.prefix(500))
+        ) {
+            conversation?.title = generated
+            onTitleChanged?(conv.id, generated)
+            return
+        }
+
+        // Fallback: truncated first message
         let title = raw.count > 60 ? String(raw.prefix(57)) + "..." : raw
         do {
             _ = try await heraldClient.renameSession(id: conv.id, title: title)
             conversation?.title = title
+            onTitleChanged?(conv.id, title)
         } catch {
-            // Non-critical — session stays titled "New Chat" in list but works fine
+            appendLog(level: .warn, "Auto-title failed: \(error.localizedDescription)")
         }
     }
 

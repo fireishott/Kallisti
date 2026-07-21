@@ -11,6 +11,7 @@ struct HeraldActivityAttributes: ActivityAttributes, Sendable {
         var elapsedSeconds: Int       // seconds since activity started (fallback for non-timer contexts)
         var startDate: Date?          // used by Text(timerInterval:) for a live-ticking clock
         var sessionType: String       // "voice", "chat", "tool"
+        var emoji: String?            // Contextual emoji for Dynamic Island
     }
 
     /// Immutable for the lifetime of the activity.

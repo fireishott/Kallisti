@@ -20,7 +20,8 @@ final class LiveActivityService {
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = HeraldActivityAttributes.ContentState(
-            status: "Listening", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "voice"
+            status: "Listening", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "voice",
+            emoji: emojiForPhase("listening", sessionType: "voice")
         )
         if currentActivity != nil {
             startedAt = now
@@ -42,7 +43,8 @@ final class LiveActivityService {
     func updateVoiceState(_ status: String, toolName: String? = nil) {
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = HeraldActivityAttributes.ContentState(
-            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "voice"
+            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "voice",
+            emoji: emojiForPhase(status, sessionType: "voice")
         )
         updateActivity(with: state)
     }
@@ -55,7 +57,8 @@ final class LiveActivityService {
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = HeraldActivityAttributes.ContentState(
-            status: "Thinking", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "chat"
+            status: "Thinking", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "chat",
+            emoji: emojiForPhase("thinking", sessionType: "chat")
         )
         if currentActivity != nil {
             startedAt = now
@@ -78,7 +81,8 @@ final class LiveActivityService {
         guard currentActivity != nil else { return }
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = HeraldActivityAttributes.ContentState(
-            status: status, toolName: nil, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat"
+            status: status, toolName: nil, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat",
+            emoji: emojiForPhase(status, sessionType: "chat")
         )
         updateActivity(with: state)
     }
@@ -91,7 +95,8 @@ final class LiveActivityService {
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = HeraldActivityAttributes.ContentState(
-            status: "Working...", toolName: toolName, elapsedSeconds: 0, startDate: now, sessionType: "tool"
+            status: "Working...", toolName: toolName, elapsedSeconds: 0, startDate: now, sessionType: "tool",
+            emoji: emojiForPhase("working", sessionType: "tool")
         )
         if currentActivity != nil {
             startedAt = now
@@ -113,7 +118,8 @@ final class LiveActivityService {
     func updateToolProgress(_ status: String, toolName: String? = nil) {
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = HeraldActivityAttributes.ContentState(
-            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool"
+            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool",
+            emoji: emojiForPhase(status, sessionType: "tool")
         )
         updateActivity(with: state)
     }
@@ -126,7 +132,8 @@ final class LiveActivityService {
 
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
-                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice"
+                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
+                emoji: nil
             ),
             staleDate: nil
         )
@@ -161,7 +168,8 @@ final class LiveActivityService {
     static func endAllActivities() {
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
-                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice"
+                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
+                emoji: nil
             ),
             staleDate: nil
         )
@@ -177,6 +185,22 @@ final class LiveActivityService {
         if let activity = Activity<HeraldActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
             currentActivity = activity
             startedAt = activity.content.state.startDate
+        }
+    }
+
+    private func emojiForPhase(_ phase: String, sessionType: String) -> String {
+        switch phase.lowercased() {
+        case "thinking", "reasoning": return "\u{1F9E0}"    // brain
+        case "responding", "streaming": return "\u{1F4AC}"  // speech bubble
+        case "working", "executing": return "\u{26A1}"      // lightning
+        case "listening": return "\u{1F3A4}"                // microphone
+        case "searching": return "\u{1F50D}"                // magnifying glass
+        default:
+            switch sessionType {
+            case "voice": return "\u{1F3A4}"
+            case "tool":  return "\u{1F527}"
+            default:      return "\u{1F4AC}"
+            }
         }
     }
 }

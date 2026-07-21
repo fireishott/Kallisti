@@ -154,6 +154,10 @@ extension MockHeraldClient {
         SessionSummary(id: id, title: title)
     }
 
+    func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        "New Chat"
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         currentConversation ?? DemoData.sampleConversation
     }

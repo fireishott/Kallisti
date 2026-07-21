@@ -1242,6 +1242,8 @@ class HeraldConnector:
                 result = await self._rpc_jobs_cancel(params)
             elif method == "note.enrich":
                 result = await self._rpc_note_enrich(params)
+            elif method == "session.generateTitle":
+                result = await self._rpc_session_generate_title(params)
             else:
                 raise RuntimeError(f"Unsupported RPC method: {method}")
             return {
@@ -1874,6 +1876,26 @@ class HeraldConnector:
         except Exception as e:
             logger.error("Note enrichment failed: %s", e, exc_info=True)
             return {"status": "error", "errors": [str(e)]}
+
+    async def _rpc_session_generate_title(self, params: dict) -> dict:
+        """Generate a concise session title using the Hermes API server."""
+        user_message = params.get("userMessage", "")
+        assistant_message = params.get("assistantMessage", "")
+        prompt = (
+            "Generate a concise 3-6 word title for this conversation. "
+            "Return ONLY the title, nothing else.\n\n"
+            f"User: {user_message}\nAssistant: {assistant_message}"
+        )
+        state = self.state_store.load()
+        runtime = await self.runtime_adapter_for_state_async(state)
+        result = await asyncio.to_thread(
+            runtime.send_text_message,
+            latest_user_message=prompt,
+            history=[],
+            session_id=None,
+        )
+        title = result.text.strip().strip('"').strip("'")[:60]
+        return {"title": title}
 
     def _build_note_enrichment_prompt(self, req: EnrichmentRequest, directives: list) -> str:
         """Build the system prompt for note enrichment."""

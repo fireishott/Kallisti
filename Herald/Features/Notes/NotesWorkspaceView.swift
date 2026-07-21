@@ -12,6 +12,7 @@ struct NotesWorkspaceView: View {
         } detail: {
             if let selectedId = store.selectedNoteId {
                 NoteEditorView(noteId: selectedId)
+                    .id(selectedId)
             } else {
                 ContentUnavailableView(
                     "No Note Selected",

@@ -922,11 +922,15 @@ final class AppContainer {
 
         struct AppStateResponse: Decodable {}
 
-        _ = try? await apiClient.post(
-            path: "device/app-state",
-            body: AppStateBody(state: state),
-            accessToken: accessToken
-        ) as AppStateResponse
+        do {
+            _ = try await apiClient.post(
+                path: "device/app-state",
+                body: AppStateBody(state: state),
+                accessToken: accessToken
+            ) as AppStateResponse
+        } catch {
+            // Non-fatal — app state reporting is best-effort
+        }
     }
 
     /// Snapshots current app state into the App Group shared container

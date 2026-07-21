@@ -2,6 +2,39 @@
 
 All notable changes to Hermes iOS are documented here.
 
+## [1.7.5] - 2026-07-21
+
+### Fix: Note selection broken (B1)
+
+- **Force view identity on note switch** (`NotesWorkspaceView.swift`): Added `.id(selectedId)` to `NoteEditorView` so SwiftUI destroys and recreates the editor when switching notes. Previously `.onAppear` only fired once per view lifecycle.
+
+### Fix: Chat session titles (B2)
+
+- **LLM-generated titles** (`ChatStore.swift`, `LiveHeraldClient.swift`, `HeraldClientProtocol.swift`): New `generateSessionTitle` RPC sends first user+assistant messages to connector for a 3-6 word title. Falls back to truncated first message if LLM fails.
+- **Title on cancel/failure** (`ChatStore.swift`): `autoTitleIfNeeded()` now runs in `.cancelled` and `.failed` handlers, not just `.finished`.
+- **Relay endpoint** (`relay/app/main.py`): New `POST /v1/sessions/{id}/generate-title` proxies to connector RPC.
+- **Connector RPC** (`connector/client.py`): New `session.generateTitle` handler dispatches to Hermes API.
+
+### Fix: Unreliable responses (B3)
+
+- **Grace period before fail** (`ChatStore.swift`): `runAttemptLoop` now waits 30s after watchdog fires, refreshes conversation to check for late responses, then calls `failStalledMessage` if still empty. Shows "tap to retry" instead of hanging forever.
+
+### Fix: Missing push notifications (B4)
+
+- **Force push for slow responses** (`relay/app/main.py`): `maybe_send_message_push` gains `force` param. Jobs taking >60s bypass the foreground-stale check.
+- **Reduced stale window** (deploy `.env`): `APP_PRESENCE_STALE_SECONDS` 120→30.
+- **App state logging** (`AppContainer.swift`): `reportAppStateIfNeeded` now logs errors instead of silently discarding.
+
+### Fix: Dynamic Island emoji (B5)
+
+- **Emoji field in ContentState** (`HeraldActivityAttributes.swift` × 2): Added `emoji: String?` to `ContentState`. Both app and widget copies updated.
+- **Phase-to-emoji mapping** (`LiveActivityService.swift`): New `emojiForPhase()` maps phases to contextual emojis (🧠 thinking, 💬 responding, ⚡ working, 🎤 listening, 🔍 searching).
+- **Emoji in Dynamic Island** (`HeraldLiveActivity.swift`): Compact and minimal DI regions render emoji when available, fall back to Herald logo.
+
+### Environment: Relay logging (E2)
+
+- **Uvicorn log level** (`relay/Dockerfile`): Added `--log-level info` so app-level logger output appears in container logs.
+
 ## [1.7.3] - 2026-07-20
 
 ### Fix: Double thinking indicator (F4)

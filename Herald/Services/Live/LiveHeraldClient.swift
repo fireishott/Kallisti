@@ -745,6 +745,27 @@ extension LiveHeraldClient {
         )
     }
 
+    func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        struct GenerateTitleBody: Encodable {
+            let userMessage: String
+            let assistantMessage: String
+        }
+        struct GenerateTitleResponse: Decodable {
+            let title: String?
+        }
+        let response: GenerateTitleResponse = try await performAuthorizedRequest { [self] token in
+            try await self.apiClient.post(
+                path: "sessions/\(sessionId.uuidString.lowercased())/generate-title",
+                body: GenerateTitleBody(userMessage: userMessage, assistantMessage: assistantMessage),
+                accessToken: token
+            )
+        }
+        guard let title = response.title, !title.isEmpty else {
+            throw URLError(.badServerResponse)
+        }
+        return title
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
             try await self.apiClient.get(

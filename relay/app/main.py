@@ -441,6 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         message_text: str,
         job_id: str | None = None,
         category: str | None = None,
+        force: bool = False,
     ) -> None:
         apns_client = app.state.apns_client
         if apns_client is None:
@@ -452,7 +453,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         preview = preview[:160]
 
         for device, registration in active_push_registrations_for_user(db, user_id=user_id):
-            if device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
+            if not force and device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
                 logger.info("Skipping push for device %s (foreground)", device.id)
                 continue
             if registration.transport == "relay":
@@ -2155,6 +2156,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         updated = rename_session(db, session_id=session_id, title=body.title)
         return success({"session": serialize_session_summary(updated) if updated else None})
 
+    @app.post("/v1/sessions/{session_id}/generate-title")
+    async def generate_session_title(
+        session_id: str,
+        body: dict = Body(...),
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        session = get_session(db, session_id=session_id)
+        if session is None or session.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="session.generateTitle",
+                params={
+                    "userMessage": body.get("userMessage", ""),
+                    "assistantMessage": body.get("assistantMessage", ""),
+                },
+                timeout_seconds=15.0,
+            )
+            if result and "title" in result:
+                rename_session(db, session_id=session_id, title=result["title"])
+                return success({"title": result["title"]})
+        except HTTPException:
+            pass
+        except Exception:
+            logger.warning("generate-title RPC failed for session %s", session_id, exc_info=True)
+        return success({"title": None})
+
     @app.get("/v1/messages/{message_id}/attachments/{index}")
     def message_attachment_bytes(
         message_id: str,
@@ -2893,6 +2923,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     if completed.result_message_id:
                                         completed_message = db.get(Message, completed.result_message_id)
                                         if completed_message is not None:
+                                            job_duration = (utcnow() - completed.created_at).total_seconds() if completed.created_at else 0
                                             await maybe_send_message_push(
                                                 db=db,
                                                 user_id=completed.user_id,
@@ -2901,6 +2932,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 message_text=completed_message.text,
                                                 job_id=claimed_job.id,
                                                 category="HERALD_MESSAGE_READY",
+                                                force=(job_duration > 60),
                                             )
                                 done_event_data: dict = {
                                     "jobId": claimed_job.id,

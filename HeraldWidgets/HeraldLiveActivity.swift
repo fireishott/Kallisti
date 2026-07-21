@@ -102,7 +102,11 @@ struct HeraldLiveActivity: Widget {
                 }
             } compactLeading: {
                 // Compact left side of Dynamic Island
-                HeraldBrandIcon(size: 14)
+                if let emoji = context.state.emoji {
+                    Text(emoji).font(.system(size: 14))
+                } else {
+                    HeraldBrandIcon(size: 14)
+                }
             } compactTrailing: {
                 // Compact right side
                 Text(context.state.status.prefix(12))
@@ -112,7 +116,11 @@ struct HeraldLiveActivity: Widget {
                     .foregroundStyle(.white.opacity(0.85))
             } minimal: {
                 // Minimal (when multiple Live Activities compete)
-                HeraldBrandIcon(size: 16)
+                if let emoji = context.state.emoji {
+                    Text(emoji).font(.system(size: 16))
+                } else {
+                    HeraldBrandIcon(size: 16)
+                }
             }
         }
         .supplementalActivityFamilies([.small])
