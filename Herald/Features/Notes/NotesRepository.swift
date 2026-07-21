@@ -38,7 +38,9 @@ actor NotesRepository {
             return []
         }
         let data = try Data(contentsOf: metadataURL)
-        return try JSONDecoder().decode([HeraldNote].self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([HeraldNote].self, from: data)
     }
 
     /// Save the full notes index. Atomic write.
@@ -181,7 +183,9 @@ actor NotesRepository {
         let url = attachmentsMetadataURL(for: noteId)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode([NoteAttachment].self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([NoteAttachment].self, from: data)
     }
 
     /// Save attachment metadata index.
@@ -189,6 +193,7 @@ actor NotesRepository {
         let noteDir = noteDirectory(for: noteId)
         try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
         let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(attachments)
         try data.write(to: attachmentsMetadataURL(for: noteId), options: .atomic)
     }

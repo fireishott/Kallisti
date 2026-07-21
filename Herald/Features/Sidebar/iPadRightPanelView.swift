@@ -24,6 +24,7 @@ struct iPadRightPanelView: View {
                 case .terminal: terminalContent
                 case .tools:    toolsContent
                 case .canvas:   CanvasView(store: canvasStore)
+                case .gateway:  gatewayContent
                 }
             }
             .frame(maxWidth: .infinity)
@@ -201,6 +202,12 @@ struct iPadRightPanelView: View {
         .background(Design.Colors.background)
     }
 
+    // MARK: - Gateway Logs
+
+    private var gatewayContent: some View {
+        LiveLogView()
+    }
+
     // MARK: - Usage
 
     private var toolsContent: some View {
@@ -258,7 +265,7 @@ struct iPadRightPanelView: View {
 // MARK: - Right Panel Tab
 
 enum RightPanelTab: String, CaseIterable, Identifiable {
-    case logs, terminal, tools, canvas
+    case logs, terminal, tools, canvas, gateway
     var id: String { rawValue }
 
     var title: String {
@@ -267,6 +274,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
         case .terminal: "Terminal"
         case .tools: "Usage"
         case .canvas: "Canvas"
+        case .gateway: "Gateway"
         }
     }
 
@@ -276,6 +284,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
         case .terminal: "apple.terminal"
         case .tools: "chart.bar"
         case .canvas: "rectangle.on.rectangle"
+        case .gateway: "antenna.radiowaves.left.and.right"
         }
     }
 }

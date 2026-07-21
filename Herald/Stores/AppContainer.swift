@@ -62,6 +62,7 @@ final class AppContainer {
     let notesStore: NotesStore
     let attachmentService: AttachmentService
     let sensorUploadService: SensorUploadService?
+    let dashboardLogService: DashboardLogService
     let themeManager: ThemeManager
     private let apiClient: RelayAPIClient?
     private let notificationService: (any NotificationServiceProtocol)?
@@ -103,6 +104,7 @@ final class AppContainer {
         notesStore: NotesStore? = nil,
         attachmentService: AttachmentService? = nil,
         sensorUploadService: SensorUploadService? = nil,
+        dashboardLogService: DashboardLogService? = nil,
         apiClient: RelayAPIClient? = nil,
         notificationService: (any NotificationServiceProtocol)? = nil,
         pushRegistrationCoordinator: PushRegistrationCoordinator? = nil,
@@ -151,6 +153,10 @@ final class AppContainer {
             }
         )
         self.sensorUploadService = sensorUploadService
+        self.dashboardLogService = dashboardLogService ?? DashboardLogService(
+            baseURLProvider: { "http://herald-host.internal:9119" },
+            credentialsProvider: { nil }
+        )
         self.apiClient = apiClient
         self.notificationService = notificationService
         self.pushRegistrationCoordinator = pushRegistrationCoordinator
@@ -308,6 +314,14 @@ final class AppContainer {
             healthService: liveHealthService,
             motionService: liveMotionService
         )
+        let dashboardLogService = DashboardLogService(
+            baseURLProvider: { settingsStore.settings.dashboardURL ?? "http://herald-host.internal:9119" },
+            credentialsProvider: {
+                guard let user = settingsStore.settings.dashboardUsername,
+                      let pass = settingsStore.settings.dashboardPassword else { return nil }
+                return (user, pass)
+            }
+        )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
         let container = AppContainer(
@@ -361,6 +375,7 @@ final class AppContainer {
             }(),
             sessionListStore: SessionListStore(heraldClient: heraldClient, chatStore: chatStore, settingsStore: settingsStore, persistence: persistence),
             sensorUploadService: sensorUploadService,
+            dashboardLogService: dashboardLogService,
             apiClient: apiClient,
             notificationService: notificationService,
             pushRegistrationCoordinator: pushRegistrationCoordinator,

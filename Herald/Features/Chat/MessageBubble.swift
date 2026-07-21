@@ -270,7 +270,8 @@ struct MessageBubble: View, Equatable {
             content: displayContent,
             isStreaming: message.isStreaming,
             showCursor: message.isStreaming,
-            showReasoning: settingsStore.settings.showReasoning
+            showReasoning: settingsStore.settings.showReasoning,
+            hasStreamedReasoning: !message.reasoning.isEmpty
         )
         .foregroundStyle(Design.Colors.foreground)
         .padding(.vertical, Design.Spacing.xxs)

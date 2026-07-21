@@ -279,17 +279,15 @@ final class ChatStore {
                             if let startedAt = reasoningStartedAt {
                                 resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
                             }
-                            // Strip reasoning text that the relay echoed into content
-                            if resolved.content.hasPrefix(streamedReasoning) {
-                                let stripped = String(resolved.content.dropFirst(streamedReasoning.count))
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                resolved.content = stripped
-                            }
                         }
-                        // Strip any <think>…</think> blocks that leaked into content
-                        resolved.content = resolved.content
-                            .replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Always strip <think>…</think> from content — whether or not we
+                        // streamed reasoning. NSRegularExpression with
+                        // .dotMatchesLineSeparators handles multiline blocks reliably.
+                        if let regex = try? NSRegularExpression(pattern: "<think>.*?</think>", options: [.dotMatchesLineSeparators]) {
+                            let range = NSRange(resolved.content.startIndex..., in: resolved.content)
+                            resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, replacement: "")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
                         self.conversation?.messages[idx] = resolved
                     }
                     // Mark user message as delivered if it's still in sending state

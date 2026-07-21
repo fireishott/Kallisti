@@ -977,6 +977,7 @@ class HeraldConnector:
                 history=history,
                 session_id=job.get("sessionId"),
                 attachments=job.get("attachments"),
+                reasoning_effort=job.get("reasoningEffort"),
             ):
                 if event.type == "text_delta":
                     accumulated_text += event.data

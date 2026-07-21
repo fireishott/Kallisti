@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,13 +46,13 @@ def list_notes(
 
 
 @router.post("")
-def create_note(
+async def create_note(
     request: Request,
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
     """Create a new note."""
-    body = _parse_body(request)
+    body = await _parse_body(request)
     note = Note(
         id=str(uuid4()),
         user_id=auth.user.id,
@@ -73,7 +74,7 @@ def create_note(
     )
     db.commit()
 
-    return {"data": _note_to_dict(note)}, status.HTTP_201_CREATED
+    return JSONResponse(content={"data": _note_to_dict(note)}, status_code=status.HTTP_201_CREATED)
 
 
 @router.get("/{note_id}")
@@ -87,7 +88,7 @@ def get_note(
 
 
 @router.patch("/{note_id}")
-def update_note(
+async def update_note(
     note_id: str,
     request: Request,
     auth: AuthContext = Depends(get_auth_context),
@@ -107,7 +108,7 @@ def update_note(
                 detail="Note revision mismatch.",
             )
 
-    body = _parse_body(request)
+    body = await _parse_body(request)
     if "title" in body:
         note.title = body["title"]
     if "folderId" in body:
@@ -238,7 +239,7 @@ def download_blob(
 
 
 @router.post("/{note_id}/runs")
-def create_run(
+async def create_run(
     note_id: str,
     request: Request,
     auth: AuthContext = Depends(get_auth_context),
@@ -246,7 +247,7 @@ def create_run(
 ):
     """Start an enrichment run. Idempotent on clientRunId."""
     note = _get_note_or_404(db, note_id, auth.user.id)
-    body = _parse_body(request)
+    body = await _parse_body(request)
 
     client_run_id = body.get("clientRunId")
     if not client_run_id:
@@ -290,7 +291,7 @@ def create_run(
     )
     db.commit()
 
-    return {"data": _run_to_dict(run)}, status.HTTP_201_CREATED
+    return JSONResponse(content={"data": _run_to_dict(run)}, status_code=status.HTTP_201_CREATED)
 
 
 @router.get("/../note-runs/{run_id}")
@@ -360,10 +361,10 @@ def cancel_run(
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _parse_body(request: Request) -> dict:
+async def _parse_body(request: Request) -> dict:
     """Parse JSON body, returning empty dict on failure."""
     try:
-        return request.json() if hasattr(request, '_json') else {}
+        return await request.json()
     except Exception:
         return {}
 

@@ -111,6 +111,7 @@ class HeraldAPIRuntimeAdapter:
         history: list[RuntimeConversationMessage],
         session_id: str | None = None,
         attachments: list[dict] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator:
         """Async streaming send — yields StreamEvent objects."""
         async for event in self.executor.stream_message(
@@ -121,6 +122,7 @@ class HeraldAPIRuntimeAdapter:
             ],
             session_id=session_id,
             attachments=attachments,
+            reasoning_effort=reasoning_effort,
         ):
             yield event
 

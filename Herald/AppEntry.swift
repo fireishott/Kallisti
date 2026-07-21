@@ -132,6 +132,7 @@ struct HeraldApp: App {
                 .environment(container.canvasStore)
                 .environment(container.notesStore)
                 .environment(container.attachmentService)
+                .environment(container.dashboardLogService)
                 .task { await container.initialize() }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {

@@ -620,6 +620,9 @@ struct UserSettings: Codable, Hashable, Sendable {
     var enterToSend: Bool
     var showReasoning: Bool
     var reasoningEffort: ReasoningEffort
+    var dashboardURL: String?
+    var dashboardUsername: String?
+    var dashboardPassword: String?
 
     init(
         userName: String = "User",
@@ -639,7 +642,10 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeak: Bool = false,
         enterToSend: Bool = false,
         showReasoning: Bool = true,
-        reasoningEffort: ReasoningEffort = .medium
+        reasoningEffort: ReasoningEffort = .medium,
+        dashboardURL: String? = nil,
+        dashboardUsername: String? = nil,
+        dashboardPassword: String? = nil
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -659,6 +665,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.enterToSend = enterToSend
         self.showReasoning = showReasoning
         self.reasoningEffort = reasoningEffort
+        self.dashboardURL = dashboardURL
+        self.dashboardUsername = dashboardUsername
+        self.dashboardPassword = dashboardPassword
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -680,6 +689,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         case enterToSend
         case showReasoning
         case reasoningEffort
+        case dashboardURL
+        case dashboardUsername
+        case dashboardPassword
     }
 
     init(from decoder: Decoder) throws {
@@ -710,6 +722,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
         reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
+        dashboardURL = try container.decodeIfPresent(String.self, forKey: .dashboardURL)
+        dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
+        dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -732,6 +747,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(enterToSend, forKey: .enterToSend)
         try container.encode(showReasoning, forKey: .showReasoning)
         try container.encode(reasoningEffort, forKey: .reasoningEffort)
+        try container.encodeIfPresent(dashboardURL, forKey: .dashboardURL)
+        try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
+        try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
     }
 
     func applyingEnvironmentPolicy(

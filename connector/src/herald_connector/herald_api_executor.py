@@ -279,6 +279,7 @@ class HeraldAPIExecutor:
         history: list[HeraldConversationMessage] | None = None,
         session_id: str | None = None,
         attachments: list[dict] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a chat completion, yielding events as they arrive."""
         headers = {
@@ -297,6 +298,13 @@ class HeraldAPIExecutor:
             ),
             "stream": True,
         }
+
+        # Control thinking based on reasoning_effort
+        # "off" disables thinking; all other values enable it
+        if reasoning_effort == "off":
+            payload["think"] = False
+        elif reasoning_effort is not None:
+            payload["think"] = True
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
