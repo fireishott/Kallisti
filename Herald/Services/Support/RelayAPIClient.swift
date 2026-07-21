@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let sseLogger = Logger(subsystem: "net.fihonline.herald", category: "SSE")
 
 enum RelayCoders {
     private static func internetDateTimeStyle() -> Date.ISO8601FormatStyle {
@@ -220,8 +223,11 @@ final class RelayAPIClient {
                     let (bytes, response) = try await session.bytes(for: request)
                     let httpResponse = response as? HTTPURLResponse
 
+                    sseLogger.info("SSE connected status=\(httpResponse?.statusCode ?? 0) path=\(path)")
+
                     guard let httpResponse, (200 ..< 300).contains(httpResponse.statusCode) else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        sseLogger.error("SSE connection failed status=\(code) path=\(path)")
                         if code == 401 {
                             continuation.finish(throwing: ClientError.unauthorized("Unauthorized"))
                         } else {
@@ -247,6 +253,7 @@ final class RelayAPIClient {
                         // Empty line = dispatch event
                         if line.isEmpty {
                             if !currentData.isEmpty {
+                                sseLogger.debug("SSE dispatch event=\(currentEvent) id=\(currentID ?? "nil") bytes=\(currentData.utf8.count)")
                                 continuation.yield(SSEEvent(
                                     event: currentEvent,
                                     data: currentData,
@@ -273,6 +280,7 @@ final class RelayAPIClient {
                         }
                     }
 
+                    sseLogger.info("SSE stream ended path=\(path)")
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

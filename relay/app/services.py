@@ -1591,7 +1591,7 @@ def append_job_event(
     if job is None:
         return None
 
-    if job.status in ("completed", "failed", "cancelled"):
+    if job.status in ("completed", "failed", "cancelled") and event_type != "done":
         return None
 
     if job.attempt != attempt:

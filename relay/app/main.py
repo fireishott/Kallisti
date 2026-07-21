@@ -2557,7 +2557,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             for evt in persisted:
                 yield emit_db_event(evt)
-                if evt.get("type") in ("completed", "failed", "cancelled"):
+                if evt.get("type") in ("completed", "failed", "cancelled", "done"):
                     return
 
             # --- Phase 1b: If job already terminal, emit terminal event and close ---
@@ -2584,6 +2584,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                     for evt in new_events:
                         yield emit_db_event(evt)
+                        if evt.get("type") in ("completed", "failed", "cancelled", "done"):
+                            # Terminal event received — drain remaining and close
+                            with database.session() as drain_db:
+                                remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
+                            for evt in remaining:
+                                yield emit_db_event(evt)
+                            return
 
                     # Check if job became terminal
                     with database.session() as check_db:

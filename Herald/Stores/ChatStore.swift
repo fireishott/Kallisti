@@ -1,8 +1,10 @@
 import Foundation
+import os
 
 @MainActor
 @Observable
 final class ChatStore {
+    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "ChatStore")
     var conversation: Conversation?
     var isLoading = false
     var pendingMessageSentAt: Date?
@@ -237,6 +239,7 @@ final class ChatStore {
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
+                    Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
                     self.enqueueDelta(delta, placeholderID: placeholderID)
 
@@ -272,6 +275,7 @@ final class ChatStore {
 
                 case .finished(let finalMessage, let usage, let diff):
                     progressContinuation?.yield(())
+                    Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
@@ -742,9 +746,11 @@ final class ChatStore {
 
         // Single concat: O(sum(chunk sizes)) instead of O(n·chunks) across ticks.
         var buffer = conv.messages[idx].content
+        let beforeCount = buffer.count
         buffer.reserveCapacity(buffer.count + totalBytes)
         for chunk in chunks { buffer.append(chunk) }
         conv.messages[idx].content = buffer
+        Self.logger.debug("flush deltas chunks=\(chunks.count) bytes=\(totalBytes) content \(beforeCount)→\(buffer.count) chars")
 
         // Only touch tool-activity state when it actually needs clearing —
         // avoids spurious writes on every delta for messages that never ran tools.

@@ -93,9 +93,11 @@ actor JobStreamCoordinator {
                     gotAnyEvent = true
 
                     guard let envelope = self.parseEnvelope(from: sseEvent) else {
-                        self.logger.warning("Failed to parse event envelope for seq \(sseEvent.id ?? "nil")")
+                        self.logger.warning("job=\(self.jobId.uuidString.prefix(8)) decode_error seq=\(sseEvent.id ?? "nil") event=\(sseEvent.event)")
                         continue
                     }
+
+                    self.logger.debug("job=\(self.jobId.uuidString.prefix(8)) decoded seq=\(envelope.seq) type=\(envelope.type.rawValue) bytes=\(sseEvent.data.utf8.count)")
 
                     // Reject wrong-job events
                     guard envelope.jobId == self.jobId.uuidString.lowercased() else {
@@ -120,6 +122,7 @@ actor JobStreamCoordinator {
 
                     // Map envelope type to StreamingUpdate
                     if let update = self.mapToStreamingUpdate(envelope) {
+                        self.logger.info("job=\(self.jobId.uuidString.prefix(8)) yield seq=\(envelope.seq) update=\(String(describing: update).prefix(40))")
                         continuation.yield(update)
                     }
 
@@ -190,48 +193,27 @@ actor JobStreamCoordinator {
 
     // MARK: - Parsing
 
+    /// Parse an SSE event into a JobEventEnvelope.
+    ///
+    /// The relay's SSE wire format is:
+    /// - `id:` = seq (integer)
+    /// - `event:` = event type (text_delta, reasoning_delta, tool_activity, started, heartbeat, done)
+    /// - `data:` = JSON payload (delta, label, status, message, usage, etc.)
+    ///
+    /// This is the canonical decoder for the relay→iOS contract. The relay strips
+    /// the v2 envelope fields (contractVersion, jobId, conversationId, etc.) and
+    /// sends only the payload in `data:`, with the type in `event:`.
     private func parseEnvelope(from sseEvent: SSEEvent) -> JobEventEnvelope? {
-        guard let data = sseEvent.data.data(using: .utf8) else { return nil }
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            var envelope = try decoder.decode(JobEventEnvelope.self, from: data)
-            // The server may send type in the SSE event field; use that if payload type is missing
-            if envelope.type == .runStarted && sseEvent.event != "run.started" {
-                if JobEventType(rawValue: sseEvent.event) != nil {
-                    var dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-                    dict["type"] = sseEvent.event
-                    let fixedData = try JSONSerialization.data(withJSONObject: dict)
-                    envelope = try decoder.decode(JobEventEnvelope.self, from: fixedData)
-                }
-            }
-            return envelope
-        } catch {
-            // Fall back to v1 format if v2 parse fails
-            // DEPRECATED: v1 fallback will be removed in a future release once
-            // metrics confirm all clients are on v2. See Phase A-4 in the streaming plan.
-            return parseV1Fallback(from: sseEvent)
-        }
-    }
-
-    /// DEPRECATED: Parses legacy v1 SSE event format. Kept temporarily for backward
-    /// compatibility during the v1→v2 transition. Will be removed once dogfood metrics
-    /// confirm v1 usage is negligible.
-    private func parseV1Fallback(from sseEvent: SSEEvent) -> JobEventEnvelope? {
         guard let data = sseEvent.data.data(using: .utf8) else { return nil }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
 
-        // Use the coordinator's known jobId when the legacy payload omits it
         let envelopeJobId = (json["jobId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             ?? self.jobId.uuidString.lowercased()
 
-        // For legacy frames without id:, assign a local next sequence
-        // rather than passing seq=0 into duplicate/gap logic
         let seq: Int
         if let idString = sseEvent.id, let parsedSeq = Int(idString), parsedSeq > 0 {
             seq = parsedSeq
         } else {
-            // Assign a compatibility-local sequence that advances past lastAppliedSeq
             self.lastAppliedSeq += 1
             seq = self.lastAppliedSeq
         }
