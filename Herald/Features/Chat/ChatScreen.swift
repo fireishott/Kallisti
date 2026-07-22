@@ -93,8 +93,11 @@ struct ChatScreen: View {
             scrollToBottom()
         }
         .onChange(of: chatStore.pendingMessageSentAt) {
+            // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(200))
+                // Only scroll if keyboard is not actively dismissing
+                guard !isComposerFocused else { return }
                 scrollToBottom()
             }
         }
@@ -809,6 +812,8 @@ struct ChatScreen: View {
             } else {
                 await chatStore.sendMessage(content, attachments: attachments)
             }
+            // Delay scroll to allow keyboard dismiss animation to complete
+            try? await Task.sleep(for: .milliseconds(300))
             scrollToBottom()
         }
     }
