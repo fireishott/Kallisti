@@ -30,6 +30,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case chat
     case inbox
     case talk
+    case notes
     case settings
 
     var id: String { rawValue }
@@ -39,6 +40,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .chat: "Chat"
         case .inbox: "Inbox"
         case .talk: "Talk"
+        case .notes: "Notes"
         case .settings: "Settings"
         }
     }
@@ -48,6 +50,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .chat: "bubble.left.and.bubble.right"
         case .inbox: "tray"
         case .talk: "waveform"
+        case .notes: "pencil.and.outline"
         case .settings: "gearshape"
         }
     }

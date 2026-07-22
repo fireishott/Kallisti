@@ -7,6 +7,7 @@ import SwiftUI
 struct PencilCanvasRepresentable: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     var pageStyle: NotePageStyle
+    var pencilOnly: Bool = false
     var onDrawingChanged: ((PKDrawing) -> Void)?
     var onToolUseBegan: (() -> Void)?
     var onToolUseEnded: (() -> Void)?
@@ -19,7 +20,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         let canvas = PKCanvasView()
         canvas.delegate = context.coordinator
         canvas.drawing = drawing
-        canvas.drawingPolicy = .default
+        canvas.drawingPolicy = pencilOnly ? .pencilOnly : .anyInput
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.maximumZoomScale = 4.0
@@ -40,6 +41,11 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         }
 
         canvas.becomeFirstResponder()
+
+        // Accessibility
+        canvas.accessibilityLabel = "Drawing canvas"
+        canvas.accessibilityHint = "Use Apple Pencil or finger to draw. Double-tap for tool switching."
+
         return canvas
     }
 
@@ -50,10 +56,21 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             canvas.drawing = drawing
         }
 
+        // Update drawing policy if pencilOnly changed
+        let desiredPolicy: PKCanvasViewDrawingPolicy = pencilOnly ? .pencilOnly : .anyInput
+        if canvas.drawingPolicy != desiredPolicy {
+            canvas.drawingPolicy = desiredPolicy
+        }
+
         // Update paper if style changed
         if context.coordinator.currentStyle != pageStyle {
             context.coordinator.currentStyle = pageStyle
             context.coordinator.updatePaper(style: pageStyle)
+        }
+
+        // Restore tool picker visibility after sheet/rotation/backgrounding
+        if let picker = context.coordinator.toolPicker {
+            picker.setVisible(true, forFirstResponder: canvas)
         }
     }
 

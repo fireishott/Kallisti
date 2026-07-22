@@ -192,6 +192,9 @@ struct NoteRowView: View {
             }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(note.pinned ? "Pinned: \(note.title.isEmpty ? "Untitled" : note.title)" : note.title.isEmpty ? "Untitled" : note.title)
+        .accessibilityHint(showDeleted ? "Deleted note" : "Double-tap to open note")
     }
 }
 

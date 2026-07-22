@@ -191,6 +191,7 @@ struct AdaptiveRootView: View {
         case .chat: selectedSection = .chat
         case .inbox: selectedSection = .inbox
         case .talk: selectedSection = .talk
+        case .notes: selectedSection = .notes
         case .settings: selectedSection = .settings
         }
     }

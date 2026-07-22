@@ -11,6 +11,7 @@ struct NoteEditorView: View {
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
     @State private var attachments: [NoteAttachment] = []
+    @State private var pencilOnly: Bool = false
 
     /// Debounce timer for persisting drawings.
     @State private var persistTask: Task<Void, Never>?
@@ -28,6 +29,8 @@ struct NoteEditorView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .accessibilityLabel("Note title")
+                .accessibilityHint("Enter a title for this note")
                 .onChange(of: title) { _, newValue in
                     updateTitle(newValue)
                 }
@@ -49,6 +52,7 @@ struct NoteEditorView: View {
             PencilCanvasRepresentable(
                 drawing: $drawing,
                 pageStyle: pageStyle,
+                pencilOnly: pencilOnly,
                 onDrawingChanged: { newDrawing in
                     schedulePersist(newDrawing)
                 },
@@ -62,6 +66,14 @@ struct NoteEditorView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                // Pencil-only toggle
+                Button {
+                    pencilOnly.toggle()
+                } label: {
+                    Image(systemName: pencilOnly ? "pencil.tip" : "hand.draw")
+                }
+                .accessibilityLabel(pencilOnly ? "Pencil only mode" : "Any input mode")
+                .accessibilityHint("Toggle between pencil-only and finger drawing")
                 // Attachment button (Phase 3)
                 Menu {
                     Button {
@@ -80,6 +92,7 @@ struct NoteEditorView: View {
                 } label: {
                     Image(systemName: "paperclip")
                 }
+                .accessibilityLabel("Add attachment")
 
                 // Paper style menu (Phase 1)
                 Menu {
@@ -91,6 +104,7 @@ struct NoteEditorView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("Note options")
             }
         }
         .onChange(of: pageStyle) { _, newStyle in
