@@ -116,12 +116,14 @@ actor LiveNotesClient {
 
     func getRunEvents(runId: String, lastEventID: String? = nil) async throws -> [RunEventDTO] {
         let token = await accessTokenProvider()
-        var request = try apiClient.makeRequest(
-            path: "note-runs/\(runId)/events",
-            method: "GET",
-            accessToken: token,
-            body: nil
-        )
+        var request = try await MainActor.run {
+            try apiClient.makeRequest(
+                path: "note-runs/\(runId)/events",
+                method: "GET",
+                accessToken: token,
+                body: nil
+            )
+        }
         if let lastEventID, !lastEventID.isEmpty {
             request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
         }
@@ -166,7 +168,7 @@ struct DirectiveRequest: Encodable {
 
 // MARK: - Response Types
 
-struct EmptyResponse: Decodable {}
+private struct EmptyResponse: Decodable, Sendable {}
 
 struct NotesListResponse: Decodable {
     let data: [NoteDTO]
@@ -184,7 +186,7 @@ struct RunResponse: Decodable {
     let data: RunDTO
 }
 
-struct RunEventsResponse: Decodable {
+struct RunEventsResponse: Decodable, Sendable {
     let data: [RunEventDTO]
 }
 
@@ -261,7 +263,7 @@ struct NoteRecognitionDTO: Decodable {
     let createdAt: String?
 }
 
-struct RunEventDTO: Decodable {
+struct RunEventDTO: Decodable, Sendable {
     let id: String
     let runId: String
     let seq: Int
@@ -272,7 +274,7 @@ struct RunEventDTO: Decodable {
     let createdAt: String?
 }
 
-enum AnyCodable: Decodable {
+enum AnyCodable: Decodable, Sendable {
     case string(String)
     case int(Int)
     case double(Double)
