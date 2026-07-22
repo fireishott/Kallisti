@@ -46,6 +46,9 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         pencilInteraction.delegate = context.coordinator
         canvas.addInteraction(pencilInteraction)
 
+        // CRITICAL: Block parent ScrollView from intercepting pencil touches
+        canvas.panGestureRecognizer.require(toFail: canvas.drawingGestureRecognizer)
+
         canvas.becomeFirstResponder()
 
         // Accessibility

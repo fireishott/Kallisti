@@ -198,6 +198,7 @@ struct NoteEditorView: View {
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minHeight: 600) // Ensure canvas has enough height to not need scrolling
     }
 
     @ViewBuilder
