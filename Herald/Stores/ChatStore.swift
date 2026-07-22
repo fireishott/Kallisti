@@ -218,20 +218,30 @@ final class ChatStore {
         )
         guard stalled else { return }
 
-        // Watchdog fired. Grace period for late responses.
+        // Watchdog fired. Show "Waiting for host..." state
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
 
-        try? await Task.sleep(for: .seconds(30))
+        // Grace period with progress checking
+        for i in 0..<3 {
+            try? await Task.sleep(for: .seconds(10))
 
-        // Check if answered during grace period
-        let refreshed = await refreshActiveConversation()
-        conversation = mergeConversationMetadata(from: conversation, into: refreshed)
-        if let msg = conversation?.messages.first(where: { $0.id == placeholderID }),
-           msg.status == .delivered || !msg.content.isEmpty { return }
+            // Check if answered during grace period
+            let refreshed = await refreshActiveConversation()
+            conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+            if let msg = conversation?.messages.first(where: { $0.id == placeholderID }),
+               msg.status == .delivered || !msg.content.isEmpty {
+                return
+            }
 
-        // No response — fail with tap-to-retry
+            // Update status message
+            if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conversation?.messages[idx].toolActivity = "Still waiting... (\((i + 1) * 10)s)"
+            }
+        }
+
+        // No response after 30s — fail with tap-to-retry
         failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
     }
 
@@ -501,7 +511,7 @@ final class ChatStore {
     /// available and falling back to "Herald".
     func failureMessage() -> String {
         let name = profileStore?.activeProfile?.name ?? "Herald"
-        return "\(name) didn't respond — tap to retry"
+        return "\(name) didn't respond. Tap to retry."
     }
 
     /// Marks a message as failed with real, actionable error text after both
