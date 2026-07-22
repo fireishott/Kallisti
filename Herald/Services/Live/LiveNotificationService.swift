@@ -11,7 +11,13 @@ final class LiveNotificationService: NotificationServiceProtocol {
     private let center = UNUserNotificationCenter.current()
 
     init() {
-        Task { await refreshAuthorizationStatus() }
+        Task {
+            await refreshAuthorizationStatus()
+            // Request authorization if not determined
+            if authorizationStatus == .notDetermined {
+                _ = await requestAuthorization()
+            }
+        }
     }
 
     func requestAuthorization() async -> PermissionStatus {

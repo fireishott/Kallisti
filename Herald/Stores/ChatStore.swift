@@ -1,5 +1,7 @@
 import Foundation
 import os
+import UIKit
+import UserNotifications
 
 @MainActor
 @Observable
@@ -364,6 +366,22 @@ final class ChatStore {
                         self.onTitleChanged?(conv.id, conv.title)
                     }
                     await self.autoTitleIfNeeded()
+
+                    // Post local notification if app is in background
+                    if await UIApplication.shared.applicationState == .background {
+                        let content = UNMutableNotificationContent()
+                        content.title = "Herald"
+                        content.body = String(finalMessage.content.prefix(100))
+                        content.sound = .default
+                        content.categoryIdentifier = NotificationCategoryID.messageReady
+
+                        let request = UNNotificationRequest(
+                            identifier: "herald-response-\(UUID().uuidString)",
+                            content: content,
+                            trigger: nil
+                        )
+                        try? await UNUserNotificationCenter.current().add(request)
+                    }
 
                 case .started(let phase):
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
