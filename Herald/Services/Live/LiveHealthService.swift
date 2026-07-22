@@ -35,7 +35,7 @@ final class LiveHealthService: HealthServiceProtocol {
         let newAnchor: HKQueryAnchor?
     }
 
-    private static let healthAuthRequestedKey = "herald.healthkit.authorizationRequested"
+    nonisolated private static let healthAuthRequestedKey = "herald.healthkit.authorizationRequested"
 
     private(set) var authorizationStatus: PermissionStatus
     private(set) var backgroundDeliveryEnabled = false
@@ -46,6 +46,11 @@ final class LiveHealthService: HealthServiceProtocol {
     private let metricDescriptors: [String: HealthMetricDescriptor]
     private var observerQueries: [HKObserverQuery] = []
 
+    /// Tracks whether we've verified HealthKit entitlements are present in this build.
+    /// `nil` means not yet checked; `true` means entitlements verified; `false` means missing.
+    /// Internal for testing.
+    var entitlementsVerified: Bool?
+
     init(persistence: (any AppPersistenceStoreProtocol)? = nil) {
         self.persistence = persistence
 
@@ -53,6 +58,7 @@ final class LiveHealthService: HealthServiceProtocol {
             self.store = nil
             self.metricDescriptors = [:]
             self.authorizationStatus = .unsupported
+            self.entitlementsVerified = false
             return
         }
 
@@ -65,6 +71,14 @@ final class LiveHealthService: HealthServiceProtocol {
     func requestAuthorization() async -> PermissionStatus {
         guard let store else {
             authorizationStatus = .unsupported
+            return .unsupported
+        }
+
+        // Verify entitlements before attempting authorization.
+        // If the build lacks HealthKit entitlements, report unavailable immediately.
+        guard await verifyEntitlements(store: store) else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
             return .unsupported
         }
 
@@ -90,6 +104,15 @@ final class LiveHealthService: HealthServiceProtocol {
             return
         }
 
+        // Verify entitlements are present before trusting any cached state.
+        // A build without HealthKit entitlements (e.g., some TestFlight configs)
+        // must report unavailable regardless of UserDefaults flags from prior builds.
+        guard await verifyEntitlements(store: store) else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
+            return
+        }
+
         // Apple's privacy model: authorizationStatus(for:) only works for
         // write (share) access. For read access, the system always returns
         // .notDetermined to prevent apps from learning what the user denied.
@@ -105,16 +128,68 @@ final class LiveHealthService: HealthServiceProtocol {
             // read-only types. Trust the persisted state.
             authorizationStatus = .authorized
         } else {
-            // Never requested — check if the system thinks we asked.
-            let requestStatus = store.authorizationStatus(for: HKQuantityType(.stepCount))
-            if requestStatus == .sharingDenied {
-                // User saw the prompt and denied write — but we only read.
-                // If we got here without our flag, they may have denied.
-                authorizationStatus = .notDetermined
-            } else {
-                authorizationStatus = .notDetermined
-            }
+            // Never requested — we cannot infer read authorization.
+            // Apple intentionally limits read-authorization disclosure:
+            // authorizationStatus(for:) only reflects write access, and
+            // a query returning no samples does NOT mean the user granted
+            // read access. Stay at .notDetermined until the user explicitly
+            // triggers the authorization dialog.
+            authorizationStatus = .notDetermined
         }
+    }
+
+    // MARK: - Entitlement Verification
+
+    /// Verifies that the app has HealthKit entitlements by probing the store.
+    ///
+    /// Apple intentionally limits read-authorization disclosure: a query returning
+    /// no samples does NOT mean the user granted read access. This method checks
+    /// whether the build is *capable* of using HealthKit (i.e., has entitlements),
+    /// not whether the user has authorized read access.
+    ///
+    /// The result is cached so subsequent calls are free.
+    /// Internal access for testing.
+    func verifyEntitlements(store: HKHealthStore) async -> Bool {
+        if let verified = entitlementsVerified {
+            return verified
+        }
+
+        // Probe with a minimal anchored query on step count.
+        // If entitlements are missing, the system returns an authorization error
+        // even though we never showed the permission dialog.
+        let stepType = HKQuantityType(.stepCount)
+        let result: Bool = await withCheckedContinuation { continuation in
+            let query = HKAnchoredObjectQuery(
+                type: stepType,
+                predicate: nil,
+                anchor: nil,
+                limit: 1
+            ) { _, _, _, _, error in
+                if let hkError = error as? HKError {
+                    switch hkError.code {
+                    case .errorAuthorizationDenied, .errorAuthorizationNotDetermined:
+                        // If we've never shown the auth dialog and get an
+                        // authorization error, the build likely lacks entitlements.
+                        let hasShownDialog = UserDefaults.standard.bool(
+                            forKey: Self.healthAuthRequestedKey
+                        )
+                        if !hasShownDialog {
+                            continuation.resume(returning: false)
+                            return
+                        }
+                    default:
+                        break
+                    }
+                }
+                // Query succeeded (possibly with empty results) or error is
+                // not entitlement-related — entitlements are present.
+                continuation.resume(returning: true)
+            }
+            store.execute(query)
+        }
+
+        entitlementsVerified = result
+        return result
     }
 
     func startMonitoring() {

@@ -164,6 +164,8 @@ final class PermissionsStore {
         case .authorized:
             let backgroundStatus = healthService.backgroundDeliveryEnabled ? "Background Sync On" : "Background Sync Off"
             return "Read Only • \(backgroundStatus)"
+        case .unsupported:
+            return "Health data is not available in this build"
         case .denied, .restricted:
             return "Manage in Apple Health or Settings > Privacy & Security > Health"
         default:

@@ -155,6 +155,7 @@
 		9EAF5CA0B81815F92BFA4B01 /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77999D56108FB7AF8368C7DB /* MockSyncCoordinator.swift */; };
 		9EF3B2B4A9A5C0492AFE2876 /* PairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A312A723CB0C58F828248F /* PairingStore.swift */; };
 		A3417E2AF1578789D1F239FE /* MimoFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */; };
+		F1C868E7880528C663E5369D /* HealthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2E3F206FE10EDC956E6422 /* HealthServiceTests.swift */; };
 		A37EE6986A0F8E324B30EFB2 /* ConnectionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71EBD1CFF7886DDC671DEFFA /* ConnectionStatus.swift */; };
 		A4692AAF32F57CBD63A862D7 /* note_enrichment_request.json in Resources */ = {isa = PBXBuildFile; fileRef = 514E044C3232C165B753FF7D /* note_enrichment_request.json */; };
 		A47A5D3D75318EBC2ED0E44C /* CreateCronJobSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E80959DAADB44928CE1A7C /* CreateCronJobSheet.swift */; };
@@ -392,6 +393,7 @@
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
 		6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePaperBackground.swift; sourceTree = "<group>"; };
 		6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoFixtureTests.swift; sourceTree = "<group>"; };
+		0B2E3F206FE10EDC956E6422 /* HealthServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthServiceTests.swift; sourceTree = "<group>"; };
 		6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockMediaService.swift; sourceTree = "<group>"; };
 		6C47B0EEFCF9E67C01A57B76 /* HostEnrollmentCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEnrollmentCode.swift; sourceTree = "<group>"; };
 		6F63E8AF80786EE3EB03BB3B /* ChatScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatScreen.swift; sourceTree = "<group>"; };
@@ -1035,6 +1037,7 @@
 				95C2477A711189829B37C788 /* AppTemplateTests.swift */,
 				82DCB33DBF34B15C4F911320 /* JobStreamCoordinatorTests.swift */,
 				6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */,
+				0B2E3F206FE10EDC956E6422 /* HealthServiceTests.swift */,
 				335CFA8379C6876DAB2A5B4A /* NoteDirectiveParserTests.swift */,
 				2FE61813D4321D8A0D8C9E81 /* NotesRepositoryTests.swift */,
 				7EF89A2AB11146AAEE5ACEC2 /* StreamContractV2Tests.swift */,
@@ -1276,6 +1279,7 @@
 				FB336C619EDA67C99762B7E9 /* AppTemplateTests.swift in Sources */,
 				7DA63AE4BB6F2BB4AA103B95 /* JobStreamCoordinatorTests.swift in Sources */,
 				A3417E2AF1578789D1F239FE /* MimoFixtureTests.swift in Sources */,
+				F1C868E7880528C663E5369D /* HealthServiceTests.swift in Sources */,
 				19BB97BCFA14F369A04AA7EE /* MockHandwritingRecognizer.swift in Sources */,
 				98AD7B8F2A603E64A90FAFE8 /* NoteDirectiveParserTests.swift in Sources */,
 				E5E83246F0B39DE2FD527EFB /* NotesRepositoryTests.swift in Sources */,
