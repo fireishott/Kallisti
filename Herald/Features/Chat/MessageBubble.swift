@@ -9,6 +9,7 @@ struct MessageBubble: View, Equatable {
     var onDelete: ((Message) -> Void)? = nil
     var onOpenCanvas: ((Message) -> Void)? = nil
     @State private var showReactionPicker = false
+    @State private var reactions: [String] = []
 
     /// Only the message itself affects the rendered bubble — the retry closure
     /// is captured fresh per parent render but is functionally stable. Comparing
@@ -29,9 +30,6 @@ struct MessageBubble: View, Equatable {
 
     var body: some View {
         contentView
-            .onLongPressGesture(minimumDuration: 0.5) {
-                showReactionPicker = true
-            }
             .contextMenu {
                 // Copy text — always
                 Button {
@@ -64,6 +62,13 @@ struct MessageBubble: View, Equatable {
                     } label: {
                         Label("Open in Canvas", systemImage: "rectangle.on.rectangle")
                     }
+                }
+
+                // React
+                Button {
+                    showReactionPicker = true
+                } label: {
+                    Label("React", systemImage: "face.smiling")
                 }
 
                 Divider()
@@ -189,6 +194,8 @@ struct MessageBubble: View, Equatable {
                         .brandEyebrow(Design.Colors.danger)
                 }
             }
+
+            reactionBadge
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(message.isVoiceTranscript ? "Voice" : "You"): \(message.content). \(message.status.rawValue)")
@@ -250,6 +257,8 @@ struct MessageBubble: View, Equatable {
                             .brandEyebrow(Design.Brand.accent)
                     }
                 }
+
+                reactionBadge
             }
         }
         .accessibilityElement(children: .combine)
@@ -342,10 +351,25 @@ struct MessageBubble: View, Equatable {
 
     // MARK: - Reactions
 
+    @ViewBuilder
+    private var reactionBadge: some View {
+        if !reactions.isEmpty {
+            HStack(spacing: 2) {
+                ForEach(Array(reactions.enumerated()), id: \.offset) { _, reaction in
+                    Text(reaction)
+                        .font(.system(size: 14))
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Design.Colors.surface)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 0.5))
+        }
+    }
+
     private func addReaction(_ reaction: String, to message: Message) {
-        // Implement reaction storage
-        // This could be local-only or synced to the server
-        print("Added reaction \(reaction) to message \(message.id)")
+        reactions.append(reaction)
     }
 
     // MARK: - Budget Warning Stripping
@@ -359,16 +383,5 @@ struct MessageBubble: View, Equatable {
             with: "",
             options: .regularExpression
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-// MARK: - SelectableContentView
-
-struct SelectableContentView: View {
-    let content: String
-
-    var body: some View {
-        Text(content)
-            .textSelection(.enabled)
     }
 }

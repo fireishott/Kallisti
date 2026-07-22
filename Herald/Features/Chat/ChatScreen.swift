@@ -642,6 +642,11 @@ struct ChatScreen: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: Design.Spacing.md) {
+                    // Top anchor for scrolling to empty state after /new
+                    Color.clear
+                        .frame(height: 1)
+                        .id("top")
+
                     if let messages = chatStore.conversation?.messages {
                         ForEach(messages) { message in
                             MessageBubble(
@@ -927,11 +932,9 @@ struct ChatScreen: View {
             try await chatStore.clearConversation()
             showStatusCard = false
             
-            // Scroll to show the empty state / first message area
-            if let firstMessage = chatStore.conversation?.messages.first {
-                withAnimation(Design.Motion.standard) {
-                    scrollProxy?.scrollTo(firstMessage.id, anchor: .top)
-                }
+            // Scroll to top anchor — conversation is now empty
+            withAnimation(Design.Motion.standard) {
+                scrollProxy?.scrollTo("top", anchor: .top)
             }
         } catch {
             let reason: String

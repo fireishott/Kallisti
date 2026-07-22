@@ -378,7 +378,7 @@ final class ChatStore {
                     await self.autoTitleIfNeeded()
 
                     // Post local notification if app is in background
-                    if await UIApplication.shared.applicationState == .background {
+                    if UIApplication.shared.applicationState == .background {
                         let content = UNMutableNotificationContent()
                         content.title = "Herald"
                         content.body = String(finalMessage.content.prefix(100))
