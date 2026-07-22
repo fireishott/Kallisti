@@ -7,7 +7,7 @@ import SwiftUI
 struct PencilCanvasRepresentable: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     var pageStyle: NotePageStyle
-    var pencilOnly: Bool = false
+    var pencilOnly: Bool = true
     var onDrawingChanged: ((PKDrawing) -> Void)?
     var onToolUseBegan: (() -> Void)?
     var onToolUseEnded: (() -> Void)?
@@ -40,11 +40,16 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             context.coordinator.toolPicker = picker
         }
 
+        // Pencil interactions — honor system preferred actions for double-tap and squeeze
+        let pencilInteraction = UIPencilInteraction()
+        pencilInteraction.delegate = context.coordinator
+        canvas.addInteraction(pencilInteraction)
+
         canvas.becomeFirstResponder()
 
         // Accessibility
         canvas.accessibilityLabel = "Drawing canvas"
-        canvas.accessibilityHint = "Use Apple Pencil or finger to draw. Double-tap for tool switching."
+        canvas.accessibilityHint = "Use Apple Pencil or finger to draw. Double-tap or squeeze for tool switching."
 
         return canvas
     }
@@ -76,7 +81,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: PencilCanvasRepresentable
         var toolPicker: PKToolPicker?
         var isDrawingActive = false
@@ -135,6 +140,76 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             isDrawingActive = false
             parent.onToolUseEnded?()
+        }
+
+        // MARK: - UIPencilInteractionDelegate
+
+        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+            // Honor the user's system-preferred double-tap action (Settings > Apple Pencil)
+            switch UIPencilInteraction.preferredTapAction {
+            case .switchEraser:
+                toggleEraser()
+            case .switchPrevious:
+                switchToPreviousTool()
+            case .showColorPalette:
+                showToolPicker()
+            case .showInkAttributes:
+                showToolPicker()
+            case .ignore:
+                break
+            @unknown default:
+                break
+            }
+        }
+
+        @available(iOS 17.5, *)
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+            // Honor the user's system-preferred squeeze action (Apple Pencil Pro)
+            if squeeze.phase == .ended {
+                switch UIPencilInteraction.preferredSqueezeAction {
+                case .switchEraser:
+                    toggleEraser()
+                case .switchPrevious:
+                    switchToPreviousTool()
+                case .showColorPalette:
+                    showToolPicker()
+                case .showInkAttributes:
+                    showToolPicker()
+                case .ignore:
+                    break
+                @unknown default:
+                    break
+                }
+            }
+        }
+
+        private func toggleEraser() {
+            guard let picker = toolPicker else { return }
+            // Find the canvas from the picker's first responder
+            guard let canvas = picker.observedView as? PKCanvasView else { return }
+            if canvas.tool is PKEraserTool {
+                // Switch back to previous tool (ink)
+                canvas.tool = parent.drawing.strokes.last.map { $0.ink } ?? PKInkingTool(.pen, color: .black, width: 2)
+            } else {
+                canvas.tool = PKEraserTool(.vector)
+            }
+        }
+
+        private func switchToPreviousTool() {
+            guard let picker = toolPicker else { return }
+            guard let canvas = picker.observedView as? PKCanvasView else { return }
+            // PKToolPicker manages previous tool state; toggling eraser achieves "switch previous"
+            if canvas.tool is PKEraserTool {
+                canvas.tool = PKInkingTool(.pen, color: .black, width: 2)
+            } else {
+                canvas.tool = PKEraserTool(.vector)
+            }
+        }
+
+        private func showToolPicker() {
+            guard let picker = toolPicker, let canvas = picker.observedView as? PKCanvasView else { return }
+            picker.setVisible(true, forFirstResponder: canvas)
+            canvas.becomeFirstResponder()
         }
     }
 }

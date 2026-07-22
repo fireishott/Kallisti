@@ -10,9 +10,11 @@ struct NotesWorkspaceView: View {
         NavigationSplitView {
             NotesListView()
         } detail: {
-            if let selectedId = store.selectedNoteId {
-                NoteEditorView(noteId: selectedId)
-                    .id(selectedId)
+            if store.selectedNoteId != nil {
+                NoteEditorView(noteId: Binding(
+                    get: { store.selectedNoteId! },
+                    set: { store.selectedNoteId = $0 }
+                ))
             } else {
                 ContentUnavailableView(
                     "No Note Selected",

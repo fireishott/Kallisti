@@ -5,13 +5,13 @@ import VisionKit
 
 /// Note editor — shows the PencilKit canvas with title editing, paper styles, and attachments.
 struct NoteEditorView: View {
-    let noteId: UUID
+    @Binding var noteId: UUID
     @Environment(NotesStore.self) private var notesStore
     @State private var title: String = ""
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
     @State private var attachments: [NoteAttachment] = []
-    @State private var pencilOnly: Bool = false
+    @State private var pencilOnly: Bool = true
 
     /// Debounce timer for persisting drawings.
     @State private var persistTask: Task<Void, Never>?
@@ -111,6 +111,11 @@ struct NoteEditorView: View {
             updatePageStyle(newStyle)
         }
         .onAppear {
+            loadNote()
+        }
+        .onChange(of: noteId) { _, _ in
+            persistTask?.cancel()
+            persistDrawing(drawing)
             loadNote()
         }
         .onDisappear {
