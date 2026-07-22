@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.8.1] - 2026-07-21
+
+Patch release with Swift 6 concurrency fixes for Xcode 26 compatibility.
+Resolves build failures when archiving with Swift 6.3.3 strict concurrency
+checking enabled.
+
+### Fixed
+
+- **EmptyResponse type ambiguity**: Made `EmptyResponse` private in both
+  `LiveNotesClient` and `LiveHeraldHostService` to resolve duplicate
+  type definitions causing ambiguous lookup errors.
+- **Main actor isolation in LiveNotesClient**: Wrapped `makeRequest` call
+  in `MainActor.run` within `getRunEvents` to satisfy Swift 6 actor
+  isolation requirements for `@MainActor`-isolated API client methods.
+- **Sendable conformance**: Added `Sendable` to `RunEventsResponse`,
+  `RunEventDTO`, and `AnyCodable` types to satisfy Swift 6 strict
+  concurrency checking when crossing actor boundaries.
+
+### Build
+
+- Version: 1.8.1 (Build 44)
+- Target: iOS 18.0+
+- Swift: 6.3.3 (Xcode 26.6)
+- TestFlight Delivery UUID: d28b6b36-efd9-4be5-a10a-b99d52b3e560
+
 ## [1.8.0] - 2026-07-21
 
 Herald 1.8 introduces a local-first Notes workspace for iPad with native
