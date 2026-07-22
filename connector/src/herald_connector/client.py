@@ -4,6 +4,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import uuid
 logger = logging.getLogger("herald.connector")
 
 import httpx
+from websockets.asyncio.client import connect as websocket_connect
 
 from . import __version__
 
@@ -387,6 +389,12 @@ class HeraldConnector:
         self._HEALTH_CACHE_TTL: float = 30.0
         self._active_adapter_mode: str = "unknown"
         self._relay_server: HeraldRelayServer | None = None
+        # Connection-independent job tracking: survives across _run_once calls
+        self._active_jobs: dict[str, asyncio.Task] = {}
+        self._job_phases: dict[str, str] = {}
+        self._pending_results: dict[str, list[dict]] = {}
+        self._job_heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._fastapi_host_ws_connected: bool = False
 
     @property
     def sensor_store(self) -> SensorStore:
@@ -677,47 +685,535 @@ class HeraldConnector:
             expires_at=data.get("expiresAt"),
         )
 
-    async def run_forever(self) -> None:
-        """Start the relay server and sensor pipeline.
 
-        The Hermes gateway dials into the relay server. The connector no longer
-        connects outbound to a relay — it IS the relay.
+    async def run_forever(self) -> None:
+        """Hybrid mode: native Hermes relay server + FastAPI host WebSocket.
+
+        Phone online/jobs still depend on FastAPI hosts/ws. Gateway uses :8765.
         """
+        native_enabled = os.getenv("HERALD_NATIVE_RELAY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        fastapi_enabled = os.getenv("HERALD_FASTAPI_HOST_WS_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
         state = self.state_store.load()
         state = self.refresh_runtime_config(force=False)
         state = self.refresh_voice_context(state=state)
         self.apply_runtime_environment(state)
 
-        # Re-validate MCP command path
         try:
             register_native_mcp_server(state_dir=self.state_store.state_dir)
         except Exception:
             pass  # non-fatal
 
-        relay_port = int(os.getenv("HERALD_RELAY_PORT", "8765"))
+        if native_enabled:
+            relay_port = int(os.getenv("HERALD_RELAY_PORT", "8765"))
+            self._relay_server = HeraldRelayServer(
+                host="0.0.0.0",
+                port=relay_port,
+                outbound_handler=self._handle_relay_outbound,
+                interrupt_handler=self._handle_relay_interrupt,
+            )
+            await self._relay_server.start()
+            logger.info(
+                "Native relay server listening on port %d (gateway path)",
+                relay_port,
+            )
+        else:
+            logger.warning("HERALD_NATIVE_RELAY_ENABLED disabled — gateway path off")
 
-        self._relay_server = HeraldRelayServer(
-            host="0.0.0.0",
-            port=relay_port,
-            outbound_handler=self._handle_relay_outbound,
-            interrupt_handler=self._handle_relay_interrupt,
+        if not fastapi_enabled:
+            logger.warning(
+                "HERALD_FASTAPI_HOST_WS_ENABLED disabled — phone host online/jobs path off"
+            )
+            state.last_connected_at = utcnow_iso()
+            state.last_error = None
+            self.state_store.save(state)
+            try:
+                await asyncio.Event().wait()
+            except KeyboardInterrupt:
+                raise
+            finally:
+                if self._relay_server is not None:
+                    await self._relay_server.stop()
+            return
+
+        logger.info(
+            "FastAPI host WebSocket path enabled — dialing %s",
+            state.web_socket_url,
         )
-
-        await self._relay_server.start()
-
-        state.last_connected_at = utcnow_iso()
-        state.last_error = None
-        self.state_store.save(state)
-
-        logger.info("Connector ready — relay server on port %d, sensor pipeline active", relay_port)
-
-        # Keep running until cancelled
         try:
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            raise
+            while True:
+                state = self.state_store.load()
+                try:
+                    await self._run_once(state)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    self._fastapi_host_ws_connected = False
+                    state.last_error = str(error)
+                    self.state_store.save(state)
+                    logger.warning(
+                        "FastAPI host WS disconnected/error: %s; retry in %.1fs",
+                        error,
+                        self.reconnect_delay_seconds,
+                    )
+                    await asyncio.sleep(self.reconnect_delay_seconds)
         finally:
-            await self._relay_server.stop()
+            self._fastapi_host_ws_connected = False
+            if self._relay_server is not None:
+                await self._relay_server.stop()
+
+
+    async def _run_once(self, state: ConnectorState) -> None:
+        state = self.refresh_runtime_config(force=False)
+        state = self.refresh_voice_context(state=state)
+        self.apply_runtime_environment(state)
+        settings = self.settings_for_state(state)
+        metadata = self.metadata(display_name=state.connector_display_name, settings=settings)
+        async with websocket_connect(
+            state.web_socket_url,
+            additional_headers={"Authorization": f"Bearer {state.connector_credential}"},
+            max_size=50 * 1024 * 1024,  # 50 MB — job payloads with image attachments can be large
+        ) as websocket:
+            # Build hello with resume info if we have active jobs from a prior connection
+            hello_payload: dict = {
+                "type": "hello",
+                "version": 1,
+                "connector": {
+                    "platform": metadata.platform,
+                    "hostname": metadata.hostname,
+                    "connectorVersion": metadata.connector_version,
+                    "heraldCommand": metadata.hermes_command,
+                    "heraldVersion": metadata.hermes_version,
+                    "heraldModel": metadata.hermes_model,
+                    "displayName": metadata.display_name,
+                },
+            }
+            # Include resume info if reconnecting with active jobs
+            if self._active_jobs:
+                hello_payload["resume"] = {
+                    "activeJobIds": list(self._active_jobs.keys()),
+                    "pendingResults": {
+                        jid: results
+                        for jid, results in self._pending_results.items()
+                        if results
+                    },
+                }
+            await websocket.send(json.dumps(hello_payload))
+
+            ready = json.loads(await websocket.recv())
+            if ready.get("type") != "ready":
+                raise RuntimeError("Relay did not accept the connector session.")
+
+            state.last_connected_at = utcnow_iso()
+            state.last_error = None
+            self.state_store.save(state)
+            self._fastapi_host_ws_connected = True
+            logger.info("FastAPI host WebSocket connected (phone online path live)")
+
+            # Re-validate the MCP command path on every connect, not just at
+            # enroll.  If the connector venv moved or was reinstalled, the
+            # `command` in ~/.hermes/config.yaml goes stale and Hermes can't
+            # spawn the stdio server — "TaskGroup 1 sub-exception".
+            try:
+                register_native_mcp_server(state_dir=self.state_store.state_dir)
+            except Exception:
+                pass  # non-fatal; MCP tools just won't be available
+
+            send_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+            async def send_worker() -> None:
+                """Serialize all outbound WebSocket messages through a single coroutine."""
+                while True:
+                    payload = await send_queue.get()
+                    if payload is None:
+                        break
+                    await websocket.send(payload)
+
+            send_task = asyncio.create_task(send_worker())
+
+            def enqueue(payload: dict) -> None:
+                send_queue.put_nowait(json.dumps(payload))
+
+            # Drain any buffered terminal results from prior connection
+            for job_id, results in list(self._pending_results.items()):
+                for result in results:
+                    enqueue(result)
+                self._pending_results.pop(job_id, None)
+
+            try:
+                while True:
+                    try:
+                        raw_message = await asyncio.wait_for(
+                            websocket.recv(),
+                            timeout=self.heartbeat_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        send_queue.put_nowait(json.dumps({"type": "heartbeat"}))
+                        continue
+
+                    message = json.loads(raw_message)
+                    message_type = message.get("type")
+                    logger.debug("Received relay message type: %s", message_type)
+                    if message_type == "job.execute":
+                        job = message["job"]
+                        job_id = job.get("id", "unknown")
+                        task = asyncio.create_task(self._handle_job_enqueue(job, enqueue))
+                        self._active_jobs[job_id] = task
+                        task.add_done_callback(lambda _t, jid=job_id: self._active_jobs.pop(jid, None))
+                        continue
+                    if message_type == "rpc.request":
+                        response = await self._handle_rpc_request(message)
+                        enqueue(response)
+                        continue
+                    if message_type == "ready":
+                        continue
+                    sensor_ack = self._handle_sensor_message(message)
+                    if sensor_ack is not None:
+                        enqueue(sensor_ack)
+                        continue
+                    logger.warning("Ignoring unknown relay message type: %s", message_type)
+                    continue
+            finally:
+                send_queue.put_nowait(None)
+                await send_task
+
+    async def _handle_job_enqueue(self, job: dict, enqueue) -> None:
+        """Run a job using the shared send queue instead of a direct websocket."""
+        job_id = job.get("id", "unknown")
+
+        class _WS:
+            async def send(self, payload):
+                parsed = json.loads(payload) if isinstance(payload, str) else payload
+                enqueue(parsed)
+                # Buffer terminal results for reconnect delivery
+                if parsed.get("type") in ("job.result", "job.failed"):
+                    self_ref._pending_results.setdefault(job_id, []).append(parsed)
+
+        # Use a ref so the inner class can access the instance
+        self_ref = self
+        await self._handle_job(_WS(), job)
+
+    async def _handle_job(self, websocket, job: dict) -> None:
+        state = self.state_store.load()
+        workdir = state.runtime_config.hermes_workdir if state.runtime_config else None
+
+        # Stage image attachments to disk and replace them with vision context
+        # in the user message. The Hermes API server can't handle multipart
+        # content arrays, but the agent's vision_analyze tool works on local files.
+        # Do this BEFORE runtime selection so streaming still works for image jobs.
+        attachments = job.get("attachments") or []
+        if attachments:
+            attachment_context = self._build_cli_attachment_context(
+                job_id=str(job["id"]),
+                attachments=attachments,
+            )
+            if attachment_context:
+                msg = job.get("latestUserMessage", "")
+                job["latestUserMessage"] = (
+                    f"{msg}\n\n{attachment_context}" if msg.strip() else attachment_context
+                )
+            job["attachments"] = None  # staged to disk; don't pass raw data downstream
+
+        try:
+            runtime = await self.runtime_adapter_for_state_async(state)
+            if not getattr(runtime, "supports_streaming", False):
+                await self._handle_job_cli(websocket, job, runtime)
+                return
+
+            await self._handle_job_streaming(websocket, job, runtime, workdir=workdir)
+        finally:
+            # Clean up staged attachment files after job completes
+            staging_dir = self.state_store.state_dir / "attachment_staging" / str(job["id"])
+            if staging_dir.exists():
+                import shutil
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _start_job_heartbeat(self, job_id: str, enqueue) -> None:
+        """Start a background task that emits job.heartbeat every 10 seconds."""
+        async def _heartbeat_loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(self.heartbeat_interval_seconds)
+                    phase = self._job_phases.get(job_id, "starting")
+                    pending_send = enqueue({
+                        "type": "job.heartbeat",
+                        "jobId": job_id,
+                        "phase": phase,
+                    })
+                    if inspect.isawaitable(pending_send):
+                        await pending_send
+            except asyncio.CancelledError:
+                pass
+        self._job_heartbeat_tasks[job_id] = asyncio.create_task(_heartbeat_loop())
+
+    def _stop_job_heartbeat(self, job_id: str) -> None:
+        """Cancel and remove the heartbeat task for a job."""
+        task = self._job_heartbeat_tasks.pop(job_id, None)
+        if task is not None:
+            task.cancel()
+        self._job_phases.pop(job_id, None)
+
+    async def _handle_job_streaming(
+        self, websocket, job: dict, runtime, *, workdir: str | None = None,
+    ) -> None:
+        """Process a job using the Hermes API server with streaming events."""
+        job_id = job["id"]
+        try:
+            accumulated_text = ""
+            session_id: str | None = None
+            usage: dict | None = None
+            attempt = job.get("attempt", 0)
+            source_seq = 0
+
+            # Emit job.started immediately, before waiting for first token
+            await websocket.send(json.dumps({
+                "type": "job.started",
+                "jobId": job_id,
+                "phase": "starting",
+                "attempt": attempt,
+            }))
+            self._job_phases[job_id] = "starting"
+            self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
+
+            # Snapshot git state before Hermes runs so we can diff afterwards
+            pre_snapshot = await capture_snapshot(workdir) if workdir else None
+
+            history = [
+                RuntimeConversationMessage(role=item["role"], text=item["text"])
+                for item in job.get("history", [])
+            ]
+
+            # Prepend voice transcript context so the Hermes agent sees the
+            # voice conversation even when using its own session history.
+            user_message = job["latestUserMessage"]
+            voice_context = job.get("voiceTranscriptContext")
+            if voice_context:
+                user_message = (
+                    f"[Recent voice conversation for context]\n{voice_context}\n"
+                    f"[End voice conversation]\n\n{user_message}"
+                )
+
+            async for event in runtime.send_text_message_streaming(
+                latest_user_message=user_message,
+                history=history,
+                session_id=job.get("sessionId"),
+                attachments=job.get("attachments"),
+                reasoning_effort=job.get("reasoningEffort"),
+            ):
+                if event.type == "text_delta":
+                    accumulated_text += event.data
+                    self._job_phases[job_id] = "writing"
+                    source_seq += 1
+                    await websocket.send(json.dumps({
+                        "type": "job.progress",
+                        "jobId": job_id,
+                        "kind": "text_delta",
+                        "delta": event.data,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
+                    }))
+                elif event.type == "reasoning_delta":
+                    self._job_phases[job_id] = "thinking"
+                    source_seq += 1
+                    await websocket.send(json.dumps({
+                        "type": "job.progress",
+                        "jobId": job_id,
+                        "kind": "reasoning_delta",
+                        "delta": event.data,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
+                    }))
+                elif event.type == "tool_activity":
+                    self._job_phases[job_id] = "tool"
+                    source_seq += 1
+                    await websocket.send(json.dumps({
+                        "type": "job.progress",
+                        "jobId": job_id,
+                        "kind": "tool_activity",
+                        "label": event.label,
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
+                    }))
+                elif event.type == "keepalive":
+                    source_seq += 1
+                    await websocket.send(json.dumps({
+                        "type": "job.progress",
+                        "jobId": job["id"],
+                        "kind": "keepalive",
+                        "attempt": attempt,
+                        "sourceSeq": source_seq,
+                    }))
+                elif event.type == "finish":
+                    session_id = event.session_id
+                    usage = event.usage
+
+            final_text = accumulated_text.strip()
+            if not final_text:
+                raise RuntimeError("Hermes API server returned an empty response.")
+
+            # Capture what files Hermes changed during this job
+            diff_data = await capture_diff(workdir, pre_snapshot) if pre_snapshot else None
+
+            # Extract MEDIA: tags from the response — same pattern the
+            # Hermes gateway uses to deliver files on Discord/Telegram.
+            media_attachments, cleaned_text = _extract_media_from_response(final_text)
+
+            result_payload: dict = {
+                "type": "job.result",
+                "jobId": job_id,
+                "text": cleaned_text,
+                "sessionId": session_id,
+                "usage": usage,
+            }
+            if media_attachments:
+                result_payload["attachments"] = media_attachments
+            if diff_data is not None:
+                result_payload["diff"] = diff_data
+
+            self._stop_job_heartbeat(job_id)
+            await websocket.send(json.dumps(result_payload))
+        except Exception as error:  # noqa: BLE001
+            self._stop_job_heartbeat(job_id)
+            await websocket.send(json.dumps({
+                "type": "job.failed",
+                "jobId": job_id,
+                "retryable": self._is_retryable_job_error(error),
+                "error": str(error),
+            }))
+
+    async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
+        """Process a job using the CLI subprocess (original path)."""
+        job_id = job["id"]
+
+        # Emit job.started immediately
+        await websocket.send(json.dumps({
+            "type": "job.started",
+            "jobId": job_id,
+            "phase": "cli_waiting",
+        }))
+        self._job_phases[job_id] = "cli_waiting"
+        self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
+
+        async def execute_job() -> dict:
+            try:
+                user_message = job["latestUserMessage"]
+                voice_context = job.get("voiceTranscriptContext")
+                if voice_context:
+                    user_message = (
+                        f"[Recent voice conversation for context]\n{voice_context}\n"
+                        f"[End voice conversation]\n\n{user_message}"
+                    )
+                attachments = job.get("attachments") or []
+                if attachments:
+                    attachment_context = self._build_cli_attachment_context(
+                        job_id=str(job["id"]),
+                        attachments=attachments,
+                    )
+                    if attachment_context:
+                        user_message = (
+                            f"{user_message}\n\n{attachment_context}"
+                            if user_message.strip()
+                            else attachment_context
+                        )
+
+                result = await asyncio.to_thread(
+                    runtime.send_text_message,
+                    latest_user_message=user_message,
+                    history=[
+                        RuntimeConversationMessage(role=item["role"], text=item["text"])
+                        for item in job.get("history", [])
+                    ],
+                    session_id=job.get("sessionId"),
+                )
+                return {
+                    "type": "job.result",
+                    "jobId": job_id,
+                    "text": result.text,
+                    "sessionId": result.session_id,
+                }
+            except Exception as error:  # noqa: BLE001
+                return {
+                    "type": "job.failed",
+                    "jobId": job_id,
+                    "retryable": self._is_retryable_job_error(error),
+                    "error": str(error),
+                }
+
+        task = asyncio.create_task(execute_job())
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.heartbeat_interval_seconds)
+                if task in done:
+                    self._stop_job_heartbeat(job_id)
+                    await websocket.send(json.dumps(task.result()))
+                    return
+        except Exception:
+            self._stop_job_heartbeat(job_id)
+            raise
+
+    def _build_cli_attachment_context(self, *, job_id: str, attachments: list[dict]) -> str:
+        attachment_root = self.state_store.state_dir / "attachment_staging" / job_id
+        attachment_root.mkdir(parents=True, exist_ok=True)
+
+        lines = [
+            "The user attached files for this request. Use them if they are relevant.",
+        ]
+        for index, attachment in enumerate(attachments, start=1):
+            filename = self._sanitize_attachment_filename(attachment.get("filename") or f"attachment-{index}")
+            mime_type = str(attachment.get("mimeType") or "application/octet-stream")
+            data_b64 = str(attachment.get("data") or "")
+            if not data_b64:
+                continue
+
+            try:
+                raw_data = base64.b64decode(data_b64)
+            except Exception:
+                continue
+
+            file_path = attachment_root / filename
+            file_path.write_bytes(raw_data)
+
+            if mime_type.startswith("image/"):
+                lines.append(
+                    f"- Image attachment available at {file_path}. If you need to inspect it, use vision_analyze with image_url: {file_path}"
+                )
+            elif self._is_text_like_attachment(mime_type):
+                lines.append(
+                    f"- Text attachment available at {file_path}. Read it with read_file if you need its contents."
+                )
+            else:
+                lines.append(f"- Binary attachment available at {file_path} ({mime_type}).")
+
+        return "\n".join(lines)
+
+    def _is_retryable_job_error(error: Exception) -> bool:
+        if isinstance(error, (ConnectionError, TimeoutError, OSError, httpx.TransportError, httpx.TimeoutException)):
+            return True
+
+        message = str(error).lower()
+        transient_markers = (
+            "connection refused",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+            "network is unreachable",
+            "connection reset",
+            "broken pipe",
+        )
+        return any(marker in message for marker in transient_markers)
+
+    def _sanitize_attachment_filename(filename: str) -> str:
+        cleaned = re.sub(r'[^A-Za-z0-9._-]+', "_", filename).strip("._")
+        return cleaned or "attachment"
+
+    def _is_text_like_attachment(mime_type: str) -> bool:
+        return mime_type.startswith("text/") or mime_type in {
+            "application/json",
+            "application/xml",
+            "application/yaml",
+            "application/x-yaml",
+        }
+
 
     @property
     def relay_server(self) -> HeraldRelayServer | None:
