@@ -25,6 +25,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         canvas.isOpaque = false
         canvas.maximumZoomScale = 4.0
         canvas.minimumZoomScale = 1.0
+        context.coordinator.canvasView = canvas
 
         // Install paper layer behind canvas content
         context.coordinator.installPaper(in: canvas, style: pageStyle)
@@ -84,6 +85,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
     final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: PencilCanvasRepresentable
         var toolPicker: PKToolPicker?
+        weak var canvasView: PKCanvasView?
         var isDrawingActive = false
         var currentStyle: NotePageStyle
         private weak var paperView: NotePaperUIView?
@@ -155,6 +157,10 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                 showToolPicker()
             case .showInkAttributes:
                 showToolPicker()
+            case .showContextualPalette:
+                showToolPicker()
+            case .runSystemShortcut:
+                break
             case .ignore:
                 break
             @unknown default:
@@ -175,6 +181,10 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                     showToolPicker()
                 case .showInkAttributes:
                     showToolPicker()
+                case .showContextualPalette:
+                    showToolPicker()
+                case .runSystemShortcut:
+                    break
                 case .ignore:
                     break
                 @unknown default:
@@ -184,21 +194,16 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         }
 
         private func toggleEraser() {
-            guard let picker = toolPicker else { return }
-            // Find the canvas from the picker's first responder
-            guard let canvas = picker.observedView as? PKCanvasView else { return }
+            guard let canvas = canvasView else { return }
             if canvas.tool is PKEraserTool {
-                // Switch back to previous tool (ink)
-                canvas.tool = parent.drawing.strokes.last.map { $0.ink } ?? PKInkingTool(.pen, color: .black, width: 2)
+                canvas.tool = PKInkingTool(.pen, color: .black, width: 2)
             } else {
                 canvas.tool = PKEraserTool(.vector)
             }
         }
 
         private func switchToPreviousTool() {
-            guard let picker = toolPicker else { return }
-            guard let canvas = picker.observedView as? PKCanvasView else { return }
-            // PKToolPicker manages previous tool state; toggling eraser achieves "switch previous"
+            guard let canvas = canvasView else { return }
             if canvas.tool is PKEraserTool {
                 canvas.tool = PKInkingTool(.pen, color: .black, width: 2)
             } else {
@@ -207,7 +212,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         }
 
         private func showToolPicker() {
-            guard let picker = toolPicker, let canvas = picker.observedView as? PKCanvasView else { return }
+            guard let picker = toolPicker, let canvas = canvasView else { return }
             picker.setVisible(true, forFirstResponder: canvas)
             canvas.becomeFirstResponder()
         }

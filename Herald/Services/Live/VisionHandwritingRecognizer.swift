@@ -7,12 +7,20 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
     let level: RecognitionLevel
     let engineVersion: String? = nil
 
+    var isAvailable: Bool { true }  // VNRecognizeTextRequest available since iOS 13
+
+    var supportedLanguages: [String] {
+        (try? Self.supportedLanguages(level: level)) ?? ["en-US"]
+    }
+
     var engineId: String {
         switch level {
         case .accurate: "vn_accurate"
         case .fast:     "vn_fast"
         }
     }
+
+    var recognitionVersion: String { "1.0" }
 
     enum RecognitionLevel {
         case accurate

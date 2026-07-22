@@ -3,8 +3,11 @@ import Foundation
 
 /// Mock handwriting recognizer for testing.
 struct MockHandwritingRecognizer: HandwritingRecognizing {
+    var isAvailable: Bool = true
+    var supportedLanguages: [String] = ["en-US"]
     var engineId: String = "mock"
     var engineVersion: String? = "1.0.0"
+    var recognitionVersion: String = "1.0"
 
     /// Pre-configured results to return.
     var results: [RecognizedTextCandidate] = []

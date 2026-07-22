@@ -14,9 +14,38 @@ actor NoteRecognitionCoordinator {
     /// The drawing revision currently being recognized.
     private var recognizingRevision: Int?
 
-    init(recognizer: HandwritingRecognizing = VisionHandwritingRecognizer(), repository: NotesRepository = NotesRepository()) {
+    /// Debounce task for settled edits.
+    private var debounceTask: Task<Void, Never>?
+
+    /// Debounce interval — recognition fires after this many seconds of inactivity.
+    let debounceDuration: TimeInterval
+
+    init(
+        recognizer: HandwritingRecognizing = VisionHandwritingRecognizer(),
+        repository: NotesRepository = NotesRepository(),
+        debounceDuration: TimeInterval = 0.5
+    ) {
         self.recognizer = recognizer
         self.repository = repository
+        self.debounceDuration = debounceDuration
+    }
+
+    /// Schedule recognition after a debounce delay.
+    /// Call this on each stroke edit; recognition only runs after `debounceDuration` of inactivity.
+    func scheduleRecognition(
+        noteId: UUID,
+        drawingRevision: Int,
+        languages: [String] = []
+    ) async -> NoteRecognition? {
+        debounceTask?.cancel()
+        let task = Task<Void, Never> { [debounceDuration] in
+            try? await Task.sleep(nanoseconds: UInt64(debounceDuration * 1_000_000_000))
+        }
+        debounceTask = task
+        await task.value
+
+        guard !Task.isCancelled else { return nil }
+        return await recognize(noteId: noteId, drawingRevision: drawingRevision, languages: languages)
     }
 
     /// Start recognition for a drawing revision. Cancels any in-progress recognition.
@@ -31,6 +60,8 @@ actor NoteRecognitionCoordinator {
         recognizingRevision = drawingRevision
 
         let task = Task<NoteRecognition?, Never> { [recognizer, repository, logger] in
+            guard !Task.isCancelled else { return nil }
+
             // Render the drawing to an image
             guard let drawingData = try? await repository.loadDrawingBlob(noteId: noteId, revision: drawingRevision) else {
                 logger.error("Failed to load drawing blob for recognition")
@@ -57,11 +88,14 @@ actor NoteRecognitionCoordinator {
                 // Check if revision is still current
                 guard !Task.isCancelled else { return nil }
 
+                let resolvedEngine: RecognitionEngine = recognizer.engineId == "vn_fast" ? .visionFast : .visionAccurate
+
                 return NoteRecognition(
                     noteId: noteId,
-                    drawingRevision: drawingRevision,
-                    engine: recognizer.engineId == "vn_fast" ? .visionFast : .visionAccurate,
+                    drawingRevisionId: UUID(),  // ephemeral — tied to this recognition snapshot
+                    engine: resolvedEngine,
                     engineVersion: recognizer.engineVersion,
+                    recognitionVersion: recognizer.recognitionVersion,
                     languages: languages.isEmpty ? ["en-US"] : languages,
                     rawText: rawText
                 )
@@ -77,6 +111,7 @@ actor NoteRecognitionCoordinator {
 
     /// Cancel any in-progress recognition.
     func cancel() {
+        debounceTask?.cancel()
         currentTask?.cancel()
         currentTask = nil
         recognizingRevision = nil

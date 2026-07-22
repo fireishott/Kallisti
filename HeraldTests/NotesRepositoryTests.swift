@@ -87,7 +87,7 @@ struct NotesRepositoryTests {
         let note = try await repo.createNote(title: "Blob Test")
         let testData = Data("Hello, PencilKit!".utf8)
 
-        let (blobPath, contentHash) = try await repo.saveDrawingBlob(
+        let (_, blobPath, contentHash) = try await repo.saveDrawingBlob(
             noteId: note.id, data: testData, revision: 1
         )
 
@@ -105,7 +105,7 @@ struct NotesRepositoryTests {
 
         let note = try await repo.createNote(title: "Hash Test")
         let testData = Data("Test content".utf8)
-        let (_, contentHash) = try await repo.saveDrawingBlob(
+        let (_, _, contentHash) = try await repo.saveDrawingBlob(
             noteId: note.id, data: testData, revision: 1
         )
 
@@ -148,8 +148,8 @@ struct NotesRepositoryTests {
         let data1 = Data("Version 1".utf8)
         let data2 = Data("Version 2".utf8)
 
-        let (_, hash1) = try await repo.saveDrawingBlob(noteId: note.id, data: data1, revision: 1)
-        let (_, hash2) = try await repo.saveDrawingBlob(noteId: note.id, data: data2, revision: 2)
+        let (_, _, hash1) = try await repo.saveDrawingBlob(noteId: note.id, data: data1, revision: 1)
+        let (_, _, hash2) = try await repo.saveDrawingBlob(noteId: note.id, data: data2, revision: 2)
 
         #expect(hash1 != hash2)
 
@@ -185,7 +185,7 @@ struct NotesRepositoryTests {
         let goodData = Data("Good drawing data".utf8)
 
         // Save a valid revision
-        let (_, hash) = try await repo.saveDrawingBlob(noteId: note.id, data: goodData, revision: 1)
+        let (_, _, hash) = try await repo.saveDrawingBlob(noteId: note.id, data: goodData, revision: 1)
         #expect(!hash.isEmpty)
 
         // Verify the blob is intact
@@ -224,7 +224,7 @@ struct NotesRepositoryTests {
 
         let note = try await repo.createNote(title: "Corruption Test")
         let data = Data("Valid data".utf8)
-        let (_, hash) = try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1)
+        let (_, _, hash) = try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1)
 
         // Verify with correct hash
         let valid = try await repo.verifyBlobHash(noteId: note.id, revision: 1, expectedHash: hash)
