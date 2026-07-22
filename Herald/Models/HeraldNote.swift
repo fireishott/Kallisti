@@ -9,6 +9,8 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
     var title: String
     var folderId: UUID?
     var pinned: Bool
+    var currentDrawingRevisionId: UUID?
+    var currentRevision: Int
     var currentDrawingRevision: Int
     var currentTextRevision: Int
     var pageStyle: NotePageStyle
@@ -17,11 +19,16 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var deletedAt: Date?
 
+    var isPinned: Bool { pinned }
+    var folder: NoteFolder? { nil } // folders not yet wired; folderId is the raw key
+
     init(
         id: UUID = UUID(),
         title: String = "",
         folderId: UUID? = nil,
         pinned: Bool = false,
+        currentDrawingRevisionId: UUID? = nil,
+        currentRevision: Int = 0,
         currentDrawingRevision: Int = 0,
         currentTextRevision: Int = 0,
         pageStyle: NotePageStyle = .linesMedium,
@@ -34,6 +41,8 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
         self.title = title
         self.folderId = folderId
         self.pinned = pinned
+        self.currentDrawingRevisionId = currentDrawingRevisionId
+        self.currentRevision = currentRevision
         self.currentDrawingRevision = currentDrawingRevision
         self.currentTextRevision = currentTextRevision
         self.pageStyle = pageStyle
@@ -45,13 +54,15 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
 
     var isDeleted: Bool { deletedAt != nil }
 
-    /// Custom decoding to handle pre-existing JSON without `pageStyle`.
+    /// Custom decoding to handle pre-existing JSON without newer fields.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         folderId = try container.decodeIfPresent(UUID.self, forKey: .folderId)
         pinned = try container.decode(Bool.self, forKey: .pinned)
+        currentDrawingRevisionId = try container.decodeIfPresent(UUID.self, forKey: .currentDrawingRevisionId)
+        currentRevision = try container.decodeIfPresent(Int.self, forKey: .currentRevision) ?? 0
         currentDrawingRevision = try container.decode(Int.self, forKey: .currentDrawingRevision)
         currentTextRevision = try container.decode(Int.self, forKey: .currentTextRevision)
         pageStyle = try container.decodeIfPresent(NotePageStyle.self, forKey: .pageStyle) ?? .linesMedium

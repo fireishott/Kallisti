@@ -115,9 +115,10 @@ final class NotesStore {
     func saveDrawing(noteId: UUID, data: Data, revision: Int) async -> (String, String)? {
         do {
             let result = try await repository.saveDrawingBlob(noteId: noteId, data: data, revision: revision)
-            // Update note's drawing revision
+            // Update note's drawing revision and monotonic counter
             if let index = notes.firstIndex(where: { $0.id == noteId }) {
                 notes[index].currentDrawingRevision = revision
+                notes[index].currentRevision = revision
                 notes[index].updatedAt = .now
                 try await repository.updateNote(notes[index])
             }

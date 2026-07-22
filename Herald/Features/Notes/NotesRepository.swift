@@ -10,10 +10,15 @@ actor NotesRepository {
     private let notesDirectoryName = "Notes"
     private let metadataFileName = "notes-index.json"
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "notes-repository")
+    private let customBaseDirectory: URL?
 
     private var baseDirectory: URL {
-        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        customBaseDirectory ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Herald", isDirectory: true)
+    }
+
+    init(baseDirectory: URL? = nil) {
+        self.customBaseDirectory = baseDirectory
     }
 
     private var notesDirectory: URL {
@@ -134,7 +139,9 @@ actor NotesRepository {
 
     /// Save a PKDrawing blob for a note. Returns the revision number and content hash.
     /// Atomic write — crash yields prior or next complete revision, never a partial blob.
-    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int) throws -> (blobPath: String, contentHash: String) {
+    /// Also records a `NoteDrawingRevision` metadata entry.
+    @discardableResult
+    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (blobPath: String, contentHash: String) {
         let noteDir = noteDirectory(for: noteId)
         try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
 
@@ -144,7 +151,35 @@ actor NotesRepository {
         let blobURL = noteDir.appendingPathComponent("rev-\(revision).pkdrawing")
         try data.write(to: blobURL, options: .atomic)
 
+        // Record the revision metadata
+        let drawingRevision = NoteDrawingRevision(
+            noteId: noteId,
+            revision: revision,
+            blobPath: blobURL.path,
+            contentHash: hashHex,
+            pageStyle: pageStyle,
+            deviceId: deviceIdentifier
+        )
+        try saveDrawingRevision(drawingRevision, noteId: noteId)
+
         return (blobURL.path, hashHex)
+    }
+
+    /// Content-hash deduplication: skip write if the latest revision has the same hash.
+    func saveDrawingBlobIfChanged(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (blobPath: String, contentHash: String, changed: Bool) {
+        let contentHash = SHA256.hash(data: data)
+        let hashHex = contentHash.map { String(format: "%02x", $0) }.joined()
+
+        // Check if the previous revision has the same hash
+        if revision > 0 {
+            let revisions = try loadDrawingRevisions(noteId: noteId)
+            if let lastRev = revisions.last, lastRev.contentHash == hashHex {
+                return (lastRev.blobPath, hashHex, false)
+            }
+        }
+
+        let result = try saveDrawingBlob(noteId: noteId, data: data, revision: revision, pageStyle: pageStyle)
+        return (result.blobPath, result.contentHash, true)
     }
 
     /// Load a PKDrawing blob from disk.
@@ -170,6 +205,42 @@ actor NotesRepository {
         if fileManager.fileExists(atPath: blobURL.path) {
             try fileManager.removeItem(at: blobURL)
         }
+    }
+
+    // MARK: - Drawing Revision Metadata
+
+    private func revisionsMetadataURL(for noteId: UUID) -> URL {
+        noteDirectory(for: noteId).appendingPathComponent("revisions.json")
+    }
+
+    /// Load all drawing revision records for a note.
+    func loadDrawingRevisions(noteId: UUID) throws -> [NoteDrawingRevision] {
+        let url = revisionsMetadataURL(for: noteId)
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([NoteDrawingRevision].self, from: data)
+    }
+
+    /// Save a drawing revision metadata record.
+    private func saveDrawingRevision(_ revision: NoteDrawingRevision, noteId: UUID) throws {
+        var revisions = try loadDrawingRevisions(noteId: noteId)
+        revisions.append(revision)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(revisions)
+        try data.write(to: revisionsMetadataURL(for: noteId), options: .atomic)
+    }
+
+    /// Get the current device identifier (stable per install).
+    private var deviceIdentifier: String {
+        if let id = UserDefaults.standard.string(forKey: "herald.deviceId") {
+            return id
+        }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: "herald.deviceId")
+        return id
     }
 
     // MARK: - Note Attachments
