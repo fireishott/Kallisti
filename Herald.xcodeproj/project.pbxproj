@@ -249,6 +249,11 @@
 		FEE3390450ECCB4229E142BF /* AppSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53DEE0C12D517E019B12233 /* AppSessionStore.swift */; };
 		FF0CF72D1C79EBD6AABF9DAA /* NoteDirectiveParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACFA718BE71AD253C1802EE2 /* NoteDirectiveParser.swift */; };
 		FF32EC3319DE5A6CD899E5F4 /* SkillsBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* EnrichmentResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A7B8C9D0E1F2A3 /* EnrichmentResult.swift */; };
+		C3D4E5F6A7B8C9D0E1F2A3B4 /* DirectiveProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B4C5 /* DirectiveProgressView.swift */; };
+		E5F6A7B8C9D0E1F2A3B4C5D6 /* EnrichedDocumentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A7B8C9D0E1F2A3B4C5D6E7 /* EnrichedDocumentView.swift */; };
+		A7B8C9D0E1F2A3B4C5D6E7F8 /* NoteExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C9D0E1F2A3B4C5D6E7F8A9 /* NoteExportSheet.swift */; };
+		C9D0E1F2A3B4C5D6E7F8A9B0 /* NotesIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0E1F2A3B4C5D6E7F8A9B0C1 /* NotesIntegrationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -538,6 +543,11 @@
 		FE863F3296A2748FD9FAD626 /* VoiceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceState.swift; sourceTree = "<group>"; };
 		FFD1CFB386F902E262624380 /* TalkTurnClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkTurnClient.swift; sourceTree = "<group>"; };
 		FFDB6498238FCB0CFD3C359B /* PermissionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsStore.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A7B8C9D0E1F2A3 /* EnrichmentResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrichmentResult.swift; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B4C5 /* DirectiveProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectiveProgressView.swift; sourceTree = "<group>"; };
+		F6A7B8C9D0E1F2A3B4C5D6E7 /* EnrichedDocumentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrichedDocumentView.swift; sourceTree = "<group>"; };
+		B8C9D0E1F2A3B4C5D6E7F8A9 /* NoteExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExportSheet.swift; sourceTree = "<group>"; };
+		D0E1F2A3B4C5D6E7F8A9B0C1 /* NotesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -849,6 +859,7 @@
 		692F0EF92E5CD78EBCEF97AE /* Notes */ = {
 			isa = PBXGroup;
 			children = (
+				D0E1F2A3B4C5D6E7F8A9B0C1 /* NotesIntegrationTests.swift */,
 				514E044C3232C165B753FF7D /* note_enrichment_request.json */,
 				2189CEF2B2F2A7139504C33B /* note_enrichment_result.json */,
 			);
@@ -858,6 +869,10 @@
 		6DC0074AE504B4469AB73671 /* Notes */ = {
 			isa = PBXGroup;
 			children = (
+				B2C3D4E5F6A7B8C9D0E1F2A3 /* EnrichmentResult.swift */,
+				D4E5F6A7B8C9D0E1F2A3B4C5 /* DirectiveProgressView.swift */,
+				F6A7B8C9D0E1F2A3B4C5D6E7 /* EnrichedDocumentView.swift */,
+				B8C9D0E1F2A3B4C5D6E7F8A9 /* NoteExportSheet.swift */,
 				ACFA718BE71AD253C1802EE2 /* NoteDirectiveParser.swift */,
 				8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */,
 				6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */,
@@ -1277,6 +1292,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C9D0E1F2A3B4C5D6E7F8A9B0 /* NotesIntegrationTests.swift in Sources */,
 				83889635E7A4B688BE6F298A /* AppStoresTests.swift in Sources */,
 				A1B2C3D4E5F6789012345678 /* ModelStoreTests.swift in Sources */,
 				FB336C619EDA67C99762B7E9 /* AppTemplateTests.swift in Sources */,
@@ -1295,6 +1311,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* EnrichmentResult.swift in Sources */,
+				C3D4E5F6A7B8C9D0E1F2A3B4 /* DirectiveProgressView.swift in Sources */,
+				E5F6A7B8C9D0E1F2A3B4C5D6 /* EnrichedDocumentView.swift in Sources */,
+				A7B8C9D0E1F2A3B4C5D6E7F8 /* NoteExportSheet.swift in Sources */,
 				96EAFC26B2CF23E94D7CCD70 /* AdaptiveRootView.swift in Sources */,
 				F8D18D069EAB5CA6F2504D2D /* AppAttestService.swift in Sources */,
 				5C7D06B2B4B65E22C7C131C5 /* AppContainer.swift in Sources */,

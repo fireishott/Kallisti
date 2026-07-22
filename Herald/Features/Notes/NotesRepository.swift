@@ -316,6 +316,56 @@ actor NotesRepository {
         try saveAttachments(attachments, noteId: attachment.noteId)
     }
 
+    // MARK: - Recognitions
+
+    private func recognitionsMetadataURL(for noteId: UUID) -> URL {
+        noteDirectory(for: noteId).appendingPathComponent("recognitions.json")
+    }
+
+    /// Load all recognitions for a note.
+    func loadRecognitions(noteId: UUID) throws -> [NoteRecognition] {
+        let url = recognitionsMetadataURL(for: noteId)
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([NoteRecognition].self, from: data)
+    }
+
+    /// Save a recognition record.
+    func saveRecognition(_ recognition: NoteRecognition, noteId: UUID) throws {
+        var recognitions = try loadRecognitions(noteId: noteId)
+        recognitions.append(recognition)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(recognitions)
+        try data.write(to: recognitionsMetadataURL(for: noteId), options: .atomic)
+    }
+
+    // MARK: - Enrichment Results
+
+    private func enrichmentResultURL(for noteId: UUID) -> URL {
+        noteDirectory(for: noteId).appendingPathComponent("enrichment-result.json")
+    }
+
+    /// Load the latest enrichment result for a note.
+    func loadEnrichmentResult(noteId: UUID) throws -> EnrichmentResult? {
+        let url = enrichmentResultURL(for: noteId)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(EnrichmentResult.self, from: data)
+    }
+
+    /// Save an enrichment result.
+    func saveEnrichmentResult(_ result: EnrichmentResult, noteId: UUID) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(result)
+        try data.write(to: enrichmentResultURL(for: noteId), options: .atomic)
+    }
+
     // MARK: - Helpers
 
     private func noteDirectory(for noteId: UUID) -> URL {

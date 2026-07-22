@@ -65,7 +65,8 @@ enum DirectiveStatus: String, Codable, Sendable {
 // MARK: - Command Result
 
 /// The result of executing a single directive.
-struct NoteCommandResult: Codable, Hashable, Sendable {
+struct NoteCommandResult: Codable, Hashable, Sendable, Identifiable {
+    var id: String { directiveId }
     let directiveId: String
     let status: DirectiveStatus
     let sectionIndex: Int?

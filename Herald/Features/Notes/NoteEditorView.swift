@@ -12,6 +12,7 @@ struct NoteEditorView: View {
     @State private var pageStyle: NotePageStyle = .linesMedium
     @State private var attachments: [NoteAttachment] = []
     @State private var pencilOnly: Bool = true
+    @State private var viewMode: NoteViewMode = .ink
 
     /// Debounce timer for persisting drawings.
     @State private var persistTask: Task<Void, Never>?
@@ -20,6 +21,14 @@ struct NoteEditorView: View {
     @State private var showPhotoPicker = false
     @State private var showDocumentScanner = false
     @State private var showAttachmentMenu = false
+
+    // Recognition and enrichment state
+    @State private var currentRecognition: NoteRecognition?
+    @State private var parsedDirectives: [NoteDirective] = []
+    @State private var enrichmentResult: EnrichmentResult?
+    @State private var runStatus: NoteRunStatus?
+    @State private var commandResults: [NoteCommandResult] = []
+    @State private var showShareToNotes = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +44,18 @@ struct NoteEditorView: View {
                     updateTitle(newValue)
                 }
 
+            // View mode picker
+            Picker("View Mode", selection: $viewMode) {
+                ForEach(NoteViewMode.allCases) { mode in
+                    Label(mode.displayName, systemImage: mode.systemImage)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Note view mode")
+
             Divider()
 
             // Attachment strip (Phase 3)
@@ -48,21 +69,15 @@ struct NoteEditorView: View {
                 Divider()
             }
 
-            // Canvas with paper background (Phase 2: paper joins canvas)
-            PencilCanvasRepresentable(
-                drawing: $drawing,
-                pageStyle: pageStyle,
-                pencilOnly: pencilOnly,
-                onDrawingChanged: { newDrawing in
-                    schedulePersist(newDrawing)
-                },
-                onToolUseBegan: {},
-                onToolUseEnded: {
-                    // Immediate persist on pencil-up
-                    persistDrawing(drawing)
-                }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Content based on view mode
+            switch viewMode {
+            case .ink:
+                inkView
+            case .recognized:
+                recognizedView
+            case .enriched:
+                enrichedView
+            }
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -138,6 +153,93 @@ struct NoteEditorView: View {
         }
     }
 
+    // MARK: - View Modes
+
+    @ViewBuilder
+    private var inkView: some View {
+        PencilCanvasRepresentable(
+            drawing: $drawing,
+            pageStyle: pageStyle,
+            pencilOnly: pencilOnly,
+            onDrawingChanged: { newDrawing in
+                schedulePersist(newDrawing)
+            },
+            onToolUseBegan: {},
+            onToolUseEnded: {
+                // Immediate persist on pencil-up
+                persistDrawing(drawing)
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var recognizedView: some View {
+        if let recognition = currentRecognition {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Design.Spacing.md) {
+                    RecognizedTextReviewView(
+                        recognition: recognition,
+                        directives: parsedDirectives,
+                        onCorrectedTextChanged: { corrected in
+                            Task { await saveCorrectedText(corrected) }
+                        }
+                    )
+
+                    if !parsedDirectives.isEmpty {
+                        DirectiveProgressView(
+                            directives: parsedDirectives,
+                            commandResults: commandResults,
+                            runStatus: runStatus?.status
+                        )
+                    }
+                }
+                .padding()
+            }
+        } else {
+            ContentUnavailableView(
+                "No Recognition",
+                systemImage: "text.viewfinder",
+                description: Text("Write with Apple Pencil and recognition will run automatically after a short delay.")
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var enrichedView: some View {
+        if let result = enrichmentResult {
+            EnrichedDocumentView(
+                result: result,
+                isEditingCopy: false,
+                onEditCopy: { createDerivedCopy() }
+            )
+        } else if runStatus?.status == .queued || runStatus?.status == .claimed {
+            VStack(spacing: Design.Spacing.lg) {
+                ProgressView()
+                    .tint(Design.Brand.accent)
+                Text("Enrichment in progress...")
+                    .font(Design.Typography.body)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+
+                if !parsedDirectives.isEmpty {
+                    DirectiveProgressView(
+                        directives: parsedDirectives,
+                        commandResults: commandResults,
+                        runStatus: runStatus?.status
+                    )
+                    .padding(.horizontal)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView(
+                "No Enrichment",
+                systemImage: "doc.text",
+                description: Text("Add a #research or #summary directive and run enrichment to generate a document.")
+            )
+        }
+    }
+
     // MARK: - Loading
 
     private func loadNote() {
@@ -154,6 +256,8 @@ struct NoteEditorView: View {
             }
             // Load attachments
             attachments = await notesStore.loadAttachments(noteId: noteId)
+            // Load recognition and enrichment data
+            loadRecognitionAndEnrichment()
         }
     }
 
@@ -198,6 +302,55 @@ struct NoteEditorView: View {
             guard let note = notesStore.notes.first(where: { $0.id == noteId }) else { return }
             let newRevision = note.currentDrawingRevision + 1
             _ = await notesStore.saveDrawing(noteId: noteId, data: data, revision: newRevision)
+        }
+    }
+
+    // MARK: - Recognition & Enrichment
+
+    private func saveCorrectedText(_ corrected: String) async {
+        guard var recognition = currentRecognition else { return }
+        recognition.userCorrectedText = corrected
+        currentRecognition = recognition
+
+        // Re-parse directives from corrected text
+        let parser = NoteDirectiveParser()
+        parsedDirectives = parser.parse(
+            text: corrected,
+            noteId: noteId,
+            sourceTextRevision: recognition.drawingRevisionId.hashValue
+        )
+    }
+
+    private func createDerivedCopy() {
+        guard let result = enrichmentResult else { return }
+        Task {
+            if let newNote = await notesStore.createNote(title: "\(result.title) (Copy)") {
+                notesStore.selectedNoteId = newNote.id
+            }
+        }
+    }
+
+    private func loadRecognitionAndEnrichment() {
+        Task {
+            // Load the latest recognition from the repository
+            let repo = NotesRepository()
+            if let note = notesStore.notes.first(where: { $0.id == noteId }) {
+                let recs = try? await repo.loadRecognitions(noteId: noteId)
+                currentRecognition = recs?.last
+
+                // Parse directives
+                if let recognition = currentRecognition {
+                    let parser = NoteDirectiveParser()
+                    parsedDirectives = parser.parse(
+                        text: recognition.effectiveText,
+                        noteId: noteId,
+                        sourceTextRevision: note.currentTextRevision
+                    )
+                }
+
+                // Load enrichment result if available
+                enrichmentResult = try? await repo.loadEnrichmentResult(noteId: noteId)
+            }
         }
     }
 
