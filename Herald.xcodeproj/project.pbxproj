@@ -126,6 +126,7 @@
 		8205AC97008E0D16E113716E /* CronManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C9A641C1CEBE8C9E0230A0F /* CronManagerView.swift */; };
 		832687151645B01F87079665 /* SessionBootstrapServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */; };
 		83889635E7A4B688BE6F298A /* AppStoresTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE78A4AFFD68002BD6F2EB5D /* AppStoresTests.swift */; };
+		C1D2E3F4A5B6789012345678 /* SpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E3F4A5B6C7890123456789 /* SpeechServiceTests.swift */; };
 		A1B2C3D4E5F6789012345678 /* ModelStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F678901234567890 /* ModelStoreTests.swift */; };
 		861D924C8953ABF1917D7E43 /* VoiceAttachmentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50AA91A99B709AF890AF8921 /* VoiceAttachmentSheet.swift */; };
 		86D6D97EAB3252EAA0705F1E /* InboxItemDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B877ED93E5135C72758F2A /* InboxItemDetailSheet.swift */; };
@@ -492,6 +493,7 @@
 		CD8CC41F0A9739AAE02DF1F8 /* HeraldWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = HeraldWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE1E76F3C501F3CCAA26A81C /* HeraldUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HeraldUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE78A4AFFD68002BD6F2EB5D /* AppStoresTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoresTests.swift; sourceTree = "<group>"; };
+		D2E3F4A5B6C7890123456789 /* SpeechServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechServiceTests.swift; sourceTree = "<group>"; };
 		B2C3D4E5F678901234567890 /* ModelStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelStoreTests.swift; sourceTree = "<group>"; };
 		CF288BDAEA5CA4F148345BB0 /* VoiceOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrb.swift; sourceTree = "<group>"; };
 		CF35606C6D86CB57EE6B2A4C /* NotesWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesWorkspaceView.swift; sourceTree = "<group>"; };
@@ -1041,6 +1043,7 @@
 				335CFA8379C6876DAB2A5B4A /* NoteDirectiveParserTests.swift */,
 				2FE61813D4321D8A0D8C9E81 /* NotesRepositoryTests.swift */,
 				7EF89A2AB11146AAEE5ACEC2 /* StreamContractV2Tests.swift */,
+				D2E3F4A5B6C7890123456789 /* SpeechServiceTests.swift */,
 			);
 			path = HeraldTests;
 			sourceTree = "<group>";
@@ -1284,6 +1287,7 @@
 				98AD7B8F2A603E64A90FAFE8 /* NoteDirectiveParserTests.swift in Sources */,
 				E5E83246F0B39DE2FD527EFB /* NotesRepositoryTests.swift in Sources */,
 				17103C3C57C7552A6E042572 /* StreamContractV2Tests.swift in Sources */,
+				C1D2E3F4A5B6789012345678 /* SpeechServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

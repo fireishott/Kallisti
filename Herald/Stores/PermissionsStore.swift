@@ -101,7 +101,11 @@ final class PermissionsStore {
             DeviceCapability(permissionType: .camera, status: mediaService.cameraAuthorizationStatus),
             DeviceCapability(permissionType: .photos, status: mediaService.photosAuthorizationStatus),
             DeviceCapability(permissionType: .motion, status: motionService?.authorizationStatus ?? .unsupported),
-            DeviceCapability(permissionType: .speechRecognition, status: speechRecognitionStatus()),
+            DeviceCapability(
+                permissionType: .speechRecognition,
+                status: speechRecognitionStatus(),
+                statusDetail: Self.speechRecognitionStatusDetail(for: speechRecognitionStatus())
+            ),
         ]
     }
 
@@ -127,17 +131,40 @@ final class PermissionsStore {
 
     // MARK: - Speech Recognition
 
-    private func speechRecognitionStatus() -> PermissionStatus {
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized: .authorized
-        case .denied: .denied
-        case .restricted: .restricted
-        case .notDetermined: .notDetermined
-        @unknown default: .notDetermined
+    /// Returns the availability-aware speech recognition status.
+    /// On iOS < 26, returns `.unsupported` since the modern Speech APIs
+    /// (SpeechAnalyzer, DictationTranscriber) are not available.
+    static func speechRecognitionAvailabilityStatus() -> PermissionStatus {
+        if #available(iOS 26.0, *) {
+            switch SFSpeechRecognizer.authorizationStatus() {
+            case .authorized: return .authorized
+            case .denied: return .denied
+            case .restricted: return .restricted
+            case .notDetermined: return .notDetermined
+            @unknown default: return .notDetermined
+            }
+        } else {
+            return .unsupported
         }
     }
 
+    /// Returns a user-facing status detail for speech recognition.
+    /// On iOS < 26, explains that the feature requires a newer OS.
+    static func speechRecognitionStatusDetail(for status: PermissionStatus) -> String? {
+        switch status {
+        case .unsupported:
+            return "Requires iOS 26 or later"
+        default:
+            return nil
+        }
+    }
+
+    private func speechRecognitionStatus() -> PermissionStatus {
+        Self.speechRecognitionAvailabilityStatus()
+    }
+
     private func requestSpeechAuthorization() async {
+        guard #available(iOS 26.0, *) else { return }
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
         await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { _ in
