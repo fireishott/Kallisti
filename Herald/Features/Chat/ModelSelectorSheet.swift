@@ -112,12 +112,22 @@ struct ModelSelectorSheet: View {
                 } else if modelStore.isActive(model) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Design.Brand.accent)
+                        .font(.system(size: 18))
+                } else {
+                    Image(systemName: "circle")
+                        .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.3))
+                        .font(.system(size: 18))
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isSwitching)
+        .listRowBackground(
+            modelStore.isActive(model)
+                ? Design.Brand.accent.opacity(0.08)
+                : Color.clear
+        )
     }
 
     private func selectModel(_ model: ModelStore.HeraldModel) {
