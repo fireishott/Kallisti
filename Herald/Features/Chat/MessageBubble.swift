@@ -286,6 +286,7 @@ struct MessageBubble: View, Equatable {
             hasStreamedReasoning: !message.reasoning.isEmpty
         )
         .foregroundStyle(Design.Colors.foreground)
+        .textSelection(.enabled)
         .padding(.vertical, Design.Spacing.xxs)
     }
 
@@ -358,5 +359,16 @@ struct MessageBubble: View, Equatable {
             with: "",
             options: .regularExpression
         ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// MARK: - SelectableContentView
+
+struct SelectableContentView: View {
+    let content: String
+
+    var body: some View {
+        Text(content)
+            .textSelection(.enabled)
     }
 }
