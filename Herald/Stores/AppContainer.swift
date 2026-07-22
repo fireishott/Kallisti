@@ -383,6 +383,7 @@ final class AppContainer {
         )
 
         chatStore.profileStore = container.profileStore
+        chatStore.useStreaming = settingsStore.settings.useStreaming
 
         let refreshUnpairedRelayContext: @MainActor () async -> Void = { [weak sessionStore, weak container] in
             guard container?.pairingStore.isPaired == false else { return }

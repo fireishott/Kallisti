@@ -83,6 +83,7 @@ final class ChatStore {
     /// Called when the conversation title changes (server-derived or renamed).
     /// Used by SessionListStore to update sidebar immediately.
     var onTitleChanged: (@MainActor (_ conversationID: UUID, _ newTitle: String) -> Void)?
+    var useStreaming: Bool = true
 
     init(heraldClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
         self.heraldClient = heraldClient
@@ -137,32 +138,53 @@ final class ChatStore {
             attachments: attachments.map { MessageAttachment(from: $0) }
         )
         if conversation == nil {
-            conversation = Conversation(title: "Herald")
+            conversation = Conversation(title: "New Chat")
         }
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp
         pendingMessageSentAt = optimistic.timestamp
 
-        // Append a placeholder Herald message for streaming content
-        let placeholderID = UUID()
-        let placeholder = Message(
-            id: placeholderID,
-            sender: .herald,
-            content: "",
-            status: .sending,
-            isStreaming: true
-        )
-        conversation?.messages.append(placeholder)
-        // activeStreams entry is added in the .messageSent handler once jobId is known.
-        // streamingMessageID (computed) remains nil until then — that's correct.
-        restartPendingPollingIfNeeded()
+        if useStreaming {
+            // Append a placeholder Herald message for streaming content
+            let placeholderID = UUID()
+            let placeholder = Message(
+                id: placeholderID,
+                sender: .herald,
+                content: "",
+                status: .sending,
+                isStreaming: true
+            )
+            conversation?.messages.append(placeholder)
+            // activeStreams entry is added in the .messageSent handler once jobId is known.
+            // streamingMessageID (computed) remains nil until then — that's correct.
+            restartPendingPollingIfNeeded()
 
-        await runAttemptLoop(
-            content: trimmedContent,
-            attachments: attachments,
-            clientMessageID: clientMessageID,
-            placeholderID: placeholderID
-        )
+            await runAttemptLoop(
+                content: trimmedContent,
+                attachments: attachments,
+                clientMessageID: clientMessageID,
+                placeholderID: placeholderID
+            )
+        } else {
+            let response = await heraldClient.send(
+                message: trimmedContent,
+                attachments: attachments,
+                clientMessageID: clientMessageID
+            )
+            if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                conversation?.messages[idx].status = .delivered
+            }
+            conversation?.messages.append(response)
+            conversation?.lastActivity = response.timestamp
+            conversation = mergeConversationMetadata(
+                from: conversation,
+                into: heraldClient.currentConversation
+            )
+            if let latestUsage = conversation?.latestUsage {
+                lastTokenUsage = latestUsage
+            }
+            await autoTitleIfNeeded()
+        }
 
         if !hasPendingMessages {
             pendingMessageSentAt = nil

@@ -512,6 +512,15 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                settingsToggle(
+                    icon: "bolt.fill",
+                    iconColor: Design.Colors.foreground,
+                    title: "Streaming",
+                    isOn: useStreamingBinding
+                )
+
+                sectionDivider
+
                 reasoningEffortPicker
             }
         }
@@ -811,6 +820,15 @@ struct SettingsScreen: View {
         Binding(
             get: { settingsStore.settings.showReasoning },
             set: { settingsStore.settings.showReasoning = $0 }
+        )
+    }
+    private var useStreamingBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.useStreaming },
+            set: {
+                settingsStore.settings.useStreaming = $0
+                chatStore.useStreaming = $0
+            }
         )
     }
 

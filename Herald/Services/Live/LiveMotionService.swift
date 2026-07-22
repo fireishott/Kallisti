@@ -85,6 +85,21 @@ final class LiveMotionService {
         return authorizationStatus
     }
 
+    func refreshAuthorizationStatus() {
+        guard CMMotionActivityManager.isActivityAvailable() else {
+            authorizationStatus = .unsupported
+            return
+        }
+        let status = CMMotionActivityManager.authorizationStatus()
+        switch status {
+        case .authorized: authorizationStatus = .authorized
+        case .denied: authorizationStatus = .denied
+        case .restricted: authorizationStatus = .restricted
+        case .notDetermined: authorizationStatus = .notDetermined
+        @unknown default: authorizationStatus = .notDetermined
+        }
+    }
+
     // MARK: - Monitoring
 
     func startMonitoring() {

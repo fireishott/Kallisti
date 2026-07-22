@@ -165,20 +165,14 @@ final class LiveHealthService: HealthServiceProtocol {
                 anchor: nil,
                 limit: 1
             ) { _, _, _, _, error in
-                if let hkError = error as? HKError {
-                    switch hkError.code {
-                    case .errorAuthorizationDenied, .errorAuthorizationNotDetermined:
-                        // If we've never shown the auth dialog and get an
-                        // authorization error, the build likely lacks entitlements.
-                        let hasShownDialog = UserDefaults.standard.bool(
-                            forKey: Self.healthAuthRequestedKey
-                        )
-                        if !hasShownDialog {
-                            continuation.resume(returning: false)
-                            return
-                        }
-                    default:
-                        break
+                if let hkError = error as? HKError,
+                   hkError.code == .errorAuthorizationDenied {
+                    let hasShownDialog = UserDefaults.standard.bool(
+                        forKey: Self.healthAuthRequestedKey
+                    )
+                    if !hasShownDialog {
+                        continuation.resume(returning: false)
+                        return
                     }
                 }
                 // Query succeeded (possibly with empty results) or error is

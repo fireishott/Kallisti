@@ -980,7 +980,7 @@ def get_or_create_current_conversation(db: Session, *, user_id: str, device_id: 
         conversation = Conversation(
             user_id=user_id,
             device_id=device_id,
-            title="Herald",
+            title="New Chat",
             source="herald" if device_id is None else "ios",
         )
 

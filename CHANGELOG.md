@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.0.2] - 2026-07-22
+
+### Fixed
+
+- **Health permissions N/A** (B1): Entitlement probe no longer misidentifies a
+  fresh install as missing entitlements. `.errorAuthorizationNotDetermined` is
+  now treated as a valid pre-prompt state, not an entitlement failure.
+- **Talk mode crash** (B2): Audio capture guards against double-start, API key
+  holder refreshes before readiness check, playback prepare failures are caught
+  instead of crashing.
+- **Permissions copy** (B5): Updated "hermes works best" to "herald and hermes
+  work together best" on the Permissions screen.
+- **Motion activity not persisting** (B6): `reloadCapabilities()` now re-reads
+  CoreMotion authorization status, so motion permission survives screen
+  transitions.
+- **Connection verification** (B7): Confirmed v2.0.1 relay URL fix is in HEAD;
+  added re-pair guidance for devices with cached stale URLs.
+
+### Added
+
+- **Streaming toggle** (B4): New "Streaming" toggle in Settings → Preferences
+  lets users choose between progressive streaming and full-response delivery.
+
+### Changed
+
+- **Default conversation title** (B3): New conversations are titled "New Chat"
+  instead of "Herald" to avoid confusion with the app name.
+
 ## [2.0.1] - 2026-07-22
 
 ### Fixed

@@ -134,9 +134,12 @@ final class TalkStore {
             blockedReason = "Talk coordinator not available"
             return
         }
+        if let apiKeyHolder {
+            await apiKeyHolder.refresh()
+        }
         guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
             canStartSession = false
-            blockedReason = "Mimo API key required"
+            blockedReason = "Mimo API key required — add it in Settings → Voice"
             return
         }
         canStartSession = true

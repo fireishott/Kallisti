@@ -530,6 +530,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsAutoSpeak: Bool
     var enterToSend: Bool
     var showReasoning: Bool
+    var useStreaming: Bool
     var reasoningEffort: ReasoningEffort
     var dashboardURL: String?
     var dashboardUsername: String?
@@ -553,6 +554,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeak: Bool = false,
         enterToSend: Bool = false,
         showReasoning: Bool = true,
+        useStreaming: Bool = true,
         reasoningEffort: ReasoningEffort = .medium,
         dashboardURL: String? = nil,
         dashboardUsername: String? = nil,
@@ -575,6 +577,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.ttsAutoSpeak = ttsAutoSpeak
         self.enterToSend = enterToSend
         self.showReasoning = showReasoning
+        self.useStreaming = useStreaming
         self.reasoningEffort = reasoningEffort
         self.dashboardURL = dashboardURL
         self.dashboardUsername = dashboardUsername
@@ -599,6 +602,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case ttsAutoSpeak
         case enterToSend
         case showReasoning
+        case useStreaming
         case reasoningEffort
         case dashboardURL
         case dashboardUsername
@@ -632,6 +636,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
+        useStreaming = try container.decodeIfPresent(Bool.self, forKey: .useStreaming) ?? true
         reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
         dashboardURL = try container.decodeIfPresent(String.self, forKey: .dashboardURL)
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
@@ -657,6 +662,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(ttsAutoSpeak, forKey: .ttsAutoSpeak)
         try container.encode(enterToSend, forKey: .enterToSend)
         try container.encode(showReasoning, forKey: .showReasoning)
+        try container.encode(useStreaming, forKey: .useStreaming)
         try container.encode(reasoningEffort, forKey: .reasoningEffort)
         try container.encodeIfPresent(dashboardURL, forKey: .dashboardURL)
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)

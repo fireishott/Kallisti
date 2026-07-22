@@ -37,7 +37,7 @@ struct PermissionsScreen: View {
         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
             Text("Access")
                 .brandEyebrow()
-            Text("hermes works best with your permission. you control what data hermes can access.")
+            Text("herald and hermes work together best with your permission. you control what data herald can access.")
                 .font(Design.Typography.editorialItalicSmall)
                 .foregroundStyle(Design.Colors.foreground)
         }

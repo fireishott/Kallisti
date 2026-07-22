@@ -39,6 +39,10 @@ final class TalkAudioCapture {
     let maxBytes: Int = 10 * 1024 * 1024  // 10 MB
 
     func startRecording() throws {
+        if isRecording {
+            _ = stopRecording()
+        }
+
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
