@@ -290,6 +290,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 )
             }
             let conversation = mapConversation(response.conversation)
+            // Don't silently replace a loaded conversation with a different one
+            // from the relay — the old conversation may still be in use locally.
+            if let existing = currentConversation, existing.id != conversation.id {
+                Self.logger.info("Relay reports new conversation \(conversation.id), keeping current \(existing.id)")
+                connectionStatus = .connected
+                return existing
+            }
             currentConversation = conversation
             connectionStatus = .connected
             return conversation

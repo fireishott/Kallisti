@@ -56,18 +56,19 @@ struct NoteEditorView: View {
     @State private var showShareToNotes = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Title field
-            TextField("Note Title", text: $title)
-                .font(.title2)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .accessibilityLabel("Note title")
-                .accessibilityHint("Enter a title for this note")
-                .onChange(of: title) { _, newValue in
-                    updateTitle(newValue)
-                }
+        ScrollView {
+            VStack(spacing: 0) {
+                // Title field
+                TextField("Note Title", text: $title)
+                    .font(.headline)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .accessibilityLabel("Note title")
+                    .accessibilityHint("Enter a title for this note")
+                    .onChange(of: title) { _, newValue in
+                        updateTitle(newValue)
+                    }
 
             // View mode picker
             Picker("View Mode", selection: $viewMode) {
@@ -102,6 +103,7 @@ struct NoteEditorView: View {
                 recognizedView
             case .enriched:
                 enrichedView
+            }
             }
         }
         .toolbar {

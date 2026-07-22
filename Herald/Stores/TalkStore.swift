@@ -165,6 +165,14 @@ final class TalkStore {
         connectionState = .connected
         voiceSessionID = coordinator.conversationId
         await coordinator.startListeningWithVAD()
+        // If the coordinator failed internally, sync state
+        if case .failed(let msg) = coordinator.state {
+            voiceState = .disconnected
+            connectionState = .failed
+            isSessionActive = false
+            statusMessage = msg
+            blockedReason = msg
+        }
     }
 
     func endSession() async {

@@ -27,27 +27,31 @@ enum Design {
     // MARK: - Colors
 
     enum Colors {
+        private static var palette: ThemePalette {
+            ThemeManager.shared.currentPalette
+        }
+
         /// Deep ink — the app's native ground.
-        static let background = Color(hex: 0x16181A)
+        static var background: Color { palette.background }
         /// Raised ink — elevated card surface on the dark ground.
-        static let backgroundRaised = Color(hex: 0x2D2D29)
+        static var backgroundRaised: Color { palette.surface }
         /// Warm bone paper — primary foreground on dark.
-        static let foreground = Color(hex: 0xC1C0B6)
+        static var foreground: Color { palette.foreground }
         /// Secondary text (grey-300).
-        static let secondaryForeground = Color(hex: 0x8D8D85)
+        static var secondaryForeground: Color { palette.secondaryForeground }
         /// Tertiary text (grey-350).
-        static let tertiaryForeground = Color(hex: 0x8B8B89)
+        static var tertiaryForeground: Color { palette.secondaryForeground.opacity(0.85) }
 
         /// Low-opacity bone over ground. Cards, bubbles, chips.
-        static let surface = Color(hex: 0xC1C0B6, opacity: 0.05)
-        static let surface2 = Color(hex: 0xC1C0B6, opacity: 0.08)
-        static let surface3 = Color(hex: 0xC1C0B6, opacity: 0.14)
+        static var surface: Color { palette.surface }
+        static var surface2: Color { palette.surface.opacity(1.6) }
+        static var surface3: Color { palette.surface.opacity(2.8) }
 
         /// Hair of contrast, never a true outline.
-        static let border = Color(hex: 0xC1C0B6, opacity: 0.12)
-        static let borderStrong = Color(hex: 0xC1C0B6, opacity: 0.22)
+        static var border: Color { palette.divider.opacity(1.5) }
+        static var borderStrong: Color { palette.divider.opacity(2.75) }
         /// Subtle divider between rows / sections.
-        static let divider = Color(hex: 0xC1C0B6, opacity: 0.08)
+        static var divider: Color { palette.divider }
 
         /// Semantic signal colors.
         static let success = Color(hex: 0x00C275)
@@ -56,7 +60,7 @@ enum Design {
         static let violet = Color(hex: 0x7E51B9)
 
         /// Scrim over content for the voice overlay etc.
-        static let scrim = Color(hex: 0x16181A, opacity: 0.72)
+        static var scrim: Color { palette.background.opacity(0.72) }
     }
 
     // MARK: - Spacing (4pt base grid)

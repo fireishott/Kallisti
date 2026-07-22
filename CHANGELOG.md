@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.8.2] - 2026-07-22
+
+Point release addressing 15 bugs across Settings, Chat, Notes, Talk,
+theme, push notifications, and onboarding.
+
+### Fixed
+
+- **Settings X close button** (B25): X button now only appears when
+  Settings is presented as a sheet; hidden when accessed via tab bar.
+- **Host selection navigation** (B26): "Hermes Host" row now uses
+  NavigationLink within the Settings NavigationStack instead of pushing
+  onto the Chat tab's stack.
+- **Light/Dark/System theme** (B19): Design.Colors now reads from
+  ThemeManager palette. ThemeAwareRootView applies .preferredColorScheme
+  based on user preference.
+- **Session disappearance guard** (B27): loadConversation no longer
+  silently replaces a loaded conversation with a different one from the
+  relay.
+- **Talk mode crash guard** (B28): startSession now checks coordinator
+  state after startListeningWithVAD and surfaces errors to the UI.
+- **Reasoning toggle** (B29): .thinking segments are now filtered when
+  showReasoning is false, matching the toggle's intent.
+- **Scroll-to-bottom on send** (B14): Added delay before scrolling to
+  let SwiftUI insert the new message. Also scrolls to bottom on initial
+  chat load.
+- **Notes switching** (B30): NoteEditorView now uses .id(noteId) to
+  force view recreation on note switch, preventing stale @State.
+- **Notes scrolling** (B30): Wrapped editor content in ScrollView.
+- **Notes title size** (B30): Reduced from .title2 to .headline with
+  tighter padding.
+- **Notes line spacing** (B30): Increased medium spacing from 24pt to
+  30pt to match native Notes feel.
+- **Custom wallpaper** (B31): Increased scrim opacity for custom photos
+  to 0.65 for text legibility. Cached decoded UIImage to prevent
+  re-decoding on every render.
+- **Rebrand onboarding** (B32): Changed "HERALD · iOS" to "HERMES · iOS",
+  "Herald" to "Hermes" in display text, removed HeraldMark and
+  AppIconWatermark from welcome screen.
+- **Health permission** (B33): Added border to N/A status pill in
+  onboarding for better visibility.
+- **Privacy/TOS URLs** (B34/B35): Added APP_PRIVACY_URL and
+  APP_TERMS_URL to project.yml and Info.plist.
+
+### Build
+
+- Version: 1.8.2 (Build 45)
+- Target: iOS 18.0+
+- Swift: 6.2
+
 ## [1.8.1] - 2026-07-21
 
 Patch release with Swift 6 concurrency fixes for Xcode 26 compatibility.

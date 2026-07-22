@@ -7,7 +7,11 @@ final class ThemeManager {
 
     var preset: ThemePreset = .herald
     var colorSchemePreference: ColorSchemePreference = .system
-    var currentScheme: ColorScheme = .dark
+    var systemScheme: ColorScheme = .dark
+
+    var currentScheme: ColorScheme {
+        resolvedColorScheme(for: systemScheme)
+    }
 
     func resolvedColorScheme(for systemScheme: ColorScheme) -> ColorScheme {
         switch colorSchemePreference {

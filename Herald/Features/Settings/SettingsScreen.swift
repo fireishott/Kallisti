@@ -42,10 +42,12 @@ struct SettingsScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: Design.Size.iconSmall, weight: .semibold))
-                        .foregroundStyle(Design.Colors.foreground)
+                if router.activeSheet != nil {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: Design.Size.iconSmall, weight: .semibold))
+                            .foregroundStyle(Design.Colors.foreground)
+                    }
                 }
             }
         }
@@ -84,19 +86,31 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 if pairingStore.pairedRelayConfiguration != nil {
-                    settingsNavRow(
-                        icon: hostStatusRowIcon,
-                        iconColor: hostStatusRowColor,
-                        title: "Hermes Host",
-                        value: hostStatusRowValue,
-                        accessibilityIdentifier: "settings.heraldHost"
-                    ) {
-                        dismiss()
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(300))
-                            router.navigate(to: .connectHost)
+                    NavigationLink(value: Route.connectHost) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: hostStatusRowIcon)
+                                .font(.system(size: 14))
+                                .foregroundStyle(hostStatusRowColor)
+                                .frame(width: 20, alignment: .center)
+
+                            Text("Hermes Host")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+
+                            Text(hostStatusRowValue)
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
                         }
+                        .frame(minHeight: Design.Size.minTapTarget)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.heraldHost")
 
                     sectionDivider
                 }

@@ -6,6 +6,10 @@
 	<true/>
 	<key>APP_HOSTED_RELAY_URL</key>
 	<string>https://hermes-relay.fihonline.net/v1</string>
+	<key>APP_PRIVACY_URL</key>
+	<string>https://herald.fihonline.net/privacy.html</string>
+	<key>APP_TERMS_URL</key>
+	<string>https://herald.fihonline.net/terms.html</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

@@ -48,7 +48,7 @@ struct MarkdownContentView: View {
                     case .video(_, let url, let altText):
                         inlineVideoView(url: url, altText: altText)
                     case .thinking(_, let thinkContent):
-                        if showReasoning && !hasStreamedReasoning {
+                        if showReasoning {
                             ThinkingBlockView(content: thinkContent, isStreaming: isStreaming)
                         }
                     case .toolCall(_, let name, let args, let result):

@@ -157,6 +157,9 @@ struct ChatWallpaperBackground: View {
     /// `accent` to keep the wallpaper in sync with the selected theme.
     var tint: Color = .accentColor
 
+    /// Cache decoded custom image to avoid re-decoding on every render.
+    @State private var cachedCustomImage: UIImage?
+
     var body: some View {
         switch wallpaper {
         case .default:
@@ -221,12 +224,15 @@ struct ChatWallpaperBackground: View {
 
     @ViewBuilder
     private func customImage(_ data: Data) -> some View {
-        if let uiImage = UIImage(data: data) {
-            Image(uiImage: uiImage)
+        if let image = cachedCustomImage {
+            Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
         } else {
             Color(.secondarySystemBackground)
+                .task {
+                    cachedCustomImage = UIImage(data: data)
+                }
         }
     }
 }

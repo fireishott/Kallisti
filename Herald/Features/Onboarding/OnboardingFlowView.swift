@@ -264,14 +264,10 @@ private struct WelcomeStepView: View {
 
     var body: some View {
         ZStack {
-            // Background silhouette
-            AppIconWatermark()
-
             VStack(alignment: .leading, spacing: 0) {
                 // Brand row
                 HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                    HeraldMark(size: 22, color: Design.Colors.foreground)
-                    Text("HERALD · iOS")
+                    Text("HERMES · iOS")
                         .brandEyebrow(Design.Colors.foreground)
                     Spacer()
                     let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
@@ -286,7 +282,7 @@ private struct WelcomeStepView: View {
             // Huge mono display
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Herald")
+                    Text("Hermes")
                     Text("on")
                         .foregroundStyle(Design.Colors.tertiaryForeground)
                     Text("iOS.")
@@ -778,6 +774,7 @@ private struct PermissionsStepView: View {
                 .brandEyebrow(Design.Colors.tertiaryForeground)
                 .padding(.horizontal, Design.Spacing.sm)
                 .padding(.vertical, 6)
+                .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
         }
     }
 

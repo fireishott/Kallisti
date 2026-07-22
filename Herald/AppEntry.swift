@@ -104,6 +104,24 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
     }
 }
 
+struct ThemeAwareRootView: View {
+    @Environment(\.colorScheme) private var systemScheme
+    @Environment(ThemeManager.self) private var themeManager
+    let container: AppContainer
+
+    var body: some View {
+        AppRootView()
+            .onChange(of: systemScheme, initial: true) { _, newScheme in
+                themeManager.systemScheme = newScheme
+            }
+            .preferredColorScheme(
+                themeManager.colorSchemePreference == .system
+                    ? nil
+                    : themeManager.colorSchemePreference == .light ? .light : .dark
+            )
+    }
+}
+
 @main
 struct HeraldApp: App {
     @Environment(\.scenePhase) private var scenePhase
@@ -112,7 +130,7 @@ struct HeraldApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppRootView()
+            ThemeAwareRootView(container: container)
                 .environment(container)
                 .environment(container.router)
                 .environment(container.themeManager)

@@ -74,6 +74,9 @@ struct ChatScreen: View {
             // the composer after the host reconnects or changes profile.
             await profileStore.loadProfiles(force: true)
             await modelStore.loadModels()
+            // Scroll to most recent messages after loading
+            try? await Task.sleep(for: .milliseconds(150))
+            scrollToBottom()
         }
         .task {
             while !Task.isCancelled {
@@ -90,7 +93,10 @@ struct ChatScreen: View {
             scrollToBottom()
         }
         .onChange(of: chatStore.pendingMessageSentAt) {
-            scrollToBottom()
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                scrollToBottom()
+            }
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
             if old != nil && new == nil {
@@ -150,6 +156,8 @@ struct ChatScreen: View {
         switch settingsStore.settings.chatWallpaper {
         case .default:
             0
+        case .custom:
+            0.65
         default:
             0.35
         }
