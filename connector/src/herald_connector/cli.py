@@ -382,6 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = subparsers.add_parser("setup", help="Register this machine with a Herald relay.")
     setup.add_argument("--relay-url", help="Relay API base URL. Required unless HERMES_MOBILE_RELAY_URL is set.")
+    setup.add_argument("--relay-port", type=int, default=8765, help="Port for the relay WebSocket server (default: 8765).")
     setup.add_argument(
         "--skip-mcp",
         action="store_true",

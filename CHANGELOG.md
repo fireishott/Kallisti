@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.0.0] - 2026-07-22
+
+### Architecture
+
+- **Native Hermes Relay Channel**: Replaced the FastAPI relay (Docker, SQLite)
+  with a WebSocket server inside the connector that speaks the Hermes Relay
+  Protocol. The Hermes gateway now dials directly into the connector on
+  port 8765. No custom platform code in Hermes. No fork.
+- **Launch fix**: App no longer gets stuck on "Connecting to Herald..." after
+  re-pair. The `.networkFailure` pattern match now handles any error message,
+  not just the empty string.
+
+### Changed
+
+- Connector now runs as a WebSocket server (`relay_server.py`) instead of
+  polling the relay for jobs.
+- Removed dead modules: `hermes_runner.py`, `hermes_gateway_executor.py`,
+  `stream_contract.py`.
+- `APP_HOSTED_RELAY_URL` now points to connector HTTP API on port 8766.
+- Bumped version to 1.9.0 (build 46).
+
+### Fixed
+
+- **B-LAUNCH**: `isLaunchReady` in `AppContainer.swift` now matches any
+  `.networkFailure` case, not just `.networkFailure("")`. The retry/re-pair
+  screen appears correctly when the relay is unreachable.
+
 ## [1.8.2] - 2026-07-22
 
 Point release addressing 15 bugs across Settings, Chat, Notes, Talk,

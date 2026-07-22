@@ -174,10 +174,10 @@ final class AppContainer {
     /// background, continuous with the iOS launch image.
     var isLaunchReady: Bool {
         if !pairingStore.isPaired { return true }
-        // Launch is ready when initialization succeeded OR when we have a recoverable error
-        return (isInitialized && !sessionStore.isBootstrapping)
-            || sessionStore.launchState == .authFailure
-            || sessionStore.launchState == .networkFailure("")
+        if isInitialized && !sessionStore.isBootstrapping { return true }
+        if sessionStore.launchState == .authFailure { return true }
+        if case .networkFailure = sessionStore.launchState { return true }
+        return false
     }
 
     static func makeDefault(
