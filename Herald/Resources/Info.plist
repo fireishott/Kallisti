@@ -10,6 +10,11 @@
 	<string>https://herald.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
 	<string>https://herald.fihonline.net/terms.html</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>net.fihonline.herald.refresh</string>
+		<string>net.fihnews.HeraldBGProcessing</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -80,5 +85,12 @@
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 </dict>
 </plist>

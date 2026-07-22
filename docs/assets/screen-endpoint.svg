@@ -1,0 +1,89 @@
+<svg viewBox="0 0 390 844" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141618"/>
+      <stop offset="100%" stop-color="#1A1D23"/>
+    </linearGradient>
+    <linearGradient id="btnGrad2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF3D00"/>
+      <stop offset="100%" stop-color="#FF6B00"/>
+    </linearGradient>
+    <clipPath id="phoneClip2">
+      <rect x="0" y="0" width="390" height="844" rx="44"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#phoneClip2)">
+    <rect width="390" height="844" fill="url(#bg2)"/>
+
+    <!-- Progress bar -->
+    <rect x="24" y="60" width="82" height="3" rx="1.5" fill="#FFFFFF"/>
+    <rect x="116" y="60" width="82" height="3" rx="1.5" fill="#333333"/>
+    <rect x="208" y="60" width="82" height="3" rx="1.5" fill="#333333"/>
+    <rect x="300" y="60" width="66" height="3" rx="1.5" fill="#333333"/>
+
+    <!-- Step label -->
+    <text x="24" y="90" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1.5">001 · RELAY</text>
+    <text x="366" y="90" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1" text-anchor="end">STEP 1/4</text>
+
+    <!-- Title -->
+    <text x="24" y="160" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="58" font-weight="800" fill="#FFFFFF" letter-spacing="-1">ENDPOINT.</text>
+
+    <!-- Subtitle -->
+    <text x="24" y="200" font-family="Georgia, 'Times New Roman', serif" font-size="20" font-style="italic" fill="#AAAAAA">where your Herald is reachable.</text>
+
+    <!-- CONNECTION MODE label -->
+    <text x="24" y="248" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="600" fill="#777777" letter-spacing="1.5">CONNECTION MODE</text>
+
+    <!-- Tailscale card -->
+    <rect x="24" y="264" width="342" height="72" rx="12" fill="none" stroke="#333333" stroke-width="1.5"/>
+    <!-- Tailscale icon -->
+    <circle cx="52" cy="296" r="10" fill="none" stroke="#777777" stroke-width="1.5"/>
+    <line x1="46" y1="296" x2="58" y2="296" stroke="#777777" stroke-width="1.5"/>
+    <line x1="52" y1="290" x2="52" y2="302" stroke="#777777" stroke-width="1.5"/>
+    <text x="74" y="293" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="17" font-weight="600" fill="#FFFFFF">Tailscale</text>
+    <text x="74" y="315" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#777777">Private tailnet reachability for a</text>
+    <text x="74" y="330" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#777777">local Hermes relay.</text>
+
+    <!-- Self-Hosted Relay card (selected) -->
+    <rect x="24" y="348" width="342" height="72" rx="12" fill="none" stroke="#FF6B00" stroke-width="2"/>
+    <!-- Server icon -->
+    <rect x="42" y="374" width="20" height="14" rx="3" fill="none" stroke="#FF6B00" stroke-width="1.5"/>
+    <line x1="46" y1="381" x2="58" y2="381" stroke="#FF6B00" stroke-width="1"/>
+    <circle cx="56" cy="378" r="1.5" fill="#FF6B00"/>
+    <text x="74" y="380" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="17" font-weight="600" fill="#FFFFFF">Self-Hosted Relay</text>
+    <text x="74" y="400" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#777777">Bring your own public Hermes</text>
+    <text x="74" y="415" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#777777">relay URL.</text>
+    <!-- Checkmark -->
+    <circle cx="344" cy="384" r="12" fill="#FF6B00"/>
+    <polyline points="337,384 342,389 351,379" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- RELAY URL label -->
+    <text x="24" y="458" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="600" fill="#777777" letter-spacing="1.5">RELAY URL</text>
+
+    <!-- URL input field -->
+    <rect x="24" y="470" width="342" height="48" rx="10" fill="#222426" stroke="#333333" stroke-width="1"/>
+    <text x="44" y="500" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="14" fill="#AAAAAA">https://relay.example.com/v1</text>
+
+    <!-- Helper text -->
+    <text x="24" y="540" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#666666">Point this at your public Hermes relay — e.g.</text>
+    <text x="24" y="558" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#666666">https://relay.example.com/v1</text>
+    <text x="24" y="588" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#666666">Self-hosted relays don't receive official push</text>
+    <text x="24" y="606" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#666666">credentials. Background delivery depends on your</text>
+    <text x="24" y="624" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="13" fill="#666666">relay's own notification channel.</text>
+
+    <!-- Bottom buttons -->
+    <rect x="24" y="738" width="166" height="48" rx="10" fill="none" stroke="#444444" stroke-width="1.5"/>
+    <text x="107" y="768" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#FFFFFF" letter-spacing="1.5" text-anchor="middle">PASTE</text>
+
+    <rect x="200" y="738" width="166" height="48" rx="10" fill="none" stroke="#444444" stroke-width="1.5"/>
+    <text x="283" y="768" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#FFFFFF" letter-spacing="1.5" text-anchor="middle">SCAN QR</text>
+
+    <!-- CONTINUE button -->
+    <rect x="24" y="798" width="342" height="52" rx="26" fill="url(#btnGrad2)"/>
+    <text x="195" y="830" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700" fill="#FFFFFF" letter-spacing="2" text-anchor="middle">CONTINUE →</text>
+  </g>
+
+  <!-- Phone bezel -->
+  <rect x="0" y="0" width="390" height="844" rx="44" fill="none" stroke="#333333" stroke-width="2"/>
+</svg>

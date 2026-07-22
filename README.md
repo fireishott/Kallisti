@@ -7,13 +7,13 @@
 <p align="center">
   <strong>Self-hosted AI companion for iPhone and iPad</strong>
   <br/>
-  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Session management · Relay architecture</sub>
+  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Notes · Session management · Native relay</sub>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.1-FF6B00?style=flat-square" alt="version"/>
+  <img src="https://img.shields.io/badge/version-2.0.0-FF6B00?style=flat-square" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-26+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 26+"/>
-  <img src="https://img.shields.io/badge/Swift-6.3-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.3"/>
+  <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
   <img src="https://img.shields.io/badge/self--hosted-true-FF3D00?style=flat-square&labelColor=1A1D23" alt="self-hosted"/>
 </p>
@@ -22,9 +22,24 @@
 
 ## What is HERALD?
 
-HERALD is a **native iOS companion** for [Hermes Agent](https://github.com/NousResearch/hermes-agent) runtimes. It connects to your self-hosted Hermes instance through a relay, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, CarPlay, and session management — without your data leaving your infrastructure.
+HERALD is a **native iOS client** for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) framework. It connects to your self-hosted Hermes instance through a native WebSocket relay channel, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, CarPlay, notes, and session management — without your data leaving your infrastructure.
 
 HERALD is not the AI. It is the phone interface for **your** Hermes agent.
+
+<p align="center">
+  <img src="docs/assets/onboarding-strip.svg" alt="Onboarding — Welcome, Endpoint, Paired" width="100%"/>
+</p>
+
+---
+
+## What's new in 2.0
+
+HERALD 2.0 replaces the FastAPI relay (Docker, SQLite, polling) with a **native Hermes Relay Protocol channel** inside the connector. The gateway dials directly into the connector over WebSocket on port 8765 — no fork of hermes-agent required, no separate relay container.
+
+- **`relay_server.py`** — NDJSON WebSocket handshake + MessageEvent exchange, built into the connector
+- **~400 lines removed** from `client.py` — the job-polling loop is gone
+- **Dead modules deleted** — `hermes_runner`, `hermes_gateway_executor`, `stream_contract`
+- **Launch fix** — `isLaunchReady` now matches any `.networkFailure` case, so the retry screen appears correctly
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Architecture" width="100%"/>
@@ -219,27 +234,45 @@ All sensitive data lives in the Keychain, not UserDefaults.
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+### Notes
+- PencilKit handwriting editor with tool picker
+- On-device handwriting recognition
+- Relay CRUD with optimistic concurrency
+- SHA-256 content hashing and monotonic revisions
+- PDF export with document directives
+- iPad split-view navigation
+
+</td>
+<td width="50%">
+
+### Inbox and Action Center
+- Push-driven action items from your agent
+- Dismiss, snooze, and filter controls
+- Refresh on push wake
+- Directive progress tracking
+- Enriched document previews
+
+</td>
+</tr>
 </table>
 
 ---
 
 ## Quick Start
 
-### 1. Deploy the relay
-
-```bash
-cd relay
-docker compose up -d
-```
-
-### 2. Install the connector
+### 1. Install the connector
 
 ```bash
 pip install herald-connector
 herald start
 ```
 
-### 3. Build and install HERALD
+The connector runs the relay server on port 8765 (WebSocket) and the HTTP API on port 8766. No separate relay container needed.
+
+### 2. Build and install HERALD
 
 ```bash
 git clone https://github.com/fireishott/Herald.git
@@ -248,7 +281,7 @@ xcodegen generate
 open Herald.xcodeproj
 ```
 
-Build to your device from Xcode, scan the pairing QR code, and start chatting.
+Build to your device from Xcode, enter your relay URL in the onboarding flow, and start chatting.
 
 See [docs/BUILDING.md](docs/BUILDING.md) for detailed signing and entitlements instructions.
 
@@ -258,9 +291,8 @@ See [docs/BUILDING.md](docs/BUILDING.md) for detailed signing and entitlements i
 
 | Layer | Technology |
 |-------|-----------|
-| **iOS App** | Swift 6.2, SwiftUI, UIKit, iOS 26+ |
-| **Relay** | Python, FastAPI, WebSockets, SSE |
-| **Connector** | Python, MCP protocol |
+| **iOS App** | Swift 6.2, SwiftUI, UIKit, iOS 18+ |
+| **Connector** | Python, WebSockets, Hermes Relay Protocol |
 | **Project Config** | XcodeGen (`project.yml`) |
 | **Build** | Xcode 26+, macOS 26+ |
 
@@ -276,10 +308,16 @@ Herald/
 │   ├── Chat/               # Chat screen, message bubbles, renderers
 │   │   └── Renderers/      # Code, thinking, tool call, table views
 │   ├── Canvas/             # Canvas panel for code artifacts
+│   ├── Capture/            # Camera and photo capture
+│   ├── Cron/               # Cron job scheduling
+│   ├── Inbox/              # Action Center and push items
+│   ├── Notes/              # PencilKit editor, recognition, relay sync
+│   ├── Onboarding/         # Setup wizard (endpoint, permissions, pairing)
+│   ├── Permissions/        # Health, location, notification grants
+│   ├── Settings/           # App settings
 │   ├── Sidebar/            # iPad right panel
-│   ├── Talk/               # Voice mode (MiMo ASR/TTS + Hermes)
-│   ├── Sessions/           # Session management
-│   └── Settings/           # App settings
+│   ├── Skills/             # Skills browser and profile switching
+│   └── Talk/               # Voice mode (MiMo ASR/TTS + Hermes)
 ├── Models/                 # Data models (Message, Artifact, etc.)
 ├── Stores/                 # State management (ChatStore, etc.)
 ├── Services/
@@ -287,8 +325,7 @@ Herald/
 │   └── Protocols/          # Service protocols
 ├── Widgets/                # Home Screen widgets + Live Activities
 └── Resources/              # Assets, entitlements, Info.plist
-relay/                      # Python relay server
-connector/                  # Python MCP connector
+connector/                  # Python connector + relay server
 ```
 
 ---

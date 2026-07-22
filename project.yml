@@ -106,6 +106,14 @@ targets:
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        BGTaskSchedulerPermittedIdentifiers:
+          - net.fihonline.herald.refresh
+          - net.fihnews.HeraldBGProcessing
         UIBackgroundModes:
           - processing
           - location
@@ -132,6 +140,7 @@ targets:
     info:
       path: HeraldWidgets/Info.plist
       properties:
+        CFBundleDisplayName: HeraldWidgets
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
