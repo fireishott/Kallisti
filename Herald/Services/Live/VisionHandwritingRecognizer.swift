@@ -20,7 +20,12 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
         }
     }
 
-    var recognitionVersion: String { "1.0" }
+    var recognitionVersion: String {
+        // Derive from the Vision framework's current text recognition revision.
+        // This advances when Apple updates the on-device model, triggering re-recognition.
+        let revision = VNRecognizeTextRequest.currentRevision
+        return "vn-\(revision)"
+    }
 
     enum RecognitionLevel {
         case accurate
