@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.1] - 2026-07-22
+
+### Fixed
+
+- Fix connection failure: restore relay URL from Gemini wrapper endpoint to production relay
+
 ## [2.0.0] - 2026-07-22
 
 ### Architecture

@@ -5,7 +5,7 @@
 	<key>APP_HOSTED_RELAY_ENABLED</key>
 	<true/>
 	<key>APP_HOSTED_RELAY_URL</key>
-	<string>http://herald-host.internal:8766/v1</string>
+	<string>https://hermes-relay.fihonline.net/v1</string>
 	<key>APP_PRIVACY_URL</key>
 	<string>https://herald.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
