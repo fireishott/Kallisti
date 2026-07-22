@@ -8,6 +8,7 @@ struct MessageBubble: View, Equatable {
     @Environment(SettingsStore.self) private var settingsStore
     var onDelete: ((Message) -> Void)? = nil
     var onOpenCanvas: ((Message) -> Void)? = nil
+    @State private var showReactionPicker = false
 
     /// Only the message itself affects the rendered bubble — the retry closure
     /// is captured fresh per parent render but is functionally stable. Comparing
@@ -28,6 +29,9 @@ struct MessageBubble: View, Equatable {
 
     var body: some View {
         contentView
+            .onLongPressGesture(minimumDuration: 0.5) {
+                showReactionPicker = true
+            }
             .contextMenu {
                 // Copy text — always
                 Button {
@@ -92,6 +96,13 @@ struct MessageBubble: View, Equatable {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+            }
+            .sheet(isPresented: $showReactionPicker) {
+                MessageReactionPicker { reaction in
+                    addReaction(reaction, to: message)
+                }
+                .presentationDetents([.height(120)])
+                .presentationDragIndicator(.hidden)
             }
     }
 
@@ -326,6 +337,14 @@ struct MessageBubble: View, Equatable {
         }
         .padding(.horizontal, Design.Spacing.lg)
         .padding(.vertical, Design.Spacing.sm)
+    }
+
+    // MARK: - Reactions
+
+    private func addReaction(_ reaction: String, to message: Message) {
+        // Implement reaction storage
+        // This could be local-only or synced to the server
+        print("Added reaction \(reaction) to message \(message.id)")
     }
 
     // MARK: - Budget Warning Stripping

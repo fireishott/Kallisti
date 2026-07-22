@@ -169,6 +169,7 @@
 		A5A12F82EF2D9B3755BC2123 /* VoiceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE863F3296A2748FD9FAD626 /* VoiceState.swift */; };
 		A5FEB304F096E5293D906257 /* TalkTurnClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD1CFB386F902E262624380 /* TalkTurnClient.swift */; };
 		A6E5C154955E1211BEC683E1 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89BE15FD4F6761362E992750 /* MessageBubble.swift */; };
+		A1B2C3D4E5F6001122334466 /* MessageReactionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */; };
 		A6F493C7EFE794AA2F54F9C2 /* CronStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 862C24F9EB251BD8705AAADC /* CronStore.swift */; };
 		A8271060009609E1170A948B /* MarkdownContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDE14C58C9441A5A7864510 /* MarkdownContentView.swift */; };
 		A86DA4177809D2F2ABD5EDDE /* MessageStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C3EC13DA4272428D489B6E /* MessageStatus.swift */; };
@@ -440,6 +441,7 @@
 		88B179CF374730DABD661130 /* SlashCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommand.swift; sourceTree = "<group>"; };
 		89583DC26484BE1D61CD0CFB /* ProfileSelectorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSelectorSheet.swift; sourceTree = "<group>"; };
 		89BE15FD4F6761362E992750 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
 		8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
 		8E5EECD4A37679A849ADB3AB /* CarPlayVoiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayVoiceManager.swift; sourceTree = "<group>"; };
 		8FC392ED86295411DCB768B5 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
@@ -828,6 +830,7 @@
 				0CDE14C58C9441A5A7864510 /* MarkdownContentView.swift */,
 				CC5E563F9C5DC22502D5B3D6 /* MessageAttachmentsView.swift */,
 				89BE15FD4F6761362E992750 /* MessageBubble.swift */,
+				A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */,
 				A716B6514A139613D09C4C5D /* ModelSelectorSheet.swift */,
 				89583DC26484BE1D61CD0CFB /* ProfileSelectorSheet.swift */,
 				5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */,
@@ -1415,6 +1418,7 @@
 				4BD38645C4B8DFF268351F67 /* Message.swift in Sources */,
 				AAD76E14D301AD70028DF07E /* MessageAttachmentsView.swift in Sources */,
 				A6E5C154955E1211BEC683E1 /* MessageBubble.swift in Sources */,
+				A1B2C3D4E5F6001122334466 /* MessageReactionPicker.swift in Sources */,
 				EDD0F31A29DC769C974F8BDC /* MessageSender.swift in Sources */,
 				A86DA4177809D2F2ABD5EDDE /* MessageStatus.swift in Sources */,
 				8B4D3DEB78E237B357B8A69C /* MimoASRService.swift in Sources */,
