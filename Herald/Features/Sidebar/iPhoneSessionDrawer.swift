@@ -155,6 +155,9 @@ struct iPhoneSessionDrawer: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Design.Colors.background)
+        .refreshable {
+            await sessionStore.loadSessions(forceRefresh: true)
+        }
     }
 
     // MARK: - Filter Chips
