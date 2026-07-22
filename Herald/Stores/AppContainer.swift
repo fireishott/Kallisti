@@ -622,6 +622,7 @@ final class AppContainer {
         reconcileLiveActivities()
         updateWidgetData()
         await chatStore.loadConversation()
+        await inboxStore.loadInbox(force: true)
     }
 
     func handleSystemLaunch() async {

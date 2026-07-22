@@ -888,9 +888,14 @@ def create_inbox_item(
 
 
 def list_inbox_items(db: Session, *, user_id: str) -> list[InboxItem]:
+    now = utcnow()
     items = db.scalars(
         select(InboxItem)
-        .where(InboxItem.user_id == user_id)
+        .where(
+            InboxItem.user_id == user_id,
+            InboxItem.status != "dismissed",
+            (InboxItem.expires_at.is_(None)) | (InboxItem.expires_at > now),
+        )
         .order_by(InboxItem.created_at.desc())
     ).all()
     return list(items)
