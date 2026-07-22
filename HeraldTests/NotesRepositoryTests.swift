@@ -321,16 +321,17 @@ struct NotesRepositoryTests {
 
         let note = try await repo.createNote(title: "Concurrent Test")
 
-        // Fire 5 concurrent title updates
-        await withTaskGroup(of: Void.self) { group in
+        // Fire 5 concurrent title updates — propagate any errors
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 1...5 {
                 group.addTask {
                     var updated = note
                     updated.title = "Concurrent \(i)"
                     updated.updatedAt = .now
-                    try? await repo.updateNote(updated)
+                    try await repo.updateNote(updated)
                 }
             }
+            try await group.waitForAll()
         }
 
         let notes = try await repo.loadNotes()
@@ -347,13 +348,14 @@ struct NotesRepositoryTests {
 
         let note = try await repo.createNote(title: "Blob Concurrent")
 
-        await withTaskGroup(of: Void.self) { group in
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 1...5 {
                 group.addTask {
                     let data = Data("Blob version \(i)".utf8)
-                    try? await repo.saveDrawingBlob(noteId: note.id, data: data, revision: i)
+                    try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: i)
                 }
             }
+            try await group.waitForAll()
         }
 
         // All 5 revisions should exist and be loadable
@@ -420,7 +422,7 @@ struct NotesRepositoryTests {
     func noteRecognitionVersion() {
         let recognition = NoteRecognition(
             noteId: UUID(),
-            drawingRevision: 1,
+            drawingRevisionId: UUID(),
             engine: .visionAccurate,
             rawText: "Hello"
         )
@@ -433,7 +435,7 @@ struct NotesRepositoryTests {
     func noteRecognitionCorrectedResult() {
         var recognition = NoteRecognition(
             noteId: UUID(),
-            drawingRevision: 1,
+            drawingRevisionId: UUID(),
             engine: .visionFast,
             rawText: "raw"
         )

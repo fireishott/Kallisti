@@ -137,11 +137,11 @@ actor NotesRepository {
 
     // MARK: - Drawing Blobs
 
-    /// Save a PKDrawing blob for a note. Returns the revision number and content hash.
+    /// Save a PKDrawing blob for a note. Returns the revision UUID, file path, and content hash.
     /// Atomic write — crash yields prior or next complete revision, never a partial blob.
     /// Also records a `NoteDrawingRevision` metadata entry.
     @discardableResult
-    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (blobPath: String, contentHash: String) {
+    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (revisionId: UUID, blobPath: String, contentHash: String) {
         let noteDir = noteDirectory(for: noteId)
         try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
 
@@ -155,18 +155,18 @@ actor NotesRepository {
         let drawingRevision = NoteDrawingRevision(
             noteId: noteId,
             revision: revision,
-            blobPath: blobURL.path,
+            drawingData: data,
             contentHash: hashHex,
             pageStyle: pageStyle,
             deviceId: deviceIdentifier
         )
         try saveDrawingRevision(drawingRevision, noteId: noteId)
 
-        return (blobURL.path, hashHex)
+        return (drawingRevision.id, blobURL.path, hashHex)
     }
 
     /// Content-hash deduplication: skip write if the latest revision has the same hash.
-    func saveDrawingBlobIfChanged(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (blobPath: String, contentHash: String, changed: Bool) {
+    func saveDrawingBlobIfChanged(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (revisionId: UUID, blobPath: String, contentHash: String, changed: Bool) {
         let contentHash = SHA256.hash(data: data)
         let hashHex = contentHash.map { String(format: "%02x", $0) }.joined()
 
@@ -174,12 +174,12 @@ actor NotesRepository {
         if revision > 0 {
             let revisions = try loadDrawingRevisions(noteId: noteId)
             if let lastRev = revisions.last, lastRev.contentHash == hashHex {
-                return (lastRev.blobPath, hashHex, false)
+                return (lastRev.id, "", hashHex, false)
             }
         }
 
         let result = try saveDrawingBlob(noteId: noteId, data: data, revision: revision, pageStyle: pageStyle)
-        return (result.blobPath, result.contentHash, true)
+        return (result.revisionId, result.blobPath, result.contentHash, true)
     }
 
     /// Load a PKDrawing blob from disk.

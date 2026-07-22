@@ -4,7 +4,7 @@ import Foundation
 struct NoteRecognition: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let noteId: UUID
-    let drawingRevision: Int
+    let drawingRevisionId: UUID
     let engine: RecognitionEngine
     let engineVersion: String?
     let recognitionVersion: String
@@ -20,7 +20,7 @@ struct NoteRecognition: Codable, Identifiable, Hashable, Sendable {
     init(
         id: UUID = UUID(),
         noteId: UUID,
-        drawingRevision: Int,
+        drawingRevisionId: UUID,
         engine: RecognitionEngine,
         engineVersion: String? = nil,
         recognitionVersion: String = "1.0",
@@ -31,7 +31,7 @@ struct NoteRecognition: Codable, Identifiable, Hashable, Sendable {
     ) {
         self.id = id
         self.noteId = noteId
-        self.drawingRevision = drawingRevision
+        self.drawingRevisionId = drawingRevisionId
         self.engine = engine
         self.engineVersion = engineVersion
         self.recognitionVersion = recognitionVersion
@@ -46,7 +46,7 @@ struct NoteRecognition: Codable, Identifiable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         noteId = try container.decode(UUID.self, forKey: .noteId)
-        drawingRevision = try container.decode(Int.self, forKey: .drawingRevision)
+        drawingRevisionId = try container.decode(UUID.self, forKey: .drawingRevisionId)
         engine = try container.decode(RecognitionEngine.self, forKey: .engine)
         engineVersion = try container.decodeIfPresent(String.self, forKey: .engineVersion)
         recognitionVersion = try container.decodeIfPresent(String.self, forKey: .recognitionVersion) ?? "1.0"

@@ -83,12 +83,11 @@ struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Note Drawing Revision
 
 /// An immutable snapshot of a PKDrawing at a point in time.
-/// The actual bytes live on disk at `blobPath`; this is the metadata record.
 struct NoteDrawingRevision: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let noteId: UUID
     let revision: Int
-    let blobPath: String
+    let drawingData: Data
     let contentHash: String  // SHA-256 hex
     let canvasSize: CGSize
     let pageStyle: NotePageStyle
@@ -99,7 +98,7 @@ struct NoteDrawingRevision: Codable, Identifiable, Hashable, Sendable {
         id: UUID = UUID(),
         noteId: UUID,
         revision: Int,
-        blobPath: String,
+        drawingData: Data,
         contentHash: String,
         canvasSize: CGSize = NotePageStyle.letter.size,
         pageStyle: NotePageStyle = .letter,
@@ -109,7 +108,7 @@ struct NoteDrawingRevision: Codable, Identifiable, Hashable, Sendable {
         self.id = id
         self.noteId = noteId
         self.revision = revision
-        self.blobPath = blobPath
+        self.drawingData = drawingData
         self.contentHash = contentHash
         self.canvasSize = canvasSize
         self.pageStyle = pageStyle
