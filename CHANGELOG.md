@@ -1,6 +1,134 @@
 # Changelog
 
+## [1.8.0] - 2026-07-21
+
+Herald 1.8 introduces a local-first Notes workspace for iPad with native
+PencilKit drawing tools, durable editable ink, on-device handwriting
+recognition, reviewed note commands, and revision-safe Hermes enrichment.
+This release also includes reliability fixes for multi-tool streaming,
+push notifications, model picker, chat titles, and permission handling.
+
+### Added
+
+- **iPad Notes workspace** (PR1–PR5): Local-first notes with native
+  PencilKit canvas, system tool picker, undo/redo, and full CRUD.
+  Seven paper styles (blank, ruled small/medium/large, grid
+  small/medium/large). Photo and document scanner attachments.
+- **On-device handwriting recognition**: Vision framework recognition
+  with debounced, cancellable, revision-versioned pipeline. Recognized
+  text is always a derived layer — original ink is never modified.
+- **Note directive parser**: Deterministic, allowlisted `#command`
+  parsing from corrected recognition (`#research`, `#search`,
+  `#talkingpoints`, `#summary`, `#actions`, `#questions`). Unknown
+  tags are data, never intent.
+- **Hermes enrichment for notes**: Idempotent, revision-fenced note
+  runs with event replay, cancellation, and stale-result fencing.
+- **Enriched document UI**: Ink / Recognized / Enriched view modes,
+  directive progress, citations, immutable run history, and export
+  (ink PDF, recognized text, enriched Markdown).
+- **Notes relay API**: Full CRUD with If-Match optimistic concurrency,
+  blob storage with SHA-256 verification, run lifecycle management,
+  and cursor-based event replay.
+
+### Fixed
+
+- **Multi-tool streaming** (B1): Terminal content is now extracted from
+  the documented payload and flushed after all pending deltas. SSE
+  comments maintain transport liveness without advancing event
+  sequence. Heartbeats continue through long tool gaps. Disconnect
+  queries authoritative job status and resumes from the last durable
+  cursor. Tool activity, reasoning, answer text, and terminal data
+  remain typed and separate.
+- **APNs push registration** (B7/B8): Re-registration on launch even
+  when the local token hasn't changed. Per-environment routing
+  preserves separate development and production token paths.
+  Foreground suppression is per-device. Relaunch recovers server-
+  inactive registrations without manual intervention.
+- **iPad model picker** (B2): Model status now shows distinct loading,
+  unavailable, and loaded states. No more silent `"..."` failure.
+- **Profile-aware failure copy** (B3): Error messages now use the
+  active profile name; falls back to "Herald" when unavailable.
+- **Chat titles** (B4): Single title owner with deterministic local
+  fallback, timeout/retry, and session-list sync. Older completions
+  cannot overwrite user renames.
+- **Speech service** (B10): Availability-guards both construction and
+  API use. Unavailable services show a disabled, readable state
+  instead of crashing.
+- **HealthKit** (B6): Availability-gated at runtime. No longer infers
+  read authorization from an empty query result.
+- **Action Center** (B13): Inbox refreshes on push wake; dismissed
+  and expired items are filtered from display.
+- **Canvas stability**: Note-switching no longer recreates the
+  `PKCanvasView`, preserving undo history. PDF export guards against
+  force-unwrap crashes.
+
+### Changed
+
+- **Managed Relay removed** (B5): The unsupported Managed Relay choice
+  is removed from onboarding and settings. Legacy `managedRelay` raw
+  values decode safely and migrate to self-hosted.
+
+### Known Limitations
+
+- Handwriting recognition uses the Vision framework. Apple Notes
+  Smart Script and handwriting refinement are not available as public
+  APIs and are not embedded in Herald 1.8.
+- HealthKit availability depends on distribution-signing entitlements;
+  TestFlight builds may show unavailable state.
+
+### Operational Notes
+
+- Required relay minimum: commit containing the Notes API schema and
+  `/v1/notes/*` endpoints.
+- Required connector minimum: revision supporting `note.enrich` RPC
+  and the Notes contract schema.
+- APNs environment routing is per-registration; ensure the public
+  relay's `.env` distinguishes TestFlight (production) from dev builds
+  (sandbox) via `APNS_ENVIRONMENT`.
+
 All notable changes to Hermes iOS are documented here.
+
+## [1.8.1] - 2026-07-21
+
+### Fix: Chat opens to most recent messages (B14)
+
+- **Scroll-to-bottom on load** (`ChatScreen.swift`): Chat now scrolls to the most recent message when the screen appears, instead of showing the top of conversation history.
+
+### Added: Scroll-to-bottom button (B15)
+
+- **Floating chevron button** (`ChatScreen.swift`): When scrolled up in chat, a chevron-down button appears at the bottom center to quickly return to the latest messages.
+
+### Fix: Thinking bubbles persist until response completes (B16)
+
+- **Extended watchdog tolerance** (`ChatStore.swift`): Thinking dots and "Thinking... Xs" timer now persist as long as the relay reports the job is still active, instead of disappearing after 120s. Supports the known slow-host scenario.
+- **Live Activity stays alive** (`ChatStore.swift`): Lock screen Live Activity no longer ends prematurely on watchdog timeout.
+
+### Fix: PDF viewer fullscreen and close button (B17/B18)
+
+- **Fullscreen presentation** (`MessageAttachmentsView.swift`): PDF viewer now uses `.fullScreenCover` instead of `.sheet`, filling the iPad screen and preventing rotation-triggered dismissals on iPhone.
+- **Explicit close button** (`MessageAttachmentsView.swift`): "Done" button always visible in the PDF viewer navigation bar on both iPhone and iPad.
+
+### Fix: Light mode and theme selector (B19)
+
+- **Dynamic Design.Colors** (`Design.swift`): All `Design.Colors` properties now read from `ThemeManager`'s active palette instead of hardcoded dark hex values.
+- **preferredColorScheme applied** (`AppEntry.swift`): Root view now applies `.preferredColorScheme` so system chrome (status bar, keyboard, alerts) matches the user's in-app theme selection.
+- **System/Light/Dark all functional** (`ThemeManager.swift`): Appearance selector in Settings now correctly switches between system, light, and dark modes.
+
+### Fix: Save-to-files keyboard conflict on iPad (B20)
+
+- **Stable share presentation** (`MessageAttachmentsView.swift`): Share/save dialogs use popover anchoring on iPad to prevent keyboard appearance from dismissing the dialog.
+
+### Fix: Attachment size increased for iPhone photos (B21)
+
+- **Larger per-attachment limit** (`PendingAttachment.swift`): Increased from 350KB to 800KB, with max dimension from 768px to 1024px.
+- **5 attachments per message** (`PendingAttachment.swift`): Increased from 4 to 5.
+- **User feedback on failure** (`ChatScreen.swift`): System message shown when an attachment exceeds the size limit.
+- **Relay body limit increased** (`relay/Dockerfile`): Request body limit raised to 5MB to support larger payloads.
+
+### Fix: Image attachment loading reliability (B22)
+
+- **Disk cache** (`AttachmentService.swift`): Fetched attachment images are now cached on disk, surviving app restart and memory pressure.
+- **Automatic retry** (`MessageAttachmentsView.swift`): Failed image loads retry up to 2 times with a 2-second delay.
 
 ## [1.7.5] - 2026-07-21
 
