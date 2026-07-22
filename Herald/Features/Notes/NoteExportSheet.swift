@@ -1,31 +1,6 @@
 import PencilKit
 import SwiftUI
 
-/// View mode for the note editor — shows ink, recognized text, or enriched document.
-enum NoteViewMode: String, CaseIterable, Identifiable {
-    case ink
-    case recognized
-    case enriched
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .ink: "Ink"
-        case .recognized: "Recognized"
-        case .enriched: "Enriched"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .ink: "pencil.tip"
-        case .recognized: "text.viewfinder"
-        case .enriched: "doc.text"
-        }
-    }
-}
-
 // MARK: - Export Layer
 
 /// Exportable layer types for a note.
@@ -171,15 +146,15 @@ struct NoteExportSheet: View {
 
     private func exportDrawingAsPDF(_ drawing: PKDrawing) -> Data? {
         let image = drawing.image(from: drawing.bounds, scale: 2.0)
-        let renderer = UIGraphicsImageRenderer(size: image.size)
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: nil, nil) else {
+              let context = CGContext(consumer: consumer, mediaBox: nil, nil),
+              let cgImage = image.cgImage else {
             return nil
         }
         var mediaBox = CGRect(origin: .zero, size: image.size)
         context.beginPDFPage(nil)
-        context.draw(image.cgImage!, in: mediaBox)
+        context.draw(cgImage, in: mediaBox)
         context.endPDFPage()
         context.closePDF()
         return data as Data

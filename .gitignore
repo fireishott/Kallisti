@@ -21,6 +21,7 @@ build/
 Pods/
 Carthage/Build/
 .package.resolved
+uv.lock
 
 # OS
 .DS_Store

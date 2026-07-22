@@ -3,6 +3,31 @@ import PhotosUI
 import SwiftUI
 import VisionKit
 
+/// View mode for the note editor — shows ink, recognized text, or enriched document.
+enum NoteViewMode: String, CaseIterable, Identifiable {
+    case ink
+    case recognized
+    case enriched
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .ink: "Ink"
+        case .recognized: "Recognized"
+        case .enriched: "Enriched"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .ink: "pencil.tip"
+        case .recognized: "text.viewfinder"
+        case .enriched: "doc.text"
+        }
+    }
+}
+
 /// Note editor — shows the PencilKit canvas with title editing, paper styles, and attachments.
 struct NoteEditorView: View {
     @Binding var noteId: UUID
