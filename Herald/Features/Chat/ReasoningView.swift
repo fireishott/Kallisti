@@ -38,16 +38,23 @@ struct ReasoningView: View {
                 .stroke(Design.Colors.divider, lineWidth: 1)
         )
         .onAppear {
-            // Collapsed by default once complete; auto-open while streaming.
-            isExpanded = isStreaming
+            // Always start collapsed; user can expand to view
+            isExpanded = false
             if isStreaming {
                 withAnimation(Design.Motion.breathe) { pulse = true }
             }
         }
         .onChange(of: isStreaming) { _, streaming in
-            // When streaming ends, collapse the block down to its summary.
-            withAnimation(Design.Motion.standard) {
-                if !streaming { isExpanded = false }
+            if streaming {
+                // Show reasoning while streaming
+                withAnimation(Design.Motion.standard) { isExpanded = true }
+                withAnimation(Design.Motion.breathe) { pulse = true }
+            } else {
+                // Collapse when streaming ends
+                withAnimation(Design.Motion.standard) {
+                    isExpanded = false
+                    pulse = false
+                }
             }
         }
     }

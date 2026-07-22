@@ -198,9 +198,10 @@ struct MessageBubble: View, Equatable {
                 if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
                     ReasoningView(
                         reasoning: message.reasoning,
-                        isStreaming: message.isStreaming && message.content.isEmpty,
+                        isStreaming: message.isStreaming,
                         duration: message.reasoningDuration
                     )
+                    .transition(.opacity)
                 }
 
                 if !message.content.isEmpty {
