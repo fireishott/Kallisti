@@ -926,6 +926,13 @@ struct ChatScreen: View {
         do {
             try await chatStore.clearConversation()
             showStatusCard = false
+            
+            // Scroll to show the empty state / first message area
+            if let firstMessage = chatStore.conversation?.messages.first {
+                withAnimation(Design.Motion.standard) {
+                    scrollProxy?.scrollTo(firstMessage.id, anchor: .top)
+                }
+            }
         } catch {
             let reason: String
             if (error as? URLError)?.code == .userAuthenticationRequired
