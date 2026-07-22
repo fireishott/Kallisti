@@ -725,8 +725,6 @@ struct ChatScreen: View {
             return "Hermes host offline"
         case .unreachable:
             switch settingsStore.settings.relayConfiguration.connectionMode {
-            case .managedRelay:
-                return "Managed relay unreachable"
             case .tailscale:
                 return "Tailnet relay unreachable"
             case .selfHostedRelay:

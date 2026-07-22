@@ -836,8 +836,6 @@ struct SettingsScreen: View {
 
     private var customRelayURLPlaceholder: String {
         switch relayConfiguration.connectionMode {
-        case .managedRelay:
-            return "https://your-relay.example.com/v1"
         case .tailscale:
             return "https://my-mac.tail-scale.ts.net/v1"
         case .selfHostedRelay:
@@ -846,11 +844,7 @@ struct SettingsScreen: View {
     }
 
     private var backgroundDeliveryNote: String {
-        let mode = relayConfiguration.connectionMode
-        if mode == .managedRelay && !settingsStore.buildConfiguration.usesManagedPushBroker {
-            return "Managed mode selected, but this build uses direct relay push only."
-        }
-        return mode.backgroundDeliveryNote
+        relayConfiguration.connectionMode.backgroundDeliveryNote
     }
 
     private var backgroundLocationDescription: String {

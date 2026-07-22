@@ -1629,7 +1629,7 @@ struct AppStoresTests {
     }
 
     @Test
-    func relayConfigurationDefaultsToConfiguredManagedRelay() throws {
+    func relayConfigurationDefaultsToSelfHostedRelay() throws {
         let buildConfiguration = AppBuildConfiguration(infoDictionary: [
             "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
             "APP_HOSTED_RELAY_ENABLED": true,
@@ -1640,12 +1640,11 @@ struct AppStoresTests {
             environmentPolicy: AppEnvironmentPolicy(allowsEnvironmentOverrides: true)
         )
 
-        #expect(configuration.connectionMode == .managedRelay)
-        #expect(configuration.activeBaseURLString == "https://hermes-relay.fihonline.net/v1")
+        #expect(configuration.connectionMode == .selfHostedRelay)
     }
 
     @Test
-    func productionSettingsMigrateOldDebugLocalhostDefaultToManagedRelay() throws {
+    func productionSettingsWithLocalhostRemainSelfHostedAfterPolicyApplication() throws {
         let buildConfiguration = AppBuildConfiguration(infoDictionary: [
             "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
             "APP_HOSTED_RELAY_ENABLED": true,
@@ -1663,16 +1662,15 @@ struct AppStoresTests {
             buildConfiguration: buildConfiguration
         )
 
-        #expect(migrated.relayConfiguration.connectionMode == .managedRelay)
-        #expect(migrated.relayConfiguration.activeBaseURLString == "https://hermes-relay.fihonline.net/v1")
+        #expect(migrated.relayConfiguration.connectionMode == .selfHostedRelay)
     }
 
     @Test
-    func relayConfigurationMigratesLegacyHostedModeToManagedConnectionMode() throws {
+    func relayConfigurationMigratesLegacyHostedModeToSelfHostedConnectionMode() throws {
         let json = """
         {
           "relayMode": "hosted",
-          "customRelayBaseURL": "",
+          "customRelayBaseURL": "https://managed.example.com/v1",
           "hostedRelayBaseURL": "https://managed.example.com/v1",
           "hostedRelayEnabled": true
         }
@@ -1681,8 +1679,8 @@ struct AppStoresTests {
 
         let configuration = try JSONDecoder().decode(RelayConfiguration.self, from: data)
 
-        #expect(configuration.connectionMode == .managedRelay)
-        #expect(configuration.connectionMode.reliesOnOfficialPushRelay == true)
+        #expect(configuration.connectionMode == .selfHostedRelay)
+        #expect(configuration.connectionMode.reliesOnOfficialPushRelay == false)
         #expect(configuration.activeBaseURLString == "https://managed.example.com/v1")
     }
 
@@ -1718,7 +1716,7 @@ struct AppStoresTests {
     }
 
     @Test @MainActor
-    func pushRegistrationCoordinatorUsesBrokerTransportForManagedRelay() async throws {
+    func pushRegistrationCoordinatorUsesDirectTransport() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -1731,28 +1729,11 @@ struct AppStoresTests {
             requestLog.value.append(url.absoluteString)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
 
-            if url.absoluteString == "https://relay.example.com/v1/relay/identity" {
-                let data = #"""
-                {"data":{"identity":{"id":"relay-123","algorithm":"ed25519","publicKey":"relay-pub-key","relayBaseURL":"https://relay.example.com/v1","createdAt":"2026-04-21T00:00:00Z","updatedAt":"2026-04-21T00:00:00Z"}}}
-                """#.data(using: .utf8)!
-                return (response, data)
-            }
-            if url.absoluteString == "https://broker.example.com/v1/push-broker/challenge" {
-                let data = #"{"data":{"challengeId":"challenge-123","challenge":"challenge-value","expiresAt":"2026-05-01T00:00:00Z"}}"#.data(using: .utf8)!
-                return (response, data)
-            }
-            if url.absoluteString == "https://broker.example.com/v1/push-broker/register" {
-                let body = requestBodyString(request)
-                #expect(body.contains("\"challengeId\":\"challenge-123\""))
-                #expect(body.contains("\"keyId\":\"attest-key\""))
-                let data = #"{"data":{"transport":"relay","relayHandle":"relay-handle-123","sendGrant":"relay-send-grant-123","relayId":"relay-123","relayPublicKey":"relay-pub-key","installationId":"install-123","topic":"net.fihonline.herald","environment":"production","tokenDebugSuffix":"efef5678","expiresAt":"2026-05-01T00:00:00Z"}}"#.data(using: .utf8)!
-                return (response, data)
-            }
             if url.absoluteString == "https://relay.example.com/v1/push/register" {
                 let body = requestBodyString(request)
                 relayRegisterBodies.value.append(body)
-                #expect(body.contains("\"transport\":\"relay\""))
-                #expect(body.contains("\"relayHandle\":\"relay-handle-123\""))
+                #expect(body.contains("\"transport\":\"direct\""))
+                #expect(body.contains("\"apnsToken\":\"abcd1234efef5678\""))
                 let data = #"{"data":{"registered":true}}"#.data(using: .utf8)!
                 return (response, data)
             }
@@ -1766,29 +1747,19 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let brokerClient = PushBrokerClient(
-            baseURL: URL(string: FakeBundleInfo.pushBrokerURL)!,
-            session: session
-        )
         let secureStore = MockSecureStore()
         let registrationStore = PushBrokerRegistrationStore(secureStore: secureStore)
-        let attestService = FakeAppAttestService()
         let coordinator = PushRegistrationCoordinator(
             relayAPIClient: relayAPIClient,
-            brokerClient: brokerClient,
+            brokerClient: nil,
             registrationStore: registrationStore,
-            appAttestService: attestService,
-            buildConfiguration: AppBuildConfiguration(infoDictionary: [
-                "APP_HOSTED_RELAY_URL": FakeBundleInfo.hostedRelayURL,
-                "APP_HOSTED_RELAY_ENABLED": true,
-                "APP_PUSH_TRANSPORT": "relay",
-                "APP_PUSH_BROKER_URL": FakeBundleInfo.pushBrokerURL,
-            ])
+            appAttestService: FakeAppAttestService(),
+            buildConfiguration: AppBuildConfiguration(infoDictionary: [:])
         )
 
         let didRegister = try await coordinator.registerPushToken(
             "abcd1234efef5678",
-            relayConfiguration: RelayConfiguration(connectionMode: .managedRelay, hostedRelayBaseURL: FakeBundleInfo.hostedRelayURL, hostedRelayEnabled: true),
+            relayConfiguration: RelayConfiguration(connectionMode: .selfHostedRelay, customRelayBaseURL: "https://relay.example.com/v1"),
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
@@ -1798,24 +1769,12 @@ struct AppStoresTests {
         )
 
         #expect(didRegister)
-        #expect(attestService.callCount == 1)
-        #expect(attestService.lastChallenge == "challenge-value")
-        #expect(requestLog.value == [
-            "https://relay.example.com/v1/relay/identity",
-            "https://broker.example.com/v1/push-broker/challenge",
-            "https://broker.example.com/v1/push-broker/register",
-            "https://relay.example.com/v1/push/register",
-        ])
+        #expect(requestLog.value == ["https://relay.example.com/v1/push/register"])
         #expect(relayRegisterBodies.value.count == 1)
-        let stored = await registrationStore.loadRegistrationState()
-        #expect(stored?.relayHandle == "relay-handle-123")
-        #expect(stored?.sendGrant == "relay-send-grant-123")
-        #expect(stored?.relayID == "relay-123")
-        #expect(stored?.brokerBaseURL == FakeBundleInfo.pushBrokerURL)
     }
 
     @Test @MainActor
-    func pushRegistrationCoordinatorReusesCachedBrokerRegistrationForSameToken() async throws {
+    func pushRegistrationCoordinatorAlwaysUsesDirectTransportRegardlessOfCachedState() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -1827,12 +1786,6 @@ struct AppStoresTests {
             requestLog.value.append(url.absoluteString)
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
 
-            if url.absoluteString == "https://relay.example.com/v1/relay/identity" {
-                let data = #"""
-                {"data":{"identity":{"id":"relay-123","algorithm":"ed25519","publicKey":"relay-pub-key","relayBaseURL":"https://relay.example.com/v1","createdAt":"2026-04-21T00:00:00Z","updatedAt":"2026-04-21T00:00:00Z"}}}
-                """#.data(using: .utf8)!
-                return (response, data)
-            }
             if url.absoluteString == "https://relay.example.com/v1/push/register" {
                 let data = #"{"data":{"registered":true}}"#.data(using: .utf8)!
                 return (response, data)
@@ -1847,42 +1800,33 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let brokerClient = PushBrokerClient(
-            baseURL: URL(string: FakeBundleInfo.pushBrokerURL)!,
-            session: session
-        )
         let secureStore = MockSecureStore()
         let registrationStore = PushBrokerRegistrationStore(secureStore: secureStore)
+        // Pre-populate with stale broker state — should be ignored since direct transport is always used.
         await registrationStore.saveRegistrationState(
             PushBrokerRegistrationState(
                 relayHandle: "relay-handle-123",
                 sendGrant: "relay-send-grant-123",
                 relayID: "relay-123",
                 relayPublicKey: "relay-pub-key",
-                brokerBaseURL: FakeBundleInfo.pushBrokerURL,
+                brokerBaseURL: "https://broker.example.com/v1",
                 installationID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 tokenHash: PushBrokerRegistrationState.tokenHash(for: "abcd1234efef5678"),
                 tokenDebugSuffix: "efef5678",
                 expiresAt: Date.distantFuture
             )
         )
-        let attestService = FakeAppAttestService()
         let coordinator = PushRegistrationCoordinator(
             relayAPIClient: relayAPIClient,
-            brokerClient: brokerClient,
+            brokerClient: nil,
             registrationStore: registrationStore,
-            appAttestService: attestService,
-            buildConfiguration: AppBuildConfiguration(infoDictionary: [
-                "APP_HOSTED_RELAY_URL": FakeBundleInfo.hostedRelayURL,
-                "APP_HOSTED_RELAY_ENABLED": true,
-                "APP_PUSH_TRANSPORT": "relay",
-                "APP_PUSH_BROKER_URL": FakeBundleInfo.pushBrokerURL,
-            ])
+            appAttestService: FakeAppAttestService(),
+            buildConfiguration: AppBuildConfiguration(infoDictionary: [:])
         )
 
         let didRegister = try await coordinator.registerPushToken(
             "abcd1234efef5678",
-            relayConfiguration: RelayConfiguration(connectionMode: .managedRelay, hostedRelayBaseURL: FakeBundleInfo.hostedRelayURL, hostedRelayEnabled: true),
+            relayConfiguration: RelayConfiguration(connectionMode: .selfHostedRelay, customRelayBaseURL: "https://relay.example.com/v1"),
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
@@ -1892,11 +1836,7 @@ struct AppStoresTests {
         )
 
         #expect(didRegister)
-        #expect(attestService.callCount == 0)
-        #expect(requestLog.value == [
-            "https://relay.example.com/v1/relay/identity",
-            "https://relay.example.com/v1/push/register",
-        ])
+        #expect(requestLog.value == ["https://relay.example.com/v1/push/register"])
     }
 
     @Test @MainActor
@@ -1949,17 +1889,12 @@ struct AppStoresTests {
 
     @Test
     func relayConnectionModesExposeModeAwareChatRecoveryCopy() throws {
-        #expect(RelayConnectionMode.managedRelay.hostOfflineMessage == "Messages can queue while your Hermes host reconnects.")
         #expect(RelayConnectionMode.tailscale.defaultOfflineMessage == "Open Tailscale or reconnect to your tailnet to reach Herald.")
         #expect(RelayConnectionMode.selfHostedRelay.notConnectedMessage == "Pair a Hermes host with this self-hosted relay before sending messages.")
     }
 
     @Test
     func relayConnectionModesExposeModeAwareUnreachableSendGuidance() throws {
-        #expect(
-            RelayConnectionMode.managedRelay.unreachableSendBlockedMessage ==
-            "Hermes relay is unreachable. Check your connection and try again."
-        )
         #expect(
             RelayConnectionMode.tailscale.unreachableSendBlockedMessage ==
             "Can't reach your tailnet relay. Open Tailscale to reconnect, then send again."
@@ -1972,14 +1907,12 @@ struct AppStoresTests {
 
     @Test
     func relayConnectionModesExposeUnreachableActionLabels() throws {
-        #expect(RelayConnectionMode.managedRelay.unreachableActionLabel == "Retry")
         #expect(RelayConnectionMode.tailscale.unreachableActionLabel == "Open Tailscale")
         #expect(RelayConnectionMode.selfHostedRelay.unreachableActionLabel == "Retry")
     }
 
     @Test
-    func tailscaleModeProvidesDeepLinkOtherModesFallBackToRetry() throws {
-        #expect(RelayConnectionMode.managedRelay.unreachableActionDeepLink == nil)
+    func tailscaleModeProvidesDeepLinkSelfHostedFallsBackToRetry() throws {
         #expect(RelayConnectionMode.selfHostedRelay.unreachableActionDeepLink == nil)
         let tailscaleDeepLink = RelayConnectionMode.tailscale.unreachableActionDeepLink
         #expect(tailscaleDeepLink == URL(string: "tailscale://"))
@@ -1987,80 +1920,72 @@ struct AppStoresTests {
     }
 
     @Test
-    func relayURLHintOnlyShownForModesThatNeedIt() throws {
-        // Managed has no URL field, so it shouldn't advertise a hint.
-        #expect(RelayConnectionMode.managedRelay.relayURLHint == nil)
-        // Tailscale points users at tailnet URLs or `tailscale serve`.
+    func relayURLHintShownForAllModes() throws {
         let tailscaleHint = try #require(RelayConnectionMode.tailscale.relayURLHint)
         #expect(tailscaleHint.contains("tail-scale.ts.net"))
         #expect(tailscaleHint.contains("tailscale serve"))
-        // Self-hosted nudges users toward a public URL example.
         let selfHostedHint = try #require(RelayConnectionMode.selfHostedRelay.relayURLHint)
         #expect(selfHostedHint.contains("public Hermes relay"))
     }
 
     @Test
     func backgroundDeliveryNotesStayHonestAboutPushCapability() throws {
-        // Managed is the only mode that can honestly promise background wake.
-        #expect(
-            RelayConnectionMode.managedRelay.backgroundDeliveryNote.contains("official push")
-        )
-        // Tailscale's note must warn about foreground-only delivery.
         let tailscaleNote = RelayConnectionMode.tailscale.backgroundDeliveryNote
         #expect(tailscaleNote.contains("No official background push"))
         #expect(tailscaleNote.contains("foreground"))
-        // Self-hosted defers to the user's own channel.
         let selfHostedNote = RelayConnectionMode.selfHostedRelay.backgroundDeliveryNote
         #expect(selfHostedNote.contains("don't receive official push credentials"))
     }
 
     @Test
     func relayConnectionModePreservesLegacyMappingForBackwardsCompatibility() throws {
-        #expect(RelayConnectionMode(legacyRelayMode: .hosted) == .managedRelay)
+        #expect(RelayConnectionMode(legacyRelayMode: .hosted) == .selfHostedRelay)
         #expect(RelayConnectionMode(legacyRelayMode: .custom) == .selfHostedRelay)
-        #expect(RelayConnectionMode.managedRelay.legacyRelayMode == .hosted)
         #expect(RelayConnectionMode.tailscale.legacyRelayMode == .custom)
         #expect(RelayConnectionMode.selfHostedRelay.legacyRelayMode == .custom)
     }
 
     @Test
-    func onlyManagedModeReliesOnOfficialPushRelay() throws {
-        #expect(RelayConnectionMode.managedRelay.reliesOnOfficialPushRelay == true)
+    func noModeReliesOnOfficialPushRelay() throws {
         #expect(RelayConnectionMode.tailscale.reliesOnOfficialPushRelay == false)
         #expect(RelayConnectionMode.selfHostedRelay.reliesOnOfficialPushRelay == false)
     }
 
     @Test
-    func selectableConnectionModesIncludeManagedOnlyWhenBuildSupportsIt() throws {
-        let withoutManaged = RelayConfiguration(
+    func selectableConnectionModesAlwaysTailscaleAndSelfHosted() throws {
+        let config = RelayConfiguration(
             connectionMode: .selfHostedRelay,
             customRelayBaseURL: "https://relay.example.com/v1",
             hostedRelayBaseURL: nil,
             hostedRelayEnabled: false
         )
-        #expect(withoutManaged.selectableConnectionModes == [.tailscale, .selfHostedRelay])
-
-        let withManaged = RelayConfiguration(
-            connectionMode: .managedRelay,
-            customRelayBaseURL: "",
-            hostedRelayBaseURL: "https://managed.example.com/v1",
-            hostedRelayEnabled: true
-        )
-        #expect(withManaged.selectableConnectionModes == [.managedRelay, .tailscale, .selfHostedRelay])
+        #expect(config.selectableConnectionModes == [.tailscale, .selfHostedRelay])
     }
 
     @Test
-    func relayConfigurationFallsBackOffManagedWhenHostedIsUnavailable() throws {
-        // Simulating a build that claims managed but never wired up the hosted URL.
+    func relayConfigurationDefaultsToSelfHostedWhenNoHostedURL() throws {
         let config = RelayConfiguration(
-            connectionMode: .managedRelay,
+            connectionMode: .selfHostedRelay,
             customRelayBaseURL: "https://relay.example.com/v1",
             hostedRelayBaseURL: nil,
             hostedRelayEnabled: false
         )
-        // Init-time fallback prevents shipping with managed selected but no URL to hit.
         #expect(config.connectionMode == .selfHostedRelay)
         #expect(config.relayMode == .custom)
+    }
+
+    @Test
+    func legacyManagedRelayDecodesToSelfHosted() throws {
+        let json = #""managedRelay""#
+        let data = try #require(json.data(using: .utf8))
+        let mode = try JSONDecoder().decode(RelayConnectionMode.self, from: data)
+        #expect(mode == .selfHostedRelay)
+    }
+
+    @Test
+    func freshInstallDefaultsToSelfHostedRelay() throws {
+        let settings = UserSettings()
+        #expect(settings.relayConfiguration.connectionMode == .selfHostedRelay)
     }
 
     @Test

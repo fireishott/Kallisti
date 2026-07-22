@@ -88,7 +88,6 @@ struct OnboardingFlowView: View {
         case .relay:
             RelayStepView(
                 relayConfiguration: relayConfiguration,
-                usesManagedPushBroker: settingsStore.buildConfiguration.usesManagedPushBroker,
                 validationMessage: relayConfiguration.validationMessage,
                 errorMessage: localErrorMessage,
                 connectionModeBinding: connectionModeBinding,
@@ -200,13 +199,8 @@ struct OnboardingFlowView: View {
 
     private func applyRelayURL(_ rawRelayURL: String) {
         var config = settingsStore.settings.relayConfiguration
-        let normalizedRelayURL = RelayConfiguration.normalizeBaseURL(rawRelayURL)
-        if normalizedRelayURL == config.hostedRelayBaseURL, config.canUseHosted {
-            config.updateConnectionMode(.managedRelay)
-        } else {
-            config.updateConnectionMode(.selfHostedRelay)
-            config.customRelayBaseURL = rawRelayURL
-        }
+        config.updateConnectionMode(.selfHostedRelay)
+        config.customRelayBaseURL = rawRelayURL
         settingsStore.settings.relayConfiguration = config
     }
 
@@ -341,7 +335,6 @@ private struct WelcomeStepView: View {
 
 private struct RelayStepView: View {
     let relayConfiguration: RelayConfiguration
-    let usesManagedPushBroker: Bool
     let validationMessage: String?
     let errorMessage: String?
     let connectionModeBinding: Binding<RelayConnectionMode>
@@ -416,7 +409,7 @@ private struct RelayStepView: View {
                                 .foregroundStyle(Design.Colors.warning)
                         }
 
-                        Text(backgroundDeliveryNote(for: relayConfiguration.connectionMode, usesManagedPushBroker: usesManagedPushBroker))
+                        Text(relayConfiguration.connectionMode.backgroundDeliveryNote)
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .fixedSize(horizontal: false, vertical: true)
@@ -453,23 +446,11 @@ private struct RelayStepView: View {
 
 private func urlPlaceholder(for mode: RelayConnectionMode) -> String {
     switch mode {
-    case .managedRelay:
-        return "https://relay.example.com/v1"
     case .tailscale:
         return "https://my-mac.tail-scale.ts.net/v1"
     case .selfHostedRelay:
         return "https://relay.example.com/v1"
     }
-}
-
-private func backgroundDeliveryNote(
-    for mode: RelayConnectionMode,
-    usesManagedPushBroker: Bool
-) -> String {
-    if mode == .managedRelay && !usesManagedPushBroker {
-        return "Managed mode selected, but this build uses direct relay push only."
-    }
-    return mode.backgroundDeliveryNote
 }
 
 private struct ConnectionModeSelector: View {
@@ -525,8 +506,6 @@ private struct ConnectionModeSelector: View {
 
     private func iconName(for mode: RelayConnectionMode) -> String {
         switch mode {
-        case .managedRelay:
-            return "cloud.fill"
         case .tailscale:
             return "point.3.connected.trianglepath.dotted"
         case .selfHostedRelay:
