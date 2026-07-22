@@ -28,7 +28,9 @@ enum Design {
 
     enum Colors {
         private static var palette: ThemePalette {
-            ThemeManager.shared.currentPalette
+            MainActor.assumeIsolated {
+                ThemeManager.shared.currentPalette
+            }
         }
 
         /// Deep ink — the app's native ground.
