@@ -14,6 +14,7 @@ from .services import record_audit
 
 
 router = APIRouter(prefix="/v1/notes", tags=["notes"])
+note_runs_router = APIRouter(prefix="/v1/note-runs", tags=["note-runs"])
 
 
 def _get_note_or_404(db: Session, note_id: str, user_id: str) -> Note:
@@ -97,16 +98,20 @@ async def update_note(
     """Update note metadata. Requires If-Match header for optimistic concurrency."""
     note = _get_note_or_404(db, note_id, auth.user.id)
 
-    # If-Match check
+    # If-Match check — required for optimistic concurrency
     if_match = request.headers.get("if-match")
-    if if_match is not None:
-        # Simple revision-based ETag
-        expected = f'"rev-{note.current_drawing_revision}-{note.current_text_revision}"'
-        if if_match != expected:
-            raise HTTPException(
-                status_code=status.HTTP_412_PRECONDITION_FAILED,
-                detail="Note revision mismatch.",
-            )
+    if if_match is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="If-Match header is required for note updates.",
+        )
+
+    expected = f'"{note.revision}"'
+    if if_match != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Note revision mismatch.",
+        )
 
     body = await _parse_body(request)
     if "title" in body:
@@ -116,6 +121,7 @@ async def update_note(
     if "pinned" in body:
         note.pinned = body["pinned"]
 
+    note.revision += 1
     note.updated_at = utcnow()
     db.commit()
 
@@ -235,6 +241,49 @@ def download_blob(
     }
 
 
+# ── Recognition Endpoints ────────────────────────────────────────
+
+
+@router.post("/{note_id}/recognitions")
+async def create_recognition(
+    note_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """Store OCR/handwriting recognition results for a note revision."""
+    note = _get_note_or_404(db, note_id, auth.user.id)
+    body = await _parse_body(request)
+
+    drawing_revision = body.get("drawingRevision")
+    engine = body.get("engine")
+    raw_text = body.get("rawText")
+
+    if not drawing_revision or not engine or not raw_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="drawingRevision, engine, and rawText are required.",
+        )
+
+    recognition = NoteRecognition(
+        id=str(uuid4()),
+        note_id=note_id,
+        drawing_revision=drawing_revision,
+        engine=engine,
+        engine_version=body.get("engineVersion"),
+        languages=body.get("languages"),
+        raw_text=raw_text,
+        user_corrected_text=body.get("userCorrectedText"),
+    )
+    db.add(recognition)
+    db.commit()
+
+    return JSONResponse(
+        content={"data": _recognition_to_dict(recognition)},
+        status_code=status.HTTP_201_CREATED,
+    )
+
+
 # ── Run Endpoints ────────────────────────────────────────────────
 
 
@@ -294,7 +343,7 @@ async def create_run(
     return JSONResponse(content={"data": _run_to_dict(run)}, status_code=status.HTTP_201_CREATED)
 
 
-@router.get("/../note-runs/{run_id}")
+@note_runs_router.get("/{run_id}")
 def get_run(
     run_id: str,
     auth: AuthContext = Depends(get_auth_context),
@@ -308,25 +357,44 @@ def get_run(
     return {"data": _run_to_dict(run)}
 
 
-@router.get("/../note-runs/{run_id}/events")
+@note_runs_router.get("/{run_id}/events")
 def get_run_events(
     run_id: str,
     request: Request,
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
-    """Get run events with cursor-based pagination."""
+    """Get run events with cursor-based pagination.
+
+    Supports durable replay via Last-Event-ID header (preferred) or
+    ?after= query param (fallback).
+    """
     run = db.get(NoteRun, run_id)
     if run is None or run.user_id != auth.user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
 
-    # Cursor from query params
-    after_seq = request.query_params.get("after")
+    # Determine replay cursor: Last-Event-ID header takes precedence
+    cursor: int | None = None
+    last_event_id = request.headers.get("last-event-id")
+    if last_event_id is not None:
+        try:
+            cursor = int(last_event_id)
+        except (ValueError, TypeError):
+            pass
+
+    if cursor is None:
+        after_seq = request.query_params.get("after")
+        if after_seq is not None:
+            try:
+                cursor = int(after_seq)
+            except (ValueError, TypeError):
+                pass
+
     limit = min(int(request.query_params.get("limit", "100")), 500)
 
     query = select(NoteRunEvent).where(NoteRunEvent.run_id == run_id)
-    if after_seq is not None:
-        query = query.where(NoteRunEvent.seq > int(after_seq))
+    if cursor is not None:
+        query = query.where(NoteRunEvent.seq > cursor)
     query = query.order_by(NoteRunEvent.seq).limit(limit)
 
     events = db.execute(query).scalars().all()
@@ -337,7 +405,7 @@ def get_run_events(
     }
 
 
-@router.post("/../note-runs/{run_id}/cancel")
+@note_runs_router.post("/{run_id}/cancel")
 def cancel_run(
     run_id: str,
     auth: AuthContext = Depends(get_auth_context),
@@ -376,6 +444,7 @@ def _note_to_dict(note: Note) -> dict:
         "title": note.title,
         "folderId": note.folder_id,
         "pinned": note.pinned,
+        "revision": note.revision,
         "currentDrawingRevision": note.current_drawing_revision,
         "currentTextRevision": note.current_text_revision,
         "createdAt": note.created_at.isoformat() if note.created_at else None,
@@ -413,4 +482,18 @@ def _event_to_dict(event: NoteRunEvent) -> dict:
         "type": event.type,
         "payload": event.payload_json,
         "createdAt": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+def _recognition_to_dict(rec: NoteRecognition) -> dict:
+    return {
+        "id": rec.id,
+        "noteId": rec.note_id,
+        "drawingRevision": rec.drawing_revision,
+        "engine": rec.engine,
+        "engineVersion": rec.engine_version,
+        "languages": rec.languages,
+        "rawText": rec.raw_text,
+        "userCorrectedText": rec.user_corrected_text,
+        "createdAt": rec.created_at.isoformat() if rec.created_at else None,
     }

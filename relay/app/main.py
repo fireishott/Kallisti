@@ -310,8 +310,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.connector_rpc_waiters: dict[str, asyncio.Future[dict]] = {}
 
     # Notes API router (Phase 3)
-    from .notes import router as notes_router
+    from .notes import router as notes_router, note_runs_router
     app.include_router(notes_router)
+    app.include_router(note_runs_router)
     app.state.event_fanout = EventFanout()
 
     async def subscribe_job_events(job_id: str) -> asyncio.Queue:
@@ -759,6 +760,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         identity = ensure_relay_identity(db, settings=request_settings)
         return success({"identity": serialize_relay_identity(identity, settings=request_settings)})
+
+    @app.get("/v1/capabilities")
+    def capabilities() -> dict:
+        return success({
+            "supportsNotes": True,
+            "supportsChat": True,
+            "supportsVoice": True,
+            "supportsCron": True,
+        })
 
     @app.post("/v1/push-broker/challenge")
     def push_broker_challenge(

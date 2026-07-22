@@ -48,6 +48,36 @@ actor LiveNotesClient {
         return response.data
     }
 
+    func updateNote(id: String, revision: Int, request: NoteUpdateRequest) async throws -> NoteDTO {
+        let token = await accessTokenProvider()
+        let requestBody = try RelayCoders.makeEncoder().encode(request)
+        let response: NoteDTO = try await apiClient.patchWithHeaders(
+            path: "notes/\(id)",
+            body: requestBody,
+            accessToken: token,
+            additionalHeaders: ["If-Match": "\"\(revision)\""]
+        )
+        return response
+    }
+
+    func deleteNote(id: String) async throws {
+        let token = await accessTokenProvider()
+        let _: EmptyResponse = try await apiClient.delete(
+            path: "notes/\(id)",
+            accessToken: token
+        )
+    }
+
+    func postRecognition(noteId: String, request: NoteRecognitionRequest) async throws -> NoteRecognitionDTO {
+        let token = await accessTokenProvider()
+        let response: NoteRecognitionResponse = try await apiClient.post(
+            path: "notes/\(noteId)/recognitions",
+            body: request,
+            accessToken: token
+        )
+        return response.data
+    }
+
     // MARK: - Run Management
 
     func createRun(noteId: String, clientRunId: UUID, request: EnrichmentRunRequest) async throws -> RunDTO {
@@ -83,12 +113,42 @@ actor LiveNotesClient {
         )
         return response.data
     }
+
+    func getRunEvents(runId: String, lastEventID: String? = nil) async throws -> [RunEventDTO] {
+        let token = await accessTokenProvider()
+        var request = try apiClient.makeRequest(
+            path: "note-runs/\(runId)/events",
+            method: "GET",
+            accessToken: token,
+            body: nil
+        )
+        if let lastEventID, !lastEventID.isEmpty {
+            request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+        }
+        let response: RunEventsResponse = try await apiClient.sendRequest(request)
+        return response.data
+    }
 }
 
 // MARK: - Request Types
 
 struct NoteCreateRequest: Encodable {
     let title: String
+}
+
+struct NoteUpdateRequest: Encodable {
+    let title: String?
+    let folderId: String?
+    let pinned: Bool?
+}
+
+struct NoteRecognitionRequest: Encodable {
+    let drawingRevision: Int
+    let engine: String
+    let engineVersion: String?
+    let languages: String?
+    let rawText: String
+    let userCorrectedText: String?
 }
 
 struct NoteRunCreateRequest: Encodable {
@@ -106,6 +166,8 @@ struct DirectiveRequest: Encodable {
 
 // MARK: - Response Types
 
+struct EmptyResponse: Decodable {}
+
 struct NotesListResponse: Decodable {
     let data: [NoteDTO]
 }
@@ -114,8 +176,16 @@ struct NoteResponse: Decodable {
     let data: NoteDTO
 }
 
+struct NoteRecognitionResponse: Decodable {
+    let data: NoteRecognitionDTO
+}
+
 struct RunResponse: Decodable {
     let data: RunDTO
+}
+
+struct RunEventsResponse: Decodable {
+    let data: [RunEventDTO]
 }
 
 // MARK: - DTOs
@@ -126,6 +196,7 @@ struct NoteDTO: Decodable {
     let title: String
     let folderId: String?
     let pinned: Bool
+    let revision: Int
     let currentDrawingRevision: Int
     let currentTextRevision: Int
     let createdAt: String?
@@ -173,6 +244,60 @@ struct RunDTO: Decodable {
             createdAt: ISO8601DateFormatter().date(from: createdAt ?? "") ?? .now,
             completedAt: completedAt.flatMap { ISO8601DateFormatter().date(from: $0) }
         )
+    }
+}
+
+// MARK: - Additional DTOs
+
+struct NoteRecognitionDTO: Decodable {
+    let id: String
+    let noteId: String
+    let drawingRevision: Int
+    let engine: String
+    let engineVersion: String?
+    let languages: String?
+    let rawText: String
+    let userCorrectedText: String?
+    let createdAt: String?
+}
+
+struct RunEventDTO: Decodable {
+    let id: String
+    let runId: String
+    let seq: Int
+    let attempt: Int
+    let sourceSeq: Int?
+    let type: String
+    let payload: [String: AnyCodable]?
+    let createdAt: String?
+}
+
+enum AnyCodable: Decodable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case array([AnyCodable])
+    case dictionary([String: AnyCodable])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode([AnyCodable].self) {
+            self = .array(value)
+        } else if let value = try? container.decode([String: AnyCodable].self) {
+            self = .dictionary(value)
+        } else {
+            self = .null
+        }
     }
 }
 

@@ -141,7 +141,7 @@ final class RelayAPIClient {
         accessToken: String? = nil
     ) async throws -> T {
         let request = try makeRequest(path: path, method: "GET", accessToken: accessToken, body: nil)
-        return try await send(request)
+        return try await sendRequest(request)
     }
 
     func post<T: Decodable>(
@@ -149,7 +149,7 @@ final class RelayAPIClient {
         accessToken: String? = nil
     ) async throws -> T {
         let request = try makeRequest(path: path, method: "POST", accessToken: accessToken, body: nil)
-        return try await send(request)
+        return try await sendRequest(request)
     }
 
     func post<Body: Encodable, T: Decodable>(
@@ -164,10 +164,10 @@ final class RelayAPIClient {
             accessToken: accessToken,
             body: requestBody
         )
-        return try await send(request)
+        return try await sendRequest(request)
     }
 
-    private func makeRequest(
+    func makeRequest(
         path: String,
         method: String,
         accessToken: String?,
@@ -293,7 +293,7 @@ final class RelayAPIClient {
         }
     }
 
-    private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
+    func sendRequest<T: Decodable>(_ request: URLRequest) async throws -> T {
         let (data, response) = try await session.data(for: request)
         let httpResponse = response as? HTTPURLResponse
 
@@ -339,7 +339,7 @@ extension RelayAPIClient {
         accessToken: String? = nil
     ) async throws -> T {
         let request = try makeRequest(path: path, method: "DELETE", accessToken: accessToken, body: nil)
-        return try await send(request)
+        return try await sendRequest(request)
     }
 
     func patch<Body: Encodable, T: Decodable>(
@@ -354,7 +354,25 @@ extension RelayAPIClient {
             accessToken: accessToken,
             body: requestBody
         )
-        return try await send(request)
+        return try await sendRequest(request)
+    }
+
+    func patchWithHeaders<T: Decodable>(
+        path: String,
+        body: Data,
+        accessToken: String? = nil,
+        additionalHeaders: [String: String] = [:]
+    ) async throws -> T {
+        var request = try makeRequest(
+            path: path,
+            method: "PATCH",
+            accessToken: accessToken,
+            body: body
+        )
+        for (key, value) in additionalHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        return try await sendRequest(request)
     }
 
     /// Fetches a raw (non-JSON) response body — used for attachment bytes.

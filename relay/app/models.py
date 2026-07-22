@@ -387,6 +387,7 @@ class Note(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, default="")
     folder_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     current_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     current_text_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

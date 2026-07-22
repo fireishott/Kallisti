@@ -602,6 +602,9 @@ def test_stale_result_preserved_as_history(tmp_path):
                 status="completed",
             )
             db.add(run)
+        db.flush()
+
+        for i, (draw_rev, text_rev) in enumerate([(1, 1), (2, 1)], 1):
             db.add(EnrichedNoteRevision(
                 id=f"rev-history-{i:03d}",
                 note_id="note-history-001",
@@ -630,3 +633,232 @@ def test_stale_result_preserved_as_history(tmp_path):
         assert all(r.is_stale for r in revisions)
         assert revisions[0].source_drawing_revision == 1
         assert revisions[1].source_drawing_revision == 2
+
+
+# ---------------------------------------------------------------------------
+# HTTP-Level Integration Tests
+# ---------------------------------------------------------------------------
+
+
+def _make_http_client(tmp_path):
+    from fastapi.testclient import TestClient
+    from app.config import Settings
+    from app.main import create_app
+
+    settings = Settings(
+        environment="test",
+        public_base_url="http://testserver/v1",
+        database_url=f"sqlite:///{tmp_path / 'relay-http.db'}",
+        internal_api_key="test-internal-key",
+    )
+    app = create_app(settings)
+    return TestClient(app)
+
+
+def _register_and_get_token(client):
+    import uuid
+    response = client.post(
+        "/v1/device/register",
+        json={
+            "device": {
+                "platform": "ios",
+                "deviceName": "Test iPhone",
+                "appVersion": "1.0.0",
+                "buildNumber": "1",
+                "bundleId": "net.fihonline.herald",
+                "installationId": str(uuid.uuid4()),
+                "deviceModel": "iPhone17,2",
+                "systemVersion": "26.4",
+            },
+            "client": {"environment": "development"},
+        },
+    )
+    assert response.status_code == 200, f"Register failed: {response.status_code} {response.text}"
+    return response.json()["data"]["auth"]["accessToken"]
+
+
+def _create_note(client, token, title="Test Note"):
+    response = client.post(
+        "/v1/notes",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": title},
+    )
+    assert response.status_code == 201
+    return response.json()["data"]
+
+
+def test_patch_requires_matching_revision(tmp_path):
+    """PATCH requires If-Match; revision mismatch returns 409 Conflict."""
+    with _make_http_client(tmp_path) as client:
+        token = _register_and_get_token(client)
+        note = _create_note(client, token, "Concurrency Test")
+        note_id = note["id"]
+
+        # Initial revision is 1
+        initial_revision = note["revision"]
+        assert initial_revision == 1
+        initial_etag = f'"{initial_revision}"'
+
+        # PATCH with correct If-Match → success, revision increments to 2
+        response = client.patch(
+            f"/v1/notes/{note_id}",
+            headers={"Authorization": f"Bearer {token}", "If-Match": initial_etag},
+            json={"title": "Updated Title"},
+        )
+        assert response.status_code == 200
+        updated = response.json()["data"]
+        assert updated["title"] == "Updated Title"
+        assert updated["revision"] == 2
+
+        # PATCH with stale If-Match (revision 1) → 409 Conflict
+        response = client.patch(
+            f"/v1/notes/{note_id}",
+            headers={"Authorization": f"Bearer {token}", "If-Match": initial_etag},
+            json={"title": "Should Fail"},
+        )
+        assert response.status_code == 409
+
+        # PATCH without If-Match → 409 Conflict
+        response = client.patch(
+            f"/v1/notes/{note_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"title": "Should Also Fail"},
+        )
+        assert response.status_code == 409
+
+
+def test_duplicate_client_run_id(tmp_path):
+    """Posting the same clientRunId twice returns the same run, no duplicate."""
+    with _make_http_client(tmp_path) as client:
+        token = _register_and_get_token(client)
+        note = _create_note(client, token, "Run Idempotency Test")
+        note_id = note["id"]
+
+        client_run_id = "idempotent-run-001"
+
+        # First POST
+        response = client.post(
+            f"/v1/notes/{note_id}/runs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"clientRunId": client_run_id, "directives": []},
+        )
+        assert response.status_code == 201
+        run1 = response.json()["data"]
+        assert run1["clientRunId"] == client_run_id
+
+        # Second POST with same clientRunId
+        response = client.post(
+            f"/v1/notes/{note_id}/runs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"clientRunId": client_run_id, "directives": []},
+        )
+        assert response.status_code == 200
+        run2 = response.json()["data"]
+
+        # Same run returned
+        assert run1["id"] == run2["id"]
+        assert run1["status"] == run2["status"]
+
+
+def test_disconnect_replay(tmp_path):
+    """Events replayed from cursor via Last-Event-ID header."""
+    settings, database = make_database(tmp_path)
+
+    with _make_http_client(tmp_path) as client:
+        token = _register_and_get_token(client)
+        note = _create_note(client, token, "Replay Test")
+        note_id = note["id"]
+
+        # Create a run
+        response = client.post(
+            f"/v1/notes/{note_id}/runs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"clientRunId": "replay-run-001", "directives": []},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["data"]["id"]
+
+        # Insert events directly via DB (shared between HTTP client and DB)
+        # We need to use the app's database instance
+        app_db = client.app.state.database
+        with app_db.session() as db:
+            for i in range(1, 11):
+                db.add(NoteRunEvent(
+                    id=f"evt-replay-{i:03d}",
+                    run_id=run_id,
+                    seq=i,
+                    attempt=0,
+                    type="text_delta",
+                    payload_json={"delta": f"chunk-{i}"},
+                ))
+            db.commit()
+
+        # Fetch all events
+        response = client.get(
+            f"/v1/note-runs/{run_id}/events",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        all_events = response.json()["data"]
+        assert len(all_events) == 10
+
+        # Reconnect with Last-Event-ID = 5 (replay from seq 5)
+        response = client.get(
+            f"/v1/note-runs/{run_id}/events",
+            headers={"Authorization": f"Bearer {token}", "Last-Event-ID": "5"},
+        )
+        assert response.status_code == 200
+        replayed = response.json()["data"]
+        assert len(replayed) == 5
+        assert replayed[0]["seq"] == 6
+        assert replayed[-1]["seq"] == 10
+
+        # Reconnect with ?after=7 (fallback query param)
+        response = client.get(
+            f"/v1/note-runs/{run_id}/events?after=7",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        replayed2 = response.json()["data"]
+        assert len(replayed2) == 3
+        assert replayed2[0]["seq"] == 8
+
+        # No gaps or duplicates in full fetch
+        seqs = [e["seq"] for e in all_events]
+        assert seqs == list(range(1, 11))
+
+
+def test_recognitions_endpoint(tmp_path):
+    """POST recognitions stores OCR data."""
+    with _make_http_client(tmp_path) as client:
+        token = _register_and_get_token(client)
+        note = _create_note(client, token, "Recognition Test")
+        note_id = note["id"]
+
+        response = client.post(
+            f"/v1/notes/{note_id}/recognitions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "drawingRevision": 1,
+                "engine": "vn_accurate",
+                "engineVersion": "2.0",
+                "languages": '["en-US"]',
+                "rawText": "Hello world",
+                "userCorrectedText": "Hello, world!",
+            },
+        )
+        assert response.status_code == 201
+        rec = response.json()["data"]
+        assert rec["rawText"] == "Hello world"
+        assert rec["userCorrectedText"] == "Hello, world!"
+        assert rec["engine"] == "vn_accurate"
+
+
+def test_capabilities_endpoint(tmp_path):
+    """GET /v1/capabilities returns supported features."""
+    with _make_http_client(tmp_path) as client:
+        response = client.get("/v1/capabilities")
+        assert response.status_code == 200
+        caps = response.json()["data"]
+        assert caps["supportsNotes"] is True
+        assert caps["supportsChat"] is True
