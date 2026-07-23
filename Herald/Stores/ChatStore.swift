@@ -384,6 +384,12 @@ final class ChatStore {
                         content.body = String(finalMessage.content.prefix(100))
                         content.sound = .default
                         content.categoryIdentifier = NotificationCategoryID.messageReady
+                        if let convId = self.conversation?.id.uuidString {
+                            content.userInfo = [
+                                "conversationId": convId,
+                                "messageId": finalMessage.id.uuidString,
+                            ]
+                        }
 
                         let request = UNNotificationRequest(
                             identifier: "herald-response-\(UUID().uuidString)",

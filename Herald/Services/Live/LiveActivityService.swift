@@ -32,9 +32,10 @@ final class LiveActivityService {
             currentActivity = try Activity.request(
                 attributes: attributes,
                 content: .init(state: state, staleDate: nil),
-                pushType: nil
+                pushType: .token
             )
             startedAt = now
+            observePushTokens()
         } catch {
             // Live Activities not supported or disabled — silently ignore
         }
@@ -69,9 +70,10 @@ final class LiveActivityService {
             currentActivity = try Activity.request(
                 attributes: attributes,
                 content: .init(state: state, staleDate: nil),
-                pushType: nil
+                pushType: .token
             )
             startedAt = now
+            observePushTokens()
         } catch {
             // Live Activities not supported or disabled — silently ignore
         }
@@ -107,9 +109,10 @@ final class LiveActivityService {
             currentActivity = try Activity.request(
                 attributes: attributes,
                 content: .init(state: state, staleDate: nil),
-                pushType: nil
+                pushType: .token
             )
             startedAt = now
+            observePushTokens()
         } catch {
             // Silently ignore
         }
@@ -142,6 +145,25 @@ final class LiveActivityService {
                 await activity.end(finalContent, dismissalPolicy: .immediate)
             }
         }
+    }
+
+    // MARK: - Push Token Registration
+
+    /// Observe push token updates from the current activity and deliver them
+    /// to the relay for remote activity updates.
+    func observePushTokens() {
+        guard let activity = currentActivity else { return }
+        let activityRef = activity
+        Task {
+            for await token in activityRef.pushTokenUpdates {
+                let tokenHex = token.map { String(format: "%02x", $0) }.joined()
+                self.registerLiveActivityPushTokenSync(tokenHex)
+            }
+        }
+    }
+
+    private nonisolated func registerLiveActivityPushTokenSync(_ token: String) {
+        UserDefaults.standard.set(token, forKey: "herald.liveActivity.pushToken")
     }
 
     // MARK: - Private

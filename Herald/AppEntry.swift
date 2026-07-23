@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UserNotifications
+import BackgroundTasks
 
 final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
@@ -12,6 +13,17 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         // activities immediately on launch; real active sessions will recreate
         // or adopt an activity once state is restored.
         LiveActivityService.endAllActivities()
+
+        // Register background refresh task
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "net.fihonline.herald.refresh",
+            using: nil
+        ) { task in
+            Task { @MainActor in
+                await AppContainer.sharedDefault().handleBackgroundRefresh(task as! BGAppRefreshTask)
+            }
+        }
+        scheduleBackgroundRefresh()
 
         // Register for remote (silent push) notifications
         application.registerForRemoteNotifications()
@@ -102,6 +114,12 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
             )
         }
     }
+
+    private func scheduleBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.herald.refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
 }
 
 struct ThemeAwareRootView: View {
@@ -163,8 +181,8 @@ struct HeraldApp: App {
                         }
                     }
                     // Note: voice sessions are NOT ended on background.
-                    // The "audio" background mode keeps WebRTC alive so
-                    // the user can continue talking while the app is
+                    // The "audio" background mode keeps the voice session alive
+                    // so the user can continue talking while the app is
                     // backgrounded. The session ends only when the user
                     // explicitly closes the voice overlay.
                 }

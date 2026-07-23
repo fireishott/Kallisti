@@ -155,7 +155,9 @@ final class LiveSpeechService {
                 throw SpeechError.startupTimedOut
             }
 
-            let stream = try await group.next()!
+            guard let stream = try await group.next() else {
+                throw SpeechError.startupTimedOut
+            }
             group.cancelAll()
             return stream
         }

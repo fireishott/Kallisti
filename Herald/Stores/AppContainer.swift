@@ -1,5 +1,6 @@
 import Foundation
 import os
+import BackgroundTasks
 
 extension Logger {
     static let app = Logger(subsystem: "net.fihonline.herald", category: "app")
@@ -642,6 +643,34 @@ final class AppContainer {
         updateWidgetData()
         await chatStore.loadConversation()
         await inboxStore.loadInbox(force: true)
+    }
+
+    func handleBackgroundRefresh(_ task: BGAppRefreshTask) async {
+        // Schedule the next background refresh before we start
+        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.herald.refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(request)
+
+        guard pairingStore.isPaired else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+        guard await sessionStore.currentAccessToken() != nil else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+
+        let expiration = Task {
+            try? await Task.sleep(for: .seconds(25))
+            task.setTaskCompleted(success: false)
+        }
+
+        await chatStore.loadConversation()
+        await inboxStore.loadInbox(force: true)
+        await hostStore.refresh()
+
+        expiration.cancel()
+        task.setTaskCompleted(success: true)
     }
 
     func handleSystemLaunch() async {

@@ -22,6 +22,21 @@ final class TalkAudioCapture {
     private var isRecording = false
     private(set) var currentPower: Float = -160.0  // dBFS
 
+    // Buffered audio tap — accumulates on tap thread, flushes to MainActor periodically
+    private nonisolated(unsafe) var tapBuffer: [AVAudioPCMBuffer] = []
+    private nonisolated(unsafe) var tapPower: Float = -160.0
+    private let tapLock = NSLock()
+    private var flushTask: Task<Void, Never>?
+
+    private nonisolated func swapTapBuffer() -> ([AVAudioPCMBuffer], Float) {
+        tapLock.lock()
+        let batch = tapBuffer
+        let power = tapPower
+        tapBuffer = []
+        tapLock.unlock()
+        return (batch, power)
+    }
+
     // MARK: - VAD Endpointing
 
     private var vadEndpointContinuation: AsyncStream<Void>.Continuation?
@@ -59,16 +74,32 @@ final class TalkAudioCapture {
             guard let self else { return }
             let channelData = buffer.floatChannelData?[0]
             let frames = buffer.frameLength
+            let power: Float
             if let channelData, frames > 0 {
                 var rms: Float = 0
                 vDSP_measqv(channelData, 1, &rms, vDSP_Length(frames))
-                let dbFS = 10 * log10(rms + 1e-10)
-                Task { @MainActor in
-                    self.currentPower = dbFS
-                }
+                power = 10 * log10(rms + 1e-10)
+            } else {
+                power = -160.0
             }
-            Task { @MainActor in
-                self.recordedBuffers.append(buffer)
+            // Accumulate on tap thread — no Task allocation per sample
+            self.tapLock.lock()
+            self.tapBuffer.append(buffer)
+            self.tapPower = power
+            self.tapLock.unlock()
+        }
+
+        // Single flush task — moves batched data to MainActor at ~10Hz
+        flushTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self else { return }
+                let (batch, power) = self.swapTapBuffer()
+                guard !batch.isEmpty else { continue }
+                await MainActor.run {
+                    self.currentPower = power
+                    self.recordedBuffers.append(contentsOf: batch)
+                }
             }
         }
 
@@ -82,6 +113,13 @@ final class TalkAudioCapture {
 
     func stopRecording() -> RecordedUtterance? {
         guard isRecording else { return nil }
+
+        flushTask?.cancel()
+        flushTask = nil
+
+        // Flush any remaining buffered audio
+        let (remaining, _) = swapTapBuffer()
+        recordedBuffers.append(contentsOf: remaining)
 
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
@@ -116,6 +154,9 @@ final class TalkAudioCapture {
     }
 
     func cancel() {
+        flushTask?.cancel()
+        flushTask = nil
+        _ = swapTapBuffer()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
@@ -205,12 +246,12 @@ final class TalkAudioCapture {
         let totalFrames = recordedBuffers.reduce(0) { $0 + Int($1.frameLength) }
 
         let outputSampleRate: Double = 24000
-        let outputFormat = AVAudioFormat(
+        guard let outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: outputSampleRate,
             channels: 1,
             interleaved: true
-        )!
+        ) else { return nil }
 
         // Resample ratio
         let ratio = outputSampleRate / inputSampleRate

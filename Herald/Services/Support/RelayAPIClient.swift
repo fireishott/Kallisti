@@ -206,19 +206,21 @@ final class RelayAPIClient {
         lastEventID: String? = nil
     ) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task { @MainActor in
+            let task = Task {
                 do {
-                    var request = try makeRequest(
-                        path: path,
-                        method: "GET",
-                        accessToken: accessToken,
-                        body: nil
-                    )
+                    var request = try await MainActor.run {
+                        try makeRequest(
+                            path: path,
+                            method: "GET",
+                            accessToken: accessToken,
+                            body: nil
+                        )
+                    }
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     if let lastEventID, !lastEventID.isEmpty {
                         request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
                     }
-                    request.timeoutInterval = 300
+                    request.timeoutInterval = TimeInterval(Int.max)
 
                     let (bytes, response) = try await session.bytes(for: request)
                     let httpResponse = response as? HTTPURLResponse

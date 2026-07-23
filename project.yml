@@ -24,11 +24,6 @@ settings:
     ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     ENABLE_PREVIEWS: true
 
-packages:
-  WebRTC:
-    url: https://github.com/stasel/WebRTC.git
-    version: 130.0.0
-
 schemes:
   Herald:
     build:
@@ -72,8 +67,8 @@ targets:
       - path: Herald/Resources
         optional: true
     dependencies:
-      - package: WebRTC
       - target: HeraldWidgets
+      - target: HeraldNotificationService
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
@@ -149,6 +144,31 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
+        MARKETING_VERSION: "2.1.2"
+        CURRENT_PROJECT_VERSION: "53"
+        SWIFT_VERSION: "6.2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 58U7UPFS53
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  HeraldNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HeraldNotificationService
+    info:
+      path: HeraldNotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: HeraldNotificationService
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
+        PRODUCT_NAME: HeraldNotificationService
         MARKETING_VERSION: "2.1.2"
         CURRENT_PROJECT_VERSION: "53"
         SWIFT_VERSION: "6.2"

@@ -1,11 +1,13 @@
 import CarPlay
 import UIKit
+import os
 
 /// Bridges `TalkStore` voice state to the CarPlay `CPVoiceControlTemplate`.
 /// The current public CarPlay SDK exposes stateful voice control visuals but
 /// not per-state action buttons, so this manager presents status only.
 @MainActor
 final class CarPlayVoiceManager {
+    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "CarPlay")
     private static let maxTranscriptTitleLength = 80
 
     private let interfaceController: CPInterfaceController
@@ -45,9 +47,15 @@ final class CarPlayVoiceManager {
 
         observationTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
                 guard let self else { return }
                 self.syncState()
+                // Wait until an observed property changes, then loop
+                await withObservationTracking {
+                    _ = self.talkStore.voiceState
+                    _ = self.talkStore.connectionState
+                    _ = self.talkStore.isSessionActive
+                    _ = self.talkStore.transcriptItems.count
+                } onChange: {}
             }
         }
     }
@@ -64,8 +72,11 @@ final class CarPlayVoiceManager {
     private func setTemplate(speakingTitle: String?, activeStateID: String?) {
         let template = buildVoiceControlTemplate(speakingTitle: speakingTitle)
         voiceTemplate = template
-        interfaceController.setRootTemplate(template, animated: false) { _, _ in
-            guard let activeStateID else { return }
+        interfaceController.setRootTemplate(template, animated: false) { success, error in
+            if let error {
+                CarPlayVoiceManager.logger.error("CarPlay setRootTemplate failed: \(error.localizedDescription)")
+            }
+            guard let activeStateID, success else { return }
             template.activateVoiceControlState(withIdentifier: activeStateID)
         }
     }
@@ -74,35 +85,35 @@ final class CarPlayVoiceManager {
         let idle = CPVoiceControlState(
             identifier: StateID.idle,
             titleVariants: ["Tap Start to talk to Herald", "Talk to Herald"],
-            image: UIImage(systemName: "brain.head.profile")!,
+            image: UIImage(systemName: "brain.head.profile") ?? UIImage(),
             repeats: false
         )
 
         let connecting = CPVoiceControlState(
             identifier: StateID.connecting,
             titleVariants: ["Connecting to Herald...", "Connecting..."],
-            image: UIImage(systemName: "antenna.radiowaves.left.and.right")!,
+            image: UIImage(systemName: "antenna.radiowaves.left.and.right") ?? UIImage(),
             repeats: true
         )
 
         let listening = CPVoiceControlState(
             identifier: StateID.listening,
             titleVariants: ["Listening...", "Go ahead"],
-            image: UIImage(systemName: "waveform")!,
+            image: UIImage(systemName: "waveform") ?? UIImage(),
             repeats: true
         )
 
         let thinking = CPVoiceControlState(
             identifier: StateID.thinking,
             titleVariants: ["Thinking...", "Working on it"],
-            image: UIImage(systemName: "gear")!,
+            image: UIImage(systemName: "gear") ?? UIImage(),
             repeats: true
         )
 
         let speaking = CPVoiceControlState(
             identifier: StateID.speaking,
             titleVariants: [speakingTitle ?? "Herald is speaking", "Herald is speaking"],
-            image: UIImage(systemName: "speaker.wave.2.fill")!,
+            image: UIImage(systemName: "speaker.wave.2.fill") ?? UIImage(),
             repeats: false
         )
 

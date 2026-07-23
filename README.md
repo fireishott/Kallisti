@@ -288,6 +288,21 @@ All sensitive data lives in the Keychain, not UserDefaults.
 
 ---
 
+## Pairing Props
+
+**Copy-paste setup prompts that any AI assistant can use to walk you through configuring Herald end-to-end.**
+
+| Prompt | Method | Best for |
+|--------|--------|----------|
+| [`tailscale.md`](docs/pairing-props/tailscale.md) | Tailscale tailnet (private mesh) | Home lab, single-network, privacy-first |
+| [`remote-relay.md`](docs/pairing-props/remote-relay.md) | Public URL (Fly.io, VPS, etc.) | Mobile use, travel, always-on access |
+
+**How it works:** copy the contents of either prompt, paste it into a conversation with your Hermes agent (or Claude, ChatGPT, etc.), and the assistant will check your prerequisites, deploy the relay, configure the connector, and pair your phone step by step.
+
+See [`docs/pairing-props/`](docs/pairing-props/) for a detailed comparison, architecture diagram, and troubleshooting guide.
+
+---
+
 ## Quick Start
 
 ### 1. Install the connector

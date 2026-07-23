@@ -1,6 +1,10 @@
 import AVFoundation
 import os
 
+enum PlaybackError: Error {
+    case unsupportedFormat
+}
+
 @MainActor
 final class PCMPlaybackQueue {
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "PCMPlayback")
@@ -18,12 +22,14 @@ final class PCMPlaybackQueue {
         let player = AVAudioPlayerNode()
         engine.attach(player)
 
-        let fmt = AVAudioFormat(
+        guard let fmt = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 24000,
             channels: 1,
             interleaved: true
-        )!
+        ) else {
+            throw PlaybackError.unsupportedFormat
+        }
 
         engine.connect(player, to: engine.mainMixerNode, format: fmt)
         try engine.start()

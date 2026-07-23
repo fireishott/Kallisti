@@ -363,7 +363,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return DemoData.sampleConversation
         }
 
-        return Conversation(title: "Herald")
+        return Conversation(title: "New Chat")
     }
 
     private func mapConversation(_ relayConversation: RelayConversation) -> Conversation {

@@ -1145,6 +1145,7 @@ struct AppStoresTests {
         #expect(mergedAttachment.localStoragePath != nil)
     }
 
+    #if canImport(WebRTC)
     @Test @MainActor
     func liveVoiceSessionServiceRefreshesExpiredAccessTokenDuringReadiness() async throws {
         let configuration = URLSessionConfiguration.ephemeral
@@ -1429,6 +1430,7 @@ struct AppStoresTests {
         #expect(voiceService.voiceState == .idle)
         #expect(voiceService.statusMessage == nil)
     }
+    #endif
 
     @Test @MainActor
     func liveHeraldClientRefreshesExpiredAccessTokenDuringConversationLoad() async throws {

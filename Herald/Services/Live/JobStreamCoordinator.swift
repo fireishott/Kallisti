@@ -102,6 +102,9 @@ actor JobStreamCoordinator {
                     // Reset watchdog on ANY SSE data, including comments/heartbeats
                     lastSSEDataTime = Date()
 
+                    // Snapshot lastAppliedSeq BEFORE parseEnvelope mutates it
+                    let seqBefore = self.lastAppliedSeq
+
                     guard let envelope = self.parseEnvelope(from: sseEvent) else {
                         self.logger.debug("job=\(self.jobId.uuidString.prefix(8)) skipped event=\(sseEvent.event) id=\(sseEvent.id ?? "nil")")
                         continue
@@ -116,13 +119,13 @@ actor JobStreamCoordinator {
                     }
 
                     // Detect seq gaps
-                    if envelope.seq > self.lastAppliedSeq + 1 {
-                        self.logger.warning("Seq gap detected: expected \(self.lastAppliedSeq + 1), got \(envelope.seq). Reconnecting.")
+                    if envelope.seq > seqBefore + 1 {
+                        self.logger.warning("Seq gap detected: expected \(seqBefore + 1), got \(envelope.seq). Reconnecting.")
                         break  // Reconnect from lastAppliedSeq
                     }
 
-                    // Skip duplicates
-                    if envelope.seq <= self.lastAppliedSeq {
+                    // Skip duplicates (compare against snapshot, not mutated value)
+                    if envelope.seq <= seqBefore {
                         continue
                     }
 
@@ -275,8 +278,7 @@ actor JobStreamCoordinator {
         if let idString = sseEvent.id, let parsedSeq = Int(idString), parsedSeq > 0 {
             seq = parsedSeq
         } else {
-            self.lastAppliedSeq += 1
-            seq = self.lastAppliedSeq
+            seq = self.lastAppliedSeq + 1
         }
 
         let eventType: JobEventType
@@ -297,6 +299,31 @@ actor JobStreamCoordinator {
             eventType = .toolProgress
             let label = json["label"] as? String ?? "Working..."
             payload = .toolProgress(ToolProgressPayload(toolCallId: "", label: label))
+
+        case "tool.started":
+            eventType = .toolStarted
+            let toolCallId = json["tool_call_id"] as? String ?? ""
+            let name = json["name"] as? String ?? "tool"
+            let args = json["args"] as? String ?? ""
+            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args))
+
+        case "tool.completed":
+            eventType = .toolCompleted
+            let toolCallId = json["tool_call_id"] as? String ?? ""
+            let output = json["output"] as? String ?? ""
+            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output))
+
+        case "approval.required":
+            eventType = .approvalRequired
+            let toolCallId = json["tool_call_id"] as? String ?? ""
+            let prompt = json["prompt"] as? String ?? "Approval required"
+            payload = .approvalRequired(ApprovalRequiredPayload(toolCallId: toolCallId, prompt: prompt))
+
+        case "run.requeued":
+            eventType = .runRequeued
+            let fromAttempt = json["from_attempt"] as? Int ?? 0
+            let toAttempt = json["to_attempt"] as? Int ?? 0
+            payload = .runRequeued(RunRequeuedPayload(fromAttempt: fromAttempt, toAttempt: toAttempt))
 
         case "started":
             eventType = .runStarted
