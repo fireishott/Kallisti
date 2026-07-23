@@ -26,7 +26,7 @@ struct NoteRecognitionCoordinatorTests {
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Debounce Test")
         let data = Data("drawing".utf8)
-        try repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1)
+        try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         let coordinator = NoteRecognitionCoordinator(
             recognizer: recognizer,
@@ -63,7 +63,7 @@ struct NoteRecognitionCoordinatorTests {
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Version Refresh Test")
         let data = Data("drawing".utf8)
-        try repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1)
+        try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         // First recognition with version 1.0
         let coordinator = NoteRecognitionCoordinator(

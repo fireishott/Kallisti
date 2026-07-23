@@ -262,6 +262,8 @@
 		FEE3390450ECCB4229E142BF /* AppSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53DEE0C12D517E019B12233 /* AppSessionStore.swift */; };
 		FF0CF72D1C79EBD6AABF9DAA /* NoteDirectiveParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACFA718BE71AD253C1802EE2 /* NoteDirectiveParser.swift */; };
 		FF32EC3319DE5A6CD899E5F4 /* SkillsBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */; };
+		A3BF9C1849774F1C9B6A9E74 /* NotesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61B67FC3A0644CBA86017C13 /* NotesStoreTests.swift */; };
+		A52F636D8801459BB8C9986B /* MockNotesRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50FC6437D084400BE37CED8 /* MockNotesRepository.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -576,6 +578,8 @@
 		FE863F3296A2748FD9FAD626 /* VoiceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceState.swift; sourceTree = "<group>"; };
 		FFD1CFB386F902E262624380 /* TalkTurnClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkTurnClient.swift; sourceTree = "<group>"; };
 		FFDB6498238FCB0CFD3C359B /* PermissionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsStore.swift; sourceTree = "<group>"; };
+		61B67FC3A0644CBA86017C13 /* NotesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesStoreTests.swift; sourceTree = "<group>"; };
+		A50FC6437D084400BE37CED8 /* MockNotesRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockNotesRepository.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -1098,6 +1102,8 @@
 				3E857F239BD33E0037CCFDFA /* NoteRecognitionCoordinatorTests.swift */,
 				494FEFB282E50AC8AB9D2D31 /* NotesIntegrationTests.swift */,
 				2FE61813D4321D8A0D8C9E81 /* NotesRepositoryTests.swift */,
+				61B67FC3A0644CBA86017C13 /* NotesStoreTests.swift */,
+				A50FC6437D084400BE37CED8 /* MockNotesRepository.swift */,
 				D0994BAC56178F32ABD3B939 /* PushRegistrationTests.swift */,
 				FD775DE2E1B65DD90403BEB3 /* SpeechServiceTests.swift */,
 				7EF89A2AB11146AAEE5ACEC2 /* StreamContractV2Tests.swift */,
@@ -1389,6 +1395,8 @@
 				27A4730E25856023C4E0E52E /* NoteRecognitionCoordinatorTests.swift in Sources */,
 				4481FDF60AE9F743777DDA63 /* NotesIntegrationTests.swift in Sources */,
 				E5E83246F0B39DE2FD527EFB /* NotesRepositoryTests.swift in Sources */,
+				A3BF9C1849774F1C9B6A9E74 /* NotesStoreTests.swift in Sources */,
+				A52F636D8801459BB8C9986B /* MockNotesRepository.swift in Sources */,
 				AB8504A9F7B672BBA9B1DB83 /* PushRegistrationTests.swift in Sources */,
 				54EE2B42FB35CCC45800504A /* SpeechServiceTests.swift in Sources */,
 				17103C3C57C7552A6E042572 /* StreamContractV2Tests.swift in Sources */,

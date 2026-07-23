@@ -40,6 +40,7 @@ struct iPadSidebarView: View {
     @Binding var isRightPanelOpen: Bool
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(SessionListStore.self) private var sessionStore
+    @Environment(NotesStore.self) private var notesStore
     @State private var renamingSession: SessionSummary?
     @State private var renameText = ""
 
@@ -50,8 +51,12 @@ struct iPadSidebarView: View {
                 headerRow
             }
 
+            // ── Notes blade (when Notes is selected) ──
+            if selectedSection == .notes {
+                notesBladeContent
+            }
             // ── Session browser (only when Chat is selected or browsing) ──
-            if selectedSection == .chat || sessionStore.searchResults != nil {
+            else if selectedSection == .chat || sessionStore.searchResults != nil {
                 // Search bar
                 searchBar
 
@@ -152,6 +157,40 @@ struct iPadSidebarView: View {
             .help("Toggle inspector panel")
         }
         .padding(.vertical, Design.Spacing.xs)
+    }
+
+    // MARK: - Notes Blade Content
+
+    @ViewBuilder
+    private var notesBladeContent: some View {
+        // Quick actions
+        Section {
+            Button {
+                Task { await notesStore.createNote() }
+            } label: {
+                Label("New Note", systemImage: "square.and.pencil")
+            }
+            Button {
+                Task { await notesStore.createQuickNote() }
+            } label: {
+                Label("Quick Note", systemImage: "note.text.badge.plus")
+            }
+        }
+
+        // Folders
+        Section("Folders") {
+            ForEach(notesStore.folders) { folder in
+                Label(folder.name, systemImage: "folder")
+                    .badge(notesStore.noteCount(for: folder))
+            }
+        }
+
+        // Recent notes
+        Section("Recent") {
+            ForEach(notesStore.recentNotes) { note in
+                NoteRowView(note: note)
+            }
+        }
     }
 
     // MARK: - Search Bar

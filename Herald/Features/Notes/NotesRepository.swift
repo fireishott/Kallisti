@@ -5,7 +5,7 @@ import os
 /// Repository for note metadata and drawing blobs.
 /// This is the ONLY writer for note data — all persistence flows through here.
 /// Drawing blobs are atomic files in Application Support; metadata is JSON on disk.
-actor NotesRepository {
+actor NotesRepository: NotesRepositoryProtocol {
     private let fileManager = FileManager.default
     private let notesDirectoryName = "Notes"
     private let metadataFileName = "notes-index.json"
@@ -141,7 +141,7 @@ actor NotesRepository {
     /// Atomic write — crash yields prior or next complete revision, never a partial blob.
     /// Also records a `NoteDrawingRevision` metadata entry.
     @discardableResult
-    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (revisionId: UUID, blobPath: String, contentHash: String) {
+    func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) async throws -> (revisionId: UUID, blobPath: String, contentHash: String) {
         let noteDir = noteDirectory(for: noteId)
         try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
 
@@ -166,7 +166,7 @@ actor NotesRepository {
     }
 
     /// Content-hash deduplication: skip write if the latest revision has the same hash.
-    func saveDrawingBlobIfChanged(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) throws -> (revisionId: UUID, blobPath: String, contentHash: String, changed: Bool) {
+    func saveDrawingBlobIfChanged(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle = .linesMedium) async throws -> (revisionId: UUID, blobPath: String, contentHash: String, changed: Bool) {
         let contentHash = SHA256.hash(data: data)
         let hashHex = contentHash.map { String(format: "%02x", $0) }.joined()
 
@@ -178,12 +178,12 @@ actor NotesRepository {
             }
         }
 
-        let result = try saveDrawingBlob(noteId: noteId, data: data, revision: revision, pageStyle: pageStyle)
+        let result = try await saveDrawingBlob(noteId: noteId, data: data, revision: revision, pageStyle: pageStyle)
         return (result.revisionId, result.blobPath, result.contentHash, true)
     }
 
     /// Load a PKDrawing blob from disk.
-    func loadDrawingBlob(noteId: UUID, revision: Int) throws -> Data {
+    func loadDrawingBlob(noteId: UUID, revision: Int) async throws -> Data {
         let blobURL = noteDirectory(for: noteId).appendingPathComponent("rev-\(revision).pkdrawing")
         guard fileManager.fileExists(atPath: blobURL.path) else {
             throw NotesRepositoryError.blobNotFound(noteId, revision)
@@ -192,8 +192,8 @@ actor NotesRepository {
     }
 
     /// Verify the content hash of a blob on disk.
-    func verifyBlobHash(noteId: UUID, revision: Int, expectedHash: String) throws -> Bool {
-        let data = try loadDrawingBlob(noteId: noteId, revision: revision)
+    func verifyBlobHash(noteId: UUID, revision: Int, expectedHash: String) async throws -> Bool {
+        let data = try await loadDrawingBlob(noteId: noteId, revision: revision)
         let actualHash = SHA256.hash(data: data)
         let hashHex = actualHash.map { String(format: "%02x", $0) }.joined()
         return hashHex == expectedHash
@@ -250,7 +250,7 @@ actor NotesRepository {
     }
 
     /// Load all attachments for a note.
-    func loadAttachments(noteId: UUID) throws -> [NoteAttachment] {
+    func loadAttachments(noteId: UUID) async throws -> [NoteAttachment] {
         let url = attachmentsMetadataURL(for: noteId)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
@@ -276,7 +276,7 @@ actor NotesRepository {
         type: NoteAttachmentType,
         fileName: String,
         mimeType: String
-    ) throws -> NoteAttachment {
+    ) async throws -> NoteAttachment {
         let noteDir = noteDirectory(for: noteId)
         try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
 
@@ -295,7 +295,7 @@ actor NotesRepository {
             contentHash: hashHex
         )
 
-        var attachments = try loadAttachments(noteId: noteId)
+        var attachments = try await loadAttachments(noteId: noteId)
         attachments.append(attachment)
         try saveAttachments(attachments, noteId: noteId)
 
@@ -303,7 +303,7 @@ actor NotesRepository {
     }
 
     /// Delete an attachment blob and remove it from the metadata index.
-    func deleteAttachment(_ attachment: NoteAttachment) throws {
+    func deleteAttachment(_ attachment: NoteAttachment) async throws {
         // Remove blob file
         let blobURL = URL(fileURLWithPath: attachment.blobPath)
         if fileManager.fileExists(atPath: blobURL.path) {
@@ -311,7 +311,7 @@ actor NotesRepository {
         }
 
         // Remove from metadata index
-        var attachments = try loadAttachments(noteId: attachment.noteId)
+        var attachments = try await loadAttachments(noteId: attachment.noteId)
         attachments.removeAll { $0.id == attachment.id }
         try saveAttachments(attachments, noteId: attachment.noteId)
     }
