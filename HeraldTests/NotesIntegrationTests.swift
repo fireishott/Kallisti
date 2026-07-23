@@ -4,6 +4,7 @@ import Testing
 @testable import Herald
 
 @Suite(.serialized)
+@MainActor
 struct NotesIntegrationTests {
 
     // MARK: - Helpers

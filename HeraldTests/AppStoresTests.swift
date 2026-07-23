@@ -219,7 +219,7 @@ struct AppStoresTests {
                     sendCallCount += 1
                     lastClientMessageID = clientMessageID
                     continuation.yield(.messageSent(jobID: UUID()))
-                    continuation.yield(.finished(nextResponse, nil, nil))
+                    continuation.yield(.finished(nextResponse, nil, nil, nil))
                     continuation.finish()
                 }
             }
@@ -518,7 +518,8 @@ struct AppStoresTests {
                                 status: .delivered
                             ),
                             nil,
-                            diff
+                            diff,
+                            nil
                         ))
                         continuation.finish()
                     }
@@ -651,7 +652,7 @@ struct AppStoresTests {
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
                         try? await Task.sleep(for: .milliseconds(50))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Done", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Done", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -914,7 +915,7 @@ struct AppStoresTests {
 
         let finishedMessage = try #require(
             updates.compactMap { update -> Message? in
-                guard case .finished(let message, _, _) = update else { return nil }
+                guard case .finished(let message, _, _, _) = update else { return nil }
                 return message
             }.last
         )
@@ -994,7 +995,7 @@ struct AppStoresTests {
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Retried", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Retried", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -1092,7 +1093,7 @@ struct AppStoresTests {
                 return AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "I saw the attachment.", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "I saw the attachment.", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -2773,7 +2774,7 @@ struct NotificationReplyTests {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -2843,7 +2844,7 @@ struct NotificationReplyTests {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -2913,7 +2914,7 @@ struct NotificationReplyTests {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }
@@ -2980,7 +2981,7 @@ struct NotificationReplyTests {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
-                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil))
+                        continuation.yield(.finished(Message(sender: .herald, content: "Reply", status: .delivered), nil, nil, nil))
                         continuation.finish()
                     }
                 }

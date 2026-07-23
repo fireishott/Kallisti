@@ -5,6 +5,13 @@ import Testing
 @Suite(.serialized)
 struct PushRegistrationTests {
 
+    /// Shared mutable state for stub URL protocol captures.
+    private final class CaptureState: @unchecked Sendable {
+        var requestCount: Int = 0
+        var lastRequestBody: String?
+        var capturedBody: String?
+    }
+
     private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         nonisolated(unsafe) static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
 
@@ -58,6 +65,7 @@ struct PushRegistrationTests {
         return URLSession(configuration: config)
     }
 
+    @MainActor
     private func makeCoordinator(
         session: URLSession? = nil,
         usesManagedPushBroker: Bool = false
@@ -87,13 +95,12 @@ struct PushRegistrationTests {
     @MainActor
     @Test("Registration always sends request to relay, even if token hasn't changed")
     func testRegistrationAlwaysSendsToRelay() async throws {
-        var requestCount = 0
-        var lastRequestBody: String?
+        let capture = CaptureState()
 
         StubURLProtocol.requestHandler = { request in
-            requestCount += 1
+            capture.requestCount += 1
             if let body = request.httpBody {
-                lastRequestBody = String(data: body, encoding: .utf8)
+                capture.lastRequestBody = String(data: body, encoding: .utf8)
             }
             let response = HTTPURLResponse(
                 url: request.url!,
@@ -122,7 +129,7 @@ struct PushRegistrationTests {
             pushEnvironment: "development"
         )
         #expect(result1 == true)
-        #expect(requestCount == 1)
+        #expect(capture.requestCount == 1)
 
         // Second registration with same token — must still send request
         let result2 = try await coordinator.registerPushToken(
@@ -139,16 +146,16 @@ struct PushRegistrationTests {
             pushEnvironment: "development"
         )
         #expect(result2 == true)
-        #expect(requestCount == 2, "Coordinator must always send registration, never short-circuit")
+        #expect(capture.requestCount == 2, "Coordinator must always send registration, never short-circuit")
     }
 
     @MainActor
     @Test("Per-environment routing: development token uses development environment")
     func testPerEnvironmentRoutingDevelopment() async throws {
-        var capturedBody: String?
+        let capture = CaptureState()
 
         StubURLProtocol.requestHandler = { request in
-            capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -175,17 +182,17 @@ struct PushRegistrationTests {
             pushEnvironment: "development"
         )
 
-        let body = try #require(capturedBody)
+        let body = try #require(capture.capturedBody)
         #expect(body.contains("\"pushEnvironment\":\"development\""))
     }
 
     @MainActor
     @Test("Per-environment routing: production token uses production environment")
     func testPerEnvironmentRoutingProduction() async throws {
-        var capturedBody: String?
+        let capture = CaptureState()
 
         StubURLProtocol.requestHandler = { request in
-            capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -212,18 +219,18 @@ struct PushRegistrationTests {
             pushEnvironment: "production"
         )
 
-        let body = try #require(capturedBody)
+        let body = try #require(capture.capturedBody)
         #expect(body.contains("\"pushEnvironment\":\"production\""))
     }
 
     @MainActor
     @Test("Registration succeeds and sends correct deviceId and bundleId")
     func testRegistrationPayload() async throws {
-        var capturedBody: String?
+        let capture = CaptureState()
         let deviceID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
 
         StubURLProtocol.requestHandler = { request in
-            capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -250,7 +257,7 @@ struct PushRegistrationTests {
             pushEnvironment: "development"
         )
 
-        let body = try #require(capturedBody)
+        let body = try #require(capture.capturedBody)
         #expect(body.contains("11111111-1111-1111-1111-111111111111"))
         #expect(body.contains("net.fihonline.herald"))
         #expect(body.contains("deadbeef"))
@@ -268,12 +275,9 @@ struct PushRegistrationTests {
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let errorJSON = try! JSONEncoder().encode([
-                "error": [
-                    "code": "TOKEN_INVALID",
-                    "message": "APNs token is permanently invalid (410 Gone)"
-                ] as [String: Any]
-            ])
+            let errorJSON = """
+            {"error":{"code":"TOKEN_INVALID","message":"APNs token is permanently invalid (410 Gone)"}}
+            """.data(using: .utf8)!
             return (response, errorJSON)
         }
 
@@ -293,7 +297,7 @@ struct PushRegistrationTests {
                 appVersion: "1.0.0",
                 pushEnvironment: "development"
             )
-            Issue("Expected registration to throw on 410 Gone response")
+            Issue.record("Expected registration to throw on 410 Gone response")
         } catch {
             // The coordinator should propagate the error — not silently succeed.
             // This ensures the app knows the registration failed and can retry
