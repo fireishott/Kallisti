@@ -1,7 +1,7 @@
 <!-- HERALD — Self-hosted AI companion for iPhone and iPad -->
 
 <p align="center">
-  <img src="docs/assets/brand-mark.svg" alt="HERALD" width="400"/>
+  <img src="docs/assets/brand-mark.png" alt="HERALD" width="400"/>
 </p>
 
 <p align="center">
@@ -380,7 +380,7 @@ Built on the foundation of [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS
 ---
 
 <p align="center">
-  <img src="docs/assets/brand-mark.svg" alt="HERALD" width="120"/>
+  <img src="docs/assets/brand-mark.png" alt="HERALD" width="120"/>
   <br/>
   <sub>Your AI. Your server. Your rules.</sub>
 </p>
