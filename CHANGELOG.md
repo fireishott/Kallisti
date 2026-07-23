@@ -49,6 +49,13 @@
   and `context.used` in the job.result payload, enabling the iOS app to
   display accurate context usage without estimating from token counts.
 
+- **Actionable notification categories**: Notifications now carry category
+  identifiers and conversation metadata through the full push pipeline.
+  New `HERALD_SESSION_REMINDER` category with "Remind in 1h" action.
+  Connector sends `category` and `userInfo` (conversationId) to relay;
+  relay forwards them to APNs so iOS can show action buttons and route
+  taps to the correct conversation.
+
 ### Fixed
 
 - **Relay health check mismatch**: Connector was hitting `/health` (404)
