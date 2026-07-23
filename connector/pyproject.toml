@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "herald-connector"
-version = "0.3.0"
+version = "0.4.0"
 description = "Connector process that bridges a local Herald CLI to Herald relay."
 requires-python = ">=3.11"
 dependencies = [
