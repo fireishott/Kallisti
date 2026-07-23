@@ -12,6 +12,14 @@
   and `context.used` in the job.result payload, enabling the iOS app to
   display accurate context usage without estimating from token counts.
 
+### Fixed
+
+- **Relay health check mismatch**: Connector was hitting `/health` (404)
+  instead of `/v1/health`, and was parsing the response incorrectly
+  (checking top-level `status` instead of `data.status`). Both issues
+  caused spurious "relay unhealthy" errors. Added `/health` alias in
+  relay as defense-in-depth.
+
 ## [2.1.2] - 2026-07-23
 
 ### Fixed
