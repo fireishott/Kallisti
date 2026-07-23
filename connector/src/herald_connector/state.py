@@ -62,6 +62,8 @@ class ConnectorState:
     host_id: str
     connector_credential: str
     user_id: str | None = None
+    device_token: str | None = None
+    device_token_environment: str | None = None
     connector_display_name: str | None = None
     enrolled_at: str | None = None
     last_connected_at: str | None = None

@@ -1469,49 +1469,50 @@ class HeraldConnector:
         category: str | None = None,
         conversation_id: str | None = None,
     ) -> None:
-        """Send a remote push notification via the relay's APNs gateway."""
+        """Send a remote push notification directly via APNs."""
         state = self.state_store.load()
-        if not state.relay_url or not state.user_id:
+        if not state.user_id:
             return
 
-        internal_key = os.getenv("RELAY_INTERNAL_API_KEY", "").strip()
-        if not internal_key:
-            logger.debug("Push skipped: RELAY_INTERNAL_API_KEY not set")
+        device_token = state.device_token
+        if not device_token:
+            logger.debug("Push skipped: no device_token registered")
             return
 
         body = body_text.strip()
         if not body:
             return
 
-        payload: dict = {
-            "user_id": state.user_id,
-            "type": "alert",
-            "title": "Herald",
-            "body": body[:100],
-        }
-        if category:
-            payload["category"] = category
-        if conversation_id:
-            payload["userInfo"] = {"conversationId": conversation_id}
+        # Lazily initialize APNs client
+        if not hasattr(self, '_apns_client') or self._apns_client is None:
+            try:
+                from .apns_client import APNsClient
+                self._apns_client = APNsClient()
+                logger.info("APNs client initialized for direct push")
+            except Exception as e:
+                logger.warning("APNs client init failed: %s", e)
+                self._apns_client = None
+                return
+
+        user_info = {"conversationId": conversation_id} if conversation_id else None
+        environment = state.device_token_environment or "production"
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{state.relay_url.rstrip('/')}/v1/push/send",
-                    headers={
-                        "X-Relay-Internal-Key": internal_key,
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-                if resp.status_code >= 400:
-                    logger.warning(
-                        "Push send failed: HTTP %s - %s",
-                        resp.status_code,
-                        (resp.text or "")[:200],
-                    )
-                else:
-                    logger.info("Push sent for job %s", job_id[:8])
+            from .apns_client import PushResult
+            result = await self._apns_client.send_alert_push(
+                device_token,
+                title="Herald",
+                body=body[:100],
+                category=category,
+                environment=environment,
+                user_info=user_info,
+            )
+            if result == PushResult.SENT:
+                logger.info("Push sent for job %s", job_id[:8])
+            elif result == PushResult.TOKEN_INVALID:
+                logger.warning("Device token is invalid — iOS app should re-register")
+            else:
+                logger.warning("Push send result: %s", result.value)
         except Exception:
             logger.debug("Push send error (non-fatal)", exc_info=True)
 

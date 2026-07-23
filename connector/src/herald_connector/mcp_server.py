@@ -280,6 +280,30 @@ def query_sensor_data(sql: str, limit: int = 100) -> str:
         store.close()
 
 
+@mcp.tool()
+def register_push_device(device_token: str, environment: str = "production") -> str:
+    """Register an iOS device's APNs token for push notifications.
+
+    Call this when the iOS app receives a device token from APNs.
+    The connector will use this token to send push notifications directly
+    via APNs instead of routing through the relay.
+
+    Args:
+        device_token: The hex-encoded APNs device token from iOS
+        environment: "production" or "development" (default: production)
+    """
+    state_store = ConnectorStateStore()
+    state = state_store.load()
+    state.device_token = device_token
+    state.device_token_environment = environment
+    state_store.save(state)
+    return json.dumps({
+        "status": "ok",
+        "device_token": device_token[:8] + "...",
+        "environment": environment,
+    })
+
+
 def main() -> None:
     import argparse
 
