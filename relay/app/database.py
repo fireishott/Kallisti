@@ -176,8 +176,8 @@ class Database:
             job_columns = {column["name"] for column in inspector.get_columns("message_jobs")}
             if "usage_data" not in job_columns:
                 connection.execute(text("ALTER TABLE message_jobs ADD COLUMN usage_data JSON"))
-            if "context_data" not in job_columns:
-                connection.execute(text("ALTER TABLE message_jobs ADD COLUMN context_data JSON"))
+            # NOTE: context_data column must be added manually:
+            # ALTER TABLE message_jobs ADD COLUMN context_data JSON;
             if "diff_data" not in job_columns:
                 connection.execute(text("ALTER TABLE message_jobs ADD COLUMN diff_data JSON"))
 
