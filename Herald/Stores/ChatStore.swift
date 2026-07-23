@@ -19,6 +19,9 @@ final class ChatStore {
     var isLoading = false
     var pendingMessageSentAt: Date?
     var lastTokenUsage: TokenUsage?
+    /// Error context from the most recent `.failed` streaming update.
+    var lastErrorCategory: String?
+    var lastErrorAction: String?
     /// Live log entries for the iPad inspector panel's Logs tab.
     var logEntries: [LogEntry] = []
     private var isPollingEnabled = false
@@ -437,18 +440,39 @@ final class ChatStore {
                     }
                     await self.autoTitleIfNeeded()
 
-                case .failed(let errorMessage):
+                case .failed(let errorMessage, let category, let action):
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
                     // out the timeout, and handle it exactly as before.
                     progressContinuation?.yield(())
                     self.flushPendingDeltas(placeholderID: placeholderID)
+
+                    // Store error context for the UI
+                    self.lastErrorCategory = category
+                    self.lastErrorAction = action
+
+                    // Show actionable guidance based on error category
+                    let guidance: String
+                    switch category {
+                    case "context_exceeded":
+                        guidance = "This session is too long for the current model. Start a new session or switch models."
+                    case "rate_limited":
+                        guidance = "Herald is rate-limited. Please wait and try again."
+                    case "timeout":
+                        guidance = "The request timed out. Check your connection and retry."
+                    case "empty_response":
+                        guidance = "Herald returned an empty response. Try again or start a new session."
+                    default:
+                        guidance = errorMessage
+                    }
+
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         if acceptedJobID == nil {
                             self.conversation?.messages[idx] = Message(
                                 sender: .system,
-                                content: errorMessage,
-                                status: .failed
+                                content: guidance,
+                                status: .failed,
+                                errorCategory: category
                             )
                         } else {
                             self.conversation?.messages.remove(at: idx)

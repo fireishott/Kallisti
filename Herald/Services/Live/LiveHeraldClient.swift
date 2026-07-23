@@ -71,6 +71,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let diff: CodeDiff?
         let attempt: Int?
         let lastSeq: Int?
+        let errorCategory: String?
+        let errorAction: String?
     }
 
     private struct AttachmentPayload: Encodable {
@@ -235,7 +237,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     let result = await coordinator.run(continuation: continuation)
 
                     switch result {
-                    case .completed(let terminalResult), .failed(let terminalResult):
+                    case .completed(let terminalResult):
                         // Build a StreamDonePayload from the terminal result
                         let donePayload: StreamDonePayload?
                         if let terminalResult {
@@ -247,10 +249,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             }()
                             donePayload = StreamDonePayload(
                                 jobId: jobId,
-                                status: terminalResult.error != nil ? "failed" : "completed",
+                                status: "completed",
                                 usage: usage,
                                 diff: nil,
-                                error: terminalResult.error,
+                                error: nil,
                                 message: nil
                             )
                         } else {
@@ -265,6 +267,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         )
                         let usage: TokenUsage? = donePayload?.usage ?? refreshedConversation?.latestUsage
                         continuation.yield(.finished(finalMessage, usage, nil))
+                    case .failed:
+                        // Coordinator already yielded .failed StreamingUpdate
+                        // with error category/action. Reload conversation so
+                        // ChatStore picks up the persisted failed message.
+                        _ = await self.reloadConversationForStreaming()
                     case .cancelled:
                         break // Coordinator already yielded .cancelled
                     case .error:
@@ -709,6 +716,8 @@ extension LiveHeraldClient {
             let message: RelayMessage?
             let attempt: Int?
             let lastSeq: Int?
+            let errorCategory: String?
+            let errorAction: String?
         }
         struct JobStatusAPIResponse: Decodable {
             let data: JobStatusData
@@ -729,7 +738,9 @@ extension LiveHeraldClient {
                 usage: data.usage,
                 diff: data.diff,
                 attempt: data.attempt,
-                lastSeq: data.lastSeq
+                lastSeq: data.lastSeq,
+                errorCategory: data.errorCategory,
+                errorAction: data.errorAction
             )
         } catch {
             Self.logger.warning("Failed to get job status: \(error.localizedDescription)")
@@ -822,7 +833,11 @@ extension LiveHeraldClient {
 
                 case "failed":
                     Self.logger.info("Job \(jobId.uuidString.prefix(8)) failed during polling")
-                    continuation.yield(.failed(statusResponse.error ?? "Job failed"))
+                    continuation.yield(.failed(
+                        statusResponse.error ?? "Job failed",
+                        category: statusResponse.errorCategory,
+                        action: statusResponse.errorAction
+                    ))
                     return
 
                 case "cancelled":

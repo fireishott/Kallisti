@@ -1230,17 +1230,42 @@ class HeraldConnector:
             await self._send_push_for_job(job_id, cleaned_text)
         except Exception as error:  # noqa: BLE001
             self._stop_job_heartbeat(job_id)
-            error_payload: dict = {
+
+            # Extract structured error info
+            error_category = "internal_error"
+            error_action = "retry"
+            error_detail: dict = {}
+
+            if isinstance(error, StructuredJobError):
+                error_category = error.category
+                error_action = error.detail.get("action", "retry")
+                error_detail = error.detail
+            else:
+                error_category, error_action = self._classify_error(error)
+
+            failure_payload: dict = {
                 "type": "job.failed",
                 "jobId": job_id,
                 "retryable": self._is_retryable_job_error(error),
                 "error": str(error),
+                "errorCategory": error_category,
+                "errorAction": error_action,
             }
-            if isinstance(error, StructuredJobError):
-                error_payload["errorCategory"] = error.category
-                error_payload["errorDetail"] = error.detail
-            await websocket.send(json.dumps(error_payload))
-            await self._send_push_for_job(job_id, f"Herald ran into an issue: {str(error)[:100]}")
+            if error_detail:
+                failure_payload["errorDetail"] = error_detail
+
+            await websocket.send(json.dumps(failure_payload))
+
+            # Push with actionable text
+            action_messages = {
+                "context_exceeded": "Session too long. Start a new chat.",
+                "rate_limited": "Herald is busy. Try again in a moment.",
+                "timeout": "Herald took too long. Tap to retry.",
+                "empty_response": "No response received. Tap to retry.",
+                "internal_error": f"Herald ran into an issue: {str(error)[:80]}",
+            }
+            push_body = action_messages.get(error_category, action_messages["internal_error"])
+            await self._send_push_for_job(job_id, push_body)
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
         """Process a job using the CLI subprocess (original path)."""
@@ -1293,12 +1318,18 @@ class HeraldConnector:
                     "sessionId": result.session_id,
                 }
             except Exception as error:  # noqa: BLE001
-                return {
+                error_category, error_action = self._classify_error(error)
+                failure: dict = {
                     "type": "job.failed",
                     "jobId": job_id,
                     "retryable": self._is_retryable_job_error(error),
                     "error": str(error),
+                    "errorCategory": error_category,
+                    "errorAction": error_action,
                 }
+                if isinstance(error, StructuredJobError) and error.detail:
+                    failure["errorDetail"] = error.detail
+                return failure
 
         task = asyncio.create_task(execute_job())
         try:
@@ -1346,6 +1377,25 @@ class HeraldConnector:
                 lines.append(f"- Binary attachment available at {file_path} ({mime_type}).")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _classify_error(error: Exception) -> tuple[str, str]:
+        """Classify an exception into (category, action) for the iOS app."""
+        msg = str(error).lower()
+
+        if any(kw in msg for kw in ("rate limit", "rate_limit", "429")):
+            return "rate_limited", "wait"
+
+        if any(kw in msg for kw in ("timeout", "timed out", "timed_out")):
+            return "timeout", "retry"
+
+        if "hermes api server returned an empty response" in str(error):
+            return "empty_response", "retry_or_new_session"
+
+        if "context length exceeded" in str(error) or "context" in msg and "exceed" in msg:
+            return "context_exceeded", "new_session"
+
+        return "internal_error", "retry"
 
     @staticmethod
     def _is_retryable_job_error(error: Exception) -> bool:

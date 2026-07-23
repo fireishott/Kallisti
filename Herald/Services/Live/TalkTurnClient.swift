@@ -48,7 +48,7 @@ final class TalkTurnClient {
                         continuation.yield(.completed(text: canonicalText))
                         continuation.finish()
                         return
-                    case .failed(let error):
+                    case .failed(let error, _, _):
                         continuation.finish(throwing: TalkTurnError.hermesError(error))
                         return
                     case .cancelled:

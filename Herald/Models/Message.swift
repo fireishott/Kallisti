@@ -70,6 +70,9 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     /// How long reasoning streamed for, in seconds — used for the collapsed
     /// "Thought for Xs" label. Set when the final answer arrives.
     var reasoningDuration: TimeInterval?
+    /// Error category from the connector (e.g. "context_exceeded", "timeout").
+    /// Non-persisted — only set for in-memory failed messages.
+    var errorCategory: String?
 
     /// Whether this message was transcribed from a voice session.
     var isVoiceTranscript: Bool {
@@ -91,7 +94,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         voiceSessionDuration: TimeInterval? = nil,
         attachments: [MessageAttachment] = [],
         reasoning: String = "",
-        reasoningDuration: TimeInterval? = nil
+        reasoningDuration: TimeInterval? = nil,
+        errorCategory: String? = nil
     ) {
         self.id = id
         self.clientMessageID = clientMessageID
@@ -108,6 +112,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         self.attachments = attachments
         self.reasoning = reasoning
         self.reasoningDuration = reasoningDuration
+        self.errorCategory = errorCategory
     }
 
     enum CodingKeys: String, CodingKey {
@@ -133,6 +138,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         codeDiff = nil
         isStreaming = false
         voiceSessionDuration = nil
+        errorCategory = nil
     }
 
     func encode(to encoder: Encoder) throws {

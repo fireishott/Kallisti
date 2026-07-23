@@ -11,5 +11,5 @@ enum StreamingUpdate: Sendable {
     case cancelled
     case keepalive
     case finished(Message, TokenUsage?, CodeDiff?)
-    case failed(String)
+    case failed(String, category: String? = nil, action: String? = nil)
 }

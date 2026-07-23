@@ -42,7 +42,7 @@ struct JobProjection: Sendable {
 
     enum TerminalEvent: Sendable {
         case completed(messageId: String?, text: String?)
-        case failed(error: String?, retryable: Bool)
+        case failed(error: String?, retryable: Bool, errorCategory: String?, errorAction: String?)
         case cancelled(reason: String?)
     }
 }
@@ -149,7 +149,12 @@ enum JobEventReducer {
             if case .runFailed(let payload) = event.payload {
                 projection.isTerminal = true
                 projection.phase = .failed
-                projection.terminalEvent = .failed(error: payload.error, retryable: payload.retryable)
+                projection.terminalEvent = .failed(
+                    error: payload.error,
+                    retryable: payload.retryable,
+                    errorCategory: payload.errorCategory,
+                    errorAction: payload.errorAction
+                )
                 projection.errorMessage = payload.error
             }
 

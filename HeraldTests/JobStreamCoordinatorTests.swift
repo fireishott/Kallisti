@@ -299,3 +299,162 @@ struct HeartbeatTests {
         #expect(envelope?.type == .commentary)
     }
 }
+
+// MARK: - Structured Error Propagation Tests
+
+@Suite("Structured error category propagation")
+@MainActor
+struct StructuredErrorTests {
+
+    private func makeCoordinator() -> JobStreamCoordinator {
+        JobStreamCoordinator(
+            jobId: UUID(),
+            conversationId: UUID(),
+            clientMessageId: UUID(),
+            apiClient: RelayAPIClient(baseURLProvider: { "http://localhost" }),
+            accessTokenProvider: { nil },
+            accessTokenRefresher: { nil },
+            jobStatusProvider: { _ in nil }
+        )
+    }
+
+    @Test("runFailed SSE event with errorCategory and errorAction")
+    func runFailedParsesCategoryAndAction() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "done",
+            data: "{\"status\": \"failed\", \"error\": \"Context length exceeded\", \"errorCategory\": \"context_exceeded\", \"errorAction\": \"new_session\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runFailed)
+
+        if case .runFailed(let payload) = envelope?.payload {
+            #expect(payload.error == "Context length exceeded")
+            #expect(payload.errorCategory == "context_exceeded")
+            #expect(payload.errorAction == "new_session")
+        } else {
+            Issue.record("Expected runFailed payload")
+        }
+    }
+
+    @Test("runFailed SSE event without errorCategory defaults to nil")
+    func runFailedWithoutCategoryDefaultsToNil() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "done",
+            data: "{\"status\": \"failed\", \"error\": \"Something went wrong\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        if case .runFailed(let payload) = envelope?.payload {
+            #expect(payload.errorCategory == nil)
+            #expect(payload.errorAction == nil)
+        } else {
+            Issue.record("Expected runFailed payload")
+        }
+    }
+
+    @Test("runFailed with timeout category")
+    func runFailedTimeoutCategory() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "done",
+            data: "{\"status\": \"failed\", \"error\": \"Request timed out\", \"errorCategory\": \"timeout\", \"errorAction\": \"retry\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        if case .runFailed(let payload) = envelope?.payload {
+            #expect(payload.errorCategory == "timeout")
+            #expect(payload.errorAction == "retry")
+        } else {
+            Issue.record("Expected runFailed payload")
+        }
+    }
+
+    @Test("runFailed with rate_limited category")
+    func runFailedRateLimitedCategory() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "done",
+            data: "{\"status\": \"failed\", \"error\": \"Rate limit exceeded\", \"errorCategory\": \"rate_limited\", \"errorAction\": \"wait\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        if case .runFailed(let payload) = envelope?.payload {
+            #expect(payload.errorCategory == "rate_limited")
+            #expect(payload.errorAction == "wait")
+        } else {
+            Issue.record("Expected runFailed payload")
+        }
+    }
+
+    @Test("JobEventReducer propagates errorCategory to TerminalEvent")
+    func reducerPropagatesCategoryToTerminalEvent() {
+        var projection = JobProjection(jobId: "test", conversationId: "conv")
+        let envelope = JobEventEnvelope(
+            contractVersion: 2,
+            jobId: "test",
+            conversationId: "conv",
+            attempt: 1,
+            seq: 1,
+            type: .runFailed,
+            timestamp: Date(),
+            payload: .runFailed(RunFailedPayload(
+                error: "Context exceeded",
+                retryable: false,
+                errorCategory: "context_exceeded",
+                errorAction: "new_session"
+            ))
+        )
+
+        JobEventReducer.reduce(&projection, event: envelope)
+
+        #expect(projection.isTerminal == true)
+        #expect(projection.phase == .failed)
+        #expect(projection.errorMessage == "Context exceeded")
+
+        if case .failed(let error, let retryable, let category, let action) = projection.terminalEvent {
+            #expect(error == "Context exceeded")
+            #expect(retryable == false)
+            #expect(category == "context_exceeded")
+            #expect(action == "new_session")
+        } else {
+            Issue.record("Expected failed terminal event")
+        }
+    }
+
+    @Test("RunFailedPayload decodes with missing optional fields")
+    func runFailedPayloadDecodesWithMissingFields() throws {
+        let json = """
+        {"error": "test error", "retryable": true}
+        """
+        let data = json.data(using: .utf8)!
+        let payload = try JSONDecoder().decode(RunFailedPayload.self, from: data)
+
+        #expect(payload.error == "test error")
+        #expect(payload.retryable == true)
+        #expect(payload.errorCategory == nil)
+        #expect(payload.errorAction == nil)
+    }
+
+    @Test("RunFailedPayload decodes with all fields")
+    func runFailedPayloadDecodesWithAllFields() throws {
+        let json = """
+        {"error": "timeout", "retryable": true, "errorCategory": "timeout", "errorAction": "retry"}
+        """
+        let data = json.data(using: .utf8)!
+        let payload = try JSONDecoder().decode(RunFailedPayload.self, from: data)
+
+        #expect(payload.error == "timeout")
+        #expect(payload.retryable == true)
+        #expect(payload.errorCategory == "timeout")
+        #expect(payload.errorAction == "retry")
+    }
+}

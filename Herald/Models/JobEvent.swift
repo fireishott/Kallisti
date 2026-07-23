@@ -74,6 +74,8 @@ struct RunCompletedPayload: Codable, Sendable, Hashable {
 struct RunFailedPayload: Codable, Sendable, Hashable {
     let error: String
     let retryable: Bool
+    let errorCategory: String?
+    let errorAction: String?
 }
 
 struct RunCancelledPayload: Codable, Sendable, Hashable {

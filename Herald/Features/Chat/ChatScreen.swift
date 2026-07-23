@@ -655,6 +655,9 @@ struct ChatScreen: View {
                                 onRetry: { failedMessage in
                                     Task { await chatStore.retryMessage(failedMessage) }
                                 },
+                                onStartNewSession: {
+                                    Task { await performClear() }
+                                },
                                 onDelete: { msg in
                                     chatStore.deleteMessage(msg)
                                 },

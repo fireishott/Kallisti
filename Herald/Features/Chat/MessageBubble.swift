@@ -4,6 +4,7 @@ import UIKit
 struct MessageBubble: View, Equatable {
     let message: Message
     var onRetry: ((Message) -> Void)? = nil
+    var onStartNewSession: (() -> Void)? = nil
     @Environment(TalkStore.self) private var talkStore
     @Environment(SettingsStore.self) private var settingsStore
     var onDelete: ((Message) -> Void)? = nil
@@ -137,12 +138,64 @@ struct MessageBubble: View, Equatable {
     // MARK: - System Message
 
     private var systemMessage: some View {
-        Text(message.content)
-            .brandEyebrow()
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, Design.Spacing.lg)
-            .padding(.vertical, Design.Spacing.xxs)
+        VStack(spacing: Design.Spacing.xs) {
+            Text(message.content)
+                .brandEyebrow()
+                .multilineTextAlignment(.center)
+
+            if message.status == .failed, let category = message.errorCategory {
+                errorGuidanceChip(for: category)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.xxs)
+    }
+
+    @ViewBuilder
+    private func errorGuidanceChip(for category: String) -> some View {
+        switch category {
+        case "context_exceeded":
+            Button { onStartNewSession?() } label: {
+                Label("Start New Session", systemImage: "plus.message")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        case "rate_limited":
+            Button { onRetry?(message) } label: {
+                Label("Wait & Retry", systemImage: "clock.arrow.circlepath")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.warning.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        case "timeout":
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        default:
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.surface))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     // MARK: - User Bubble

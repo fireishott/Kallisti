@@ -11,6 +11,8 @@ actor JobStreamCoordinator {
         let completionTokens: Int?
         let totalTokens: Int?
         let error: String?
+        let errorCategory: String?
+        let errorAction: String?
     }
 
     enum RunResult: Sendable {
@@ -351,7 +353,12 @@ actor JobStreamCoordinator {
             case "failed":
                 eventType = .runFailed
                 let error = json["error"] as? String ?? "Unknown error"
-                payload = .runFailed(RunFailedPayload(error: error, retryable: false))
+                let errorCategory = json["errorCategory"] as? String
+                let errorAction = json["errorAction"] as? String
+                payload = .runFailed(RunFailedPayload(
+                    error: error, retryable: false,
+                    errorCategory: errorCategory, errorAction: errorAction
+                ))
             case "cancelled":
                 eventType = .runCancelled
                 let reason = json["error"] as? String ?? "Cancelled"
@@ -419,7 +426,10 @@ actor JobStreamCoordinator {
         case .runCompleted:
             return nil
         case .runFailed:
-            return nil
+            if case .runFailed(let payload) = envelope.payload {
+                return .failed(payload.error, category: payload.errorCategory, action: payload.errorAction)
+            }
+            return .failed("Unknown error")
         case .runCancelled:
             return .cancelled
         case .runRequeued:
@@ -435,14 +445,25 @@ actor JobStreamCoordinator {
                 promptTokens: p.usage?.promptTokens,
                 completionTokens: p.usage?.completionTokens,
                 totalTokens: p.usage?.totalTokens,
-                error: nil
+                error: nil,
+                errorCategory: nil,
+                errorAction: nil
             )
         case .runFailed(let p):
-            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.error)
+            return TerminalResult(
+                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                error: p.error, errorCategory: p.errorCategory, errorAction: p.errorAction
+            )
         case .runCancelled(let p):
-            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: p.reason)
+            return TerminalResult(
+                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                error: p.reason, errorCategory: nil, errorAction: nil
+            )
         default:
-            return TerminalResult(text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil, error: nil)
+            return TerminalResult(
+                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                error: nil, errorCategory: nil, errorAction: nil
+            )
         }
     }
 }

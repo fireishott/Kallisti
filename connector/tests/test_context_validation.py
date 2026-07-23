@@ -366,8 +366,8 @@ def test_structured_job_error_empty_response(tmp_path):
     assert ws.sent[1]["retryable"] is False
 
 
-def test_regular_exception_no_category(tmp_path):
-    """Regular exceptions should not have errorCategory/errorDetail."""
+def test_regular_exception_classified_as_internal_error(tmp_path):
+    """Regular exceptions should be classified as internal_error with retry action."""
     store = ConnectorStateStore(state_dir=tmp_path / "regular-error")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
@@ -386,5 +386,76 @@ def test_regular_exception_no_category(tmp_path):
 
     assert len(ws.sent) == 2
     assert ws.sent[1]["type"] == "job.failed"
-    assert "errorCategory" not in ws.sent[1]
+    assert ws.sent[1]["errorCategory"] == "internal_error"
+    assert ws.sent[1]["errorAction"] == "retry"
     assert "errorDetail" not in ws.sent[1]
+
+
+def test_timeout_exception_classified(tmp_path):
+    """Timeout errors should be classified as timeout with retry action."""
+    store = ConnectorStateStore(state_dir=tmp_path / "timeout-error")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
+
+    class FakeTimeoutAdapter:
+        supports_streaming = True
+
+        async def send_text_message_streaming(self, **kwargs):
+            raise TimeoutError("Connection timed out")
+            yield  # pragma: no cover
+
+    ws = FakeWebSocket()
+    job = {"id": "job-timeout", "latestUserMessage": "Hello", "history": []}
+
+    asyncio.run(connector._handle_job_streaming(ws, job, FakeTimeoutAdapter()))
+
+    assert ws.sent[1]["errorCategory"] == "timeout"
+    assert ws.sent[1]["errorAction"] == "retry"
+
+
+def test_rate_limit_exception_classified(tmp_path):
+    """Rate limit errors should be classified as rate_limited with wait action."""
+    store = ConnectorStateStore(state_dir=tmp_path / "ratelimit-error")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
+
+    class FakeRateLimitAdapter:
+        supports_streaming = True
+
+        async def send_text_message_streaming(self, **kwargs):
+            raise RuntimeError("Rate limit exceeded (429)")
+            yield  # pragma: no cover
+
+    ws = FakeWebSocket()
+    job = {"id": "job-ratelimit", "latestUserMessage": "Hello", "history": []}
+
+    asyncio.run(connector._handle_job_streaming(ws, job, FakeRateLimitAdapter()))
+
+    assert ws.sent[1]["errorCategory"] == "rate_limited"
+    assert ws.sent[1]["errorAction"] == "wait"
+
+
+def test_structured_error_action_preserved(tmp_path):
+    """StructuredJobError with custom action should preserve it in errorAction."""
+    store = ConnectorStateStore(state_dir=tmp_path / "structured-action")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
+
+    class FakeStructuredAdapter:
+        supports_streaming = True
+
+        async def send_text_message_streaming(self, **kwargs):
+            raise StructuredJobError(
+                "Context overflow",
+                category="context_exceeded",
+                detail={"action": "new_session", "estimatedTokens": 200000},
+            )
+            yield  # pragma: no cover
+
+    ws = FakeWebSocket()
+    job = {"id": "job-action", "latestUserMessage": "Hello", "history": []}
+
+    asyncio.run(connector._handle_job_streaming(ws, job, FakeStructuredAdapter()))
+
+    assert ws.sent[1]["errorCategory"] == "context_exceeded"
+    assert ws.sent[1]["errorAction"] == "new_session"
