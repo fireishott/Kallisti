@@ -13,6 +13,7 @@ enum NotificationActionID {
     static let stop = "HERALD_ACTION_STOP"
     static let nudge = "HERALD_ACTION_NUDGE"
     static let remindLater = "HERALD_ACTION_REMIND_LATER"
+    static let dismiss = "HERALD_ACTION_DISMISS"
 }
 
 @MainActor

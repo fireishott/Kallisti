@@ -603,6 +603,10 @@ final class AppContainer {
             }
             return
 
+        case NotificationActionID.dismiss:
+            // Dismiss the notification without navigating
+            return
+
         default:
             break
         }

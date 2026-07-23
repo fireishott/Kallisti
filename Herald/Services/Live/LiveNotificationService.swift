@@ -88,9 +88,14 @@ final class LiveNotificationService: NotificationServiceProtocol {
             title: "Remind in 1h",
             options: []
         )
+        let dismissAction = UNNotificationAction(
+            identifier: NotificationActionID.dismiss,
+            title: "Dismiss",
+            options: .destructive
+        )
         let sessionReminderCategory = UNNotificationCategory(
             identifier: NotificationCategoryID.sessionReminder,
-            actions: [readAction, remindLaterAction],
+            actions: [readAction, remindLaterAction, dismissAction],
             intentIdentifiers: [],
             options: []
         )
