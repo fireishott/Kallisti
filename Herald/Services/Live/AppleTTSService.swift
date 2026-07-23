@@ -24,6 +24,12 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
 
     var isPlaying: Bool { synthesizer.isSpeaking || !speechBuffer.isEmpty }
 
+    /// Current rate in user-facing units (0.4-2.0 range).
+    var currentRate: Float { rate / AVSpeechUtteranceDefaultSpeechRate }
+
+    /// Current speech buffer content (for testing).
+    var currentBuffer: String { speechBuffer }
+
     // Voice selection
     var availableVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()
@@ -123,6 +129,11 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
     /// Configure the speech rate (0.4x - 2.0x).
     func setRate(_ newRate: Float) {
         rate = min(max(newRate, 0.4), 2.0) * AVSpeechUtteranceDefaultSpeechRate
+    }
+
+    /// Configure the voice by identifier.
+    func setVoice(identifier: String) {
+        voiceIdentifier = identifier
     }
 
     // MARK: - AVSpeechSynthesizerDelegate

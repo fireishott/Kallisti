@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct SettingsScreen: View {
@@ -693,6 +694,37 @@ struct SettingsScreen: View {
 
                     sectionDivider
 
+                    // Apple TTS Voice Picker
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "person.wave.2")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.purple)
+                                .frame(width: 20, alignment: .center)
+
+                            Text("Apple TTS Voice")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+
+                            Picker("Apple TTS Voice", selection: ttsAppleVoiceIdentifierBinding) {
+                                ForEach(availableAppleVoices, id: \.identifier) { voice in
+                                    Text(voice.name).tag(voice.identifier)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .tint(Design.Brand.accent)
+                        }
+
+                        Text("Select an English voice for Apple TTS fallback")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
                     // Test Voice Button
                     Button {
                         Task { await testAppleTTS() }
@@ -865,6 +897,14 @@ struct SettingsScreen: View {
     }
     private var ttsAppleRateBinding: Binding<Float> {
         Binding(get: { settingsStore.settings.ttsAppleRate }, set: { settingsStore.settings.ttsAppleRate = $0 })
+    }
+    private var ttsAppleVoiceIdentifierBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.ttsAppleVoiceIdentifier }, set: { settingsStore.settings.ttsAppleVoiceIdentifier = $0 })
+    }
+    private var availableAppleVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .sorted { ($0.quality.rawValue, $0.name) > ($1.quality.rawValue, $1.name) }
     }
 
     private var autoConnectBinding: Binding<Bool> {
@@ -1107,6 +1147,7 @@ struct SettingsScreen: View {
 
         let appleTTS = AppleTTSService()
         appleTTS.setRate(settingsStore.settings.ttsAppleRate)
+        appleTTS.setVoice(identifier: settingsStore.settings.ttsAppleVoiceIdentifier)
 
         do {
             try await appleTTS.speak(

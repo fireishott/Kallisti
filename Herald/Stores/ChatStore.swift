@@ -84,8 +84,8 @@ final class ChatStore {
 
     /// TTS service for speaking responses during/after streaming.
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
-    /// Provides current TTS settings (enabled, voice, autoSpeak, autoSpeakDuringStreaming).
-    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool))?
+    /// Provides current TTS settings (enabled, voice, autoSpeak, autoSpeakDuringStreaming, appleVoiceIdentifier).
+    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool, appleVoiceIdentifier: String))?
 
     /// Called when conversation content changes (new message, streaming complete).
     /// Used by AppContainer to push widget data updates.

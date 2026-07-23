@@ -30,23 +30,31 @@ struct AppleTTSServiceTests {
     @Test("AppleTTSService rate is clamped to valid range")
     func rateClamped() {
         let service = AppleTTSService()
-        // These should not crash
+
         service.setRate(0.1)  // Below minimum, should clamp to 0.4
+        #expect(service.currentRate >= 0.4, "Rate below minimum should be clamped to 0.4")
+
         service.setRate(3.0)  // Above maximum, should clamp to 2.0
+        #expect(service.currentRate <= 2.0, "Rate above maximum should be clamped to 2.0")
+
         service.setRate(1.0)  // Normal value
-        #expect(true, "Rate clamping works without crash")
+        #expect(service.currentRate == 1.0, "Normal rate should be stored as-is")
     }
 
     @Test("AppleTTSService speakStreaming accumulates text")
     func speakStreamingAccumulates() {
         let service = AppleTTSService()
-        // speakStreaming should not crash with multiple chunks
+
         service.speakStreaming("Hello", voice: nil)
+        #expect(service.currentBuffer.contains("Hello"), "Buffer should contain first chunk")
+
         service.speakStreaming(" world", voice: nil)
+        #expect(service.currentBuffer.contains("world"), "Buffer should contain second chunk")
+
         service.speakStreaming(". How are you?", voice: nil)
-        // The buffer should be processing
+        // After sentence boundary, buffer may be partially flushed
         service.stop()
-        #expect(true, "speakStreaming accumulates without crash")
+        #expect(service.currentBuffer.isEmpty, "Buffer should be empty after stop")
     }
 
     @Test("AppleTTSService finishStream flushes remaining text")
@@ -89,11 +97,18 @@ struct AppleTTSServiceTests {
     @Test("AppleTTSService sentence boundary detection works with CJK terminators")
     func sentenceBoundaryCJK() {
         let service = AppleTTSService()
+
         // Test with Chinese sentence terminators
         service.speakStreaming("你好世界。", voice: nil)
+        // CJK period should trigger sentence boundary detection
+        #expect(service.isPlaying, "Service should be processing CJK text")
+
         service.speakStreaming("今天天气怎么样？", voice: nil)
+        // CJK question mark should also be recognized
+        #expect(service.isPlaying, "Service should handle CJK question mark")
+
         service.finishStream()
-        #expect(true, "CJK terminators handled without crash")
+        #expect(!service.isPlaying, "Service should stop after finishStream")
     }
 
     @Test("AppleTTSService handles empty text gracefully")

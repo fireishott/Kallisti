@@ -30,7 +30,7 @@ final class TalkStore {
     /// Called when voice session state changes (start/end/state transition).
     var onSessionStateChanged: (@MainActor () -> Void)?
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
-    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool))?
+    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool, appleVoiceIdentifier: String))?
 
     /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
     @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
@@ -230,6 +230,7 @@ final class TalkStore {
 
         // Fall back to Apple TTS
         let appleTTS = AppleTTSService()
+        appleTTS.setVoice(identifier: settings.appleVoiceIdentifier)
         let renderedText = SpeechTextRenderer.render(text)
         guard !renderedText.isEmpty else { return }
         do {

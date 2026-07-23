@@ -357,7 +357,7 @@ final class AppContainer {
                 Task { await apiKeyHolder.refresh() }
                 let tts = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
                 ts.ttsService = tts
-                ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming) }
+                ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
 
                 // Wire the full Talk pipeline when not in UI-test mock mode
@@ -394,7 +394,7 @@ final class AppContainer {
         chatStore.ttsService = container.talkStore.ttsService
         chatStore.ttsSettingsProvider = {
             let s = settingsStore.settings
-            return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming)
+            return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier)
         }
 
         let refreshUnpairedRelayContext: @MainActor () async -> Void = { [weak sessionStore, weak container] in
