@@ -528,6 +528,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsEnabled: Bool
     var ttsVoice: String
     var ttsAutoSpeak: Bool
+    var ttsAutoSpeakDuringStreaming: Bool
+    var ttsAppleRate: Float
     var enterToSend: Bool
     var showReasoning: Bool
     var useStreaming: Bool
@@ -552,6 +554,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsEnabled: Bool = false,
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
+        ttsAutoSpeakDuringStreaming: Bool = true,
+        ttsAppleRate: Float = 1.0,
         enterToSend: Bool = false,
         showReasoning: Bool = true,
         useStreaming: Bool = true,
@@ -575,6 +579,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.ttsEnabled = ttsEnabled
         self.ttsVoice = ttsVoice
         self.ttsAutoSpeak = ttsAutoSpeak
+        self.ttsAutoSpeakDuringStreaming = ttsAutoSpeakDuringStreaming
+        self.ttsAppleRate = ttsAppleRate
         self.enterToSend = enterToSend
         self.showReasoning = showReasoning
         self.useStreaming = useStreaming
@@ -600,6 +606,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         case ttsEnabled
         case ttsVoice
         case ttsAutoSpeak
+        case ttsAutoSpeakDuringStreaming
+        case ttsAppleRate
         case enterToSend
         case showReasoning
         case useStreaming
@@ -634,6 +642,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsEnabled = try container.decodeIfPresent(Bool.self, forKey: .ttsEnabled) ?? false
         ttsVoice = try container.decodeIfPresent(String.self, forKey: .ttsVoice) ?? "Mia"
         ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false
+        ttsAutoSpeakDuringStreaming = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeakDuringStreaming) ?? true
+        ttsAppleRate = try container.decodeIfPresent(Float.self, forKey: .ttsAppleRate) ?? 1.0
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
         useStreaming = try container.decodeIfPresent(Bool.self, forKey: .useStreaming) ?? true
@@ -660,6 +670,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(ttsEnabled, forKey: .ttsEnabled)
         try container.encode(ttsVoice, forKey: .ttsVoice)
         try container.encode(ttsAutoSpeak, forKey: .ttsAutoSpeak)
+        try container.encode(ttsAutoSpeakDuringStreaming, forKey: .ttsAutoSpeakDuringStreaming)
+        try container.encode(ttsAppleRate, forKey: .ttsAppleRate)
         try container.encode(enterToSend, forKey: .enterToSend)
         try container.encode(showReasoning, forKey: .showReasoning)
         try container.encode(useStreaming, forKey: .useStreaming)

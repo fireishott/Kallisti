@@ -82,6 +82,11 @@ final class ChatStore {
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 
+    /// TTS service for speaking responses during/after streaming.
+    @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
+    /// Provides current TTS settings (enabled, voice, autoSpeak, autoSpeakDuringStreaming).
+    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool))?
+
     /// Called when conversation content changes (new message, streaming complete).
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
@@ -295,6 +300,13 @@ final class ChatStore {
                     self.chatLiveActivity.updatePhase("Responding")
                     self.enqueueDelta(delta, placeholderID: placeholderID)
 
+                    // Stream to TTS if enabled during streaming
+                    if let settings = self.ttsSettingsProvider?(),
+                       settings.enabled,
+                       settings.autoSpeakDuringStreaming {
+                        self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                    }
+
                 case .reasoningDelta(let delta):
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
@@ -379,6 +391,9 @@ final class ChatStore {
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
+
+                    // Finish TTS streaming — flush any remaining buffered text
+                    self.ttsService?.finishStream()
                     // Notify if merge changed the title (server-derived title)
                     if let conv = self.conversation, conv.title != oldTitle {
                         self.onTitleChanged?(conv.id, conv.title)
@@ -636,6 +651,7 @@ final class ChatStore {
         streamingTask?.cancel()
         streamingTask = nil
         chatLiveActivity.endActivity()
+        ttsService?.stop()
 
         // Flush any buffered deltas onto the placeholder before finalizing.
         if let sid = streamingMessageID {

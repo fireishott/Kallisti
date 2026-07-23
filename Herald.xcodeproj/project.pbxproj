@@ -205,6 +205,7 @@
 		BC17F32158E8FB9A1180CEBC /* PermissionType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15A79B934F9F01B812DEE797 /* PermissionType.swift */; };
 		BE16AA093F8F9566377E1882 /* ThinkingBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25B14E4B0A1EC76C42A5BA09 /* ThinkingBlockView.swift */; };
 		C0C12736C4D0E0CE6C046BEF /* MimoTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B676DFB8C5EBF36F1477C83 /* MimoTTSService.swift */; };
+		F2E1D0C9B8A7F6E5D4C3B2A1 /* AppleTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* AppleTTSService.swift */; };
 		C1D985921062D081D6AC5EAF /* TranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29E43B2BCDD432A93A3C75F9 /* TranscriptView.swift */; };
 		C590AE506A7FE75941CFC0E7 /* LiveHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F9CE2AA79EC021FAB81BC1 /* LiveHeraldHostService.swift */; };
 		C607322B107EF91ABBC93D30 /* NoteDirective.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87729377A0556194DF8BFBF7 /* NoteDirective.swift */; };
@@ -395,6 +396,7 @@
 		4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = SiriVocabulary.plist; sourceTree = "<group>"; };
 		494FEFB282E50AC8AB9D2D31 /* NotesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationTests.swift; sourceTree = "<group>"; };
 		4B676DFB8C5EBF36F1477C83 /* MimoTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoTTSService.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* AppleTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTTSService.swift; sourceTree = "<group>"; };
 		4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
 		4CDDA61B61B5B16A13D3413F /* stream_v2_goal_continuation.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_goal_continuation.json; sourceTree = "<group>"; };
 		4CE777021207BCBAA89C23D8 /* MockHandwritingRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHandwritingRecognizer.swift; sourceTree = "<group>"; };
@@ -665,6 +667,7 @@
 				947D3C677DF7F518441E2917 /* LiveVoiceSessionService.swift */,
 				3040025C12ABA45A74E5B37D /* MimoASRService.swift */,
 				4B676DFB8C5EBF36F1477C83 /* MimoTTSService.swift */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* AppleTTSService.swift */,
 				376F3C46A00109C8437ECCAC /* PCMPlaybackQueue.swift */,
 				E321CDD5420E0CF8EA5DD4D6 /* SensorUploadService.swift */,
 				F6423EAA6221083F645AE41F /* SpeechTextRenderer.swift */,
@@ -1517,6 +1520,7 @@
 				A86DA4177809D2F2ABD5EDDE /* MessageStatus.swift in Sources */,
 				8B4D3DEB78E237B357B8A69C /* MimoASRService.swift in Sources */,
 				C0C12736C4D0E0CE6C046BEF /* MimoTTSService.swift in Sources */,
+				F2E1D0C9B8A7F6E5D4C3B2A1 /* AppleTTSService.swift in Sources */,
 				52C97300E07FA69E3E790DE6 /* MockHealthService.swift in Sources */,
 				532EB8912BC84A81E8F05498 /* MockHeraldClient.swift in Sources */,
 				3C39D4EA6DFA522C88446950 /* MockHeraldHostService.swift in Sources */,

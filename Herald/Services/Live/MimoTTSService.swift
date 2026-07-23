@@ -129,6 +129,17 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
         isPlaying = false
     }
 
+    // MARK: - TTSServiceProtocol Streaming
+
+    func speakStreaming(_ chunk: String, voice: String?) {
+        // MimoTTSService does not support sentence-chunked streaming.
+        // Use speak() for full-text synthesis.
+    }
+
+    func finishStream() {
+        // No-op for MimoTTSService.
+    }
+
     // MARK: - Streaming TTS
 
     private var streamingCancelled = false

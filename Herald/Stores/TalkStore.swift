@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// Metadata captured when a voice session completes, used to trigger transcript injection.
 struct CompletedVoiceSession: Sendable {
@@ -29,7 +30,7 @@ final class TalkStore {
     /// Called when voice session state changes (start/end/state transition).
     var onSessionStateChanged: (@MainActor () -> Void)?
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
-    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool))?
+    @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool))?
 
     /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
     @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
@@ -217,8 +218,22 @@ final class TalkStore {
 
     func speakText(_ text: String) async {
         guard let ttsService, let settings = ttsSettingsProvider?(), settings.enabled else { return }
+
+        // Try the primary TTS service (MiMo TTS) first
         do {
             try await ttsService.speak(text, voice: settings.voice, context: nil as String?)
+            return
+        } catch {
+            // Log the failure and fall back to Apple TTS
+            Logger.app.warning("Primary TTS failed, falling back to Apple TTS: \(error.localizedDescription)")
+        }
+
+        // Fall back to Apple TTS
+        let appleTTS = AppleTTSService()
+        let renderedText = SpeechTextRenderer.render(text)
+        guard !renderedText.isEmpty else { return }
+        do {
+            try await appleTTS.speak(renderedText, voice: settings.voice, context: nil as String?)
         } catch {
             statusMessage = "TTS failed: \(error.localizedDescription)"
         }

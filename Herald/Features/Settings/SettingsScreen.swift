@@ -12,6 +12,7 @@ struct SettingsScreen: View {
     @Environment(TabRouter.self) private var router
     @State private var mimoAPIKey: String = ""
     @State private var showAPIKey: Bool = false
+    @State private var isTestingTTS: Bool = false
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.herald.session")
     @Environment(ThemeManager.self) private var themeManager
 
@@ -647,6 +648,84 @@ struct SettingsScreen: View {
                         title: "Auto-Speak in Talk",
                         isOn: ttsAutoSpeakBinding
                     )
+
+                    sectionDivider
+
+                    settingsToggle(
+                        icon: "text.word.spacing",
+                        iconColor: .green,
+                        title: "Speak During Streaming",
+                        isOn: ttsAutoSpeakDuringStreamingBinding
+                    )
+
+                    if settingsStore.settings.ttsAutoSpeakDuringStreaming {
+                        Text("Sentences are spoken as they complete during streaming.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .padding(.horizontal, Design.Spacing.lg)
+                    }
+
+                    sectionDivider
+
+                    // Apple TTS Fallback Rate
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "speedometer")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.cyan)
+                                .frame(width: 20, alignment: .center)
+
+                            Text("Apple TTS Speed")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+
+                            Text("\(String(format: "%.1f", settingsStore.settings.ttsAppleRate))x")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Slider(value: ttsAppleRateBinding, in: 0.4...2.0, step: 0.1)
+                            .tint(Design.Brand.accent)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
+                    // Test Voice Button
+                    Button {
+                        Task { await testAppleTTS() }
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            if isTestingTTS {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Design.Brand.accent)
+                            } else {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Design.Brand.accent)
+                                    .frame(width: 20, alignment: .center)
+                            }
+
+                            Text(isTestingTTS ? "Speaking..." : "Test Voice")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(isTestingTTS ? Design.Colors.secondaryForeground : Design.Colors.foreground)
+
+                            Spacer()
+
+                            if !isTestingTTS {
+                                Text("Apple TTS")
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isTestingTTS)
                 }
             }
         }
@@ -780,6 +859,12 @@ struct SettingsScreen: View {
     }
     private var ttsAutoSpeakBinding: Binding<Bool> {
         Binding(get: { settingsStore.settings.ttsAutoSpeak }, set: { settingsStore.settings.ttsAutoSpeak = $0 })
+    }
+    private var ttsAutoSpeakDuringStreamingBinding: Binding<Bool> {
+        Binding(get: { settingsStore.settings.ttsAutoSpeakDuringStreaming }, set: { settingsStore.settings.ttsAutoSpeakDuringStreaming = $0 })
+    }
+    private var ttsAppleRateBinding: Binding<Float> {
+        Binding(get: { settingsStore.settings.ttsAppleRate }, set: { settingsStore.settings.ttsAppleRate = $0 })
     }
 
     private var autoConnectBinding: Binding<Bool> {
@@ -1014,5 +1099,23 @@ struct SettingsScreen: View {
     private func openConfiguredURL(_ url: URL?) {
         guard let url else { return }
         openURL(url)
+    }
+
+    private func testAppleTTS() async {
+        isTestingTTS = true
+        defer { isTestingTTS = false }
+
+        let appleTTS = AppleTTSService()
+        appleTTS.setRate(settingsStore.settings.ttsAppleRate)
+
+        do {
+            try await appleTTS.speak(
+                "Hello, this is a test of the Apple text to speech voice.",
+                voice: settingsStore.settings.ttsVoice,
+                context: nil as String?
+            )
+        } catch {
+            // Test failed — user can see the button is no longer speaking
+        }
     }
 }

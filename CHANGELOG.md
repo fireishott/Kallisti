@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Local TTS fallback (Apple TTS)**: Herald now falls back to
+  `AVSpeechSynthesizer` when MiMo TTS API is unavailable. The local
+  TTS service uses sentence-chunking to create perceived streaming —
+  tokens are buffered and flushed at sentence boundaries (`.!?。！？`)
+  or every 12 words. New settings: "Speak During Streaming" toggle,
+  Apple TTS speed slider (0.4x–2.0x), and "Test Voice" button.
+  Voice picker shows all available English voices.
+
 - **Quick Notes from Anywhere**: Herald notes now publish an
   `NSUserActivity` when viewed, enabling iPadOS Quick Note linking
   (swipe from bottom-right with Apple Pencil or Globe+Q). Tapping
