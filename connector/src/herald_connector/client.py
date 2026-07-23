@@ -795,9 +795,16 @@ class HeraldConnector:
     async def _run_mcp_http_server(self, host: str, port: int) -> None:
         """Run the MCP Streamable HTTP server as a background task."""
         from .mcp_server import mcp as mcp_instance
+        from mcp.server.transport_security import TransportSecuritySettings
 
         mcp_instance.settings.host = host
         mcp_instance.settings.port = port
+
+        if host == "0.0.0.0":
+            mcp_instance.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+            )
+
         try:
             await mcp_instance.run_streamable_http_async()
         except Exception:
@@ -1117,6 +1124,7 @@ class HeraldConnector:
 
             self._stop_job_heartbeat(job_id)
             await websocket.send(json.dumps(result_payload))
+            await self._send_push_for_job(job_id, cleaned_text)
         except Exception as error:  # noqa: BLE001
             self._stop_job_heartbeat(job_id)
             await websocket.send(json.dumps({
@@ -1125,6 +1133,7 @@ class HeraldConnector:
                 "retryable": self._is_retryable_job_error(error),
                 "error": str(error),
             }))
+            await self._send_push_for_job(job_id, f"Herald ran into an issue: {str(error)[:100]}")
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
         """Process a job using the CLI subprocess (original path)."""
@@ -1269,10 +1278,53 @@ class HeraldConnector:
 
     async def _handle_relay_outbound(self, request_id: str, action: dict) -> dict:
         """Handle an outbound action from the gateway (agent response → deliver to iOS via APNs)."""
-        # TODO: Integrate with APNs push handler
-        # For now, return success — APNs integration will be wired in T2 completion
         logger.info("Outbound action received: requestId=%s, type=%s", request_id, action.get("type"))
+        action_type = action.get("type", "send")
+        if action_type == "send":
+            text = action.get("text", "")
+            await self._send_push_for_job(request_id, text)
         return {"success": True}
+
+    async def _send_push_for_job(self, job_id: str, body_text: str) -> None:
+        """Send a remote push notification via the relay's APNs gateway."""
+        state = self.state_store.load()
+        if not state.relay_url or not state.user_id:
+            return
+
+        internal_key = os.getenv("RELAY_INTERNAL_API_KEY", "").strip()
+        if not internal_key:
+            logger.debug("Push skipped: RELAY_INTERNAL_API_KEY not set")
+            return
+
+        body = body_text.strip()
+        if not body:
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{state.relay_url.rstrip('/')}/v1/push/send",
+                    headers={
+                        "X-Relay-Internal-Key": internal_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "user_id": state.user_id,
+                        "type": "alert",
+                        "title": "Herald",
+                        "body": body[:100],
+                    },
+                )
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "Push send failed: HTTP %s - %s",
+                        resp.status_code,
+                        (resp.text or "")[:200],
+                    )
+                else:
+                    logger.info("Push sent for job %s", job_id[:8])
+        except Exception:
+            logger.debug("Push send error (non-fatal)", exc_info=True)
 
     async def _handle_relay_interrupt(self, session_key: str, reason: str | None) -> None:
         """Handle an interrupt (/stop) from the gateway."""

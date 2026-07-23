@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .sensor_store import (
     HEALTH_STALE_AFTER_SECONDS,
@@ -23,7 +24,14 @@ from .sensor_store import (
 )
 from .state import ConnectorStateStore
 
-mcp = FastMCP("herald", instructions="Provides real-time location and health data from the user's phone.")
+mcp = FastMCP(
+    "herald",
+    instructions="Provides real-time location and health data from the user's phone.",
+    host="0.0.0.0",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 
 def _get_store() -> SensorStore:
