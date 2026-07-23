@@ -1,5 +1,59 @@
 # Changelog
 
+## [2.1.2] - 2026-07-23
+
+### Fixed
+
+- **Streaming not working** (critical): Fixed `parseEnvelope` seq mutation
+  bug where `lastAppliedSeq` was incremented inside `parseEnvelope` then
+  compared in `run()`, causing every SSE event without an `id:` field to be
+  silently skipped. Now snapshots seq before the call.
+- **Missing SSE event types**: Added handling for `tool.started`,
+  `tool.completed`, `approval.required`, and `run.requeued` SSE events that
+  were hitting `default: return nil` and being silently dropped.
+- **SSE timeout too short**: Changed SSE connection timeout from 300s to
+  `TimeInterval(Int.max)` for long-lived streams.
+- **SSE parsing on MainActor**: Moved SSE line-parsing loop off the main
+  actor — request is built via `MainActor.run`, parsing runs off-main to
+  prevent UI stuttering during fast LLM output.
+- **Talk crash at launch**: Removed WebRTC SPM dependency. The legacy
+  `LiveVoiceSessionService` was gated behind `#if canImport(WebRTC)` and
+  the framework was linked but not bundled, causing a dylib load crash.
+- **AVAudioFormat force-unwraps**: Replaced force-unwraps in
+  `PCMPlaybackQueue` and `TalkAudioCapture` with guard-let error propagation.
+- **Task group force-unwrap**: Fixed `LiveSpeechService.startControllerWithTimeout`
+  crash when both tasks in the group finished without producing a result.
+- **Phantom "Herald" chat**: Changed fallback conversation title from
+  "Herald" to "New Chat" so no chat appears before the user sends a message.
+  Also updated relay DB default.
+- **Notification deep-linking**: Added `conversationId` and `messageId` to
+  local notification `userInfo` so tapping a notification navigates to the
+  correct conversation.
+- **CarPlay not connecting**: Added `com.apple.developer.carplay-communications`
+  entitlement and `CPInterfaceControllerDelegate` conformance with error
+  logging.
+- **CarPlay polling**: Replaced 500ms `Task.sleep` polling with
+  `withObservationTracking` for immediate state reactivity.
+- **CarPlay force-unwrapped SF Symbols**: Added nil-coalescing fallbacks.
+
+### Added
+
+- **Background refresh**: Registered `BGTaskScheduler` for
+  `net.fihonline.herald.refresh` with 15-minute interval. App can now wake
+  for background refresh on its own instead of relying solely on push.
+- **Notification Service Extension**: New `HeraldNotificationService` target
+  for decrypting/modifying push payloads before display.
+- **Live Activity remote updates**: Changed `pushType` from `nil` to `.token`
+  so Live Activities can be updated via APNs when the app is killed.
+
+### Changed
+
+- **Audio tap Task spam**: Refactored `TalkAudioCapture` from per-sample
+  `Task` dispatch (~94 Tasks/second) to batched flush via `nonisolated`
+  helper at ~10Hz, reducing main thread congestion.
+- Server: Connector CLI fallback health cache reduced from 30s to 5s.
+- Server: Relay SSE keepalive reduced from 30s to 10s.
+
 ## [2.1.1] - 2026-07-22
 
 ### Fixed
