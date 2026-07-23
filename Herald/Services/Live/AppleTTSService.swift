@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import MediaPlayer
 import os
 
 /// Local TTS using AVSpeechSynthesizer.
@@ -23,6 +24,9 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
     private var speakContinuation: CheckedContinuation<Void, Error>?
 
     var isPlaying: Bool { synthesizer.isSpeaking || !speechBuffer.isEmpty }
+
+    /// Whether the synthesizer is actively speaking (for Now Playing).
+    var isSpeaking: Bool { synthesizer.isSpeaking }
 
     /// Current rate in user-facing units (0.4-2.0 range).
     var currentRate: Float { rate / AVSpeechUtteranceDefaultSpeechRate }
@@ -48,6 +52,9 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
     override init() {
         super.init()
         synthesizer.delegate = self
+        configureAudioSession()
+        setupRemoteCommands()
+        setupInterruptionHandler()
     }
 
     /// Called with each new token/chunk from the LLM stream.
@@ -71,6 +78,7 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
                 utterance.postUtteranceDelay = 0.3  // natural pause between sentences
                 utterance.volume = volume
                 synthesizer.speak(utterance)
+                updateNowPlaying(title: sentence)
 
                 // Remove the spoken sentence from the buffer
                 speechBuffer = String(speechBuffer[boundary.endIndex...])
@@ -108,6 +116,8 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
         utterance.rate = rate
         utterance.volume = volume
 
+        updateNowPlaying(title: renderedText)
+
         return try await withCheckedThrowingContinuation { continuation in
             self.speakContinuation = continuation
             synthesizer.speak(utterance)
@@ -122,6 +132,7 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
             speakContinuation = nil
             continuation.resume()
         }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     var volume: Float = 1.0
@@ -134,6 +145,99 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
     /// Configure the voice by identifier.
     func setVoice(identifier: String) {
         voiceIdentifier = identifier
+    }
+
+    // MARK: - Audio Session + Now Playing
+
+    /// Configure audio session for TTS playback with ducking.
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            // .playback with .duckOthers: music gets quieter, not stopped
+            try session.setCategory(
+                .playback,
+                mode: .spokenAudio,
+                options: [.duckOthers, .allowBluetooth, .allowAirPlay]
+            )
+            try session.setActive(true)
+        } catch {
+            Self.logger.error("Audio session config failed: \(error)")
+        }
+    }
+
+    /// Update Now Playing info center with current title.
+    private func updateNowPlaying(title: String) {
+        let info: [String: Any] = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: "Herald",
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+            MPNowPlayingInfoPropertyPlaybackRate: isSpeaking ? 1.0 : 0.0,
+        ]
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Register remote command handlers for lock screen / Control Center.
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.addTarget { [weak self] _ in
+            // Resume speaking — no-op since we can't resume stopped utterances
+            return .success
+        }
+
+        center.pauseCommand.addTarget { [weak self] _ in
+            self?.stop()
+            return .success
+        }
+
+        center.skipForwardCommand.addTarget { [weak self] _ in
+            self?.skipToNextSentence()
+            return .success
+        }
+
+        center.skipBackwardCommand.addTarget { [weak self] _ in
+            self?.restartCurrentSentence()
+            return .success
+        }
+    }
+
+    /// Observe audio interruptions (phone calls, alarms, etc.).
+    private func setupInterruptionHandler() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let interruptionType = AVAudioSession.InterruptionType(rawValue: type)
+            else { return }
+
+            switch interruptionType {
+            case .began:
+                // Phone call started — pause TTS
+                self.stop()
+            case .ended:
+                // Phone call ended — resume if was speaking
+                if let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                   AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) {
+                    // Resume speaking — no-op since we can't resume stopped utterances
+                }
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    /// Skip to the next sentence in the queue.
+    private func skipToNextSentence() {
+        synthesizer.stopSpeaking(at: .word)
+    }
+
+    /// Restart the current sentence from the beginning.
+    private func restartCurrentSentence() {
+        // AVSpeechSynthesizer doesn't support seeking, so we just stop
+        synthesizer.stopSpeaking(at: .immediate)
     }
 
     // MARK: - AVSpeechSynthesizerDelegate

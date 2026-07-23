@@ -12,6 +12,14 @@
   Apple TTS speed slider (0.4x–2.0x), and "Test Voice" button.
   Voice picker shows all available English voices.
 
+- **Audio session + Now Playing integration**: Herald TTS now properly
+  configures `AVAudioSession` with `.playback` category and
+  `.spokenAudio` mode with `.duckOthers` — music ducks (gets quieter)
+  instead of stopping. Registers Now Playing info so lock screen and
+  Control Center show "Herald" with play/pause/skip controls. Handles
+  audio interruptions (phone calls) by pausing speech. Supports
+  Bluetooth headphones and AirPlay speakers for TTS output.
+
 - **Quick Notes from Anywhere**: Herald notes now publish an
   `NSUserActivity` when viewed, enabling iPadOS Quick Note linking
   (swipe from bottom-right with Apple Pencil or Globe+Q). Tapping
