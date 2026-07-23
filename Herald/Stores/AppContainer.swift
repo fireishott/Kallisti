@@ -623,7 +623,8 @@ final class AppContainer {
         }
 
         // Start real-time host status stream while foregrounded
-        await hostStatusStream.start()
+        // Disabled: /v1/host/events endpoint does not exist on relay (RCA #5)
+        // await hostStatusStream.start()
     }
 
     func handleRemoteNotificationWake() async {

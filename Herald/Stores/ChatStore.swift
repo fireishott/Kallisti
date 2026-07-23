@@ -33,7 +33,7 @@ final class ChatStore {
     /// activity, or finish) arrives within this window, the job is treated as
     /// silently stalled/dropped — see `runStreamingAttempt`.
     /// Mutable so tests can set it to milliseconds.
-    static var watchdogTimeout: Duration = .seconds(120)
+    static var watchdogTimeout: Duration = .seconds(30)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
