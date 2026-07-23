@@ -60,6 +60,10 @@ final class ChatStore {
     var isStreaming: Bool { streamingMessageID != nil }
     var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
 
+    func updateConnectionStatus(_ status: ConnectionStatus) {
+        heraldClient.connectionStatus = status
+    }
+
     /// Dynamic slash command catalog fetched from the connected Hermes host.
     /// Includes gateway commands, installed skills, custom personalities,
     /// and hidden quick-command metadata for manual slash dispatch.
@@ -78,7 +82,7 @@ final class ChatStore {
     /// active profile name on the owning ProfileStore.
     var profileStore: ProfileStore?
 
-    let heraldClient: any HeraldClientProtocol
+    var heraldClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 

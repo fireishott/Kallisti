@@ -3047,4 +3047,95 @@ struct NotificationReplyTests {
 
         #expect(message.contains("Herald"))
     }
+
+    // MARK: - ConnectionStatus Tests
+
+    @Test("ConnectionStatus has all required states")
+    func connectionStatusHasAllRequiredStates() {
+        let disconnected = ConnectionStatus.disconnected
+        let connecting = ConnectionStatus.connecting
+        let connected = ConnectionStatus.connected
+        let reconnecting = ConnectionStatus.reconnecting
+        let degraded = ConnectionStatus.degraded
+        let error = ConnectionStatus.error
+
+        #expect(disconnected.displayLabel == "Disconnected")
+        #expect(connecting.displayLabel == "Connecting...")
+        #expect(connected.displayLabel == "Connected")
+        #expect(reconnecting.displayLabel == "Reconnecting...")
+        #expect(degraded.displayLabel == "Degraded")
+        #expect(error.displayLabel == "Error")
+    }
+
+    @Test("ConnectionStatus dot colors match spec")
+    func connectionStatusDotColorsMatchSpec() {
+        #expect(ConnectionStatus.connected.dotColor == .green)
+        #expect(ConnectionStatus.connecting.dotColor == .yellow)
+        #expect(ConnectionStatus.reconnecting.dotColor == .yellow)
+        #expect(ConnectionStatus.degraded.dotColor == .orange)
+        #expect(ConnectionStatus.disconnected.dotColor == .gray)
+        #expect(ConnectionStatus.error.dotColor == .gray)
+    }
+
+    @Test("ConnectionStatus display icons are set")
+    func connectionStatusDisplayIconsAreSet() {
+        #expect(ConnectionStatus.disconnected.displayIcon == "xmark.circle.fill")
+        #expect(ConnectionStatus.connecting.displayIcon == "arrow.triangle.2.circlepath")
+        #expect(ConnectionStatus.connected.displayIcon == "checkmark.circle.fill")
+        #expect(ConnectionStatus.reconnecting.displayIcon == "arrow.triangle.2.circlepath")
+        #expect(ConnectionStatus.degraded.displayIcon == "exclamationmark.triangle.fill")
+        #expect(ConnectionStatus.error.displayIcon == "exclamationmark.circle.fill")
+    }
+
+    @Test("ConnectionStatus codable round trip")
+    func connectionStatusCodableRoundTrip() throws {
+        let statuses: [ConnectionStatus] = [.disconnected, .connecting, .connected, .reconnecting, .degraded, .error]
+        for status in statuses {
+            let data = try JSONEncoder().encode(status)
+            let decoded = try JSONDecoder().decode(ConnectionStatus.self, from: data)
+            #expect(decoded == status)
+        }
+    }
+
+    @Test("ChatStore connectionStatus reflects heraldClient status")
+    @MainActor
+    func chatStoreConnectionStatusReflectsHeraldClient() {
+        let heraldClient = MockHeraldClient()
+        let suiteName = "connection-status-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+
+        heraldClient.connectionStatus = .connected
+        #expect(chatStore.connectionStatus == .connected)
+
+        heraldClient.connectionStatus = .reconnecting
+        #expect(chatStore.connectionStatus == .reconnecting)
+
+        heraldClient.connectionStatus = .degraded
+        #expect(chatStore.connectionStatus == .degraded)
+    }
+
+    @Test("ChatStore updateConnectionStatus propagates to heraldClient")
+    @MainActor
+    func chatStoreUpdateConnectionStatusPropagates() {
+        let heraldClient = MockHeraldClient()
+        let suiteName = "update-status-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+
+        let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+
+        chatStore.updateConnectionStatus(.reconnecting)
+        #expect(heraldClient.connectionStatus == .reconnecting)
+
+        chatStore.updateConnectionStatus(.degraded)
+        #expect(heraldClient.connectionStatus == .degraded)
+
+        chatStore.updateConnectionStatus(.connected)
+        #expect(heraldClient.connectionStatus == .connected)
+    }
 }

@@ -449,6 +449,14 @@ final class AppContainer {
             }
         }
 
+        // Wire up WS-based connection status to update ChatStore
+        container.hostStatusStream.onConnectionStatusChanged = { [weak container] status in
+            Task { @MainActor [weak container] in
+                guard let container else { return }
+                container.chatStore.updateConnectionStatus(status)
+            }
+        }
+
         return container
     }
 
@@ -658,8 +666,7 @@ final class AppContainer {
         }
 
         // Start real-time host status stream while foregrounded
-        // Disabled: /v1/host/events endpoint does not exist on relay (RCA #5)
-        // await hostStatusStream.start()
+        await hostStatusStream.start()
     }
 
     func handleRemoteNotificationWake() async {

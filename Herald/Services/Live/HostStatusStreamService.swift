@@ -5,19 +5,20 @@ actor HostStatusStreamService {
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "HostStatusStream")
     private let apiClient: RelayAPIClient
     private let accessTokenProvider: @Sendable () async -> String?
+    private let healthCheckProvider: @Sendable () async -> Bool
     private var streamTask: Task<Void, Never>?
+    private var wasConnected = false
     
-    var onStatusChanged: (@Sendable (HostStatusEvent) -> Void)?
+    nonisolated(unsafe) var onConnectionStatusChanged: (@Sendable (ConnectionStatus) -> Void)?
     
-    struct HostStatusEvent: Sendable {
-        let isOnline: Bool
-        let modelName: String?
-        let profileName: String?
-    }
-    
-    init(apiClient: RelayAPIClient, accessTokenProvider: @escaping @Sendable () async -> String?) {
+    init(
+        apiClient: RelayAPIClient,
+        accessTokenProvider: @escaping @Sendable () async -> String?,
+        healthCheckProvider: @escaping @Sendable () async -> Bool = { true }
+    ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        self.healthCheckProvider = healthCheckProvider
     }
     
     func start() {
@@ -33,39 +34,52 @@ actor HostStatusStreamService {
         streamTask = nil
     }
     
+    func updateConnectionStatus(_ status: ConnectionStatus) {
+        onConnectionStatusChanged?(status)
+    }
+    
     private func runStream() async {
         var backoff: TimeInterval = 1.0
         while !Task.isCancelled {
             do {
                 let token = await accessTokenProvider()
+                onConnectionStatusChanged?(wasConnected ? .reconnecting : .connecting)
+                
                 let stream = apiClient.streamEvents(
-                    path: "host/events",
+                    path: "connector/events",
                     accessToken: token,
                     lastEventID: nil
                 )
+                
                 for try await event in stream {
                     guard !Task.isCancelled else { return }
                     backoff = 1.0
-                    if let status = parseHostStatus(from: event) {
-                        onStatusChanged?(status)
+                    
+                    if event.event == "connected" {
+                        let healthy = await healthCheckProvider()
+                        if healthy {
+                            wasConnected = true
+                            onConnectionStatusChanged?(.connected)
+                        } else {
+                            wasConnected = true
+                            onConnectionStatusChanged?(.degraded)
+                        }
+                    } else if event.event == "health_check" {
+                        if wasConnected {
+                            let healthy = await healthCheckProvider()
+                            onConnectionStatusChanged?(healthy ? .connected : .degraded)
+                        }
                     }
                 }
             } catch {
                 logger.warning("Host status stream error: \(error.localizedDescription)")
             }
+            
             guard !Task.isCancelled else { return }
+            onConnectionStatusChanged?(wasConnected ? .reconnecting : .disconnected)
+            
             try? await Task.sleep(for: .seconds(backoff))
             backoff = min(backoff * 2, 30)
         }
-    }
-    
-    private func parseHostStatus(from event: SSEEvent) -> HostStatusEvent? {
-        guard let data = event.data.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return HostStatusEvent(
-            isOnline: json["is_online"] as? Bool ?? false,
-            modelName: json["model_name"] as? String,
-            profileName: json["profile_name"] as? String
-        )
     }
 }

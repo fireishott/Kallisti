@@ -23,6 +23,7 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
+    @State private var showInfraDetails = false
 
 
     var body: some View {
@@ -263,32 +264,43 @@ struct ChatScreen: View {
 
     /// Compact status control for iPhone principal toolbar slot.
     /// Shows connection dot + compact model name + context ring. Opens context popover on tap.
+    /// Tapping the connection dot shows infra details.
     /// Width-bounded to prevent system overflow ellipsis.
     private var compactStatusControl: some View {
-        Button {
-            showContextPopover.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(connectionIndicatorColor)
-                    .frame(width: 6, height: 6)
-
-                if let model = displayedModelName {
-                    Text(compactModelName(model))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .lineLimit(1)
+        HStack(spacing: 4) {
+            // Connection dot with separate tap handler for infra details
+            Circle()
+                .fill(connectionIndicatorColor)
+                .frame(width: 6, height: 6)
+                .onTapGesture {
+                    showInfraDetails = true
+                }
+                .popover(isPresented: $showInfraDetails) {
+                    infraDetailsPopover
+                        .presentationCompactAdaptation(.popover)
                 }
 
-                contextRing(progress: contextProgress)
+            // Model name + context ring with tap handler for context popover
+            Button {
+                showContextPopover.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    if let model = displayedModelName {
+                        Text(compactModelName(model))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.foreground)
+                            .lineLimit(1)
+                    }
+
+                    contextRing(progress: contextProgress)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Design.Colors.surface))
-            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(Design.Colors.surface))
+        .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
         .popover(isPresented: $showContextPopover) {
             contextPopoverContent
                 .presentationCompactAdaptation(.popover)
@@ -391,46 +403,56 @@ struct ChatScreen: View {
     // MARK: - Compact chip: 🟢 model-name [ring%]
 
     private var modelStatusChip: some View {
-        Button {
-            showContextPopover.toggle()
-        } label: {
-            HStack(spacing: Design.Spacing.xs) {
-                Circle()
-                    .fill(connectionIndicatorColor)
-                    .frame(width: 6, height: 6)
-
-                if modelStore.isLoading {
-                    ProgressView()
-                        .controlSize(.mini)
-                } else if let model = displayedModelName {
-                    ViewThatFits(in: .horizontal) {
-                        chipModelText(model)
-                        chipModelText(compactModelName(model))
-                    }
-                } else if modelStore.isError {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                } else {
-                    Text("No model")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+        HStack(spacing: Design.Spacing.xs) {
+            // Connection dot with separate tap handler for infra details
+            Circle()
+                .fill(connectionIndicatorColor)
+                .frame(width: 6, height: 6)
+                .onTapGesture {
+                    showInfraDetails = true
+                }
+                .popover(isPresented: $showInfraDetails) {
+                    infraDetailsPopover
+                        .presentationCompactAdaptation(.popover)
                 }
 
-                contextRing(progress: contextProgress)
+            // Model name + context ring with tap handler for context popover
+            Button {
+                showContextPopover.toggle()
+            } label: {
+                HStack(spacing: Design.Spacing.xs) {
+                    if modelStore.isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if let model = displayedModelName {
+                        ViewThatFits(in: .horizontal) {
+                            chipModelText(model)
+                            chipModelText(compactModelName(model))
+                        }
+                    } else if modelStore.isError {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    } else {
+                        Text("No model")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+
+                    contextRing(progress: contextProgress)
+                }
             }
-            .padding(.horizontal, Design.Spacing.sm)
-            .padding(.vertical, 6)
-            .background(
-                Capsule().fill(Design.Colors.surface)
-            )
-            .overlay(
-                Capsule().stroke(Design.Colors.border, lineWidth: 1)
-            )
-            .fixedSize(horizontal: true, vertical: false)
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
+        .padding(.horizontal, Design.Spacing.sm)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(Design.Colors.surface)
+        )
+        .overlay(
+            Capsule().stroke(Design.Colors.border, lineWidth: 1)
+        )
+        .fixedSize(horizontal: true, vertical: false)
         .popover(isPresented: $showContextPopover) {
             contextPopoverContent
                 .presentationCompactAdaptation(.popover)
@@ -587,6 +609,68 @@ struct ChatScreen: View {
         .padding(.vertical, Design.Spacing.lg)
     }
 
+    // MARK: - Popover: Infrastructure Status Details
+
+    private var infraDetailsPopover: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.md) {
+            HStack(spacing: Design.Spacing.xs) {
+                Circle()
+                    .fill(connectionIndicatorColor)
+                    .frame(width: 7, height: 7)
+                Text("Infrastructure Status")
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(Design.Colors.foreground)
+            }
+
+            Divider()
+
+            infraStatusRow(
+                "Relay",
+                status: hostStore.connectionState == .online ? "Online" : "Offline",
+                detail: settingsStore.settings.relayConfiguration.customRelayBaseURL
+            )
+
+            infraStatusRow(
+                "Connector",
+                status: hostStore.isHostOnline ? "Connected" : "Disconnected",
+                detail: hostStore.currentHost?.connectorVersion
+            )
+
+            infraStatusRow(
+                "Model",
+                status: displayedModelName.flatMap { $0 } ?? "Unknown",
+                detail: nil
+            )
+
+            infraStatusRow(
+                "Push",
+                status: "Active",
+                detail: "1 registered device"
+            )
+        }
+        .frame(width: 250, alignment: .leading)
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.lg)
+    }
+
+    private func infraStatusRow(_ label: String, status: String, detail: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label)
+                    .brandEyebrow()
+                Spacer()
+                Text(status)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+            }
+            if let detail {
+                Text(detail)
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+        }
+    }
+
     private func contextColor(_ progress: Double) -> Color {
         if progress > 0.85 { return Design.Colors.danger }
         if progress > 0.65 { return Design.Colors.warning }
@@ -617,27 +701,11 @@ struct ChatScreen: View {
     }
 
     private var connectionIndicatorColor: Color {
-        switch hostStore.connectionState {
-        case .online:
-            return Design.Colors.success
-        case .offline, .unreachable:
-            return Design.Colors.warning
-        case .notConnected:
-            return Design.Colors.tertiaryForeground
-        }
+        chatStore.connectionStatus.dotColor
     }
 
     private var connectionStatusLabel: String {
-        switch hostStore.connectionState {
-        case .online:
-            return "Online"
-        case .offline:
-            return "Offline"
-        case .unreachable:
-            return "Unreachable"
-        case .notConnected:
-            return "Not Connected"
-        }
+        chatStore.connectionStatus.displayLabel
     }
 
     // MARK: - Message List

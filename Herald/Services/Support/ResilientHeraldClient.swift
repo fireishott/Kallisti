@@ -3,14 +3,15 @@ import Foundation
 @MainActor
 final class ResilientHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus {
-        primary.connectionStatus
+        get { primary.connectionStatus }
+        set { primary.connectionStatus = newValue }
     }
 
     var currentConversation: Conversation? {
         primary.currentConversation ?? fallback.currentConversation
     }
 
-    private let primary: any HeraldClientProtocol
+    private var primary: any HeraldClientProtocol
     private let fallback: any HeraldClientProtocol
     private let allowsFallback: @MainActor () -> Bool
 

@@ -49,6 +49,14 @@
   and `context.used` in the job.result payload, enabling the iOS app to
   display accurate context usage without estimating from token counts.
 
+- **Connection indicator with infra status**: The toolbar connection dot
+  now reflects real infrastructure state via WebSocket events instead of
+  always showing green. Distinct states: green (connected), yellow
+  (connecting/reconnecting), orange (degraded), gray (disconnected).
+  Tapping the dot shows an infrastructure status popover with relay,
+  connector, model, and push details. Replaces the broken `/v1/host/events`
+  polling that returned 404.
+
 - **Actionable notification categories**: Notifications now carry category
   identifiers and conversation metadata through the full push pipeline.
   New `HERALD_SESSION_REMINDER` category with "Remind in 1h" action.

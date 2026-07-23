@@ -8,7 +8,7 @@ struct SessionListResponse: Codable, Sendable {
 
 @MainActor
 protocol HeraldClientProtocol {
-    var connectionStatus: ConnectionStatus { get }
+    var connectionStatus: ConnectionStatus { get set }
     var currentConversation: Conversation? { get }
     func connect() async
     func disconnect() async
