@@ -122,7 +122,7 @@ targets:
           - remote-notification
           - audio
         UIRequiredDeviceCapabilities:
-          - carplay
+          - arm64
         NSUserActivityTypes:
           - net.fihonline.herald.viewNote
         UIApplicationSceneManifest:
