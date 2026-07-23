@@ -4,6 +4,7 @@ import Foundation
 /// Mock notes repository for testing.
 actor MockNotesRepository: NotesRepositoryProtocol {
     var notes: [HeraldNote] = []
+    var recognitions: [UUID: [NoteRecognition]] = [:]
     var error: Error?
     
     func setNotes(_ notes: [HeraldNote]) {
@@ -69,5 +70,13 @@ actor MockNotesRepository: NotesRepositoryProtocol {
     
     func deleteAttachment(_ attachment: NoteAttachment) async throws {
         if let error { throw error }
+    }
+
+    func saveRecognition(_ recognition: NoteRecognition, noteId: UUID) async throws {
+        if let error { throw error }
+        if recognitions[noteId] == nil {
+            recognitions[noteId] = []
+        }
+        recognitions[noteId]?.append(recognition)
     }
 }

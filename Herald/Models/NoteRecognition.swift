@@ -67,4 +67,5 @@ struct NoteRecognition: Codable, Identifiable, Hashable, Sendable {
 enum RecognitionEngine: String, Codable, Sendable {
     case visionAccurate  // VNRecognizeTextRequest with .accurate level
     case visionFast      // VNRecognizeTextRequest with .fast level
+    case userImported    // Text shared from another app (no OCR)
 }

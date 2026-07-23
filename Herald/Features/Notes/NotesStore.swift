@@ -15,6 +15,7 @@ protocol NotesRepositoryProtocol: Sendable {
     func loadAttachments(noteId: UUID) async throws -> [NoteAttachment]
     func saveAttachmentBlob(noteId: UUID, data: Data, type: NoteAttachmentType, fileName: String, mimeType: String) async throws -> NoteAttachment
     func deleteAttachment(_ attachment: NoteAttachment) async throws
+    func saveRecognition(_ recognition: NoteRecognition, noteId: UUID) async throws
 }
 
 /// Manages the notes list state and coordinates with the repository.
@@ -277,6 +278,19 @@ final class NotesStore {
     /// Returns `nil` if the text is empty.
     func createNoteFromSharedText(_ text: String, title: String?) async -> HeraldNote? {
         guard !text.isEmpty else { return nil }
-        return await createNote(title: title ?? "Shared Note")
+        guard let note = await createNote(title: title ?? "Shared Note") else { return nil }
+
+        let recognition = NoteRecognition(
+            noteId: note.id,
+            drawingRevisionId: note.id,
+            engine: .userImported,
+            rawText: text
+        )
+        do {
+            try await repository.saveRecognition(recognition, noteId: note.id)
+        } catch {
+            logger.error("Failed to save shared text recognition: \(error.localizedDescription)")
+        }
+        return note
     }
 }
