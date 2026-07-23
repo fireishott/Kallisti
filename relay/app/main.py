@@ -734,6 +734,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pass
         return success({"status": "ok" if db_ok else "degraded", "database": db_ok})
 
+    @app.get("/health")
+    def health_alias(db: Session = Depends(get_db)) -> dict:
+        """Alias for /v1/health — legacy clients may use this path."""
+        return health(db)
+
     @app.get("/v1/version")
     def version(request_settings: Settings = Depends(get_settings)) -> dict:
         git_sha = None

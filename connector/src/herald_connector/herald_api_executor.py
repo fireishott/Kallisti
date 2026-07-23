@@ -201,12 +201,12 @@ class HeraldAPIExecutor:
         try:
             async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT) as client:
                 response = await client.get(
-                    f"{self._base_url()}/health",
+                    f"{self._base_url()}/v1/health",
                     headers=self._auth_headers(),
                 )
                 if response.status_code == 200:
                     body = response.json()
-                    return body.get("status") == "ok"
+                    return body.get("data", {}).get("status") == "ok"
         except Exception:  # noqa: BLE001
             pass
         return False
