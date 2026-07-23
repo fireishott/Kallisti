@@ -10,6 +10,8 @@ actor JobStreamCoordinator {
         let promptTokens: Int?
         let completionTokens: Int?
         let totalTokens: Int?
+        let contextWindow: Int?
+        let contextUsed: Int?
         let error: String?
         let errorCategory: String?
         let errorAction: String?
@@ -38,6 +40,8 @@ actor JobStreamCoordinator {
     private var isCancelled = false
     private var backoffSeconds: TimeInterval = 1.0
     private static let maxBackoff: TimeInterval = 60.0
+    private var pendingContextWindow: Int?
+    private var pendingContextUsed: Int?
 
     /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
     /// arrives within this window, the stream is considered dead.
@@ -349,6 +353,11 @@ actor JobStreamCoordinator {
                     completionTokens: $0["completion_tokens"] as? Int,
                     totalTokens: $0["total_tokens"] as? Int
                 )}
+                // Store context data for later extraction
+                if let contextDict = json["context"] as? [String: Any] {
+                    self.pendingContextWindow = contextDict["window"] as? Int
+                    self.pendingContextUsed = contextDict["used"] as? Int
+                }
                 payload = .runCompleted(RunCompletedPayload(messageId: "", text: text, usage: usage, diff: nil))
             case "failed":
                 eventType = .runFailed
@@ -445,6 +454,8 @@ actor JobStreamCoordinator {
                 promptTokens: p.usage?.promptTokens,
                 completionTokens: p.usage?.completionTokens,
                 totalTokens: p.usage?.totalTokens,
+                contextWindow: pendingContextWindow,
+                contextUsed: pendingContextUsed,
                 error: nil,
                 errorCategory: nil,
                 errorAction: nil
@@ -452,16 +463,19 @@ actor JobStreamCoordinator {
         case .runFailed(let p):
             return TerminalResult(
                 text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                contextWindow: nil, contextUsed: nil,
                 error: p.error, errorCategory: p.errorCategory, errorAction: p.errorAction
             )
         case .runCancelled(let p):
             return TerminalResult(
                 text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                contextWindow: nil, contextUsed: nil,
                 error: p.reason, errorCategory: nil, errorAction: nil
             )
         default:
             return TerminalResult(
                 text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                contextWindow: nil, contextUsed: nil,
                 error: nil, errorCategory: nil, errorAction: nil
             )
         }

@@ -1219,6 +1219,10 @@ class HeraldConnector:
                 "text": cleaned_text,
                 "sessionId": session_id,
                 "usage": usage,
+                "context": {
+                    "window": context_window,
+                    "used": usage.get("total_tokens", 0) if usage else 0,
+                },
             }
             if media_attachments:
                 result_payload["attachments"] = media_attachments

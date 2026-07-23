@@ -459,3 +459,38 @@ def test_structured_error_action_preserved(tmp_path):
 
     assert ws.sent[1]["errorCategory"] == "context_exceeded"
     assert ws.sent[1]["errorAction"] == "new_session"
+
+
+def test_job_result_includes_context_info(tmp_path):
+    """job.result payload should include context window and used tokens."""
+    store = ConnectorStateStore(state_dir=tmp_path / "context-info")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
+
+    class FakeStreamingAdapter:
+        supports_streaming = True
+
+        async def send_text_message_streaming(self, **kwargs):
+            yield StreamEvent(type="text_delta", data="Hello world!")
+            yield StreamEvent(type="finish", session_id="sess-ctx")
+
+    ws = FakeWebSocket()
+    job = {
+        "id": "job-ctx",
+        "latestUserMessage": "Hello",
+        "history": [],
+        "contextWindow": 200000,
+    }
+
+    with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
+        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+
+    # Find the job.result message
+    result_messages = [m for m in ws.sent if m.get("type") == "job.result"]
+    assert len(result_messages) == 1
+    result = result_messages[0]
+
+    # Verify context info is present
+    assert "context" in result
+    assert result["context"]["window"] == 200000
+    assert result["context"]["used"] >= 0  # usage may be None from fake adapter

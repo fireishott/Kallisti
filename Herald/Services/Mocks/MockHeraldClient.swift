@@ -86,6 +86,7 @@ final class MockHeraldClient: HeraldClientProtocol {
                 continuation.yield(.finished(
                     heraldMessage,
                     TokenUsage(promptTokens: 150, completionTokens: 80, totalTokens: 230),
+                    nil,
                     nil
                 ))
                 continuation.finish()

@@ -279,6 +279,7 @@ class MessageJob(Base):
     error_text: Mapped[str | None] = mapped_column(Text)
     retryable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     usage_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    context_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     diff_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)

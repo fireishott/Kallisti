@@ -16,6 +16,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let message: RelayMessage?
         let jobId: UUID?
         let usage: TokenUsage?
+        let context: ContextInfo?
         let diff: CodeDiff?
     }
 
@@ -25,6 +26,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let updatedAt: Date
         let messages: [RelayMessage]
         let latestUsage: TokenUsage?
+        let latestContext: ContextInfo?
     }
 
     private struct RelayAttachment: Decodable {
@@ -57,6 +59,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let jobId: UUID?
         let status: String
         let usage: TokenUsage?
+        let context: ContextInfo?
         let diff: CodeDiff?
         let error: String?
         let message: RelayMessage?
@@ -68,6 +71,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let message: Message?
         let error: String?
         let usage: TokenUsage?
+        let context: ContextInfo?
         let diff: CodeDiff?
         let attempt: Int?
         let lastSeq: Int?
@@ -195,11 +199,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     if response.replyState != "pending" {
                         if let msg = response.message {
                             let mapped = self.mapMessage(msg)
-                            continuation.yield(.finished(mapped, response.usage, response.diff))
+                            continuation.yield(.finished(mapped, response.usage, response.diff, response.context))
                         } else {
                             continuation.yield(.finished(
                                 Message(sender: .system, content: "Herald did not return a message.", status: .failed),
-                                nil, nil
+                                nil, nil, nil
                             ))
                         }
                         continuation.finish()
@@ -210,11 +214,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     guard let jobId = response.jobId else {
                         // No jobId available, fall back to non-streaming result
                         if let msg = response.message ?? response.userMessage {
-                            continuation.yield(.finished(self.mapMessage(msg), response.usage, response.diff))
+                            continuation.yield(.finished(self.mapMessage(msg), response.usage, response.diff, response.context))
                         } else {
                             continuation.yield(.finished(
                                 Message(sender: .user, content: content, status: .sent),
-                                nil, nil
+                                nil, nil, nil
                             ))
                         }
                         continuation.finish()
@@ -247,10 +251,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
                                       let total = terminalResult.totalTokens else { return nil }
                                 return TokenUsage(promptTokens: prompt, completionTokens: completion, totalTokens: total)
                             }()
+                            let context: ContextInfo? = {
+                                guard let window = terminalResult.contextWindow,
+                                      let used = terminalResult.contextUsed else { return nil }
+                                return ContextInfo(window: window, used: used)
+                            }()
                             donePayload = StreamDonePayload(
                                 jobId: jobId,
                                 status: "completed",
                                 usage: usage,
+                                context: context,
                                 diff: nil,
                                 error: nil,
                                 message: nil
@@ -266,7 +276,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             conversation: refreshedConversation ?? self.currentConversation
                         )
                         let usage: TokenUsage? = donePayload?.usage ?? refreshedConversation?.latestUsage
-                        continuation.yield(.finished(finalMessage, usage, nil))
+                        let context: ContextInfo? = donePayload?.context
+                        continuation.yield(.finished(finalMessage, usage, nil, context))
                     case .failed:
                         // Coordinator already yielded .failed StreamingUpdate
                         // with error category/action. Reload conversation so
@@ -379,7 +390,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             title: relayConversation.title,
             messages: relayConversation.messages.map(mapMessage),
             lastActivity: relayConversation.updatedAt,
-            latestUsage: relayConversation.latestUsage
+            latestUsage: relayConversation.latestUsage,
+            contextPercent: relayConversation.latestContext?.percentUsed
         )
     }
 
@@ -712,6 +724,7 @@ extension LiveHeraldClient {
             let conversationId: UUID?
             let error: String?
             let usage: TokenUsage?
+            let context: ContextInfo?
             let diff: CodeDiff?
             let message: RelayMessage?
             let attempt: Int?
@@ -736,6 +749,7 @@ extension LiveHeraldClient {
                 message: data.message.map { mapMessage($0) },
                 error: data.error,
                 usage: data.usage,
+                context: data.context,
                 diff: data.diff,
                 attempt: data.attempt,
                 lastSeq: data.lastSeq,
@@ -819,7 +833,7 @@ extension LiveHeraldClient {
                 case "completed":
                     Self.logger.info("Job \(jobId.uuidString.prefix(8)) completed during polling")
                     if let msg = statusResponse.message {
-                        continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff))
+                        continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff, statusResponse.context))
                     } else {
                         let refreshed = await self.reloadConversationForStreaming()
                         let finalMsg = self.resolveFinalMessage(
@@ -827,7 +841,7 @@ extension LiveHeraldClient {
                             donePayload: nil,
                             conversation: refreshed ?? self.currentConversation
                         )
-                        continuation.yield(.finished(finalMsg, nil, nil))
+                        continuation.yield(.finished(finalMsg, nil, nil, nil))
                     }
                     return
 

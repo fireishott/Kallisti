@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0] - 2026-07-23
+
+### Added
+
+- **Context usage meter**: After each message completes, the iOS app now
+  displays context usage as a percentage of the model's context window.
+  A warning banner appears at >90% usage with a "New Session" button.
+  Session list shows context fullness for recent sessions.
+- **Context info in job.result**: Connector now includes `context.window`
+  and `context.used` in the job.result payload, enabling the iOS app to
+  display accurate context usage without estimating from token counts.
+
 ## [2.1.2] - 2026-07-23
 
 ### Fixed

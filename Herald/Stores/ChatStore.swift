@@ -19,6 +19,7 @@ final class ChatStore {
     var isLoading = false
     var pendingMessageSentAt: Date?
     var lastTokenUsage: TokenUsage?
+    var lastContextInfo: ContextInfo?
     /// Error context from the most recent `.failed` streaming update.
     var lastErrorCategory: String?
     var lastErrorAction: String?
@@ -324,7 +325,7 @@ final class ChatStore {
                 case .keepalive:
                     progressContinuation?.yield(())
 
-                case .finished(let finalMessage, let usage, let diff):
+                case .finished(let finalMessage, let usage, let diff, let context):
                     progressContinuation?.yield(())
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingDeltas(placeholderID: placeholderID)
@@ -369,6 +370,10 @@ final class ChatStore {
                         self.lastTokenUsage = latestUsage
                     } else if let usage {
                         self.lastTokenUsage = usage
+                    }
+                    if let context {
+                        self.lastContextInfo = context
+                        self.conversation?.contextPercent = context.percentUsed
                     }
                     self.detectProfileSwitch(in: finalMessage.content)
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
@@ -868,6 +873,7 @@ final class ChatStore {
         isLoading = false
         pendingMessageSentAt = nil
         lastTokenUsage = nil
+        lastContextInfo = nil
         persistence.clearConversationCache()
     }
 

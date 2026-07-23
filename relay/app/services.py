@@ -1318,6 +1318,7 @@ def complete_message_job(
     text: str,
     session_id: str | None,
     usage: dict | None = None,
+    context: dict | None = None,
     diff: dict | None = None,
     attachments: list[dict] | None = None,
 ) -> MessageJob | None:
@@ -1350,6 +1351,7 @@ def complete_message_job(
     job.result_session_id = session_id or job.result_session_id
     job.result_message_id = result_message.id
     job.usage_data = usage
+    job.context_data = context
     job.diff_data = diff
     job.retryable = False
     db.commit()
@@ -1548,10 +1550,15 @@ def serialize_conversation(conversation: Conversation, messages: list[Message], 
         if job.result_message_id:
             jobs_by_message_id[job.result_message_id] = job
     latest_usage = None
+    latest_context = None
     for job in reversed(jobs or []):
-        if job.status == "completed" and job.usage_data:
-            latest_usage = job.usage_data
-            break
+        if job.status == "completed":
+            if job.usage_data:
+                latest_usage = job.usage_data
+            if job.context_data:
+                latest_context = job.context_data
+            if latest_usage and latest_context:
+                break
     result = {
         "id": conversation.id,
         "title": conversation.title,
@@ -1567,6 +1574,8 @@ def serialize_conversation(conversation: Conversation, messages: list[Message], 
     }
     if latest_usage:
         result["latestUsage"] = latest_usage
+    if latest_context:
+        result["latestContext"] = latest_context
     return result
 
 

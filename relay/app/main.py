@@ -635,6 +635,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job.usage_data:
             payload["usage"] = job.usage_data
 
+        if job.context_data:
+            payload["context"] = job.context_data
+
         if job.diff_data:
             payload["diff"] = job.diff_data
 
@@ -2396,6 +2399,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result["error"] = job.error_text
         if job.usage_data:
             result["usage"] = job.usage_data
+        if job.context_data:
+            result["context"] = job.context_data
         if job.diff_data:
             result["diff"] = job.diff_data
         return success_response(result)
@@ -2520,6 +2525,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if status_val == "completed":
                     if job_row.usage_data:
                         terminal_payload["usage"] = job_row.usage_data
+                    if job_row.context_data:
+                        terminal_payload["context"] = job_row.context_data
                     if job_row.diff_data:
                         terminal_payload["diff"] = job_row.diff_data
                     if job_row.result_message_id:
@@ -2926,6 +2933,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         text=incoming.get("text", "").strip(),
                                         session_id=incoming.get("sessionId"),
                                         usage=incoming.get("usage"),
+                                        context=incoming.get("context"),
                                         diff=incoming.get("diff"),
                                         attachments=incoming.get("attachments"),
                                     )
@@ -2957,6 +2965,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     "usage": completed.usage_data,
                                     "message": result_message,
                                 }
+                                if completed.context_data:
+                                    done_event_data["context"] = completed.context_data
                                 if completed.diff_data:
                                     done_event_data["diff"] = completed.diff_data
                                 publish_job_event(claimed_job.id, {

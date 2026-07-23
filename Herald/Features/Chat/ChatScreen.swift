@@ -48,6 +48,9 @@ struct ChatScreen: View {
                 if pairingStore.isPaired, hostStore.connectionState != .online {
                     connectionBanner
                 }
+                if contextProgress > 0.9 {
+                    contextWarningBanner
+                }
                 messageList
                 ChatInputBar(
                     text: $messageText,
@@ -722,6 +725,36 @@ struct ChatScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
         .padding(.horizontal, Design.Spacing.md)
         .padding(.top, Design.Spacing.md)
+    }
+
+    private var contextWarningBanner: some View {
+        HStack(alignment: .center, spacing: Design.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Design.Colors.danger)
+
+            VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+                Text("Session nearly full")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                Text("\(Int(contextProgress * 100))% of context used")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+
+            Spacer()
+
+            Button("New Session") {
+                Task { await performClear() }
+            }
+            .font(Design.Typography.caption)
+            .foregroundStyle(Design.Brand.accent)
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, Design.Spacing.sm)
+        .background(Design.Colors.danger.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.top, Design.Spacing.sm)
     }
 
     private var connectionBannerIcon: String {

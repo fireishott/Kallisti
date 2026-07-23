@@ -43,7 +43,7 @@ final class TalkTurnClient {
                         break
                     case .toolActivity(let label):
                         continuation.yield(.toolActivity(label))
-                    case .finished(let message, _, _):
+                    case .finished(let message, _, _, _):
                         canonicalText = message.content
                         continuation.yield(.completed(text: canonicalText))
                         continuation.finish()
