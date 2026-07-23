@@ -64,6 +64,7 @@ final class AppContainer {
     let sensorUploadService: SensorUploadService?
     let dashboardLogService: DashboardLogService
     let themeManager: ThemeManager
+    let hostStatusStream: HostStatusStreamService
     private let apiClient: RelayAPIClient?
     private let notificationService: (any NotificationServiceProtocol)?
     private let pushRegistrationCoordinator: PushRegistrationCoordinator?
@@ -108,7 +109,8 @@ final class AppContainer {
         apiClient: RelayAPIClient? = nil,
         notificationService: (any NotificationServiceProtocol)? = nil,
         pushRegistrationCoordinator: PushRegistrationCoordinator? = nil,
-        secureStore: (any SecureStoreProtocol)? = nil
+        secureStore: (any SecureStoreProtocol)? = nil,
+        hostStatusStream: HostStatusStreamService? = nil
     ) {
         self.sessionStore = sessionStore
         self.pairingStore = pairingStore
@@ -161,6 +163,10 @@ final class AppContainer {
         self.notificationService = notificationService
         self.pushRegistrationCoordinator = pushRegistrationCoordinator
         self.secureStore = secureStore
+        self.hostStatusStream = hostStatusStream ?? HostStatusStreamService(
+            apiClient: apiClient ?? RelayAPIClient { "" },
+            accessTokenProvider: { await sessionStore.currentAccessToken() }
+        )
     }
 
     static func sharedDefault() -> AppContainer {
@@ -607,6 +613,17 @@ final class AppContainer {
         reconcileLiveActivities()
         await reportAppStateIfNeeded("foreground")
         updateWidgetData()
+
+        // If a streaming response was in-flight when we backgrounded, the SSE
+        // connection may have died silently. Force a conversation reload — if
+        // the server has the completed response, we'll pick it up and clear
+        // the stale streaming state.
+        if chatStore.isStreaming {
+            await chatStore.recoverStalledStream()
+        }
+
+        // Start real-time host status stream while foregrounded
+        await hostStatusStream.start()
     }
 
     func handleRemoteNotificationWake() async {

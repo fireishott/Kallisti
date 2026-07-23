@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.0.4] - 2026-07-22
+
+### Fixed
+
+- **Streaming visibility** (B1/B6): `scrollToBottom()` now targets the last
+  message in the conversation (not the last user message), so streaming
+  responses are visible as they arrive. Added scroll-during-streaming logic
+  to keep the viewport following the growing response.
+- **Phantom thinking** (B2): App now detects and recovers stalled SSE streams
+  on foreground return. If the server completed a response while the app was
+  backgrounded, it's immediately displayed instead of showing perpetual
+  "Thinking...".
+- **Chat open scroll** (B3): Opening a conversation now scrolls to the absolute
+  bottom of activity, not the last sent message.
+- **Send scroll guard** (B8): Removed `isComposerFocused` guard that could
+  prevent scroll-to-bottom after sending a message.
+
+### Added
+
+- **Notes infinite scroll** (B4): PencilKit canvas now auto-extends as the
+  user approaches the bottom, matching Apple Notes infinite-scroll behavior.
+  Paper lines/grid extend with the canvas.
+- **Apple Pencil menu fix** (B5): Migrated from deprecated
+  `PKToolPicker.shared(for:)` to instance-based API. Tool picker now
+  positions correctly on all iPad configurations and survives app lifecycle.
+- **Live gateway state** (B7): Real-time SSE subscription for host status
+  while foregrounded (replaces 10s polling). Connection state, model, and
+  profile changes reflect within 1-2 seconds.
+
 ## [2.0.2] - 2026-07-22
 
 ### Fixed

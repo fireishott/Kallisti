@@ -96,8 +96,6 @@ struct ChatScreen: View {
             // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(300))
-                // Only scroll if keyboard is not actively dismissing
-                guard !isComposerFocused else { return }
                 scrollToBottom()
             }
         }
@@ -113,6 +111,13 @@ struct ChatScreen: View {
                 if settingsStore.settings.hapticFeedbackEnabled {
                     HapticEngine.responseReceived()
                 }
+            }
+        }
+        .onChange(of: chatStore.conversation?.messages.last?.content.count ?? 0) {
+            // During streaming, keep the growing response scrolled into view
+            if let streamingID = chatStore.streamingMessageID {
+                // Pin response start in view — new text grows downward
+                scrollToResponseTop(streamingID)
             }
         }
         .confirmationDialog(
@@ -1034,18 +1039,9 @@ struct ChatScreen: View {
     }
 
     private func scrollToBottom() {
-        let targetID: UUID
-        // Prefer the last user message so the view lands on what the user
-        // just sent, not at the thinking indicator in empty space.
-        if let lastUser = chatStore.conversation?.messages.last(where: { $0.sender == .user }) {
-            targetID = lastUser.id
-        } else if let lastID = chatStore.conversation?.messages.last?.id {
-            targetID = lastID
-        } else {
-            return
-        }
+        guard let lastID = chatStore.conversation?.messages.last?.id else { return }
         withAnimation(Design.Motion.standard) {
-            scrollProxy?.scrollTo(targetID, anchor: .bottom)
+            scrollProxy?.scrollTo(lastID, anchor: .bottom)
         }
     }
 

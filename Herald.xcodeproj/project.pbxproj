@@ -29,6 +29,7 @@
 		19F4FAF8EB893415E5C08204 /* TalkModeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEB48A61844EA27CA49AC2F7 /* TalkModeScreen.swift */; };
 		1AAE56AF3B9F68C0A752DADE /* MarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540B73A89FCA63E4A659A3D6 /* MarkdownParser.swift */; };
 		1B0B577FDAE58A91BE53693A /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */; };
+		1BDB9E2972386D7B5B5F8E3B /* HostStatusStreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BB0FCDC533F2E31D863DBAB /* HostStatusStreamService.swift */; };
 		1CB7DA5C804F3AABE4F9E0A7 /* NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */; };
 		1ECF9245B171D9B33C8D8587 /* stream_v2_error.json in Resources */ = {isa = PBXBuildFile; fileRef = 24618D668A621746F3C0A41E /* stream_v2_error.json */; };
 		2058D4034B69B28FA7F979F1 /* HealthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6147223A6404B126D3F471 /* HealthServiceTests.swift */; };
@@ -38,6 +39,7 @@
 		264D3D870922431680F88729 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C382C287A04B063179F255B2 /* ChatInputBar.swift */; };
 		26592A63DBB6B38A69A106FA /* NoteExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1512D6B83D183D5172E7F68D /* NoteExportSheet.swift */; };
 		277DA40B95CCE3E09EAB5001 /* MockSecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE9F404D1E7B4F3B5519665 /* MockSecureStore.swift */; };
+		2798630458A02CBE5701A20E /* MessageReactionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69739260DD17C6229D2A945D /* MessageReactionPicker.swift */; };
 		27A4730E25856023C4E0E52E /* NoteRecognitionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E857F239BD33E0037CCFDFA /* NoteRecognitionCoordinatorTests.swift */; };
 		280FF96CB810E4CF57FD560A /* PushBrokerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00DF4324FE1308E6E31A907 /* PushBrokerClient.swift */; };
 		2864D2FD043E32E41ADDF163 /* JobEventReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */; };
@@ -169,7 +171,6 @@
 		A5A12F82EF2D9B3755BC2123 /* VoiceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE863F3296A2748FD9FAD626 /* VoiceState.swift */; };
 		A5FEB304F096E5293D906257 /* TalkTurnClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD1CFB386F902E262624380 /* TalkTurnClient.swift */; };
 		A6E5C154955E1211BEC683E1 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89BE15FD4F6761362E992750 /* MessageBubble.swift */; };
-		A1B2C3D4E5F6001122334466 /* MessageReactionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */; };
 		A6F493C7EFE794AA2F54F9C2 /* CronStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 862C24F9EB251BD8705AAADC /* CronStore.swift */; };
 		A8271060009609E1170A948B /* MarkdownContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDE14C58C9441A5A7864510 /* MarkdownContentView.swift */; };
 		A86DA4177809D2F2ABD5EDDE /* MessageStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C3EC13DA4272428D489B6E /* MessageStatus.swift */; };
@@ -388,6 +389,7 @@
 		514E044C3232C165B753FF7D /* note_enrichment_request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = note_enrichment_request.json; sourceTree = "<group>"; };
 		5284C9AE8B2A58A9B7F5C258 /* iPadRightPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadRightPanelView.swift; sourceTree = "<group>"; };
 		540B73A89FCA63E4A659A3D6 /* MarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParser.swift; sourceTree = "<group>"; };
+		5BB0FCDC533F2E31D863DBAB /* HostStatusStreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatusStreamService.swift; sourceTree = "<group>"; };
 		5CEB24E972FC822860E0D282 /* DashboardLogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardLogService.swift; sourceTree = "<group>"; };
 		5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningView.swift; sourceTree = "<group>"; };
 		5DD65BFD57586C83D62945CD /* PermissionsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsScreen.swift; sourceTree = "<group>"; };
@@ -405,6 +407,7 @@
 		660D3914500E5EAF0A22B8F5 /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
 		674210B133840B32753E5B8F /* LiveMotionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMotionService.swift; sourceTree = "<group>"; };
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
+		69739260DD17C6229D2A945D /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
 		6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePaperBackground.swift; sourceTree = "<group>"; };
 		6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoFixtureTests.swift; sourceTree = "<group>"; };
 		6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockMediaService.swift; sourceTree = "<group>"; };
@@ -441,7 +444,6 @@
 		88B179CF374730DABD661130 /* SlashCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommand.swift; sourceTree = "<group>"; };
 		89583DC26484BE1D61CD0CFB /* ProfileSelectorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSelectorSheet.swift; sourceTree = "<group>"; };
 		89BE15FD4F6761362E992750 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
 		8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
 		8E5EECD4A37679A849ADB3AB /* CarPlayVoiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayVoiceManager.swift; sourceTree = "<group>"; };
 		8FC392ED86295411DCB768B5 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
@@ -627,6 +629,7 @@
 			isa = PBXGroup;
 			children = (
 				0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */,
+				5BB0FCDC533F2E31D863DBAB /* HostStatusStreamService.swift */,
 				BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */,
 				FA091035BFB4BAD3EFB013F6 /* JobStreamCoordinator.swift */,
 				E3B5AFD2826D94698CE40506 /* LiveActivityService.swift */,
@@ -830,7 +833,7 @@
 				0CDE14C58C9441A5A7864510 /* MarkdownContentView.swift */,
 				CC5E563F9C5DC22502D5B3D6 /* MessageAttachmentsView.swift */,
 				89BE15FD4F6761362E992750 /* MessageBubble.swift */,
-				A1B2C3D4E5F6001122334455 /* MessageReactionPicker.swift */,
+				69739260DD17C6229D2A945D /* MessageReactionPicker.swift */,
 				A716B6514A139613D09C4C5D /* ModelSelectorSheet.swift */,
 				89583DC26484BE1D61CD0CFB /* ProfileSelectorSheet.swift */,
 				5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */,
@@ -1376,6 +1379,7 @@
 				7F44B2762B896D747A609959 /* HeraldWidgetData.swift in Sources */,
 				3854CD76AEAD91EE4B2A71BA /* HermesTalkCoordinator.swift in Sources */,
 				0023F2ECEDF63941D7A8CC56 /* HostEnrollmentCode.swift in Sources */,
+				1BDB9E2972386D7B5B5F8E3B /* HostStatusStreamService.swift in Sources */,
 				E8EB044B187641156097049C /* InboxActionDescriptor.swift in Sources */,
 				514CAEB01797DFCA6F403B2B /* InboxActionResult.swift in Sources */,
 				10250EAE82A59D5083B19812 /* InboxItem.swift in Sources */,
@@ -1418,7 +1422,7 @@
 				4BD38645C4B8DFF268351F67 /* Message.swift in Sources */,
 				AAD76E14D301AD70028DF07E /* MessageAttachmentsView.swift in Sources */,
 				A6E5C154955E1211BEC683E1 /* MessageBubble.swift in Sources */,
-				A1B2C3D4E5F6001122334466 /* MessageReactionPicker.swift in Sources */,
+				2798630458A02CBE5701A20E /* MessageReactionPicker.swift in Sources */,
 				EDD0F31A29DC769C974F8BDC /* MessageSender.swift in Sources */,
 				A86DA4177809D2F2ABD5EDDE /* MessageStatus.swift in Sources */,
 				8B4D3DEB78E237B357B8A69C /* MimoASRService.swift in Sources */,
@@ -1682,7 +1686,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1690,7 +1694,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.2;
+				MARKETING_VERSION = 2.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SDKROOT = iphoneos;
@@ -1777,7 +1781,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1785,7 +1789,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.2;
+				MARKETING_VERSION = 2.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 				SDKROOT = iphoneos;
@@ -1817,7 +1821,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1825,7 +1829,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.2;
+				MARKETING_VERSION = 2.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 				SDKROOT = iphoneos;
@@ -1838,7 +1842,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 48;
+				CURRENT_PROJECT_VERSION = 50;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1846,7 +1850,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.2;
+				MARKETING_VERSION = 2.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SDKROOT = iphoneos;

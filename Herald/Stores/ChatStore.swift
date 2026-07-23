@@ -555,6 +555,48 @@ final class ChatStore {
         pollingTask = nil
     }
 
+    /// Recover from a stalled stream after app foregrounding.
+    /// If the server completed a response while the app was backgrounded,
+    /// this will pick it up and clear the stale streaming state.
+    func recoverStalledStream() async {
+        guard isStreaming else { return }
+
+        // Refresh conversation from server
+        let refreshed = await refreshActiveConversation()
+        guard let refreshed else { return }
+
+        // Check if the server has a completed response that we missed
+        let serverMessages = refreshed.messages
+        let localMessages = conversation?.messages ?? []
+
+        // If server has more delivered messages than we do, the stream
+        // completed while we were suspended
+        let serverDelivered = serverMessages.filter { $0.status == .delivered && $0.sender == .herald }
+        let localDelivered = localMessages.filter { $0.status == .delivered && $0.sender == .herald }
+
+        if serverDelivered.count > localDelivered.count {
+            // Server has the response — merge and clear streaming state
+            conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+
+            // Clear all active streams
+            for (jobID, _) in activeStreams {
+                activeStreams.removeValue(forKey: jobID)
+            }
+            streamingTask?.cancel()
+            streamingTask = nil
+            chatLiveActivity.endActivity()
+            pendingMessageSentAt = nil
+
+            if let latestUsage = conversation?.latestUsage {
+                lastTokenUsage = latestUsage
+            }
+            if let conversation {
+                persistence.saveConversationCache(conversation)
+                onConversationChanged?()
+            }
+        }
+    }
+
     func cancelStreaming() {
         streamingTask?.cancel()
         streamingTask = nil

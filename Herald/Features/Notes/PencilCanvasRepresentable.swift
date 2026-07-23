@@ -25,21 +25,23 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         canvas.isOpaque = false
         canvas.maximumZoomScale = 4.0
         canvas.minimumZoomScale = 1.0
+        
+        // Enable infinite vertical scrolling like Apple Notes
+        canvas.contentSize = CGSize(width: canvas.bounds.width, height: 4000)
+        canvas.alwaysBounceVertical = true
+        canvas.showsVerticalScrollIndicator = true
+        
         context.coordinator.canvasView = canvas
 
         // Install paper layer behind canvas content
         context.coordinator.installPaper(in: canvas, style: pageStyle)
 
-        // Tool picker — shared instance, stable autosave name
-        if let window = canvas.window ?? UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first?.windows.first,
-           let picker = PKToolPicker.shared(for: window) {
-            picker.setVisible(true, forFirstResponder: canvas)
-            picker.addObserver(canvas)
-            picker.stateAutosaveName = "herald.canvas"
-            context.coordinator.toolPicker = picker
-        }
+        // Tool picker — instance-based API (iOS 16+)
+        let picker = PKToolPicker()
+        picker.setVisible(true, forFirstResponder: canvas)
+        picker.addObserver(canvas)
+        picker.stateAutosaveName = "herald.canvas"
+        context.coordinator.toolPicker = picker
 
         // Pencil interactions — honor system preferred actions for double-tap and squeeze
         let pencilInteraction = UIPencilInteraction()
@@ -48,6 +50,9 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 
         // CRITICAL: Block parent ScrollView from intercepting pencil touches
         canvas.panGestureRecognizer.require(toFail: canvas.drawingGestureRecognizer)
+
+        // Monitor scroll position to auto-extend canvas
+        context.coordinator.installAutoGrow(canvas: canvas)
 
         canvas.becomeFirstResponder()
 
@@ -77,9 +82,12 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             context.coordinator.updatePaper(style: pageStyle)
         }
 
-        // Restore tool picker visibility after sheet/rotation/backgrounding
+        // Restore tool picker and first responder after sheet/rotation/backgrounding
         if let picker = context.coordinator.toolPicker {
             picker.setVisible(true, forFirstResponder: canvas)
+            if !canvas.isFirstResponder {
+                canvas.becomeFirstResponder()
+            }
         }
     }
 
@@ -93,10 +101,27 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         var currentStyle: NotePageStyle
         private weak var paperView: NotePaperUIView?
         private var contentObserver: NSKeyValueObservation?
+        private var scrollObserver: NSKeyValueObservation?
 
         init(_ parent: PencilCanvasRepresentable) {
             self.parent = parent
             self.currentStyle = parent.pageStyle
+        }
+
+        func installAutoGrow(canvas: PKCanvasView) {
+            scrollObserver = canvas.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let bottomEdge = scrollView.contentOffset.y + scrollView.bounds.height
+                    let contentHeight = scrollView.contentSize.height
+                    // When user scrolls within 200pt of bottom, extend canvas
+                    if bottomEdge > contentHeight - 200 {
+                        let newHeight = contentHeight + 2000
+                        scrollView.contentSize.height = newHeight
+                        self.updatePaper(style: self.currentStyle)
+                    }
+                }
+            }
         }
 
         func installPaper(in canvas: PKCanvasView, style: NotePageStyle) {
