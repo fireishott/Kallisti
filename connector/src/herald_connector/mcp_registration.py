@@ -143,6 +143,69 @@ def register_native_mcp_server(*, state_dir: Path, server_name: str = MCP_SERVER
     )
 
 
+def register_remote_mcp_server(
+    *,
+    mcp_url: str | None = None,
+    server_name: str = MCP_SERVER_NAME,
+) -> MCPRegistrationStatus:
+    """Register Herald MCP as a remote HTTP server in Hermes config.
+
+    Unlike register_native_mcp_server (stdio/subprocess), this writes a
+    url: entry so Hermes connects over HTTP — no herald-mcp binary needed
+    on the Hermes host.
+    """
+    if mcp_url is None:
+        host = os.environ.get("HERALD_MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("HERALD_MCP_PORT", "8767"))
+        # For registration, replace 0.0.0.0 with a routable address
+        if host == "0.0.0.0":
+            import socket
+            host = socket.gethostbyname(socket.gethostname())
+        mcp_url = f"http://{host}:{port}/mcp"
+
+    hermes_home = resolve_hermes_home()
+    config_path = hermes_home / "config.yaml"
+    config = _load_config(config_path)
+    mcp_servers = config.get("mcp_servers")
+    if not isinstance(mcp_servers, CommentedMap):
+        mcp_servers = CommentedMap(mcp_servers or {})
+        config["mcp_servers"] = mcp_servers
+
+    entry = mcp_servers.get(server_name)
+    if not isinstance(entry, CommentedMap):
+        entry = CommentedMap(entry or {})
+        mcp_servers[server_name] = entry
+
+    # Remove stdio keys if present
+    entry.pop("command", None)
+    entry.pop("args", None)
+    entry.pop("env", None)
+
+    entry["url"] = mcp_url
+    entry["enabled"] = True
+    entry["timeout"] = 60
+    entry["connect_timeout"] = 30
+
+    tools = entry.get("tools")
+    if not isinstance(tools, CommentedMap):
+        tools = CommentedMap(tools or {})
+        entry["tools"] = tools
+    tools["include"] = list(MCP_TOOL_NAMES)
+    tools["resources"] = False
+    tools["prompts"] = False
+    tools.pop("exclude", None)
+
+    _save_config(config_path, config)
+    return MCPRegistrationStatus(
+        server_name=server_name,
+        hermes_home=hermes_home,
+        config_path=config_path,
+        command_path=mcp_url,
+        registered=True,
+        included_tools=tuple(MCP_TOOL_NAMES),
+    )
+
+
 def inspect_native_mcp_registration(*, server_name: str = MCP_SERVER_NAME) -> MCPRegistrationStatus:
     hermes_home = resolve_hermes_home()
     config_path = hermes_home / "config.yaml"
@@ -171,7 +234,7 @@ def inspect_native_mcp_registration(*, server_name: str = MCP_SERVER_NAME) -> MC
         server_name=server_name,
         hermes_home=hermes_home,
         config_path=config_path,
-        command_path=entry.get("command"),
+        command_path=entry.get("url") or entry.get("command"),
         registered=bool(entry.get("enabled", True)),
         included_tools=_extract_included_tools(entry),
     )
@@ -202,6 +265,44 @@ def validate_native_mcp_server(
 
     output = (process.stderr or process.stdout or "").strip()
     return output or f"`{' '.join(command_parts)} mcp test {server_name}` failed with exit code {process.returncode}."
+
+
+def validate_remote_mcp_server(
+    *,
+    server_name: str = MCP_SERVER_NAME,
+    timeout_seconds: float = 10.0,
+) -> str | None:
+    """Verify the remote MCP HTTP server is reachable."""
+    status = inspect_native_mcp_registration(server_name=server_name)
+    if not status.registered:
+        return f"`{server_name}` is not registered in {status.config_path}."
+
+    url = status.command_path  # holds URL in remote mode
+    if not url or not url.startswith("http"):
+        return f"`{server_name}` is not configured for remote mode (no url: entry)."
+
+    import httpx
+
+    try:
+        resp = httpx.post(
+            url,
+            json={
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "herald-validate", "version": "0.1"},
+                },
+            },
+            timeout=timeout_seconds,
+        )
+        if resp.status_code == 200:
+            return None
+        return f"MCP server at {url} returned HTTP {resp.status_code}"
+    except Exception as e:
+        return f"MCP server at {url} unreachable: {e}"
 
 
 def validate_native_mcp_tools(*, server_name: str = MCP_SERVER_NAME) -> str | None:

@@ -398,9 +398,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Redeem the host without editing ~/.hermes/config.yaml. You can run `herald configure-mcp` later.",
     )
 
-    subparsers.add_parser(
+    configure_mcp_parser = subparsers.add_parser(
         "configure-mcp",
         help="Write Herald MCP tools into the local Hermes config and validate them.",
+    )
+    configure_mcp_parser.add_argument(
+        "--remote",
+        action="store_true",
+        default=True,
+        help="Register as remote HTTP server (default). Use --no-remote for stdio.",
+    )
+    configure_mcp_parser.add_argument(
+        "--no-remote",
+        dest="remote",
+        action="store_false",
+        help="Register as local stdio subprocess (legacy).",
+    )
+    configure_mcp_parser.add_argument(
+        "--url",
+        default=None,
+        help="Explicit MCP server URL (default: auto-detect from HERALD_MCP_HOST/PORT).",
     )
     configure_realtime = subparsers.add_parser(
         "configure-realtime",
@@ -624,8 +641,11 @@ def cmd_setup(args: argparse.Namespace, connector: HeraldConnector) -> int:
     return 0
 
 
-def cmd_configure_mcp(connector: HeraldConnector) -> int:
-    state = connector.configure_mcp()
+def cmd_configure_mcp(args: argparse.Namespace, connector: HeraldConnector) -> int:
+    if args.remote:
+        state = connector.configure_mcp_remote(mcp_url=args.url)
+    else:
+        state = connector.configure_mcp()
     print(f"Configured MCP for host {state.host_id}")
     for line in connector.validate_mcp():
         print(line)
@@ -775,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "setup":
         return cmd_setup(args, connector)
     if args.command == "configure-mcp":
-        return cmd_configure_mcp(connector)
+        return cmd_configure_mcp(args, connector)
     if args.command == "configure-realtime":
         return cmd_configure_realtime(args, connector)
     if args.command == "enroll":

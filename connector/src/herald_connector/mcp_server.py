@@ -273,7 +273,34 @@ def query_sensor_data(sql: str, limit: int = 100) -> str:
 
 
 def main() -> None:
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="herald-mcp")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="streamable-http",
+        help="MCP transport (default: streamable-http)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HERALD_MCP_HOST", "0.0.0.0"),
+        help="Bind address for HTTP transport (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("HERALD_MCP_PORT", "8767")),
+        help="Port for HTTP transport (default: 8767)",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "streamable-http":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

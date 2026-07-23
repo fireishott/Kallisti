@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.1.0] - 2026-07-22
+
+### Added
+
+- **Remote MCP server** — Herald's MCP server now runs Streamable HTTP
+  transport (port 8767) instead of stdio, enabling Hermes to connect over
+  the network without SSH tunnels or the herald-mcp binary on the Hermes
+  host.
+- **MCP lifecycle integration** — MCP HTTP server starts automatically
+  with the connector alongside the WebSocket relay.
+- **Remote MCP registration** — `herald configure-mcp` now defaults to
+  remote HTTP mode; `--no-remote` preserves legacy stdio registration.
+- **MCP HTTP validation** — `herald validate-mcp` can health-check
+  remote HTTP MCP servers.
+
+### Changed
+
+- `herald-mcp` CLI defaults to `streamable-http` transport. Use
+  `--transport stdio` for legacy mode.
+- Connector version bumped to 0.2.0.
+
 ## [2.0.4] - 2026-07-22
 
 ### Fixed

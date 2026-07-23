@@ -193,6 +193,7 @@ from .mcp_registration import (
     inspect_native_mcp_registration,
     native_mcp_readiness_message,
     register_native_mcp_server,
+    register_remote_mcp_server,
     validate_native_mcp_tools,
     validate_native_mcp_server,
 )
@@ -530,6 +531,15 @@ class HeraldConnector:
         metadata = self.metadata(display_name=state.connector_display_name, settings=settings)
         return self._configure_native_mcp(state, hermes_command=metadata.hermes_command)
 
+    def configure_mcp_remote(self, *, mcp_url: str | None = None) -> ConnectorState:
+        state = self.state_store.load()
+        try:
+            register_remote_mcp_server(mcp_url=mcp_url)
+            state.mcp_last_test_error = None
+        except Exception as exc:
+            state.mcp_last_test_error = str(exc)
+        return self.state_store.save(state)
+
     def configure_realtime(
         self,
         *,
@@ -700,7 +710,12 @@ class HeraldConnector:
         self.apply_runtime_environment(state)
 
         try:
-            register_native_mcp_server(state_dir=self.state_store.state_dir)
+            mcp_mode = os.getenv("HERALD_MCP_MODE", "remote").strip().lower()
+            if mcp_mode == "stdio":
+                register_native_mcp_server(state_dir=self.state_store.state_dir)
+            else:
+                mcp_url = os.getenv("HERALD_MCP_URL")
+                register_remote_mcp_server(mcp_url=mcp_url)
         except Exception:
             pass  # non-fatal
 
@@ -720,6 +735,16 @@ class HeraldConnector:
         else:
             logger.warning("HERALD_NATIVE_RELAY_ENABLED disabled — gateway path off")
 
+        # Start MCP HTTP server alongside relay
+        mcp_http_enabled = os.getenv("HERALD_MCP_HTTP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        if mcp_http_enabled:
+            mcp_port = int(os.getenv("HERALD_MCP_PORT", "8767"))
+            mcp_host = os.getenv("HERALD_MCP_HOST", "0.0.0.0")
+            self._mcp_task = asyncio.create_task(
+                self._run_mcp_http_server(mcp_host, mcp_port)
+            )
+            logger.info("MCP HTTP server listening on %s:%d", mcp_host, mcp_port)
+
         if not fastapi_enabled:
             logger.warning(
                 "HERALD_FASTAPI_HOST_WS_ENABLED disabled — phone host online/jobs path off"
@@ -732,6 +757,8 @@ class HeraldConnector:
             except KeyboardInterrupt:
                 raise
             finally:
+                if hasattr(self, "_mcp_task") and self._mcp_task is not None:
+                    self._mcp_task.cancel()
                 if self._relay_server is not None:
                     await self._relay_server.stop()
             return
@@ -759,9 +786,22 @@ class HeraldConnector:
                     await asyncio.sleep(self.reconnect_delay_seconds)
         finally:
             self._fastapi_host_ws_connected = False
+            if hasattr(self, "_mcp_task") and self._mcp_task is not None:
+                self._mcp_task.cancel()
             if self._relay_server is not None:
                 await self._relay_server.stop()
 
+
+    async def _run_mcp_http_server(self, host: str, port: int) -> None:
+        """Run the MCP Streamable HTTP server as a background task."""
+        from .mcp_server import mcp as mcp_instance
+
+        mcp_instance.settings.host = host
+        mcp_instance.settings.port = port
+        try:
+            await mcp_instance.run_streamable_http_async()
+        except Exception:
+            logger.exception("MCP HTTP server failed")
 
     async def _run_once(self, state: ConnectorState) -> None:
         state = self.refresh_runtime_config(force=False)
@@ -810,12 +850,17 @@ class HeraldConnector:
             self._fastapi_host_ws_connected = True
             logger.info("FastAPI host WebSocket connected (phone online path live)")
 
-            # Re-validate the MCP command path on every connect, not just at
+            # Re-validate the MCP registration on every connect, not just at
             # enroll.  If the connector venv moved or was reinstalled, the
             # `command` in ~/.hermes/config.yaml goes stale and Hermes can't
             # spawn the stdio server — "TaskGroup 1 sub-exception".
             try:
-                register_native_mcp_server(state_dir=self.state_store.state_dir)
+                mcp_mode = os.getenv("HERALD_MCP_MODE", "remote").strip().lower()
+                if mcp_mode == "stdio":
+                    register_native_mcp_server(state_dir=self.state_store.state_dir)
+                else:
+                    mcp_url = os.getenv("HERALD_MCP_URL")
+                    register_remote_mcp_server(mcp_url=mcp_url)
             except Exception:
                 pass  # non-fatal; MCP tools just won't be available
 
@@ -1186,6 +1231,7 @@ class HeraldConnector:
 
         return "\n".join(lines)
 
+    @staticmethod
     def _is_retryable_job_error(error: Exception) -> bool:
         if isinstance(error, (ConnectionError, TimeoutError, OSError, httpx.TransportError, httpx.TimeoutException)):
             return True
@@ -1202,10 +1248,12 @@ class HeraldConnector:
         )
         return any(marker in message for marker in transient_markers)
 
+    @staticmethod
     def _sanitize_attachment_filename(filename: str) -> str:
         cleaned = re.sub(r'[^A-Za-z0-9._-]+', "_", filename).strip("._")
         return cleaned or "attachment"
 
+    @staticmethod
     def _is_text_like_attachment(mime_type: str) -> bool:
         return mime_type.startswith("text/") or mime_type in {
             "application/json",
