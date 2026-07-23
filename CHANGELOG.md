@@ -10,6 +10,13 @@
   read/reply/compose. A "New Chat" action item is available at the top.
   The list updates reactively when sessions change. Voice tab shows
   CPVoiceControlTemplate for Talk Mode.
+- **CarPlay SiriKit messaging intents**: New HeraldIntents extension
+  enables Siri voice commands on CarPlay — "Hey Siri, ask Herald" for
+  message search and "Hey Siri, tell Herald" for sending messages.
+  Implements INSendMessageIntentHandling, INSearchForMessagesIntentHandling,
+  and INSetMessageAttributeIntentHandling. Works while phone is locked
+  and without the main app running. Registers SiriKit vocabulary for
+  "Ask Herald", "Tell Herald", and "Message Herald" phrases.
 - **Context usage meter**: After each message completes, the iOS app now
   displays context usage as a percentage of the model's context window.
   A warning banner appears at >90% usage with a "New Session" button.

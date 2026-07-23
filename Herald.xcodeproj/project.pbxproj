@@ -159,10 +159,12 @@
 		99A145314C797E4D6D5191A6 /* Router.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A17C229AA3231BD11A662DC /* Router.swift */; };
 		9AB590D5A16938A34E62A5E3 /* UserDefaultsAppPersistenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */; };
 		9ABBDDEB3AD9A3D62BF641D6 /* DeviceRegistrationRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142F3F03FB5D8E8C680901D0 /* DeviceRegistrationRequest.swift */; };
+		9ABE93130DFA0F6DBF32CB2C /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */; };
 		9AC08BD84DCDA40809F36FEF /* RelayAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D8CE1AB325DB26452D90ED1 /* RelayAPIClient.swift */; };
 		9ACA459C3AE47D462A1877D8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 950C501C931A4628EADF5421 /* CodeBlockView.swift */; };
 		9D519FAED2B0031F3581BC6A /* SpeechSynthesizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084D3A13A3C9C996A7888932 /* SpeechSynthesizing.swift */; };
 		9DF4044B611AEF08DDECE3A5 /* VoiceSessionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */; };
+		9E42A7FAD8FAA1965DB261EA /* SiriVocabulary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */; };
 		9EAF5CA0B81815F92BFA4B01 /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77999D56108FB7AF8368C7DB /* MockSyncCoordinator.swift */; };
 		9EF3B2B4A9A5C0492AFE2876 /* PairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A312A723CB0C58F828248F /* PairingStore.swift */; };
 		A3417E2AF1578789D1F239FE /* MimoFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */; };
@@ -332,6 +334,7 @@
 		163D84922269635F1FE46631 /* DeviceClass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceClass.swift; sourceTree = "<group>"; };
 		171F9B390C95F7572923823E /* MediaServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaServiceProtocol.swift; sourceTree = "<group>"; };
 		17D020123D7F5CF82E35E7EC /* ConnectHeraldHostScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectHeraldHostScreen.swift; sourceTree = "<group>"; };
+		1A549817DA633882744FA0A2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		1ABA0782CB2BD35C2C768AB1 /* Herald.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Herald.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsBrowserView.swift; sourceTree = "<group>"; };
 		1D930C3B8EDBD223348D3D7E /* NotesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesStore.swift; sourceTree = "<group>"; };
@@ -384,6 +387,7 @@
 		47B56823EBDD93AC6067B894 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		47C2C1D400AFD2DBBC90FCCA /* InboxActionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionDescriptor.swift; sourceTree = "<group>"; };
 		488D5E4529626CDECE8B25CB /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
+		4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = SiriVocabulary.plist; sourceTree = "<group>"; };
 		494FEFB282E50AC8AB9D2D31 /* NotesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationTests.swift; sourceTree = "<group>"; };
 		4B676DFB8C5EBF36F1477C83 /* MimoTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoTTSService.swift; sourceTree = "<group>"; };
 		4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
@@ -533,6 +537,8 @@
 		D28A9D351A3BE25048E7E138 /* SyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyntaxHighlighter.swift; sourceTree = "<group>"; };
 		D31A5BA625D7636D2DE3081A /* SSEEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEEvent.swift; sourceTree = "<group>"; };
 		D5C8F64496A21B83AD48E89C /* AppAttestService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAttestService.swift; sourceTree = "<group>"; };
+		D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentHandler.swift; sourceTree = "<group>"; };
+		D94AFC9CE583A234483D02A8 /* HeraldIntents.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = HeraldIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DC710002D88B4B50511DE76E /* SettingsSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSectionView.swift; sourceTree = "<group>"; };
 		DDCDDF124F28BE34A5209D52 /* AppPersistenceStoreProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceStoreProtocol.swift; sourceTree = "<group>"; };
 		DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInboxService.swift; sourceTree = "<group>"; };
@@ -803,6 +809,7 @@
 			isa = PBXGroup;
 			children = (
 				1ABA0782CB2BD35C2C768AB1 /* Herald.app */,
+				D94AFC9CE583A234483D02A8 /* HeraldIntents.appex */,
 				A25B5F8BB8056825CB02BFFB /* HeraldNotificationService.appex */,
 				37389B76F1FF8F2CBFA004C4 /* HeraldTests.xctest */,
 				CE1E76F3C501F3CCAA26A81C /* HeraldUITests.xctest */,
@@ -875,6 +882,7 @@
 				3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */,
 				6458A1B911F83B73E45C8025 /* Assets.xcassets */,
 				C8222F56AD06B3CDA4D55239 /* Info.plist */,
+				4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -959,6 +967,15 @@
 				2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */,
 			);
 			path = Support;
+			sourceTree = "<group>";
+		};
+		80E59F95F2B0CCFD14490D6D /* HeraldIntents */ = {
+			isa = PBXGroup;
+			children = (
+				1A549817DA633882744FA0A2 /* Info.plist */,
+				D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */,
+			);
+			path = HeraldIntents;
 			sourceTree = "<group>";
 		};
 		84D199467E53FB17F9DE7E04 /* Cron */ = {
@@ -1092,6 +1109,7 @@
 			isa = PBXGroup;
 			children = (
 				2182C3A24530C6AFB4DB35C1 /* Herald */,
+				80E59F95F2B0CCFD14490D6D /* HeraldIntents */,
 				32B8A6A539448D1C066B338C /* HeraldNotificationService */,
 				BBD7FBF861C475A8DBD6C2D1 /* HeraldTests */,
 				1F39FEC9F3A829E853663EAF /* HeraldUITests */,
@@ -1211,6 +1229,23 @@
 			productReference = A25B5F8BB8056825CB02BFFB /* HeraldNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		E92254BC81A0B16BACBDF97E /* HeraldIntents */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3BE16FD3F9558F6C5C4CB81E /* Build configuration list for PBXNativeTarget "HeraldIntents" */;
+			buildPhases = (
+				866836A307B43FB17A35962E /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HeraldIntents;
+			packageProductDependencies = (
+			);
+			productName = HeraldIntents;
+			productReference = D94AFC9CE583A234483D02A8 /* HeraldIntents.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		F598A1159A52AEBCAEAC741D /* HeraldTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B92EE361FCDE2E9AB238C8F0 /* Build configuration list for PBXNativeTarget "HeraldTests" */;
@@ -1267,6 +1302,10 @@
 						DevelopmentTeam = 58U7UPFS53;
 						ProvisioningStyle = Automatic;
 					};
+					E92254BC81A0B16BACBDF97E = {
+						DevelopmentTeam = 58U7UPFS53;
+						ProvisioningStyle = Automatic;
+					};
 					F598A1159A52AEBCAEAC741D = {
 						TestTargetID = 2EDF6331E478FC25A257950E;
 					};
@@ -1293,6 +1332,7 @@
 				2EDF6331E478FC25A257950E /* Herald */,
 				F9FC8FDC9517504A2312E58A /* HeraldWidgets */,
 				C978EBF73DBFD490E1670D91 /* HeraldNotificationService */,
+				E92254BC81A0B16BACBDF97E /* HeraldIntents */,
 				F598A1159A52AEBCAEAC741D /* HeraldTests */,
 				4B7C32DE8E967AE5A16A9764 /* HeraldUITests */,
 			);
@@ -1327,6 +1367,7 @@
 			files = (
 				1B0B577FDAE58A91BE53693A /* AppIcon.png in Resources */,
 				55DEB789574DE6E8D4743E8F /* Assets.xcassets in Resources */,
+				9E42A7FAD8FAA1965DB261EA /* SiriVocabulary.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1572,6 +1613,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		866836A307B43FB17A35962E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9ABE93130DFA0F6DBF32CB2C /* IntentHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A06833DB414F4077B16DC373 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1646,6 +1695,28 @@
 				TEST_TARGET_NAME = Herald;
 			};
 			name = Debug;
+		};
+		6B01CBAFFFFA35ADB7B782E4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 54;
+				DEVELOPMENT_TEAM = 58U7UPFS53;
+				INFOPLIST_FILE = HeraldIntents/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
+				PRODUCT_NAME = HeraldIntents;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.2;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
 		};
 		85AD24FA90E16D7FC5E492AC /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1926,6 +1997,28 @@
 			};
 			name = Debug;
 		};
+		F29014D978967B9ACD7F7A55 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 54;
+				DEVELOPMENT_TEAM = 58U7UPFS53;
+				INFOPLIST_FILE = HeraldIntents/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
+				PRODUCT_NAME = HeraldIntents;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.2;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		F63BABDE49FCCF37588C67E8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1974,6 +2067,15 @@
 			buildConfigurations = (
 				CF6921BADA0A702591794F95 /* Debug */,
 				C38F2B76797F148B174303F6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		3BE16FD3F9558F6C5C4CB81E /* Build configuration list for PBXNativeTarget "HeraldIntents" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F29014D978967B9ACD7F7A55 /* Debug */,
+				6B01CBAFFFFA35ADB7B782E4 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

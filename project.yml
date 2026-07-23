@@ -30,6 +30,7 @@ schemes:
       targets:
         Herald: all
         HeraldWidgets: all
+        HeraldIntents: all
     run:
       config: Debug
     test:
@@ -92,6 +93,11 @@ targets:
         NSCameraUsageDescription: "Herald uses the camera to capture photos and documents for analysis."
         NSPhotoLibraryUsageDescription: "Herald accesses your photo library to help organize and search your photos."
         NSMicrophoneUsageDescription: "Herald uses the microphone for voice conversations in Talk Mode."
+        NSSiriUsageDescription: "Herald uses Siri to send and read messages on CarPlay and with voice commands."
+        INIntentsSupported:
+          - INSendMessageIntent
+          - INSearchForMessagesIntent
+          - INSetMessageAttributeIntent
         NSLocationAlwaysAndWhenInUseUsageDescription: "Herald uses your location in the background to provide contextual awareness and proactive suggestions."
         NSMotionUsageDescription: "Herald uses motion data to understand your current activity for contextual awareness."
         NSSpeechRecognitionUsageDescription: "Herald uses speech recognition for voice commands and local transcription."
@@ -172,6 +178,42 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
         PRODUCT_NAME: HeraldNotificationService
+        MARKETING_VERSION: "2.1.2"
+        CURRENT_PROJECT_VERSION: "54"
+        SWIFT_VERSION: "6.2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 58U7UPFS53
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  HeraldIntents:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HeraldIntents
+    entitlements:
+      path: Herald/Herald.entitlements
+      properties:
+        com.apple.developer.siri: true
+        com.apple.security.application-groups:
+          - group.net.fihonline.herald
+    info:
+      path: HeraldIntents/Info.plist
+      properties:
+        CFBundleDisplayName: HeraldIntents
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.intents-service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).IntentHandler"
+          IntentsSupported:
+            - INSendMessageIntent
+            - INSearchForMessagesIntent
+            - INSetMessageAttributeIntent
+          IntentsRestrictedWhileLocked: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
+        PRODUCT_NAME: HeraldIntents
         MARKETING_VERSION: "2.1.2"
         CURRENT_PROJECT_VERSION: "54"
         SWIFT_VERSION: "6.2"

@@ -29,6 +29,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "E92254BC81A0B16BACBDF97E"
+               BuildableName = "HeraldIntents.appex"
+               BlueprintName = "HeraldIntents"
+               ReferencedContainer = "container:Herald.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "F9FC8FDC9517504A2312E58A"
                BuildableName = "HeraldWidgets.appex"
                BlueprintName = "HeraldWidgets"

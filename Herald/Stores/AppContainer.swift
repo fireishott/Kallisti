@@ -985,6 +985,8 @@ final class AppContainer {
         data.hostOnline = hostStore.isHostOnline
         data.voiceSessionActive = talkStore.isSessionActive
         data.updatedAt = .now
+        data.relayBaseURL = pairingStore.pairedRelayConfiguration?.baseURLString
+            ?? settingsStore.settings.relayConfiguration.activeBaseURLString
         if let msg = lastMessage {
             data.lastMessagePreview = String(msg.content.prefix(120))
             data.lastMessageSender = msg.sender.rawValue

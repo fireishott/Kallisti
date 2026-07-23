@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.developer.siri</key>
-	<true/>
-	<key>com.apple.security.application-groups</key>
+	<key>INSendMessageIntent</key>
 	<array>
-		<string>group.net.fihonline.herald</string>
+		<string>Ask Herald</string>
+		<string>Tell Herald</string>
+		<string>Message Herald</string>
 	</array>
 </dict>
 </plist>

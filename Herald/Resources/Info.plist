@@ -33,6 +33,12 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INSendMessageIntent</string>
+		<string>INSearchForMessagesIntent</string>
+		<string>INSetMessageAttributeIntent</string>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
@@ -51,6 +57,8 @@
 	<string>Herald uses motion data to understand your current activity for contextual awareness.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Herald accesses your photo library to help organize and search your photos.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Herald uses Siri to send and read messages on CarPlay and with voice commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Herald uses speech recognition for voice commands and local transcription.</string>
 	<key>NSSupportsLiveActivities</key>

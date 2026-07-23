@@ -15,6 +15,8 @@ struct HeraldWidgetData: Codable, Sendable {
     var sleepHours: Double?
     var heartRate: Int?
     var updatedAt: Date = .now
+    /// Relay base URL for the Intents Extension to communicate with the relay.
+    var relayBaseURL: String?
 
     static let empty = HeraldWidgetData()
 }
