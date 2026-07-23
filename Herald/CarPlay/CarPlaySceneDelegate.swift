@@ -26,6 +26,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         let voiceTemplate = CPVoiceControlTemplate(
             voiceControlStates: voiceManager.currentVoiceControlStates()
         )
+        voiceTemplate.activateVoiceControlState(withIdentifier: "idle")
         voiceManager.setVoiceTemplate(voiceTemplate)
         voiceManager.configure()
 
