@@ -14,5 +14,7 @@
 	<array>
 		<string>group.net.fihonline.herald</string>
 	</array>
+	<key>com.apple.developer.carplay-communications</key>
+	<true/>
 </dict>
 </plist>

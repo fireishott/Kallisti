@@ -57,6 +57,7 @@ targets:
         com.apple.developer.healthkit.access: []
         com.apple.developer.healthkit.background-delivery: true
         com.apple.developer.aps-environment: development
+        com.apple.developer.carplay-communications: true
         com.apple.security.application-groups:
           - group.net.fihonline.herald
     sources:
@@ -74,7 +75,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
         MARKETING_VERSION: "2.1.2"
-        CURRENT_PROJECT_VERSION: "53"
+        CURRENT_PROJECT_VERSION: "54"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -114,6 +115,8 @@ targets:
           - location
           - remote-notification
           - audio
+        UIRequiredDeviceCapabilities:
+          - carplay
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
@@ -145,7 +148,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
         MARKETING_VERSION: "2.1.2"
-        CURRENT_PROJECT_VERSION: "53"
+        CURRENT_PROJECT_VERSION: "54"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -170,7 +173,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
         PRODUCT_NAME: HeraldNotificationService
         MARKETING_VERSION: "2.1.2"
-        CURRENT_PROJECT_VERSION: "53"
+        CURRENT_PROJECT_VERSION: "54"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

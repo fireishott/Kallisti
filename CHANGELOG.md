@@ -4,6 +4,12 @@
 
 ### Added
 
+- **CarPlay conversation browser**: CarPlay now shows a tab bar with Talk
+  and Chats tabs. The Chats tab lists recent conversations using
+  CPMessageListItem — tapping a conversation auto-invokes Siri for
+  read/reply/compose. A "New Chat" action item is available at the top.
+  The list updates reactively when sessions change. Voice tab shows
+  CPVoiceControlTemplate for Talk Mode.
 - **Context usage meter**: After each message completes, the iOS app now
   displays context usage as a percentage of the model's context window.
   A warning banner appears at >90% usage with a "New Session" button.

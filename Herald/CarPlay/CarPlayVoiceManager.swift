@@ -36,10 +36,6 @@ final class CarPlayVoiceManager {
     func configure() {
         let initialSpeakingTitle = lastAssistantText()
         currentSpeakingTitle = initialSpeakingTitle
-        setTemplate(
-            speakingTitle: initialSpeakingTitle,
-            activeStateID: currentStateIdentifier()
-        )
 
         if talkStore.isSessionActive {
             syncState()
@@ -67,21 +63,9 @@ final class CarPlayVoiceManager {
         lastSyncedStateID = nil
     }
 
-    // MARK: - Template Construction
-
-    private func setTemplate(speakingTitle: String?, activeStateID: String?) {
-        let template = buildVoiceControlTemplate(speakingTitle: speakingTitle)
-        voiceTemplate = template
-        interfaceController.setRootTemplate(template, animated: false) { success, error in
-            if let error {
-                CarPlayVoiceManager.logger.error("CarPlay setRootTemplate failed: \(error.localizedDescription)")
-            }
-            guard let activeStateID, success else { return }
-            template.activateVoiceControlState(withIdentifier: activeStateID)
-        }
-    }
-
-    private func buildVoiceControlTemplate(speakingTitle: String?) -> CPVoiceControlTemplate {
+    /// Returns the current voice control states for use in a tab bar template.
+    func currentVoiceControlStates() -> [CPVoiceControlState] {
+        let speakingTitle = lastAssistantText()
         let idle = CPVoiceControlState(
             identifier: StateID.idle,
             titleVariants: ["Tap Start to talk to Herald", "Talk to Herald"],
@@ -112,14 +96,17 @@ final class CarPlayVoiceManager {
 
         let speaking = CPVoiceControlState(
             identifier: StateID.speaking,
-            titleVariants: [speakingTitle ?? "Herald is speaking", "Herald is speaking"],
+            titleVariants: [speakingTitle, "Herald is speaking"],
             image: UIImage(systemName: "speaker.wave.2.fill") ?? UIImage(),
             repeats: false
         )
 
-        return CPVoiceControlTemplate(
-            voiceControlStates: [idle, connecting, listening, thinking, speaking]
-        )
+        return [idle, connecting, listening, thinking, speaking]
+    }
+
+    /// Sets the voice template reference for state activation.
+    func setVoiceTemplate(_ template: CPVoiceControlTemplate) {
+        self.voiceTemplate = template
     }
 
     // MARK: - State Sync
@@ -157,7 +144,8 @@ final class CarPlayVoiceManager {
         if latestTitle != currentSpeakingTitle {
             currentSpeakingTitle = latestTitle
             lastSyncedStateID = stateID
-            setTemplate(speakingTitle: latestTitle, activeStateID: stateID)
+            // Update the template's speaking state title
+            voiceTemplate?.activateVoiceControlState(withIdentifier: stateID)
             return
         }
 

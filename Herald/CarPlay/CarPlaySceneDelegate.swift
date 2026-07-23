@@ -3,12 +3,13 @@ import UIKit
 import os
 
 /// Manages the CarPlay scene lifecycle. When the vehicle connects,
-/// we set up a `CPVoiceControlTemplate` as the root — Herald is a
-/// voice-first AI agent, so the CarPlay experience is just Voice Mode.
+/// we set up a `CPTabBarTemplate` with Talk and Chats tabs.
+/// The voice template is presented modally when Talk Mode is active.
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPInterfaceControllerDelegate {
     private static let logger = Logger(subsystem: "net.fihonline.herald", category: "CarPlay")
     private var interfaceController: CPInterfaceController?
     private var voiceManager: CarPlayVoiceManager?
+    private var conversationManager: CarPlayConversationListManager?
 
     // MARK: - CPTemplateApplicationSceneDelegate
 
@@ -19,12 +20,24 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         self.interfaceController = interfaceController
         interfaceController.delegate = self
 
-        let manager = CarPlayVoiceManager(interfaceController: interfaceController)
-        self.voiceManager = manager
+        // Voice tab: CPVoiceControlTemplate for Talk Mode
+        let voiceManager = CarPlayVoiceManager(interfaceController: interfaceController)
+        self.voiceManager = voiceManager
+        let voiceTemplate = CPVoiceControlTemplate(
+            voiceControlStates: voiceManager.currentVoiceControlStates()
+        )
+        voiceManager.setVoiceTemplate(voiceTemplate)
+        voiceManager.configure()
 
-        Task { @MainActor in
-            manager.configure()
-        }
+        // Conversations tab: CPMessageListItem list (Siri-managed voice I/O)
+        let conversationManager = CarPlayConversationListManager(interfaceController: interfaceController)
+        self.conversationManager = conversationManager
+        conversationManager.configure()
+        let chatsTemplate = conversationManager.listTemplate ?? CPListTemplate(title: "Chats", sections: [])
+
+        // CPTabBarTemplate takes an array of CPTemplate objects directly
+        let tabBar = CPTabBarTemplate(templates: [voiceTemplate, chatsTemplate])
+        interfaceController.setRootTemplate(tabBar, animated: false)
     }
 
     func templateApplicationScene(
@@ -35,6 +48,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         // Just release CarPlay-specific references.
         voiceManager?.tearDown()
         voiceManager = nil
+        conversationManager?.tearDown()
+        conversationManager = nil
         self.interfaceController = nil
     }
 
