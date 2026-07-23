@@ -1,18 +1,18 @@
 <!-- HERALD — Self-hosted AI companion for iPhone and iPad -->
 
 <p align="center">
-  <img src="docs/assets/brand-mark.png" alt="HERALD" width="400"/>
+  <img src="docs/assets/brand-mark.svg" alt="HERALD" width="400"/>
 </p>
 
 <p align="center">
   <strong>Self-hosted AI companion for iPhone and iPad</strong>
   <br/>
-  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Notes · Session management · Native relay</sub>
+  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Notes · Session management · Remote MCP</sub>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-FF6B00?style=flat-square" alt="version"/>
-  <img src="https://img.shields.io/badge/iOS-26+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 26+"/>
+  <img src="https://img.shields.io/badge/version-2.1.0-FF6B00?style=flat-square" alt="version"/>
+  <img src="https://img.shields.io/badge/iOS-18+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
   <img src="https://img.shields.io/badge/self--hosted-true-FF3D00?style=flat-square&labelColor=1A1D23" alt="self-hosted"/>
@@ -32,18 +32,45 @@ HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
 ---
 
-## What's new in 2.0
+## What's new in 2.1.0
 
-HERALD 2.0 replaces the FastAPI relay (Docker, SQLite, polling) with a **native Hermes Relay Protocol channel** inside the connector. The gateway dials directly into the connector over WebSocket on port 8765 — no fork of hermes-agent required, no separate relay container.
+HERALD 2.1.0 converts the MCP server from stdio to **Streamable HTTP transport**, enabling Hermes to connect over the network without SSH tunnels or the `herald-mcp` binary on the Hermes host.
+
+- **Remote MCP server** — Streamable HTTP on port 8767, proxied through Caddy at `hermes-relay.fihonline.net/mcp`
+- **MCP lifecycle integration** — MCP HTTP server starts automatically alongside the WebSocket relay
+- **Remote MCP registration** — `herald configure-mcp` defaults to remote HTTP mode; `--no-remote` for legacy stdio
+- **MCP HTTP validation** — `herald validate-mcp` health-checks remote HTTP servers
+
+### Architecture (2.0+)
+
+HERALD 2.0 replaced the FastAPI relay with a **native Hermes Relay Protocol channel** inside the connector. The gateway dials directly into the connector over WebSocket on port 8765.
 
 - **`relay_server.py`** — NDJSON WebSocket handshake + MessageEvent exchange, built into the connector
-- **~400 lines removed** from `client.py` — the job-polling loop is gone
 - **Dead modules deleted** — `hermes_runner`, `hermes_gateway_executor`, `stream_contract`
-- **Launch fix** — `isLaunchReady` now matches any `.networkFailure` case, so the retry screen appears correctly
+- **Launch fix** — `isLaunchReady` now matches any `.networkFailure` case
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Architecture" width="100%"/>
 </p>
+
+### Screens
+
+<table>
+<tr>
+<td align="center" width="33%">
+  <img src="docs/assets/screen-welcome.svg" alt="Welcome" width="100%"/>
+  <br/><sub>Welcome</sub>
+</td>
+<td align="center" width="33%">
+  <img src="docs/assets/screen-endpoint.svg" alt="Endpoint" width="100%"/>
+  <br/><sub>Endpoint</sub>
+</td>
+<td align="center" width="33%">
+  <img src="docs/assets/screen-paired.svg" alt="Paired" width="100%"/>
+  <br/><sub>Paired</sub>
+</td>
+</tr>
+</table>
 
 ---
 
@@ -267,10 +294,14 @@ All sensitive data lives in the Keychain, not UserDefaults.
 
 ```bash
 pip install herald-connector
-herald start
+herald configure-mcp   # registers MCP tools in ~/.hermes/config.yaml
+herald run             # starts WS relay (:8765) + MCP HTTP server (:8767)
 ```
 
-The connector runs the relay server on port 8765 (WebSocket) and the HTTP API on port 8766. No separate relay container needed.
+The connector runs three services:
+- **WebSocket relay** on port 8765 (native Hermes gateway protocol)
+- **MCP HTTP server** on port 8767 (Streamable HTTP for remote Hermes access)
+- **FastAPI host WS** connection to the production relay
 
 ### 2. Build and install HERALD
 
@@ -292,7 +323,7 @@ See [docs/BUILDING.md](docs/BUILDING.md) for detailed signing and entitlements i
 | Layer | Technology |
 |-------|-----------|
 | **iOS App** | Swift 6.2, SwiftUI, UIKit, iOS 18+ |
-| **Connector** | Python, WebSockets, Hermes Relay Protocol |
+| **Connector** | Python, WebSockets, FastMCP (Streamable HTTP), Hermes Relay Protocol |
 | **Project Config** | XcodeGen (`project.yml`) |
 | **Build** | Xcode 26+, macOS 26+ |
 
@@ -349,7 +380,7 @@ Built on the foundation of [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS
 ---
 
 <p align="center">
-  <img src="docs/assets/brand-mark.png" alt="HERALD" width="120"/>
+  <img src="docs/assets/brand-mark.svg" alt="HERALD" width="120"/>
   <br/>
   <sub>Your AI. Your server. Your rules.</sub>
 </p>
