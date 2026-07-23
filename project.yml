@@ -123,6 +123,8 @@ targets:
           - audio
         UIRequiredDeviceCapabilities:
           - carplay
+        NSUserActivityTypes:
+          - net.fihonline.herald.viewNote
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:

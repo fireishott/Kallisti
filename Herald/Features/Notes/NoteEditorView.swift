@@ -162,6 +162,14 @@ struct NoteEditorView: View {
             persistTask?.cancel()
             persistDrawing(drawing)
         }
+        .userActivity(QuickNoteConstants.activityType) { activity in
+            let displayTitle = title.isEmpty ? "Untitled Note" : title
+            activity.title = displayTitle
+            activity.targetContentIdentifier = QuickNoteConstants.contentIdentifier(for: noteId)
+            activity.persistentIdentifier = QuickNoteConstants.contentIdentifier(for: noteId)
+            activity.isEligibleForHandoff = true
+            activity.isEligibleForSearch = true
+        }
         .sheet(isPresented: $showPhotoPicker) {
             NotePhotoPicker { image in
                 Task { await addPhotoAttachment(image) }

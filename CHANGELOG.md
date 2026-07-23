@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Quick Notes from Anywhere**: Herald notes now publish an
+  `NSUserActivity` when viewed, enabling iPadOS Quick Note linking
+  (swipe from bottom-right with Apple Pencil or Globe+Q). Tapping
+  "Add Link" in the Quick Note panel deep-links back to the Herald
+  note. Incoming `herald://share?text=...&title=...` URLs create a
+  new note from shared content and navigate to it. Activity types
+  registered in Info.plist for system integration.
+
 - **CarPlay conversation browser**: CarPlay now shows a tab bar with Talk
   and Chats tabs. The Chats tab lists recent conversations using
   CPMessageListItem — tapping a conversation auto-invokes Siri for

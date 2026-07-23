@@ -270,4 +270,13 @@ final class NotesStore {
     func selectNote(_ id: UUID?) {
         selectedNoteId = id
     }
+
+    // MARK: - Quick Notes (shared content)
+
+    /// Create a note from text shared from another app via the Share Sheet or URL scheme.
+    /// Returns `nil` if the text is empty.
+    func createNoteFromSharedText(_ text: String, title: String?) async -> HeraldNote? {
+        guard !text.isEmpty else { return nil }
+        return await createNote(title: title ?? "Shared Note")
+    }
 }

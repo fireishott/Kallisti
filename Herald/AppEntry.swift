@@ -186,9 +186,23 @@ struct HeraldApp: App {
                     // backgrounded. The session ends only when the user
                     // explicitly closes the voice overlay.
                 }
+                .onContinueUserActivity(QuickNoteConstants.activityType) { activity in
+                    handleQuickNoteActivity(activity)
+                }
                 .onOpenURL { url in
                     handleDeeplink(url)
                 }
+        }
+    }
+
+    private func handleQuickNoteActivity(_ activity: NSUserActivity) {
+        guard activity.activityType == QuickNoteConstants.activityType,
+              let identifier = activity.targetContentIdentifier,
+              let noteId = QuickNoteConstants.noteId(from: identifier) else { return }
+        Task { @MainActor in
+            await container.notesStore.loadNotes()
+            container.notesStore.selectNote(noteId)
+            container.router.switchToTab(.notes)
         }
     }
 
@@ -204,6 +218,19 @@ struct HeraldApp: App {
             container.router.popToRoot()
             container.router.switchToTab(.chat)
             container.router.navigate(to: .permissions)
+        case "share":
+            if let params = ShareURLParser.parse(url) {
+                Task { @MainActor in
+                    let note = await container.notesStore.createNoteFromSharedText(
+                        params.text,
+                        title: params.title
+                    )
+                    if let noteId = note?.id {
+                        container.notesStore.selectNote(noteId)
+                    }
+                    container.router.switchToTab(.notes)
+                }
+            }
         case "voice":
             container.router.isVoiceOverlayPresented = true
         default:
