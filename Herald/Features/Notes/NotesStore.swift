@@ -94,7 +94,10 @@ final class NotesStore {
     }
     
     var recentNotes: [HeraldNote] {
-        activeNotes.prefix(10).sorted(by: { $0.updatedAt > $1.updatedAt })
+        notes.filter { !$0.isDeleted }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(10)
+            .map { $0 }
     }
 
     // MARK: - Loading
