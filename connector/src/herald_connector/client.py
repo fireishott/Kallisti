@@ -22,6 +22,16 @@ from websockets.asyncio.client import connect as websocket_connect
 
 from . import __version__
 
+
+class StructuredJobError(RuntimeError):
+    """Job error with machine-readable category and detail for the iOS app."""
+
+    def __init__(self, message: str, *, category: str, detail: dict | None = None):
+        super().__init__(message)
+        self.category = category
+        self.detail = detail or {}
+
+
 # Gateway-available commands from Hermes COMMAND_REGISTRY.
 # These are the commands available on messaging platforms (not cli_only).
 # Kept as static data to avoid importing hermes_cli (different venv).
@@ -162,6 +172,45 @@ def _context_window_for(
         return int(result.stdout.strip())
     except Exception:
         return 256_000
+
+
+def _estimate_payload_tokens(
+    *,
+    user_message: str,
+    history: list,
+    attachments: list | None = None,
+    provider: str | None = None,
+) -> int:
+    """Estimate token count for the full payload that will be sent to the LLM.
+
+    Uses tiktoken if available, otherwise falls back to char/4 heuristic.
+    This is a pre-flight estimate — the gateway may compress slightly, but
+    this catches clearly-over-limit sessions before wasting an API call.
+    """
+    prompt_parts = [
+        user_message or "",
+        # History
+        *[f"{item.get('role','')}: {item.get('text','')}" for item in (history or [])],
+    ]
+    # Attachments
+    for att in (attachments or []):
+        text = att.get("extracted_text", "") or att.get("description", "") or ""
+        prompt_parts.append(text)
+
+    full_text = "\n\n".join(prompt_parts)
+
+    # Try tiktoken first (matches what the gateway uses)
+    try:
+        import tiktoken
+
+        encoding = tiktoken.get_encoding("o200k_base")  # gpt-4o / modern models
+        return len(encoding.encode(full_text))
+    except Exception:
+        pass
+
+    # Fallback: ~4 chars per token (conservative for English; overestimates
+    # for code/JSON, which is the safe direction for context bounds)
+    return max(1, len(full_text) // 4)
 
 
 def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | None) -> int | None:
@@ -1045,6 +1094,51 @@ class HeraldConnector:
                     f"[End voice conversation]\n\n{user_message}"
                 )
 
+            # Pre-flight context token estimate
+            context_window = job.get("contextWindow") or _context_window_for(
+                job.get("model", ""),
+                hermes_home=self._resolve_hermes_home(),
+                provider=job.get("provider"),
+            )
+            estimated_tokens = _estimate_payload_tokens(
+                user_message=user_message,
+                history=job.get("history", []),
+                attachments=job.get("attachments"),
+                provider=job.get("provider"),
+            )
+            logger.info(
+                "Pre-flight estimate: %d tokens / %d limit for model %s (job %s)",
+                estimated_tokens, context_window, job.get("model", "unknown"), job_id,
+            )
+
+            if estimated_tokens > context_window:
+                await websocket.send(json.dumps({
+                    "type": "job.failed",
+                    "jobId": job_id,
+                    "retryable": False,
+                    "error": f"Session too long ({estimated_tokens} tokens) for model "
+                             f"{job.get('model', 'unknown')} ({context_window} token limit). "
+                             f"Start a new session or switch to a model with a larger context window.",
+                    "errorCategory": "context_exceeded",
+                    "errorDetail": {
+                        "estimatedTokens": estimated_tokens,
+                        "contextLimit": context_window,
+                        "model": job.get("model"),
+                        "action": "new_session",
+                    },
+                }))
+                self._stop_job_heartbeat(job_id)
+                return
+            elif estimated_tokens > context_window * 0.9:
+                await websocket.send(json.dumps({
+                    "type": "job.progress",
+                    "jobId": job_id,
+                    "kind": "context_warning",
+                    "estimatedTokens": estimated_tokens,
+                    "contextLimit": context_window,
+                    "message": "Approaching context limit. Consider starting a new session soon.",
+                }))
+
             async for event in runtime.send_text_message_streaming(
                 latest_user_message=user_message,
                 history=history,
@@ -1101,7 +1195,16 @@ class HeraldConnector:
 
             final_text = accumulated_text.strip()
             if not final_text:
-                raise RuntimeError("Hermes API server returned an empty response.")
+                raise StructuredJobError(
+                    "Hermes API server returned an empty response.",
+                    category="empty_response",
+                    detail={
+                        "message": "The AI returned no content. This may be due to context "
+                                   "overflow, a provider error, or the session being too long.",
+                        "retryable": False,
+                        "action": "retry_or_new_session",
+                    },
+                )
 
             # Capture what files Hermes changed during this job
             diff_data = await capture_diff(workdir, pre_snapshot) if pre_snapshot else None
@@ -1127,12 +1230,16 @@ class HeraldConnector:
             await self._send_push_for_job(job_id, cleaned_text)
         except Exception as error:  # noqa: BLE001
             self._stop_job_heartbeat(job_id)
-            await websocket.send(json.dumps({
+            error_payload: dict = {
                 "type": "job.failed",
                 "jobId": job_id,
                 "retryable": self._is_retryable_job_error(error),
                 "error": str(error),
-            }))
+            }
+            if isinstance(error, StructuredJobError):
+                error_payload["errorCategory"] = error.category
+                error_payload["errorDetail"] = error.detail
+            await websocket.send(json.dumps(error_payload))
             await self._send_push_for_job(job_id, f"Herald ran into an issue: {str(error)[:100]}")
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
