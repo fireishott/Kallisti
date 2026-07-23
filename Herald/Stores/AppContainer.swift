@@ -1,6 +1,7 @@
 import Foundation
 import os
 import BackgroundTasks
+import UserNotifications
 
 extension Logger {
     static let app = Logger(subsystem: "net.fihonline.herald", category: "app")
@@ -575,6 +576,30 @@ final class AppContainer {
                 Logger.app.info("Notification nudge: sent to conversation \(conversationID.uuidString.prefix(8))")
             } catch {
                 Logger.app.warning("Notification nudge failed: \(error.localizedDescription)")
+            }
+            return
+
+        case NotificationActionID.remindLater:
+            // Schedule a reminder notification for 1 hour from now
+            let content = UNMutableNotificationContent()
+            content.title = "Herald"
+            content.body = "You asked to be reminded about this conversation."
+            content.sound = .default
+            content.categoryIdentifier = NotificationCategoryID.sessionReminder
+            if let conversationID = route.conversationID {
+                content.userInfo["conversationId"] = conversationID.uuidString
+            }
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: false)
+            let request = UNNotificationRequest(
+                identifier: "herald-remind-\(UUID().uuidString)",
+                content: content,
+                trigger: trigger
+            )
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                Logger.app.info("Notification remind-later: scheduled for 1 hour")
+            } catch {
+                Logger.app.warning("Notification remind-later failed: \(error.localizedDescription)")
             }
             return
 

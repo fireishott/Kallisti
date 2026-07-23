@@ -4,6 +4,7 @@ import Foundation
 enum NotificationCategoryID {
     static let messageReady = "HERALD_MESSAGE_READY"
     static let jobActive = "HERALD_JOB_ACTIVE"
+    static let sessionReminder = "HERALD_SESSION_REMINDER"
 }
 
 enum NotificationActionID {
@@ -11,6 +12,7 @@ enum NotificationActionID {
     static let reply = "HERALD_ACTION_REPLY"
     static let stop = "HERALD_ACTION_STOP"
     static let nudge = "HERALD_ACTION_NUDGE"
+    static let remindLater = "HERALD_ACTION_REMIND_LATER"
 }
 
 @MainActor

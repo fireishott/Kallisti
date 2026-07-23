@@ -82,7 +82,20 @@ final class LiveNotificationService: NotificationServiceProtocol {
             options: []
         )
 
-        center.setNotificationCategories([messageReadyCategory, jobActiveCategory])
+        // HERALD_SESSION_REMINDER: time-sensitive reminder
+        let remindLaterAction = UNNotificationAction(
+            identifier: NotificationActionID.remindLater,
+            title: "Remind in 1h",
+            options: []
+        )
+        let sessionReminderCategory = UNNotificationCategory(
+            identifier: NotificationCategoryID.sessionReminder,
+            actions: [readAction, remindLaterAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([messageReadyCategory, jobActiveCategory, sessionReminderCategory])
     }
 
     private func mapStatus(_ status: UNAuthorizationStatus) -> PermissionStatus {

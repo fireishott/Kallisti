@@ -1930,6 +1930,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             type: "silent" | "alert" (default: silent)
             title: str (for alert type)
             body: str (for alert type)
+            category: str (optional, for alert type — notification category ID)
+            userInfo: dict (optional, for alert type — extra payload keys like conversationId)
         """
         apns_client = request.app.state.apns_client
         if apns_client is None:
@@ -1966,12 +1968,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if push_type == "alert":
                 title = payload.get("title", "Herald")
                 body_text = payload.get("body", "New message from Herald")
+                category = payload.get("category")
+                user_info = payload.get("userInfo")
                 result = await apns_client.send_alert_push(
                     reg.apns_token,
                     title=title,
                     body=body_text,
+                    category=category,
                     bundle_id=reg.bundle_id,
                     environment=reg.push_environment,
+                    user_info=user_info,
                 )
             else:
                 result = await apns_client.send_silent_push(

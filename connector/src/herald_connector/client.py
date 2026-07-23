@@ -1231,7 +1231,12 @@ class HeraldConnector:
 
             self._stop_job_heartbeat(job_id)
             await websocket.send(json.dumps(result_payload))
-            await self._send_push_for_job(job_id, cleaned_text)
+            await self._send_push_for_job(
+                job_id,
+                cleaned_text,
+                category="HERALD_MESSAGE_READY",
+                conversation_id=job.get("conversationId"),
+            )
         except Exception as error:  # noqa: BLE001
             self._stop_job_heartbeat(job_id)
 
@@ -1269,7 +1274,12 @@ class HeraldConnector:
                 "internal_error": f"Herald ran into an issue: {str(error)[:80]}",
             }
             push_body = action_messages.get(error_category, action_messages["internal_error"])
-            await self._send_push_for_job(job_id, push_body)
+            await self._send_push_for_job(
+                job_id,
+                push_body,
+                category="HERALD_JOB_ACTIVE",
+                conversation_id=job.get("conversationId"),
+            )
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
         """Process a job using the CLI subprocess (original path)."""
@@ -1443,10 +1453,22 @@ class HeraldConnector:
         action_type = action.get("type", "send")
         if action_type == "send":
             text = action.get("text", "")
-            await self._send_push_for_job(request_id, text)
+            await self._send_push_for_job(
+                request_id,
+                text,
+                category=action.get("category"),
+                conversation_id=action.get("conversationId"),
+            )
         return {"success": True}
 
-    async def _send_push_for_job(self, job_id: str, body_text: str) -> None:
+    async def _send_push_for_job(
+        self,
+        job_id: str,
+        body_text: str,
+        *,
+        category: str | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
         """Send a remote push notification via the relay's APNs gateway."""
         state = self.state_store.load()
         if not state.relay_url or not state.user_id:
@@ -1461,6 +1483,17 @@ class HeraldConnector:
         if not body:
             return
 
+        payload: dict = {
+            "user_id": state.user_id,
+            "type": "alert",
+            "title": "Herald",
+            "body": body[:100],
+        }
+        if category:
+            payload["category"] = category
+        if conversation_id:
+            payload["userInfo"] = {"conversationId": conversation_id}
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
@@ -1469,12 +1502,7 @@ class HeraldConnector:
                         "X-Relay-Internal-Key": internal_key,
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "user_id": state.user_id,
-                        "type": "alert",
-                        "title": "Herald",
-                        "body": body[:100],
-                    },
+                    json=payload,
                 )
                 if resp.status_code >= 400:
                     logger.warning(
