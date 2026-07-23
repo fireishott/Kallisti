@@ -155,12 +155,8 @@ def register_remote_mcp_server(
     on the Hermes host.
     """
     if mcp_url is None:
-        host = os.environ.get("HERALD_MCP_HOST", "0.0.0.0")
+        host = os.environ.get("HERALD_MCP_HOST", "localhost")
         port = int(os.environ.get("HERALD_MCP_PORT", "8767"))
-        # For registration, replace 0.0.0.0 with a routable address
-        if host == "0.0.0.0":
-            import socket
-            host = socket.gethostbyname(socket.gethostname())
         mcp_url = f"http://{host}:{port}/mcp"
 
     hermes_home = resolve_hermes_home()

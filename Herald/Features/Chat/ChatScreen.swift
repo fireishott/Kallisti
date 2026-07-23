@@ -96,6 +96,8 @@ struct ChatScreen: View {
             // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(300))
+                // Only scroll if keyboard is not actively dismissing
+                guard !isComposerFocused else { return }
                 scrollToBottom()
             }
         }
@@ -113,13 +115,7 @@ struct ChatScreen: View {
                 }
             }
         }
-        .onChange(of: chatStore.conversation?.messages.last?.content.count ?? 0) {
-            // During streaming, keep the growing response scrolled into view
-            if let streamingID = chatStore.streamingMessageID {
-                // Pin response start in view — new text grows downward
-                scrollToResponseTop(streamingID)
-            }
-        }
+
         .confirmationDialog(
             "Clear Conversation",
             isPresented: $showClearConfirmation,

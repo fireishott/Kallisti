@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.1] - 2026-07-22
+
+### Fixed
+
+- **Streaming scroll regression** (2.0.4): Removed per-delta `scrollToResponseTop`
+  that forced the active message to `.top` anchor on every content change during
+  streaming, competing with `scrollToBottom` and leaving response text invisible
+  when the keyboard is open. Restored `isComposerFocused` guard for delayed
+  pending-send scrolling to prevent scroll conflicts.
+- **MCP 421 Misdirected Request**: Changed MCP URL registration default from
+  `0.0.0.0` to `localhost` so FastMCP Streamable HTTP server accepts the
+  `Host` header from Hermes connections.
+
 ## [2.1.0] - 2026-07-22
 
 ### Added
