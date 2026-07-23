@@ -232,12 +232,28 @@ final class AppContainer {
                 ?? ""
         }
         let pushBrokerClient = buildConfiguration.pushBrokerBaseURL.map { PushBrokerClient(baseURL: $0) }
+
+        // Derive connector MCP URL from relay URL for direct push registration
+        let connectorMCPURL: String? = {
+            let relayBase = activePairingStore?.pairedRelayConfiguration?.baseURLString
+                ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                ?? ""
+            // ws://herald-host.internal:8765 -> http://herald-host.internal:8767
+            guard var components = URLComponents(string: relayBase) else { return nil }
+            components.scheme = "http"
+            if let port = components.port {
+                components.port = port + 2  // 8765 -> 8767
+            }
+            return components.string
+        }()
+
         let pushRegistrationCoordinator = PushRegistrationCoordinator(
             relayAPIClient: apiClient,
             brokerClient: pushBrokerClient,
             registrationStore: PushBrokerRegistrationStore(secureStore: secureStore),
             appAttestService: LiveAppAttestService(secureStore: secureStore),
-            buildConfiguration: buildConfiguration
+            buildConfiguration: buildConfiguration,
+            connectorMCPBaseURL: connectorMCPURL
         )
 
         let sessionBootstrapService = ResilientSessionBootstrapService(

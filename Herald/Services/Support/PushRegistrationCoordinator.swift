@@ -1,7 +1,10 @@
 import Foundation
+import os
 
 @MainActor
 final class PushRegistrationCoordinator {
+    private static let logger = Logger(subsystem: "net.fihonline.herald", category: "PushRegistration")
+
     private struct RelayIdentityEnvelope: Decodable {
         let identity: PushBrokerRelayIdentity
     }
@@ -31,19 +34,22 @@ final class PushRegistrationCoordinator {
     private let registrationStore: PushBrokerRegistrationStore
     private let appAttestService: any AppAttestServiceProtocol
     private let buildConfiguration: AppBuildConfiguration
+    private let connectorMCPBaseURL: String?
 
     init(
         relayAPIClient: RelayAPIClient,
         brokerClient: PushBrokerClient?,
         registrationStore: PushBrokerRegistrationStore,
         appAttestService: any AppAttestServiceProtocol,
-        buildConfiguration: AppBuildConfiguration
+        buildConfiguration: AppBuildConfiguration,
+        connectorMCPBaseURL: String? = nil
     ) {
         self.relayAPIClient = relayAPIClient
         self.brokerClient = brokerClient
         self.registrationStore = registrationStore
         self.appAttestService = appAttestService
         self.buildConfiguration = buildConfiguration
+        self.connectorMCPBaseURL = connectorMCPBaseURL
     }
 
     func registerPushToken(
@@ -56,6 +62,21 @@ final class PushRegistrationCoordinator {
         appVersion: String,
         pushEnvironment: String
     ) async throws -> Bool {
+        // Try connector-direct registration first (v2.0+ native relay path)
+        if let connectorURL = connectorMCPBaseURL {
+            do {
+                try await registerWithConnector(
+                    token: token,
+                    environment: pushEnvironment,
+                    connectorBaseURL: connectorURL
+                )
+                Self.logger.info("Push token registered with connector directly")
+                return true
+            } catch {
+                Self.logger.warning("Connector push registration failed, falling back to relay: \(error)")
+            }
+        }
+
         if shouldUseBroker(relayConfiguration: relayConfiguration) {
             let relayResponse: RelayIdentityEnvelope = try await relayAPIClient.get(path: "relay/identity")
             let relayIdentity = relayResponse.identity
@@ -102,6 +123,48 @@ final class PushRegistrationCoordinator {
         struct Response: Decodable { let registered: Bool? }
         let _: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
         return true
+    }
+
+    /// Register push token directly with the connector via MCP.
+    /// This is the v2.0+ path — no relay dependency.
+    private func registerWithConnector(
+        token: String,
+        environment: String,
+        connectorBaseURL: String
+    ) async throws {
+        let url = URL(string: "\(connectorBaseURL)/mcp")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": UUID().uuidString,
+            "method": "tools/call",
+            "params": [
+                "name": "register_push_device",
+                "arguments": [
+                    "device_token": token,
+                    "environment": environment,
+                ]
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+
+        // Parse MCP response
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let result = json["result"] as? [String: Any],
+           let content = result["content"] as? [[String: Any]],
+           let text = content.first?["text"] as? String {
+            Self.logger.info("Connector push registration response: \(text)")
+        }
     }
 
     private func shouldUseBroker(relayConfiguration: RelayConfiguration) -> Bool {
