@@ -312,12 +312,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 )
             }
             let conversation = mapConversation(response.conversation)
-            // Don't silently replace a loaded conversation with a different one
-            // from the relay — the old conversation may still be in use locally.
+            // Trust the relay as the source of truth for the current conversation.
+            // Previously we guarded against the relay returning a different ID,
+            // but that caused /new to silently return the stale conversation
+            // after clearConversation() created a fresh one.
             if let existing = currentConversation, existing.id != conversation.id {
-                Self.logger.info("Relay reports new conversation \(conversation.id), keeping current \(existing.id)")
-                connectionStatus = .connected
-                return existing
+                Self.logger.info("Relay reports new conversation \(conversation.id), replacing current \(existing.id)")
             }
             currentConversation = conversation
             connectionStatus = .connected
@@ -330,6 +330,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
     }
 
     func clearConversation() async throws -> Conversation {
+        // Invalidate currentConversation before the network call so that any
+        // concurrent loadConversation() won't reject the fresh conversation
+        // the relay is about to create (see loadConversation() guard removal).
+        currentConversation = nil
         let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
             try await self.apiClient.post(
                 path: "conversations/current/clear",

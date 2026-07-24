@@ -36,7 +36,7 @@ HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
 HERALD 2.1.0 converts the MCP server from stdio to **Streamable HTTP transport**, enabling Hermes to connect over the network without SSH tunnels or the `herald-mcp` binary on the Hermes host.
 
-- **Remote MCP server** — Streamable HTTP on port 8767, proxied through Caddy at `hermes-relay.fihonline.net/mcp`
+- **Remote MCP server** — Streamable HTTP on port 8767, proxied through Caddy at `your-relay.example.com/mcp`
 - **MCP lifecycle integration** — MCP HTTP server starts automatically alongside the WebSocket relay
 - **Remote MCP registration** — `herald configure-mcp` defaults to remote HTTP mode; `--no-remote` for legacy stdio
 - **MCP HTTP validation** — `herald validate-mcp` health-checks remote HTTP servers

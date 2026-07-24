@@ -86,6 +86,7 @@
 		4BD38645C4B8DFF268351F67 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC8FEFBC110F508FA4EFB63 /* Message.swift */; };
 		4C1AB358EBA5771D622304B3 /* stream_v2_goal_continuation.json in Resources */ = {isa = PBXBuildFile; fileRef = 4CDDA61B61B5B16A13D3413F /* stream_v2_goal_continuation.json */; };
 		4E444730C90C27E90A3FC56B /* HeraldWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CD8CC41F0A9739AAE02DF1F8 /* HeraldWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		4ED062C79B3B1AA71F0E4B76 /* SSELineIteratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E02CFB97A48CB9069E5136E /* SSELineIteratorTests.swift */; };
 		514CAEB01797DFCA6F403B2B /* InboxActionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */; };
 		515DCD2A02EBAE07F2D3AA33 /* MockMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */; };
 		51CD65E5412309DDE98C8162 /* GlassCircleButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD34D02337E841475436E38 /* GlassCircleButton.swift */; };
@@ -455,6 +456,7 @@
 		7C66C0194CDF7E574F06D621 /* HandwritingRecognizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingRecognizing.swift; sourceTree = "<group>"; };
 		7C8403F487A93F9A55ED256F /* HeraldWidgetData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldWidgetData.swift; sourceTree = "<group>"; };
 		7D2CF4A4D4466C2EACE7ED7C /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
+		7E02CFB97A48CB9069E5136E /* SSELineIteratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSELineIteratorTests.swift; sourceTree = "<group>"; };
 		7E13B7CB146B640D2CE04B57 /* PairingRedeemResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingRedeemResult.swift; sourceTree = "<group>"; };
 		7EE7EE70650FE88962E2A942 /* HeraldLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldLiveActivity.swift; sourceTree = "<group>"; };
 		7EF89A2AB11146AAEE5ACEC2 /* StreamContractV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamContractV2Tests.swift; sourceTree = "<group>"; };
@@ -1118,6 +1120,7 @@
 				D0994BAC56178F32ABD3B939 /* PushRegistrationTests.swift */,
 				4EDAE1BA94B9CFF6B27753D8 /* QuickNotesTests.swift */,
 				FD775DE2E1B65DD90403BEB3 /* SpeechServiceTests.swift */,
+				7E02CFB97A48CB9069E5136E /* SSELineIteratorTests.swift */,
 				7EF89A2AB11146AAEE5ACEC2 /* StreamContractV2Tests.swift */,
 			);
 			path = HeraldTests;
@@ -1412,6 +1415,7 @@
 				4799BA04AC9AB8E25D7D8253 /* NotesStoreTests.swift in Sources */,
 				AB8504A9F7B672BBA9B1DB83 /* PushRegistrationTests.swift in Sources */,
 				E060C808B9BECB8F31388B29 /* QuickNotesTests.swift in Sources */,
+				4ED062C79B3B1AA71F0E4B76 /* SSELineIteratorTests.swift in Sources */,
 				54EE2B42FB35CCC45800504A /* SpeechServiceTests.swift in Sources */,
 				17103C3C57C7552A6E042572 /* StreamContractV2Tests.swift in Sources */,
 			);
@@ -1717,10 +1721,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1741,10 +1745,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1774,10 +1778,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;
@@ -1806,10 +1810,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1822,11 +1826,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1846,11 +1850,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1861,10 +1865,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1877,10 +1881,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 61;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.2;
+				MARKETING_VERSION = 2.2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;

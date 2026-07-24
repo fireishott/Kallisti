@@ -38,19 +38,18 @@ struct ReasoningView: View {
                 .stroke(Design.Colors.divider, lineWidth: 1)
         )
         .onAppear {
-            // Always start collapsed; user can expand to view
-            isExpanded = false
+            // Match initial streaming state — onChange(of:) only fires on
+            // changes, not on the initial value, so we must sync here.
+            isExpanded = isStreaming
             if isStreaming {
                 withAnimation(Design.Motion.breathe) { pulse = true }
             }
         }
         .onChange(of: isStreaming) { _, streaming in
             if streaming {
-                // Show reasoning while streaming
                 withAnimation(Design.Motion.standard) { isExpanded = true }
                 withAnimation(Design.Motion.breathe) { pulse = true }
             } else {
-                // Collapse when streaming ends
                 withAnimation(Design.Motion.standard) {
                     isExpanded = false
                     pulse = false

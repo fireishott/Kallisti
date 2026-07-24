@@ -21,7 +21,6 @@ struct iPadRightPanelView: View {
 
                 switch selectedTab {
                 case .logs:     logsContent
-                case .terminal: terminalContent
                 case .tools:    toolsContent
                 case .canvas:   CanvasView(store: canvasStore)
                 case .gateway:  gatewayContent
@@ -161,47 +160,6 @@ struct iPadRightPanelView: View {
         .background(entry.id == chatStore.logEntries.last?.id ? Design.Brand.accent.opacity(0.06) : Color.clear)
     }
 
-    // MARK: - Terminal (Preview — not yet functional)
-
-    private var terminalContent: some View {
-        VStack(spacing: 0) {
-            // Preview banner
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                Text("Preview — Terminal integration is not yet active")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.orange)
-                Spacer()
-            }
-            .padding(.horizontal, Design.Spacing.sm)
-            .padding(.vertical, 6)
-            .background(Color.orange.opacity(0.08))
-            .overlay(alignment: .bottom) {
-                Divider().background(Design.Colors.divider)
-            }
-
-            VStack(spacing: Design.Spacing.md) {
-                Spacer()
-                Image(systemName: "apple.terminal")
-                    .font(.system(size: 32))
-                    .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.4))
-                Text("Terminal Coming Soon")
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-                Text("Interactive terminal access to your Herald host will be available in a future update.")
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.6))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, Design.Spacing.xl)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .background(Design.Colors.background)
-    }
-
     // MARK: - Gateway Logs
 
     private var gatewayContent: some View {
@@ -265,13 +223,12 @@ struct iPadRightPanelView: View {
 // MARK: - Right Panel Tab
 
 enum RightPanelTab: String, CaseIterable, Identifiable {
-    case logs, terminal, tools, canvas, gateway
+    case logs, tools, canvas, gateway
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .logs: "Activity"
-        case .terminal: "Terminal"
         case .tools: "Usage"
         case .canvas: "Canvas"
         case .gateway: "Gateway"
@@ -281,7 +238,6 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .logs: "list.bullet.rectangle"
-        case .terminal: "apple.terminal"
         case .tools: "chart.bar"
         case .canvas: "rectangle.on.rectangle"
         case .gateway: "antenna.radiowaves.left.and.right"

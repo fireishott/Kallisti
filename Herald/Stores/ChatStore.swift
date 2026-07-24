@@ -63,6 +63,11 @@ final class ChatStore {
     /// the title RPC fails and the title remains a default placeholder.
     private var autoTitleAttempted = false
 
+    /// Set by `clearConversation()` to force the next `loadConversationIfNeeded()`
+    /// to bypass the local cache and fetch fresh data from the relay. Prevents
+    /// the /new bug where a stale cached conversation survives the clear.
+    private var needsServerRefresh = false
+
     var isStreaming: Bool { streamingMessageID != nil }
     var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
 
@@ -118,7 +123,10 @@ final class ChatStore {
                 lastTokenUsage = cachedUsage
             }
         }
-        guard conversation == nil else { return }
+        // After clearConversation(), bypass the local cache and force a
+        // server fetch so the UI never shows the stale archived conversation.
+        guard conversation == nil || needsServerRefresh else { return }
+        needsServerRefresh = false
         await loadConversation()
         clearNotificationsForCurrentConversation()
     }
@@ -606,11 +614,18 @@ final class ChatStore {
         streamingTask = nil
         activeStreams.removeAll()
         chatLiveActivity.endActivity()
+        // Zero out context immediately so the UI resets to 0% before the
+        // server round-trip — prevents the ring lingering at 100% if the
+        // server returns a fresh conversation that still carries stale usage.
+        lastTokenUsage = nil
+        lastContextInfo = nil
         let fresh = try await heraldClient.clearConversation()
         conversation = fresh
         lastTokenUsage = fresh.latestUsage
+        lastContextInfo = nil
         pendingMessageSentAt = nil
         persistence.saveConversationCache(fresh)
+        needsServerRefresh = true  // Force next loadConversationIfNeeded() to bypass cache
         onConversationChanged?()
         pollingTask?.cancel()
         pollingTask = nil

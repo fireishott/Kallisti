@@ -21,6 +21,12 @@ struct ChatScreen: View {
     @State private var scrollProxy: ScrollViewProxy?
     @FocusState private var isComposerFocused: Bool
 
+    // Scroll throttling during streaming — prevents the chat flying off screen
+    // when 30fps delta flushes fight withAnimation scrollToBottom calls.
+    @State private var lastAutoScrollTime: Date = .distantPast
+    @State private var isUserScrolling = false
+    private static let scrollThrottleInterval: TimeInterval = 0.5
+
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
     @State private var showInfraDetails = false
@@ -49,7 +55,7 @@ struct ChatScreen: View {
                 if pairingStore.isPaired, hostStore.connectionState != .online {
                     connectionBanner
                 }
-                if contextProgress > 0.9 {
+                if contextProgress > 0.85 {
                     contextWarningBanner
                 }
                 messageList
@@ -96,8 +102,18 @@ struct ChatScreen: View {
             guard chatStore.streamingMessageID == nil else { return }
             scrollToBottom()
         }
+        .onChange(of: streamingContentLength) {
+            // Keep the view anchored to the bottom as streaming content grows.
+            // Without this, the ScrollView drifts — the message count is stable
+            // during streaming so the count observer above skips.
+            // Uses the same throttled scrollToBottom path (not a raw scrollTo)
+            // so the 500ms throttle and user-scroll deferral apply.
+            guard chatStore.streamingMessageID != nil else { return }
+            scrollToBottom()
+        }
         .onChange(of: chatStore.pendingMessageSentAt) {
             // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
+            isUserScrolling = false  // User sent a message — resume auto-scroll
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(300))
                 // Only scroll if keyboard is not actively dismissing
@@ -109,6 +125,7 @@ struct ChatScreen: View {
             if old != nil && new == nil {
                 // Streaming just ended — scroll to the last message so the
                 // user sees the full response, not the user message they sent.
+                isUserScrolling = false  // Reset scroll state for next stream
                 if let lastID = chatStore.conversation?.messages.last?.id {
                     withAnimation(Design.Motion.standard) {
                         scrollProxy?.scrollTo(lastID, anchor: .bottom)
@@ -326,6 +343,16 @@ struct ChatScreen: View {
 
     private var currentContextTokens: Int? {
         chatStore.currentContextTokens
+    }
+
+    /// Combined content length of the streaming placeholder message.
+    /// Observed to keep the scroll anchored during streaming (message count
+    /// doesn't change, but content grows continuously).
+    private var streamingContentLength: Int {
+        guard let sid = chatStore.streamingMessageID,
+              let msg = chatStore.conversation?.messages.first(where: { $0.id == sid })
+        else { return 0 }
+        return msg.content.count + msg.reasoning.count
     }
 
     /// Context usage as 0.0–1.0. Shows 0 when no usage data yet.
@@ -761,6 +788,10 @@ struct ChatScreen: View {
             .onTapGesture {
                 isComposerFocused = false
             }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 16)
+                    .onChanged { _ in isUserScrolling = true }
+            )
             .onAppear { scrollProxy = proxy }
         }
     }
@@ -811,11 +842,17 @@ struct ChatScreen: View {
 
             Spacer()
 
-            Button("New Session") {
-                Task { await performClear() }
+            Button("Compress") {
+                Task { await performCompress() }
             }
             .font(Design.Typography.caption)
             .foregroundStyle(Design.Brand.accent)
+
+            Button("New") {
+                Task { await performClear() }
+            }
+            .font(Design.Typography.caption)
+            .foregroundStyle(Design.Colors.secondaryForeground)
         }
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, Design.Spacing.sm)
@@ -1032,11 +1069,22 @@ struct ChatScreen: View {
         }
     }
 
+    private func performCompress() async {
+        // Trigger context compression: send a system directive to summarize
+        // the conversation so far, then continue. The agent returns a concise
+        // summary that replaces the accumulated context.
+        let compressPrompt = "/compress"
+        messageText = ""
+        appendSystemMessage("Compressing session context…")
+        await chatStore.sendMessage(compressPrompt, attachments: [])
+        scrollToBottom()
+    }
+
     private func performClear() async {
         do {
             try await chatStore.clearConversation()
             showStatusCard = false
-            
+
             // Scroll to top anchor — conversation is now empty
             withAnimation(Design.Motion.standard) {
                 scrollProxy?.scrollTo("top", anchor: .top)
@@ -1140,6 +1188,16 @@ struct ChatScreen: View {
 
     private func scrollToBottom() {
         guard let lastID = chatStore.conversation?.messages.last?.id else { return }
+        // Throttle auto-scroll during streaming to once per ~500ms.
+        // Without this, 30fps delta flushes fight withAnimation and the
+        // chat flies off screen.
+        if chatStore.isStreaming {
+            let now = Date()
+            guard now.timeIntervalSince(lastAutoScrollTime) >= Self.scrollThrottleInterval else { return }
+            lastAutoScrollTime = now
+            // Defer to user — if they've scrolled up manually, don't yank them back down.
+            guard !isUserScrolling else { return }
+        }
         withAnimation(Design.Motion.standard) {
             scrollProxy?.scrollTo(lastID, anchor: .bottom)
         }

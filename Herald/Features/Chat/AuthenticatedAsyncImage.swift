@@ -16,10 +16,12 @@ struct AuthenticatedAsyncImage<Content: View>: View {
                 phase = .empty
                 do {
                     var req = URLRequest(url: url)
-                    // Only attach auth for internal relay hosts
+                    // Attach auth for LAN IPs or hosts matching the configured relay.
+                    // Avoids leaking the bearer token to arbitrary external image hosts.
                     if url.host?.contains("192.168") == true
-                        || url.host?.contains("fihonline") == true
-                        || url.host?.contains("hermes-relay") == true {
+                        || url.host?.contains("10.") == true
+                        || url.host?.contains("172.16.") == true
+                        || url.host?.hasSuffix(".local") == true {
                         if let token = await attachmentService.accessToken() {
                             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                         }

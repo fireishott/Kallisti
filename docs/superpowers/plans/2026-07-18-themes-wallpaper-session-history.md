@@ -761,7 +761,7 @@ def search_sessions(user_id: str, query: str, device_id: str | None = None, limi
 - [ ] **Step 2: Test the endpoint**
 
 ```bash
-curl -s "https://hermes-relay.fihonline.net/v1/sessions/search?q=test" -H "Authorization: Bearer <token>"
+curl -s "https://your-relay.example.com/v1/sessions/search?q=test" -H "Authorization: Bearer <token>"
 ```
 
 - [ ] **Step 3: Commit**

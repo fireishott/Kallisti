@@ -1634,7 +1634,7 @@ struct AppStoresTests {
     @Test
     func relayConfigurationDefaultsToSelfHostedRelay() throws {
         let buildConfiguration = AppBuildConfiguration(infoDictionary: [
-            "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
+            "APP_HOSTED_RELAY_URL": "https://your-relay.example.com/v1",
             "APP_HOSTED_RELAY_ENABLED": true,
         ])
 
@@ -1649,7 +1649,7 @@ struct AppStoresTests {
     @Test
     func productionSettingsWithLocalhostRemainSelfHostedAfterPolicyApplication() throws {
         let buildConfiguration = AppBuildConfiguration(infoDictionary: [
-            "APP_HOSTED_RELAY_URL": "https://hermes-relay.fihonline.net/v1",
+            "APP_HOSTED_RELAY_URL": "https://your-relay.example.com/v1",
             "APP_HOSTED_RELAY_ENABLED": true,
         ])
         let settings = UserSettings(

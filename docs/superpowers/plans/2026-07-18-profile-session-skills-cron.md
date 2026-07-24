@@ -1488,11 +1488,11 @@ git commit -m "feat(ios): add Cron Manager screen with create, toggle, delete"
 Push relay changes to the relay host and restart the relay service. Verify all 6 new endpoints respond (even with empty defaults when connector is offline).
 
 ```bash
-curl -s https://hermes-relay.fihonline.net/v1/profiles -H "Authorization: Bearer <token>" | jq .
-curl -s https://hermes-relay.fihonline.net/v1/skills -H "Authorization: Bearer <token>" | jq .
-curl -s https://hermes-relay.fihonline.net/v1/cron -H "Authorization: Bearer <token>" | jq .
-curl -s https://hermes-relay.fihonline.net/v1/memories -H "Authorization: Bearer <token>" | jq .
-curl -s https://hermes-relay.fihonline.net/v1/tools -H "Authorization: Bearer <token>" | jq .
+curl -s https://your-relay.example.com/v1/profiles -H "Authorization: Bearer <token>" | jq .
+curl -s https://your-relay.example.com/v1/skills -H "Authorization: Bearer <token>" | jq .
+curl -s https://your-relay.example.com/v1/cron -H "Authorization: Bearer <token>" | jq .
+curl -s https://your-relay.example.com/v1/memories -H "Authorization: Bearer <token>" | jq .
+curl -s https://your-relay.example.com/v1/tools -H "Authorization: Bearer <token>" | jq .
 ```
 
 - [ ] **Step 2: Deploy connector changes**

@@ -20,7 +20,7 @@ complete identity overhaul - naming, visuals, licensing, documentation.
 | **Module Name** | HermesMobile | Herald |
 | **GitHub Repo** | fireishott/Hermes-iOS | fireishott/Herald (or similar) |
 | **Relay Container** | hermes-relay | herald-relay |
-| **Relay DNS** | hermes-relay.fihonline.net | herald-relay.fihonline.net (or subdomain of choice) |
+| **Relay DNS** | your-relay.example.com | your-relay.example.com (or subdomain of choice) |
 | **Connector Package** | hermes_mobile_connector | herald_connector |
 
 ---
@@ -376,7 +376,7 @@ This preserves the fork relationship on GitHub.
 **Description:**
 "Self-hosted AI companion for iPhone and iPad. Native iOS client with relay, voice mode, sensors, and CarPlay."
 
-**Website:** (if applicable, e.g. herald.fihonline.net or similar)
+**Website:** (if applicable, e.g. your-domain.example.com or similar)
 
 **Topics:**
 `herald` `ai-companion` `self-hosted` `ios` `ipad` `carplay` `voice-mode` `sensors` `swift` `python` `mcp`

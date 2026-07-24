@@ -331,6 +331,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source_seq = event.get("sourceSeq")
             if source_seq is None:
                 logger.warning("Legacy unsequenced event for job %s: %s", job_id, event_type)
+            # Sanitize payload for JSONB: datetime → ISO strings
+            try:
+                safe_payload = json.loads(json.dumps(payload, default=str)) if isinstance(payload, dict) else {}
+            except Exception:
+                safe_payload = payload if isinstance(payload, dict) else {}
+
             with database.session() as db:
                 job = get_message_job(db, job_id=job_id)
                 attempt = job.attempt if job is not None else 0
@@ -338,7 +344,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     db,
                     job_id=job_id,
                     event_type=event_type,
-                    payload=payload if isinstance(payload, dict) else {},
+                    payload=safe_payload,
                     source_seq=source_seq,
                     attempt=attempt,
                 )
@@ -1000,6 +1006,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "displayCode": display_code,
                 "expiresAt": pairing_code.expires_at,
             }
+        )
+
+    @app.get("/v1/connector/events")
+    async def connector_events(
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ):
+        """SSE stream of connector health events for iOS host status monitoring."""
+        from starlette.responses import StreamingResponse
+        import asyncio as _asyncio
+
+        async def event_stream():
+            yield "event: connected\ndata: {}\n\n"
+            while True:
+                try:
+                    await _asyncio.sleep(30)
+                    session = connector_session_for_user(auth.user.id)
+                    if session is not None:
+                        yield "event: health_check\ndata: {\"status\": \"online\"}\n\n"
+                    else:
+                        yield "event: health_check\ndata: {\"status\": \"offline\"}\n\n"
+                except Exception:
+                    break
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @app.post("/v1/phone-pairing/redeem")

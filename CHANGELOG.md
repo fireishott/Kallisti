@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.2.4] - 2026-07-24
+
+### Fixed
+
+- **`/new` returns stale conversation**: Fixed three interconnected bugs that caused
+  `/new` to silently return a stale conversation instead of a fresh one. (1) Removed
+  a guard in `LiveHeraldClient.loadConversation()` that rejected server-fresh
+  conversations when `currentConversation` was already set. (2) Invalidate
+  `currentConversation` before the clear network call to prevent races. (3) Added
+  `needsServerRefresh` flag in `ChatStore` that bypasses the UserDefaults cache
+  after `clearConversation()`, ensuring the next `loadConversationIfNeeded()` fetches
+  fresh data from the relay.
+- **Chat scroll flying during streaming**: Throttled `scrollToBottom()` to once per
+  500ms during active streaming, preventing the 30fps delta flushes from fighting
+  `withAnimation`. Added user-scroll detection via `DragGesture` — if the user
+  scrolls up manually during streaming, auto-scroll defers to them until the next
+  message is sent or streaming ends.
+- **APNs push notification delivery**: Installed missing `h2` Python package
+  (`httpx[http2]`) in the connector venv. Without it, every APNs push failed with
+  "Using http2=True, but the 'h2' package is not installed." This was the root
+  cause of streaming never reaching the iOS app — all reasoning and tool-call
+  bubbles were pixel-perfect but never activated because events never arrived.
+
+## [2.2.3] - 2026-07-24
+
+### Fixed
+
+- **Reasoning panel not visible during streaming**: Fixed `ReasoningView` lifecycle
+  bug where `onAppear` collapsed the reasoning body but `onChange(of: isStreaming)`
+  never re-expanded it when the view was created mid-stream.
+- **Chat scroll drift during streaming**: Added content-length observer that keeps
+  the scroll position anchored to the bottom as streaming content grows.
+- **Session context ring at 100% after new chat**: Explicitly zero out
+  `lastTokenUsage` and `lastContextInfo` before the server clear-conversation
+  round-trip so the UI resets immediately.
+- **Auto-compression at 85% context**: Lowered the context warning threshold and
+  added a "Compress" button that sends `/compress` to summarize the session.
+- **Removed "Terminal Coming Soon" placeholder**: The non-functional Terminal tab
+  has been removed from the iPad inspector panel.
+- **APNs push notification environment mismatch**: Corrected relay APNs environment
+  from development to production, unblocking all push delivery.
+- **Datetime serialization crash in relay**: Fixed `TypeError: Object of type
+  datetime is not JSON serializable` in `publish_job_event()`.
+- **Missing `/v1/connector/events` endpoint**: Added SSE endpoint for iOS host
+  status monitoring, replacing the 404 response.
+
+### Security
+
+- Scrubbed personal relay URLs and internal IPs from the public repository.
+- Removed deployment documents containing internal network topology.
+- Replaced hardcoded hostname checks in `AuthenticatedAsyncImage` with generic
+  private-network detection.
+
 ## [2.2.0] - 2026-07-23
 
 ### Added
@@ -553,7 +606,7 @@ All notable changes to Hermes iOS are documented here.
 
 ### Fix: Production connectivity and app recovery
 
-- **Use the hosted production relay by default** (`project.yml`, `Herald/Resources/Info.plist`, `Herald/Models/UserSettings.swift`): v1.7.1 points new installs at `https://hermes-relay.fihonline.net/v1` and migrates the stale DEBUG localhost default without replacing intentional custom relay choices.
+- **Use the hosted production relay by default** (`project.yml`, `Herald/Resources/Info.plist`, `Herald/Models/UserSettings.swift`): v1.7.1 points new installs at `https://your-relay.example.com/v1` and migrates the stale DEBUG localhost default without replacing intentional custom relay choices.
 
 - **Remove runtime mock fallback outside UI tests** (`Herald/Stores/AppContainer.swift`, `Herald/Stores/AppSessionStore.swift`): Failed production pairing and network calls can no longer be masked by demo data. Bootstrap also repairs sessions left in mock mode.
 
