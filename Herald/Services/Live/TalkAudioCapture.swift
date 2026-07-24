@@ -258,7 +258,7 @@ final class TalkAudioCapture {
         }
 
         var bargeInPower: Float = -160.0
-        let powerLock = NSLock()
+        let powerQueue = DispatchQueue(label: "herald.bargein.power")
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             let channelData = buffer.floatChannelData?[0]
@@ -267,9 +267,7 @@ final class TalkAudioCapture {
                 var rms: Float = 0
                 vDSP_measqv(channelData, 1, &rms, vDSP_Length(frames))
                 let power = 10 * log10(rms + 1e-10)
-                powerLock.lock()
-                bargeInPower = power
-                powerLock.unlock()
+                powerQueue.sync { bargeInPower = power }
             }
         }
 
@@ -289,9 +287,7 @@ final class TalkAudioCapture {
                 while !Task.isCancelled {
                     guard let self else { break }
                     try? await Task.sleep(for: .milliseconds(100))
-                    powerLock.lock()
-                    let power = bargeInPower
-                    powerLock.unlock()
+                    let power = powerQueue.sync { bargeInPower }
                     if power > self.bargeInThreshold {
                         continuation.yield()
                         break
