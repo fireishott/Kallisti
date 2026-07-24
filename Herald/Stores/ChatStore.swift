@@ -308,6 +308,12 @@ final class ChatStore {
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.activeStreams[jobID] = placeholderID
+                    // Arm the polling safety net. If the SSE stream fails silently
+                    // (transport drop, proxy timeout, connector stall), polling
+                    // recovers the response so the user isn't stuck staring at a
+                    // blank screen. When streaming delivers normally the pending
+                    // message is already resolved, so polling becomes a no-op.
+                    needsPollingFallback = true
                     // Start Live Activity with "Thinking" phase — the agent is
                     // processing but hasn't begun streaming content yet.
                     self.chatLiveActivity.startThinking()
@@ -489,6 +495,12 @@ final class ChatStore {
                         conv.messages[idx].toolActivity = "Reconnecting..."
                         self.conversation = conv
                     }
+                    // Start polling immediately as a parallel recovery path.
+                    // If the SSE stream is struggling to stay connected, the
+                    // polling loop can pick up the response independently.
+                    // When polling resolves the pending message the stream
+                    // coordinator will naturally exit on its next reconnect.
+                    self.restartPendingPollingIfNeeded()
 
                 case .cancelled:
                     self.appendLog(level: .info, "Job cancelled")

@@ -1,0 +1,330 @@
+2026-07-24 17:58:50 +0000 [MT] Initial pipeline context: <IDEDistributionProcessingPipelineContext: 0x8bdd78f00; archive(resolved)="<IDEArchive: 0x8bdc3c070>", distributionTask(resolved)="2", distributionDestination(resolved)="1", distributionMethod(resolved)="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team(resolved)="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	Chain (15, self inclusive):
+	<IDEDistributionProcessingPipelineContext: 0x8bdd78f00; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionProcessingPipelineContext: 0x8bdd79200; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf7200; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf6a80; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf6800; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf6580; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf6300; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf6080; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf5e00; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf4a00; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf4780; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf4500; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="<IDEProvisioningBasicTeam: 0x8bb730d00; teamID='58U7UPFS53', teamName='(null)'>">
+	<IDEDistributionContext: 0x8bdcf4280; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="(null)">
+	<IDEDistributionContext: 0x8bdcf4000; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0x8bd43bcc0>", team="(null)">
+	<IDEDistributionContext: 0x10359d460; archive = "<IDEArchive: 0x8bdc3c070>", distributionMethod="(null)", team="(null)">
+</IDEDistributionProcessingPipelineContext: 0x8bdd78f00>
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCreateDestRootStep
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCopyItemStep
+2026-07-24 17:58:50 +0000 [MT] Running /usr/bin/ditto '-V' '[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app'
+2026-07-24 17:58:50 +0000  >>> Copying [project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app 
+2026-07-24 17:58:50 +0000  copying file ./_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  5565 bytes for ./_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldNotificationService.appex/_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  2040 bytes for ./PlugIns/HeraldNotificationService.appex/_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldNotificationService.appex/HeraldNotificationService ... 
+2026-07-24 17:58:50 +0000  89056 bytes for ./PlugIns/HeraldNotificationService.appex/HeraldNotificationService
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldNotificationService.appex/embedded.mobileprovision ... 
+2026-07-24 17:58:50 +0000  14838 bytes for ./PlugIns/HeraldNotificationService.appex/embedded.mobileprovision
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldNotificationService.appex/Info.plist ... 
+2026-07-24 17:58:50 +0000  994 bytes for ./PlugIns/HeraldNotificationService.appex/Info.plist
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldWidgets.appex/_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  2040 bytes for ./PlugIns/HeraldWidgets.appex/_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldWidgets.appex/HeraldWidgets ... 
+2026-07-24 17:58:50 +0000  225664 bytes for ./PlugIns/HeraldWidgets.appex/HeraldWidgets
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldWidgets.appex/embedded.mobileprovision ... 
+2026-07-24 17:58:50 +0000  15318 bytes for ./PlugIns/HeraldWidgets.appex/embedded.mobileprovision
+2026-07-24 17:58:50 +0000  copying file ./PlugIns/HeraldWidgets.appex/Info.plist ... 
+2026-07-24 17:58:50 +0000  880 bytes for ./PlugIns/HeraldWidgets.appex/Info.plist
+2026-07-24 17:58:50 +0000  copying file ./AppIcon60x60@2x.png ... 
+2026-07-24 17:58:50 +0000  14037 bytes for ./AppIcon60x60@2x.png
+2026-07-24 17:58:50 +0000  copying file ./Assets.car ... 
+2026-07-24 17:58:50 +0000  2402440 bytes for ./Assets.car
+2026-07-24 17:58:50 +0000  copying file ./AppIcon76x76@2x~ipad.png ... 
+2026-07-24 17:58:50 +0000  21335 bytes for ./AppIcon76x76@2x~ipad.png
+2026-07-24 17:58:50 +0000  copying file ./AppIcon.png ... 
+2026-07-24 17:58:50 +0000  856654 bytes for ./AppIcon.png
+2026-07-24 17:58:50 +0000  copying file ./Herald ... 
+2026-07-24 17:58:50 +0000  5912688 bytes for ./Herald
+2026-07-24 17:58:50 +0000  copying file ./embedded.mobileprovision ... 
+15932 bytes for ./embedded.mobileprovision
+copying file ./Info.plist ... 
+2026-07-24 17:58:50 +0000  3511 bytes for ./Info.plist
+2026-07-24 17:58:50 +0000  copying file ./SiriVocabulary.plist ... 
+2026-07-24 17:58:50 +0000  113 bytes for ./SiriVocabulary.plist
+2026-07-24 17:58:50 +0000  copying file ./PkgInfo ... 
+2026-07-24 17:58:50 +0000  8 bytes for ./PkgInfo
+2026-07-24 17:58:50 +0000 [MT] /usr/bin/ditto exited with 0
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionEmbedProfileStep
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionInfoPlistStep
+2026-07-24 17:58:50 +0000 [MT] Skipping setting DTXcodeBuildDistribution because toolsBuildVersionName was nil.
+2026-07-24 17:58:50 +0000 [MT] Skipping setting DTXcodeBuildDistribution because toolsBuildVersionName was nil.
+2026-07-24 17:58:50 +0000 [MT] Skipping setting DTXcodeBuildDistribution because toolsBuildVersionName was nil.
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionItemRemovalStep
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionAppThinningPlistStep
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionAppThinningPlistStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionSymbolsStep
+2026-07-24 17:58:50 +0000 [MT] Writing /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Symbols/402C493C-220D-3198-BC10-BA3596801DCF.symbols
+2026-07-24 17:58:50 +0000 [MT] Writing /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Symbols/56AE575B-41E5-3B74-B4F4-F36769D7BD1E.symbols
+2026-07-24 17:58:50 +0000 [MT] Writing /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Symbols/DBE66793-A4D6-3A67-9873-CED34F54D56F.symbols
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCopyAppleProvidedContentStep
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionAppThinningStep
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionAppThinningStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionArchThinningStep
+2026-07-24 17:58:50 +0000 [MT] Archs to thin for item [project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex are []
+2026-07-24 17:58:50 +0000 [MT] Archs to thin for item [project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex are []
+2026-07-24 17:58:50 +0000 [MT] Archs to thin for item [project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app are []
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionODRStep
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionStripXattrsStep
+2026-07-24 17:58:50 +0000 [MT] Skipping stripping extended attributes because the codesign step will strip them.
+2026-07-24 17:58:50 +0000 [MT] Skipping stripping extended attributes because the codesign step will strip them.
+2026-07-24 17:58:50 +0000 [MT] Skipping stripping extended attributes because the codesign step will strip them.
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCodesignStep
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cba80; bundleID='net.fihonline.herald.NotificationService', path='<DVTFilePath:0x8bdc3db20:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbae0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603e40; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.NotificationService";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.NotificationService', executablePath='<DVTFilePath:0x8bdc3dc70:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex/HeraldNotificationService'>', hardenedRuntime='0'>'>: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.NotificationService";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Associated App Clip Identifiers Filter: Skipping because "com.apple.developer.associated-appclip-app-identifiers" is not present
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cba80; bundleID='net.fihonline.herald.NotificationService', path='<DVTFilePath:0x8bdc3db20:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbae0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.NotificationService";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.NotificationService', executablePath='<DVTFilePath:0x8bdc3dc70:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex/HeraldNotificationService'>', hardenedRuntime='0'>'> are: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.NotificationService";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Writing entitlements for <IDEDistributionItem: 0x8bb4cba80; bundleID='net.fihonline.herald.NotificationService', path='<DVTFilePath:0x8bdc3db20:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbae0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.NotificationService";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.NotificationService', executablePath='<DVTFilePath:0x8bdc3dc70:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldNotificationService.appex/HeraldNotificationService'>', hardenedRuntime='0'>'> to: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~q07JxX
+2026-07-24 17:58:50 +0000 [MT] invoking codesign: <NSConcreteTask: 0x8badcb2a0; launchPath='/usr/bin/codesign', arguments='(
+    "-f",
+    "-s",
+    2A267EC34CCB959A2D1051E5704A7CFE2A2F8672,
+    "--entitlements",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~q07JxX",
+    "--preserve-metadata=identifier,flags,runtime,launch-constraints,library-constraints",
+    "--generate-entitlement-der",
+    "--strip-disallowed-xattrs",
+    "-vvv",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldNotificationService.appex"
+)'>
+2026-07-24 17:58:50 +0000 [MT] codesign output: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldNotificationService.appex: replacing existing signature
+/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldNotificationService.appex: signed bundle with Mach-O thin (arm64) [net.fihonline.herald.NotificationService]
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cba20; bundleID='net.fihonline.herald.Widgets', path='<DVTFilePath:0x8bdc3dea0:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cb9c0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603e40; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.Widgets";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.Widgets', executablePath='<DVTFilePath:0x8bb4cb060:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex/HeraldWidgets'>', hardenedRuntime='0'>'>: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.Widgets";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Associated App Clip Identifiers Filter: Skipping because "com.apple.developer.associated-appclip-app-identifiers" is not present
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cba20; bundleID='net.fihonline.herald.Widgets', path='<DVTFilePath:0x8bdc3dea0:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cb9c0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.Widgets";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.Widgets', executablePath='<DVTFilePath:0x8bb4cb060:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex/HeraldWidgets'>', hardenedRuntime='0'>'> are: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.Widgets";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Writing entitlements for <IDEDistributionItem: 0x8bb4cba20; bundleID='net.fihonline.herald.Widgets', path='<DVTFilePath:0x8bdc3dea0:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cb9c0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald.Widgets";
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald.Widgets', executablePath='<DVTFilePath:0x8bb4cb060:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/PlugIns/HeraldWidgets.appex/HeraldWidgets'>', hardenedRuntime='0'>'> to: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~JZNkNt
+2026-07-24 17:58:50 +0000 [MT] invoking codesign: <NSConcreteTask: 0x8badc9630; launchPath='/usr/bin/codesign', arguments='(
+    "-f",
+    "-s",
+    2A267EC34CCB959A2D1051E5704A7CFE2A2F8672,
+    "--entitlements",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~JZNkNt",
+    "--preserve-metadata=identifier,flags,runtime,launch-constraints,library-constraints",
+    "--generate-entitlement-der",
+    "--strip-disallowed-xattrs",
+    "-vvv",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldWidgets.appex"
+)'>
+2026-07-24 17:58:50 +0000 [MT] codesign output: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldWidgets.appex: replacing existing signature
+/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldWidgets.appex: signed bundle with Mach-O thin (arm64) [net.fihonline.herald.Widgets]
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cbde0; bundleID='net.fihonline.herald', path='<DVTFilePath:0x8bb4c9740:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbba0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603e40; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald";
+    "com.apple.developer.siri" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald', executablePath='<DVTFilePath:0x8bb4cb540:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/Herald'>', hardenedRuntime='0'>'>: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald";
+    "beta-reports-active" = 1;
+    "com.apple.developer.siri" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Associated App Clip Identifiers Filter: Skipping because "com.apple.developer.associated-appclip-app-identifiers" is not present
+2026-07-24 17:58:50 +0000 [MT] Entitlements for <IDEDistributionItem: 0x8bb4cbde0; bundleID='net.fihonline.herald', path='<DVTFilePath:0x8bb4c9740:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbba0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald";
+    "com.apple.developer.siri" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald', executablePath='<DVTFilePath:0x8bb4cb540:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/Herald'>', hardenedRuntime='0'>'> are: {
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald";
+    "beta-reports-active" = 1;
+    "com.apple.developer.siri" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 0;
+}
+2026-07-24 17:58:50 +0000 [MT] Writing entitlements for <IDEDistributionItem: 0x8bb4cbde0; bundleID='net.fihonline.herald', path='<DVTFilePath:0x8bb4c9740:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0x8bb4cbba0; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0x8bd603c00; name='Apple Development: Developer (UU4BX97G8J)', hash='907CD5757DFDA3D69E93EFDD5AA7A04A7229828D', serialNumber='4B1144917779B2EF5023577747A5B8F5', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-07-18 03:54:45 +0000''>', entitlements='{
+    "application-identifier" = "58U7UPFS53.net.fihonline.herald";
+    "com.apple.developer.siri" = 1;
+    "com.apple.developer.team-identifier" = 58U7UPFS53;
+    "com.apple.security.application-groups" =     (
+        "group.net.fihonline.herald"
+    );
+    "get-task-allow" = 1;
+}', teamID='58U7UPFS53', identifier='net.fihonline.herald', executablePath='<DVTFilePath:0x8bb4cb540:'[project-root]/Herald/Herald.xcarchive/Products/Applications/Herald.app/Herald'>', hardenedRuntime='0'>'> to: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~xWDgMW
+2026-07-24 17:58:50 +0000 [MT] invoking codesign: <NSConcreteTask: 0x8badc8b40; launchPath='/usr/bin/codesign', arguments='(
+    "-f",
+    "-s",
+    2A267EC34CCB959A2D1051E5704A7CFE2A2F8672,
+    "--entitlements",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/entitlements~~~xWDgMW",
+    "--preserve-metadata=identifier,flags,runtime,launch-constraints,library-constraints",
+    "--generate-entitlement-der",
+    "--strip-disallowed-xattrs",
+    "-vvv",
+    "/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app"
+)'>
+2026-07-24 17:58:50 +0000 [MT] codesign output: /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app: replacing existing signature
+/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app: signed app bundle with Mach-O thin (arm64) [net.fihonline.herald]
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionZipODRItemStep
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionZipODRItemStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionZipODRItemStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionZipODRItemStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCreateIPAStep
+2026-07-24 17:58:50 +0000 [MT] Running /usr/bin/rsync '-8aPhhE' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Symbols' '--link-dest' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root'
+2026-07-24 17:58:50 +0000  Symbols/
+Symbols/402C493C-220D-3198-BC10-BA3596801DCF.symbols
+Symbols/56AE575B-41E5-3B74-B4F4-F36769D7BD1E.symbols
+Symbols/DBE66793-A4D6-3A67-9873-CED34F54D56F.symbols
+2026-07-24 17:58:50 +0000 [MT] /usr/bin/rsync exited with 0
+2026-07-24 17:58:50 +0000 [MT] Running /usr/bin/ditto '-V' '-c' '-k' '--norsrc' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root' '/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Packages/Herald.ipa'
+2026-07-24 17:58:50 +0000  >>> Copying /var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root 
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  5565 bytes for ./Payload/Herald.app/_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  2040 bytes for ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/HeraldNotificationService ... 
+2026-07-24 17:58:50 +0000  89120 bytes for ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/HeraldNotificationService
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/embedded.mobileprovision ... 
+2026-07-24 17:58:50 +0000  14338 bytes for ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/embedded.mobileprovision
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/Info.plist ... 
+2026-07-24 17:58:50 +0000  994 bytes for ./Payload/Herald.app/PlugIns/HeraldNotificationService.appex/Info.plist
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/_CodeSignature/CodeResources ... 
+2026-07-24 17:58:50 +0000  2040 bytes for ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/_CodeSignature/CodeResources
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/HeraldWidgets ... 
+2026-07-24 17:58:50 +0000  225744 bytes for ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/HeraldWidgets
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/embedded.mobileprovision ... 
+2026-07-24 17:58:50 +0000  14479 bytes for ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/embedded.mobileprovision
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/Info.plist ... 
+2026-07-24 17:58:50 +0000  880 bytes for ./Payload/Herald.app/PlugIns/HeraldWidgets.appex/Info.plist
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/AppIcon60x60@2x.png ... 
+2026-07-24 17:58:50 +0000  14037 bytes for ./Payload/Herald.app/AppIcon60x60@2x.png
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/Assets.car ... 
+2026-07-24 17:58:50 +0000  2402440 bytes for ./Payload/Herald.app/Assets.car
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/AppIcon76x76@2x~ipad.png ... 
+2026-07-24 17:58:50 +0000  21335 bytes for ./Payload/Herald.app/AppIcon76x76@2x~ipad.png
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/AppIcon.png ... 
+2026-07-24 17:58:50 +0000  856654 bytes for ./Payload/Herald.app/AppIcon.png
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/Herald ... 
+2026-07-24 17:58:50 +0000  5912768 bytes for ./Payload/Herald.app/Herald
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/embedded.mobileprovision ... 
+2026-07-24 17:58:50 +0000  15088 bytes for ./Payload/Herald.app/embedded.mobileprovision
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/Info.plist ... 
+2026-07-24 17:58:50 +0000  3511 bytes for ./Payload/Herald.app/Info.plist
+2026-07-24 17:58:50 +0000  copying file ./Payload/Herald.app/SiriVocabulary.plist ... 
+2026-07-24 17:58:50 +0000  113 bytes for ./Payload/Herald.app/SiriVocabulary.plist
+copying file ./Payload/Herald.app/PkgInfo ... 
+8 bytes for ./Payload/Herald.app/PkgInfo
+2026-07-24 17:58:50 +0000  copying file ./Symbols/56AE575B-41E5-3B74-B4F4-F36769D7BD1E.symbols ... 
+2026-07-24 17:58:50 +0000  14436 bytes for ./Symbols/56AE575B-41E5-3B74-B4F4-F36769D7BD1E.symbols
+2026-07-24 17:58:50 +0000  copying file ./Symbols/DBE66793-A4D6-3A67-9873-CED34F54D56F.symbols ... 
+2026-07-24 17:58:50 +0000  327780 bytes for ./Symbols/DBE66793-A4D6-3A67-9873-CED34F54D56F.symbols
+2026-07-24 17:58:50 +0000  copying file ./Symbols/402C493C-220D-3198-BC10-BA3596801DCF.symbols ... 
+2026-07-24 17:58:50 +0000  17134244 bytes for ./Symbols/402C493C-220D-3198-BC10-BA3596801DCF.symbols
+2026-07-24 17:58:50 +0000 [MT] /usr/bin/ditto exited with 0
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionAppStoreInformationStep
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionAppStoreInformationStep because it said so
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionGenerateProcessedDistributionItems
+2026-07-24 17:58:50 +0000 [MT] IDEDistributionItem init <DVTFilePath:0x8bde99960:'/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldWidgets.appex'>
+2026-07-24 17:58:50 +0000 [MT] IDEDistributionItem init <DVTFilePath:0x8bde9bd40:'/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app/PlugIns/HeraldNotificationService.appex'>
+2026-07-24 17:58:50 +0000 [MT] IDEDistributionItem init <DVTFilePath:0x8bb7a1320:'/var/folders/0f/f60xd3rx4dg7gwqlx2665mk80000gn/T/XcodeDistPipeline.~~~USts1J/Root/Payload/Herald.app'>
+2026-07-24 17:58:50 +0000 [MT] Processing step: IDEDistributionCreateManifestStep
+2026-07-24 17:58:50 +0000 [MT] Skipping step: IDEDistributionCreateManifestStep because it said so
