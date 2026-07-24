@@ -12,13 +12,13 @@
 	<string>https://herald.fihonline.net/terms.html</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>net.fihonline.herald.task.refresh</string>
-		<string>net.fihonline.herald.task.processing</string>
+		<string>net.fihonline.herald.refresh</string>
+		<string>net.fihnews.HeraldBGProcessing</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Herald Companion</string>
+	<string>Herald</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -98,12 +98,8 @@
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>
-	<array/>
-	<key>UISupportedInterfaceOrientations</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>arm64</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
