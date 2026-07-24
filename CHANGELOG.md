@@ -1152,3 +1152,20 @@ iPhone layout unchanged: MainTabView with existing tab bar.
 | Core/Router.swift | Modified |
 | Features/Onboarding/AppRootView.swift | Modified |
 | HermesMobile.xcodeproj/project.pbxproj | Modified |
+
+## 2.2.5 (build 62) — 2026-07-24
+
+### Relay Stabilization
+- Fix: orphaned job cleanup on startup (prevents replay storms after restart)
+- Fix: duplicate operation ID in talk_mcp.py (FastAPI warning)
+- Config: restart throttle (10s delay, max 5/120s) to prevent crash-loops
+- Config: MemoryMax limits (relay 512M, connector 1G) for OOM protection
+
+### Connector
+- Fix: add sourceSeq to job.started and job.heartbeat events (silences relay warnings)
+
+### Push Notifications
+- Fix: remove APNS_ENVIRONMENT=development override that caused 100% push rejection
+
+### Infrastructure
+- Security: Postgres port binding restricted to 127.0.0.1

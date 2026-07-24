@@ -76,7 +76,7 @@ def register_talk_mcp_routes(app: FastAPI) -> None:
     """Add the /v1/talk/mcp endpoint directly to the FastAPI app."""
 
     @app.api_route("/v1/talk/mcp", methods=["GET", "POST"])
-    @app.api_route("/v1/talk/mcp/", methods=["GET", "POST"])
+    @app.api_route("/v1/talk/mcp/", methods=["GET", "POST"], include_in_schema=False)
     async def talk_mcp_endpoint(request: Request) -> Response:
         # -- Authenticate via query-string token --------------------------
         relay_tool_token = request.query_params.get("token")

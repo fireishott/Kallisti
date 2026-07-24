@@ -4,7 +4,7 @@ import asyncio
 import base64
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 import inspect
 import logging
@@ -217,6 +217,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         database.create_all()
+
+        # Clean up ancient orphaned jobs to prevent replay storms on restart
+        try:
+            with database.session() as db:
+                cutoff = utcnow() - timedelta(days=7)
+                result = db.execute(
+                    text(
+                        "UPDATE message_jobs SET status = 'failed',"
+                        " error_text = 'Cleaned up by startup migration (stale >7 days)',"
+                        " completed_at = :now"
+                        " WHERE status = 'queued' AND created_at < :cutoff"
+                    ),
+                    {"now": utcnow(), "cutoff": cutoff},
+                )
+                db.commit()
+                if result.rowcount:
+                    logger.info("Startup cleanup: marked %d stale queued jobs as failed", result.rowcount)
+        except Exception:
+            logger.warning("Startup cleanup skipped (non-fatal)", exc_info=True)
+
         app.state.apns_client = create_apns_client(settings)
         app.state.push_broker_http_client = httpx.AsyncClient(http2=broker_http2_supported(), timeout=30.0)
 

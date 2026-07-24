@@ -444,6 +444,7 @@ class HeraldConnector:
         self._job_phases: dict[str, str] = {}
         self._pending_results: dict[str, list[dict]] = {}
         self._job_heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._heartbeat_seq: dict[str, int] = {}
         self._fastapi_host_ws_connected: bool = False
 
     @property
@@ -1036,10 +1037,13 @@ class HeraldConnector:
                 while True:
                     await asyncio.sleep(self.heartbeat_interval_seconds)
                     phase = self._job_phases.get(job_id, "starting")
+                    seq = self._heartbeat_seq.get(job_id, 0) + 1
+                    self._heartbeat_seq[job_id] = seq
                     pending_send = enqueue({
                         "type": "job.heartbeat",
                         "jobId": job_id,
                         "phase": phase,
+                        "sourceSeq": seq,
                     })
                     if inspect.isawaitable(pending_send):
                         await pending_send
@@ -1072,6 +1076,7 @@ class HeraldConnector:
                 "jobId": job_id,
                 "phase": "starting",
                 "attempt": attempt,
+                "sourceSeq": 0,
             }))
             self._job_phases[job_id] = "starting"
             self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))

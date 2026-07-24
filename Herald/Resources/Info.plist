@@ -5,11 +5,11 @@
 	<key>APP_HOSTED_RELAY_ENABLED</key>
 	<true/>
 	<key>APP_HOSTED_RELAY_URL</key>
-	<string>https://hermes-relay.fihonline.net/v1</string>
+	<string>https://your-relay.example.com/v1</string>
 	<key>APP_PRIVACY_URL</key>
-	<string>https://herald.fihonline.net/privacy.html</string>
+	<string>https://your-domain.example.com/privacy.html</string>
 	<key>APP_TERMS_URL</key>
-	<string>https://herald.fihonline.net/terms.html</string>
+	<string>https://your-domain.example.com/terms.html</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>net.fihonline.herald.refresh</string>

@@ -2,9 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- TODO: Re-enable com.apple.developer.carplay-communications once the
-	     entitlement is granted by Apple for the App Store distribution profile.
-	     Removed in v2.2.2 — see commit 8aec4a3 (carplay incompatible with iOS 18.0) -->
 	<key>com.apple.developer.siri</key>
 	<true/>
 	<key>com.apple.security.application-groups</key>
