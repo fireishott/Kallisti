@@ -69,16 +69,36 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    // Show banner + sound while app is in the foreground.
-    // nonisolated because UNNotification is not Sendable.
+    /// Show banner + sound while app is in the foreground.
+    ///
+    /// Implements nav-aware suppression (hermes-mobile pattern): when the user
+    /// is actively viewing the same conversation that the notification is for,
+    /// suppress the banner to avoid self-notifications. All other conversations
+    /// still deliver banners normally.
+    ///
+    /// nonisolated because UNNotification is not Sendable.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        let enabled = await MainActor.run {
-            AppContainer.sharedDefault().settingsStore.settings.notificationsEnabled
+        let (enabled, currentConversationId) = await MainActor.run {
+            let container = AppContainer.sharedDefault()
+            return (
+                container.settingsStore.settings.notificationsEnabled,
+                container.chatStore.conversation?.id
+            )
         }
         guard enabled else { return [] }
+
+        // Nav-aware suppression: if the user is viewing the same conversation
+        // the notification is for, suppress to avoid self-notification.
+        let userInfo = notification.request.content.userInfo
+        if let notificationConversationId = userInfo["conversationId"] as? String,
+           let currentId = currentConversationId,
+           notificationConversationId == currentId.uuidString.lowercased() {
+            return []
+        }
+
         return [.banner, .list, .sound, .badge]
     }
 
@@ -173,6 +193,8 @@ struct HeraldApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
                         Task { await container.handleAppDidBecomeActive() }
+                        // Reset badge count when the user returns to the app
+                        UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
                     } else if newPhase == .background {
                         Task {
                             await container.reportAppStateIfNeeded("background")

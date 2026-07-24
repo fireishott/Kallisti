@@ -286,7 +286,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     case .cancelled:
                         break // Coordinator already yielded .cancelled
                     case .error:
-                        break // Coordinator already yielded .failed
+                        // Coordinator returned an unexpected error — attempt
+                        // HTTP polling as a last-resort fallback in case the
+                        // job completed server-side while SSE was down.
+                        Self.logger.warning("SSE coordinator returned .error for job \(jobId), falling back to polling")
+                        await self.pollJobUntilTerminal(jobId: jobId, continuation: continuation)
                     }
                     continuation.finish()
 

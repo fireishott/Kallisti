@@ -144,6 +144,11 @@ class APNsClient:
         aps: dict = {"alert": {"title": title, "body": body}, "sound": "default"}
         if category:
             aps["category"] = category
+        # Per-conversation notification grouping: iOS groups notifications
+        # with the same thread-id in Notification Center. Use the conversation
+        # ID from user_info if present.
+        if user_info and "conversationId" in user_info:
+            aps["thread-id"] = user_info["conversationId"]
         payload = {"aps": aps}
         if user_info:
             payload.update(user_info)

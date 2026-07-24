@@ -3,6 +3,82 @@ import os
 
 private let sseLogger = Logger(subsystem: "net.fihonline.herald", category: "SSE")
 
+// MARK: - SSE Line Iterator (preserves empty lines)
+
+/// Foundation's `AsyncLineSequence` silently drops empty lines, but in SSE
+/// empty lines are critical — they act as event delimiters between frames.
+/// This custom iterator preserves empty strings so the SSE parser can detect
+/// `\n\n` boundaries and dispatch accumulated events.
+///
+/// Reference: dochi PR #388 "Replace AsyncLineSequence with custom SSELineIterator"
+extension URLSession.AsyncBytes {
+    /// An async sequence of SSE-compliant lines where empty strings (produced
+    /// by consecutive newline characters in the byte stream) are preserved.
+    /// Lines are yielded incrementally as newline bytes arrive.
+    var sseLines: AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                var buffer = Data()
+                do {
+                    for try await byte in self {
+                        buffer.append(byte)
+                        // Only drain when we hit a newline — avoids O(n²)
+                        // scanning of the buffer on every byte.
+                        if byte == 0x0A {
+                            for line in drainSSELines(from: &buffer) {
+                                continuation.yield(line)
+                            }
+                        }
+                    }
+                    // Flush remaining buffer — trailing content without a
+                    // final newline is yielded as-is.
+                    if !buffer.isEmpty {
+                        continuation.yield(String(data: buffer, encoding: .utf8) ?? "")
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+}
+
+/// Splits a `Data` buffer on `\n` boundaries, yielding each line as a
+/// `String`. Consecutive `\n` characters produce empty strings — these are
+/// the critical SSE event delimiters. Partial (non-newline-terminated) data
+/// remains in `buffer` for the next call.
+///
+/// - Parameter buffer: accumulated bytes; consumed content is removed
+/// - Returns: array of decoded line strings
+func drainSSELines(from buffer: inout Data) -> [String] {
+    guard !buffer.isEmpty else { return [] }
+    var lines: [String] = []
+    var searchStart = buffer.startIndex
+    while let newlineIndex = buffer[searchStart...].firstIndex(of: 0x0A) {
+        let lineEnd = newlineIndex
+        // Strip \r if present (handle \r\n line endings)
+        var lineData: Data
+        if lineEnd > buffer.startIndex, buffer[lineEnd - 1] == 0x0D {
+            lineData = buffer[buffer.startIndex ..< (lineEnd - 1)]
+        } else {
+            lineData = buffer[buffer.startIndex ..< lineEnd]
+        }
+        lines.append(String(data: lineData, encoding: .utf8) ?? "")
+        searchStart = lineEnd + 1
+    }
+    // Keep unconsumed bytes in buffer for next call
+    if searchStart < buffer.endIndex {
+        buffer = Data(buffer[searchStart...])
+    } else {
+        buffer.removeAll(keepingCapacity: true)
+    }
+    return lines
+}
+
 enum RelayCoders {
     private static func internetDateTimeStyle() -> Date.ISO8601FormatStyle {
         Date.ISO8601FormatStyle(timeZone: .gmt)
@@ -243,12 +319,18 @@ final class RelayAPIClient {
                     var currentEvent = "message"
                     var currentData = ""
                     var currentID: String?
+                    var lastKeepaliveLogTime = Date.distantPast
 
-                    for try await line in bytes.lines {
+                    for try await line in bytes.sseLines {
                         if Task.isCancelled { break }
 
-                        // Keepalive comment
+                        // Keepalive comment — log periodically for liveness debugging
                         if line.hasPrefix(":") {
+                            let now = Date()
+                            if now.timeIntervalSince(lastKeepaliveLogTime) >= 60 {
+                                lastKeepaliveLogTime = now
+                                sseLogger.debug("SSE keepalive received path=\(path)")
+                            }
                             continue
                         }
 

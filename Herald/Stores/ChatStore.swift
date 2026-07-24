@@ -37,7 +37,12 @@ final class ChatStore {
     /// activity, or finish) arrives within this window, the job is treated as
     /// silently stalled/dropped — see `runStreamingAttempt`.
     /// Mutable so tests can set it to milliseconds.
-    static var watchdogTimeout: Duration = .seconds(30)
+    ///
+    /// Set to 90s to allow for slow LLM time-to-first-token (cold starts,
+    /// reasoning phases, queued jobs). The JobStreamCoordinator's own
+    /// watchdog (120s) acts as the outer bound; this ChatStore watchdog
+    /// is an early-stall detector, not a hard timeout.
+    static var watchdogTimeout: Duration = .seconds(90)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
@@ -49,6 +54,7 @@ final class ChatStore {
         var flushTask: Task<Void, Never>?
     }
     private var deltaBuffers: [UUID: DeltaBuffer] = [:]
+    private var reasoningBuffers: [UUID: DeltaBuffer] = [:]
     private static let deltaFlushInterval: Duration = .milliseconds(33)
     private static let deltaFlushByteThreshold = 4_096
 
@@ -114,6 +120,7 @@ final class ChatStore {
         }
         guard conversation == nil else { return }
         await loadConversation()
+        clearNotificationsForCurrentConversation()
     }
 
     func loadConversation() async {
@@ -133,6 +140,7 @@ final class ChatStore {
             onConversationChanged?()
         }
         restartPendingPollingIfNeeded()
+        clearNotificationsForCurrentConversation()
     }
 
     func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
@@ -315,11 +323,7 @@ final class ChatStore {
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
-                    if var conv = self.conversation,
-                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].reasoning += delta
-                        self.conversation = conv
-                    }
+                    self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
                 case .toolActivity(let label):
                     progressContinuation?.yield(())
@@ -344,6 +348,7 @@ final class ChatStore {
                 case .finished(let finalMessage, let usage, let diff, let context):
                     progressContinuation?.yield(())
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
+                    self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
@@ -448,6 +453,7 @@ final class ChatStore {
                 case .cancelled:
                     self.appendLog(level: .info, "Job cancelled")
                     progressContinuation?.yield(())
+                    self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         self.conversation?.messages[idx] = Message(
@@ -469,6 +475,7 @@ final class ChatStore {
                     // resolve the watchdog race immediately rather than waiting
                     // out the timeout, and handle it exactly as before.
                     progressContinuation?.yield(())
+                    self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
 
                     // Store error context for the UI
@@ -659,6 +666,7 @@ final class ChatStore {
 
         // Flush any buffered deltas onto the placeholder before finalizing.
         if let sid = streamingMessageID {
+            flushPendingReasoning(placeholderID: sid)
             flushPendingDeltas(placeholderID: sid)
         }
 
@@ -916,6 +924,60 @@ final class ChatStore {
 
     // MARK: - Delta coalescing
 
+    /// Enqueue a reasoning delta into the reasoning buffer.
+    /// Uses the same coalescing strategy as text deltas (33ms / 4KB) to avoid
+    /// per-token `@Observable` mutations during deep reasoning phases.
+    private func enqueueReasoningDelta(_ delta: String, placeholderID: UUID) {
+        guard !delta.isEmpty else { return }
+        var buf = reasoningBuffers[placeholderID] ?? DeltaBuffer()
+        buf.chunks.append(delta)
+        buf.bytes += delta.utf8.count
+
+        if buf.bytes >= Self.deltaFlushByteThreshold {
+            reasoningBuffers[placeholderID] = buf
+            flushPendingReasoning(placeholderID: placeholderID)
+            return
+        }
+
+        guard buf.flushTask == nil else {
+            reasoningBuffers[placeholderID] = buf
+            return
+        }
+        buf.flushTask = Task { [weak self, placeholderID] in
+            try? await Task.sleep(for: Self.deltaFlushInterval)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.flushPendingReasoning(placeholderID: placeholderID)
+            }
+        }
+        reasoningBuffers[placeholderID] = buf
+    }
+
+    /// Flush all buffered reasoning deltas onto the placeholder message.
+    private func flushPendingReasoning(placeholderID: UUID) {
+        guard var buf = reasoningBuffers[placeholderID] else { return }
+        buf.flushTask?.cancel()
+        buf.flushTask = nil
+
+        guard !buf.chunks.isEmpty else {
+            reasoningBuffers.removeValue(forKey: placeholderID)
+            return
+        }
+        let totalBytes = buf.bytes
+        reasoningBuffers.removeValue(forKey: placeholderID)
+
+        guard var conv = conversation,
+              let idx = conv.messages.firstIndex(where: { $0.id == placeholderID })
+        else { return }
+
+        // Single concat for all buffered chunks
+        var buffer = conv.messages[idx].reasoning
+        buffer.reserveCapacity(buffer.count + totalBytes)
+        for chunk in buf.chunks { buffer.append(chunk) }
+        conv.messages[idx].reasoning = buffer
+        conversation = conv
+    }
+
     private func enqueueDelta(_ delta: String, placeholderID: UUID) {
         guard !delta.isEmpty else { return }
         var buf = deltaBuffers[placeholderID] ?? DeltaBuffer()
@@ -1146,6 +1208,29 @@ final class ChatStore {
                 thumbnailBase64: remote.thumbnailBase64 ?? match.thumbnailBase64,
                 localStoragePath: match.localStoragePath
             )
+        }
+    }
+
+    /// Remove delivered notifications for the currently active conversation.
+    /// Prevents Notification Center clutter when the user is already viewing
+    /// a conversation — stale notifications for it are cleared.
+    private func clearNotificationsForCurrentConversation() {
+        guard let convId = conversation?.id else { return }
+        let center = UNUserNotificationCenter.current()
+        Task {
+            let delivered = await center.deliveredNotifications()
+            let staleIDs = delivered.compactMap { notification -> String? in
+                let info = notification.request.content.userInfo
+                guard let notificationConvId = info["conversationId"] as? String else {
+                    return nil
+                }
+                return notificationConvId == convId.uuidString.lowercased()
+                    ? notification.request.identifier
+                    : nil
+            }
+            if !staleIDs.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: staleIDs)
+            }
         }
     }
 
