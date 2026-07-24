@@ -44,6 +44,7 @@ final class TalkAudioCapture {
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "TalkAudioCapture")
 
     private var audioEngine: AVAudioEngine?
+    private var bargeInEngine: AVAudioEngine?
     private var recordedBuffers: [AVAudioPCMBuffer] = []
     private var isRecording = false
     private(set) var currentPower: Float = -160.0  // dBFS
@@ -93,8 +94,10 @@ final class TalkAudioCapture {
     }
 
     func startRecording() throws {
+        // Use cancel() for full cleanup — it nil's the engine, removes taps,
+        // and clears buffers regardless of the engine's current state.
         if isRecording {
-            _ = stopRecording()
+            cancel()
         }
 
         let engine = AVAudioEngine()
@@ -194,6 +197,7 @@ final class TalkAudioCapture {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        stopBargeInEngine()
         isRecording = false
         recordedBuffers = []
         stopVADMonitoring()
@@ -237,14 +241,58 @@ final class TalkAudioCapture {
 
     /// Returns an AsyncStream that yields when speech is detected above the barge-in threshold.
     /// Used to detect the user speaking during TTS playback.
+    ///
+    /// Starts a lightweight recording tap solely for power monitoring (no buffer accumulation)
+    /// so that barge-in works during TTS playback when the main recording engine is stopped.
     func startBargeInMonitoring() -> AsyncStream<Void> {
+        // Start a fresh audio engine for power-only monitoring.
+        // The main recording engine is stopped during playback, so barge-in needs its own tap.
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            return AsyncStream { continuation in
+                continuation.finish()
+            }
+        }
+
+        var bargeInPower: Float = -160.0
+        let powerLock = NSLock()
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            let channelData = buffer.floatChannelData?[0]
+            let frames = buffer.frameLength
+            if let channelData, frames > 0 {
+                var rms: Float = 0
+                vDSP_measqv(channelData, 1, &rms, vDSP_Length(frames))
+                let power = 10 * log10(rms + 1e-10)
+                powerLock.lock()
+                bargeInPower = power
+                powerLock.unlock()
+            }
+        }
+
+        do {
+            try engine.start()
+        } catch {
+            return AsyncStream { continuation in
+                continuation.finish()
+            }
+        }
+
+        self.bargeInEngine = engine
+
         return AsyncStream { continuation in
             self.bargeInContinuation = continuation
             Task { [weak self] in
                 while !Task.isCancelled {
                     guard let self else { break }
                     try? await Task.sleep(for: .milliseconds(100))
-                    if self.currentPower > self.bargeInThreshold {
+                    powerLock.lock()
+                    let power = bargeInPower
+                    powerLock.unlock()
+                    if power > self.bargeInThreshold {
                         continuation.yield()
                         break
                     }
@@ -253,10 +301,18 @@ final class TalkAudioCapture {
 
             continuation.onTermination = { [weak self] _ in
                 Task { @MainActor [weak self] in
+                    self?.stopBargeInEngine()
                     self?.bargeInContinuation = nil
                 }
             }
         }
+    }
+
+    /// Stop the lightweight barge-in monitoring engine.
+    private func stopBargeInEngine() {
+        bargeInEngine?.inputNode.removeTap(onBus: 0)
+        bargeInEngine?.stop()
+        bargeInEngine = nil
     }
 
     func stopVADMonitoring() {

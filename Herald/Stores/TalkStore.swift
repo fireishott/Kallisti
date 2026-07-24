@@ -50,8 +50,15 @@ final class TalkStore {
             self?.applyHermesState(state)
         }
         coordinator.onTranscript = { [weak self] item in
-            self?.transcriptItems.append(item)
-            self?.onSessionStateChanged?()
+            guard let self else { return }
+            // Replace existing item with the same ID (partial updates reuse IDs)
+            // so the transcript array doesn't grow unbounded during streaming.
+            if let idx = self.transcriptItems.firstIndex(where: { $0.id == item.id }) {
+                self.transcriptItems[idx] = item
+            } else {
+                self.transcriptItems.append(item)
+            }
+            self.onSessionStateChanged?()
         }
     }
 
@@ -165,12 +172,14 @@ final class TalkStore {
             onSessionStateChanged?()
             return
         }
-        isSessionActive = true
-        connectionState = .connected
-        voiceSessionID = coordinator.conversationId
         await coordinator.startListeningWithVAD()
-        // If the coordinator failed internally, sync state
-        if case .failed(let msg) = coordinator.state {
+        // Only mark active if the coordinator actually started listening.
+        // If it hit a guard (e.g. state already .preparing) or failed, stay inactive.
+        if case .listening = coordinator.state {
+            isSessionActive = true
+            connectionState = .connected
+            voiceSessionID = coordinator.conversationId
+        } else if case .failed(let msg) = coordinator.state {
             voiceState = .disconnected
             connectionState = .failed
             isSessionActive = false

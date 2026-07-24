@@ -39,8 +39,8 @@ final class TalkTurnClient {
                     case .textDelta(let delta):
                         canonicalText += delta
                         continuation.yield(.textDelta(delta))
-                    case .reasoningDelta:
-                        break
+                    case .reasoningDelta(let delta):
+                        continuation.yield(.reasoningDelta(delta))
                     case .toolActivity(let label):
                         continuation.yield(.toolActivity(label))
                     case .finished(let message, _, _, _):
@@ -72,6 +72,7 @@ final class TalkTurnClient {
 enum TalkTurnUpdate: Sendable {
     case jobAccepted(jobID: UUID)
     case textDelta(String)
+    case reasoningDelta(String)
     case toolActivity(String)
     case completed(text: String)
     case cancelled

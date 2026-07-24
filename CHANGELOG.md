@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.2.7] - 2026-07-24
+
+### Fixed
+
+- **Talk streaming display (P0)**: Talk mode now shows Herald's response
+  incrementally as it streams — a partial `TranscriptItem` is created before
+  processing and updated on each text delta with 16ms coalescing. Users no
+  longer stare at "Thinking..." for the entire response duration.
+- **Talk reasoning display (P0)**: Reasoning deltas are now surfaced as system
+  `TranscriptItem`s (`💭 text`) instead of being silently dropped by
+  `TalkTurnClient`. Users can see the model's chain-of-thought during Talk.
+- **Talk button no-op (P1)**: `TalkStore.startSession()` no longer sets
+  `isSessionActive = true` before the coordinator confirms it actually started
+  listening. Prevents the UI showing "active" while nothing happens.
+- **Talk empty response (P1)**: When the model responds with only reasoning or
+  tool calls (empty body text), Talk now shows an informative system message
+  instead of silently returning to idle.
+- **Talk barge-in (P1)**: Barge-in monitoring now starts its own lightweight
+  recording tap so it can detect user speech during TTS playback where the
+  main recording engine was stopped. Speaking while Herald is talking now
+  correctly triggers barge-in.
+- **Talk audio engine crash (P2)**: `startRecording()` now uses `cancel()` for
+  pre-flight cleanup instead of `stopRecording()`, ensuring the engine is fully
+  deallocated before a new one is created on rapid stop/start cycles.
+
+### Changed
+
+- `TalkTurnUpdate` enum gains `.reasoningDelta(String)` case
+- `TalkAudioCapture` gains separate `bargeInEngine` for power-only monitoring
+
 ## [2.2.6] - 2026-07-24
 
 ### Fixed

@@ -183,6 +183,17 @@ final class HermesTalkCoordinator {
         state = .thinking
         notifyState()
 
+        // Create a partial Herald transcript item for incremental streaming display.
+        // This mirrors how ChatStore creates a placeholder Message before streaming.
+        let heraldItemID = UUID()
+        let placeholderItem = TranscriptItem(id: heraldItemID, speaker: .herald, text: "", isPartial: true)
+        onTranscript?(placeholderItem)
+
+        // Reasoning accumulates into a separate system transcript item.
+        let reasoningItemID = UUID()
+        var reasoningText = ""
+        var hasReasoning = false
+
         let clientMessageId = UUID()
         var canonicalText = ""
         var pendingText = ""
@@ -190,6 +201,10 @@ final class HermesTalkCoordinator {
         var toolBoundarySeen = false
         var earlySynthesisTask: Task<Void, Never>?
         var divergence = SpeechDivergenceMetrics()
+
+        // Coalescing: buffer deltas and flush at ~60 fps to avoid Observable churn.
+        let flushIntervalNanos: UInt64 = 16_000_000  // 16ms
+        var flushTask: Task<Void, Never>?
 
         do {
             for try await update in turnClient.submitUtterance(
@@ -201,6 +216,14 @@ final class HermesTalkCoordinator {
                 switch update {
                 case .jobAccepted:
                     break
+                case .reasoningDelta(let delta):
+                    hasReasoning = true
+                    reasoningText += delta
+                    let item = TranscriptItem(
+                        id: reasoningItemID, speaker: .system,
+                        text: "\u{1F4AD} \(reasoningText)", isPartial: true
+                    )
+                    onTranscript?(item)
                 case .textDelta(let delta):
                     // Stop early segmentation after tool/reasoning boundaries
                     if !toolBoundarySeen {
@@ -233,6 +256,20 @@ final class HermesTalkCoordinator {
                             pendingText = String(pendingText[boundary.endIndex...])
                         }
                     }
+
+                    canonicalText += delta
+
+                    // Coalesced flush: push incremental text to the transcript
+                    // at ~60 fps so the user sees word-by-word streaming.
+                    flushTask?.cancel()
+                    flushTask = Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: flushIntervalNanos)
+                        guard !Task.isCancelled else { return }
+                        await self?.flushPendingTranscript(
+                            heraldItemID: heraldItemID,
+                            canonicalText: canonicalText
+                        )
+                    }
                 case .toolActivity(let label):
                     // Tool boundaries make text unstable — stop early segmentation
                     toolBoundarySeen = true
@@ -241,6 +278,7 @@ final class HermesTalkCoordinator {
                 case .completed(let text):
                     canonicalText = text
                 case .cancelled:
+                    flushTask?.cancel()
                     earlySynthesisTask?.cancel()
                     state = .idle
                     notifyState()
@@ -248,21 +286,52 @@ final class HermesTalkCoordinator {
                 }
             }
         } catch {
+            flushTask?.cancel()
             logger.error("Hermes turn failed: \(error.localizedDescription, privacy: .public)")
             state = .failed("Hermes unavailable")
             notifyState()
             return
         }
 
+        // Finalize reasoning if any was accumulated.
+        if hasReasoning {
+            let finalReasoning = TranscriptItem(
+                id: reasoningItemID, speaker: .system,
+                text: "\u{1F4AD} \(reasoningText)", isPartial: false
+            )
+            onTranscript?(finalReasoning)
+        }
+
+        // Flush final pending deltas before marking complete.
+        flushTask?.cancel()
+        await flushPendingTranscript(heraldItemID: heraldItemID, canonicalText: canonicalText)
+
         guard !canonicalText.isEmpty else {
             earlySynthesisTask?.cancel()
+            if toolBoundarySeen {
+                let item = TranscriptItem(
+                    speaker: .system,
+                    text: "Herald used tools to process your request.",
+                    isPartial: false
+                )
+                onTranscript?(item)
+            } else if hasReasoning {
+                // Reasoning was already shown; nothing more to surface.
+            } else {
+                let item = TranscriptItem(
+                    speaker: .system,
+                    text: "Herald didn't produce a response. Try again.",
+                    isPartial: false
+                )
+                onTranscript?(item)
+            }
             state = .idle
             notifyState()
             return
         }
 
-        // Add assistant transcript
-        let assistantItem = TranscriptItem(speaker: .herald, text: canonicalText)
+        // Add assistant transcript (finalized — no longer partial).
+        let assistantItem = TranscriptItem(id: heraldItemID, speaker: .herald, text: canonicalText, isPartial: false)
         onTranscript?(assistantItem)
 
         // Compute divergence metrics
@@ -528,5 +597,16 @@ final class HermesTalkCoordinator {
 
     private func notifyState() {
         onStateChange?(state)
+    }
+
+    /// Push the current accumulated text into the partial Herald transcript item.
+    /// Called on a 16ms coalescing timer during streaming to avoid Observable churn.
+    private func flushPendingTranscript(heraldItemID: UUID, canonicalText: String) {
+        guard !canonicalText.isEmpty else { return }
+        let item = TranscriptItem(
+            id: heraldItemID, speaker: .herald,
+            text: canonicalText, isPartial: true
+        )
+        onTranscript?(item)
     }
 }
