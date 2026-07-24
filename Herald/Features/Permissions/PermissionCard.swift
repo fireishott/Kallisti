@@ -64,7 +64,14 @@ struct PermissionCard: View {
 
             if let actionLabel = actionLabelText {
                 Button {
-                    onRequest()
+                    // Defer the system permission dialog by 100ms to avoid
+                    // overlapping with SwiftUI render cycles that can crash
+                    // AttributeGraph (BarEnvironmentViewModel visibility update
+                    // racing with UIAlertController presentation).
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(100))
+                        onRequest()
+                    }
                 } label: {
                     Text(actionLabel)
                         .brandEyebrow(Design.Colors.background)

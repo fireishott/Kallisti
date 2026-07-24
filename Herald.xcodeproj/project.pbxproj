@@ -1717,10 +1717,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1741,10 +1741,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1774,10 +1774,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;
@@ -1806,10 +1806,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1822,11 +1822,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1846,11 +1846,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1861,10 +1861,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1877,10 +1877,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 59;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.0;
+				MARKETING_VERSION = 2.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;

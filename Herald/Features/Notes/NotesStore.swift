@@ -130,14 +130,6 @@ final class NotesStore {
             return nil
         }
     }
-    
-    func createQuickNote() async -> HeraldNote? {
-        let note = await createNote(title: "Quick Note")
-        if let noteId = note?.id {
-            await togglePin(id: noteId)
-        }
-        return note
-    }
 
     func updateNote(_ note: HeraldNote) async {
         do {

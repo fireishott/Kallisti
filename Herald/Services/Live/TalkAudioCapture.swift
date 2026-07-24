@@ -2,6 +2,32 @@ import AVFoundation
 import Accelerate
 import os
 
+/// Non-isolated accumulator that the audio tap callback writes to directly
+/// from AVAudioEngine's realtime thread.  @MainActor isolation is handled
+/// by the owning `TalkAudioCapture` when it drains the accumulator on a
+/// periodic flush timer.
+private final class TapAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffers: [AVAudioPCMBuffer] = []
+    private var power: Float = -160.0
+
+    func append(_ buffer: AVAudioPCMBuffer, power: Float) {
+        lock.lock()
+        buffers.append(buffer)
+        self.power = power
+        lock.unlock()
+    }
+
+    func swap() -> ([AVAudioPCMBuffer], Float) {
+        lock.lock()
+        let batch = buffers
+        let pwr = power
+        buffers = []
+        lock.unlock()
+        return (batch, pwr)
+    }
+}
+
 @MainActor
 final class TalkAudioCapture {
     enum CaptureError: LocalizedError {
@@ -22,20 +48,8 @@ final class TalkAudioCapture {
     private var isRecording = false
     private(set) var currentPower: Float = -160.0  // dBFS
 
-    // Buffered audio tap — accumulates on tap thread, flushes to MainActor periodically
-    private nonisolated(unsafe) var tapBuffer: [AVAudioPCMBuffer] = []
-    private nonisolated(unsafe) var tapPower: Float = -160.0
-    private let tapLock = NSLock()
     private var flushTask: Task<Void, Never>?
-
-    private nonisolated func swapTapBuffer() -> ([AVAudioPCMBuffer], Float) {
-        tapLock.lock()
-        let batch = tapBuffer
-        let power = tapPower
-        tapBuffer = []
-        tapLock.unlock()
-        return (batch, power)
-    }
+    private var currentAccumulator: TapAccumulator?
 
     // MARK: - VAD Endpointing
 
@@ -70,8 +84,10 @@ final class TalkAudioCapture {
             throw CaptureError.noAudioInput
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
+        let accumulator = TapAccumulator()
+        self.currentAccumulator = accumulator
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             let channelData = buffer.floatChannelData?[0]
             let frames = buffer.frameLength
             let power: Float
@@ -82,24 +98,22 @@ final class TalkAudioCapture {
             } else {
                 power = -160.0
             }
-            // Accumulate on tap thread — no Task allocation per sample
-            self.tapLock.lock()
-            self.tapBuffer.append(buffer)
-            self.tapPower = power
-            self.tapLock.unlock()
+            // Append directly to the non-isolated accumulator — no MainActor
+            // reference, so the realtime audio thread never triggers a Swift 6
+            // actor-isolation assertion.
+            accumulator.append(buffer, power: power)
         }
 
-        // Single flush task — moves batched data to MainActor at ~10Hz
+        // Single flush task — drains the non-isolated accumulator and moves
+        // batched data to MainActor at ~10 Hz.
         flushTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self else { return }
-                let (batch, power) = self.swapTapBuffer()
+                let (batch, power) = accumulator.swap()
                 guard !batch.isEmpty else { continue }
-                await MainActor.run {
-                    self.currentPower = power
-                    self.recordedBuffers.append(contentsOf: batch)
-                }
+                self.currentPower = power
+                self.recordedBuffers.append(contentsOf: batch)
             }
         }
 
@@ -117,9 +131,12 @@ final class TalkAudioCapture {
         flushTask?.cancel()
         flushTask = nil
 
-        // Flush any remaining buffered audio
-        let (remaining, _) = swapTapBuffer()
-        recordedBuffers.append(contentsOf: remaining)
+        // Flush any remaining buffered audio from the non-isolated accumulator
+        if let accumulator = currentAccumulator {
+            let (remaining, _) = accumulator.swap()
+            recordedBuffers.append(contentsOf: remaining)
+        }
+        currentAccumulator = nil
 
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
@@ -156,7 +173,8 @@ final class TalkAudioCapture {
     func cancel() {
         flushTask?.cancel()
         flushTask = nil
-        _ = swapTapBuffer()
+        _ = currentAccumulator?.swap()
+        currentAccumulator = nil
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil

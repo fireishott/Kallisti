@@ -170,11 +170,6 @@ struct iPadSidebarView: View {
             } label: {
                 Label("New Note", systemImage: "square.and.pencil")
             }
-            Button {
-                Task { await notesStore.createQuickNote() }
-            } label: {
-                Label("Quick Note", systemImage: "note.text.badge.plus")
-            }
         }
 
         // Folders

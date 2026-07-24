@@ -173,8 +173,8 @@ enum NotePageStyle: String, Codable, Sendable, CaseIterable {
     var lineSpacing: CGFloat {
         switch self {
         case .linesSmall, .gridSmall:   return 20
-        case .linesMedium, .gridMedium: return 30
-        case .linesLarge, .gridLarge:   return 36
+        case .linesMedium, .gridMedium: return 24
+        case .linesLarge, .gridLarge:   return 32
         case .a4:                       return 30
         default:                        return 0
         }

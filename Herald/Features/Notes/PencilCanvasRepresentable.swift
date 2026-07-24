@@ -82,6 +82,14 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             context.coordinator.updatePaper(style: pageStyle)
         }
 
+        // Keep canvas width in sync with the view frame so lines span the
+        // full column width (matches iOS Notes behavior).  Only height
+        // auto-grows; width is driven by the SwiftUI layout.
+        if canvas.bounds.width > 0, canvas.contentSize.width != canvas.bounds.width {
+            canvas.contentSize.width = canvas.bounds.width
+            context.coordinator.updatePaper(style: context.coordinator.currentStyle)
+        }
+
         // Restore tool picker and first responder after sheet/rotation/backgrounding
         if let picker = context.coordinator.toolPicker {
             picker.setVisible(true, forFirstResponder: canvas)
