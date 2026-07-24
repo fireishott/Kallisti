@@ -65,7 +65,7 @@ final class SessionListStore {
     private let heraldClient: any HeraldClientProtocol
     private let chatStore: ChatStore
     private let settingsStore: SettingsStore
-    private let persistence: any AppPersistenceStoreProtocol
+    private var persistence: any AppPersistenceStoreProtocol
     private var searchTask: Task<Void, Never>?
     private var searchObservationTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
@@ -191,6 +191,9 @@ final class SessionListStore {
 
     func switchToSession(_ session: SessionSummary) async {
         do {
+            // Scope the conversation cache to this session so that switching
+            // back later loads the correct history, not another session's.
+            persistence.currentSessionId = session.id
             let conversation = try await heraldClient.loadConversation(id: session.id)
             chatStore.conversation = conversation
             if let latestUsage = conversation.latestUsage {

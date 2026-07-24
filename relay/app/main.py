@@ -2399,6 +2399,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if completed_job is not None and completed_job.status == "completed" and completed_job.result_message_id:
                 result_message = db.get(Message, completed_job.result_message_id)
                 if result_message is not None:
+                    preview = " ".join(result_message.text.split()).strip()[:160]
+                    create_inbox_item(
+                        db,
+                        user_id=auth.user.id,
+                        device_id=None,
+                        kind="notification",
+                        title="Herald",
+                        body=preview,
+                        priority="normal",
+                        payload={"conversationId": conversation.id, "messageId": result_message.id},
+                        expires_at=None,
+                    )
+                    db.commit()
                     await maybe_send_message_push(
                         db=db,
                         user_id=auth.user.id,
@@ -3017,6 +3030,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     if completed.result_message_id:
                                         completed_message = db.get(Message, completed.result_message_id)
                                         if completed_message is not None:
+                                            preview = " ".join(completed_message.text.split()).strip()[:160]
+                                            # Always create inbox item — independent of push delivery
+                                            create_inbox_item(
+                                                db,
+                                                user_id=completed.user_id,
+                                                device_id=None,
+                                                kind="notification",
+                                                title="Herald",
+                                                body=preview,
+                                                priority="normal",
+                                                payload={"conversationId": completed.conversation_id, "messageId": completed_message.id},
+                                                expires_at=None,
+                                            )
+                                            db.commit()
                                             job_duration = (utcnow() - completed.created_at).total_seconds() if completed.created_at else 0
                                             await maybe_send_message_push(
                                                 db=db,

@@ -67,6 +67,31 @@ final class TalkAudioCapture {
     let maxDuration: TimeInterval = 60.0
     let maxBytes: Int = 10 * 1024 * 1024  // 10 MB
 
+    /// Non-isolated static factory for the audio tap callback.
+    ///
+    /// The callback runs on AVAudioEngine's realtime thread. Creating it in a
+    /// `nonisolated static` context prevents Swift 6 from inferring `@MainActor`
+    /// isolation on the closure, which would otherwise crash with
+    /// `dispatch_assert_queue_fail` → `swift_task_checkIsolatedSwift` the moment
+    /// the tap fires.
+    private nonisolated static func makeTapHandler(
+        accumulator: TapAccumulator
+    ) -> (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        return { buffer, _ in
+            let channelData = buffer.floatChannelData?[0]
+            let frames = buffer.frameLength
+            let power: Float
+            if let channelData, frames > 0 {
+                var rms: Float = 0
+                vDSP_measqv(channelData, 1, &rms, vDSP_Length(frames))
+                power = 10 * log10(rms + 1e-10)
+            } else {
+                power = -160.0
+            }
+            accumulator.append(buffer, power: power)
+        }
+    }
+
     func startRecording() throws {
         if isRecording {
             _ = stopRecording()
@@ -87,22 +112,13 @@ final class TalkAudioCapture {
         let accumulator = TapAccumulator()
         self.currentAccumulator = accumulator
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            let channelData = buffer.floatChannelData?[0]
-            let frames = buffer.frameLength
-            let power: Float
-            if let channelData, frames > 0 {
-                var rms: Float = 0
-                vDSP_measqv(channelData, 1, &rms, vDSP_Length(frames))
-                power = 10 * log10(rms + 1e-10)
-            } else {
-                power = -160.0
-            }
-            // Append directly to the non-isolated accumulator — no MainActor
-            // reference, so the realtime audio thread never triggers a Swift 6
-            // actor-isolation assertion.
-            accumulator.append(buffer, power: power)
-        }
+        // Use the nonisolated static factory to create the tap handler so the
+        // closure is NOT inferred as @MainActor — the realtime audio thread
+        // never triggers a Swift 6 actor-isolation assertion.
+        inputNode.installTap(
+            onBus: 0, bufferSize: 1024, format: format,
+            block: Self.makeTapHandler(accumulator: accumulator)
+        )
 
         // Single flush task — drains the non-isolated accumulator and moves
         // batched data to MainActor at ~10 Hz.

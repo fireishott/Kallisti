@@ -85,15 +85,42 @@ final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
         defaults.removeObject(forKey: Keys.sensorOutboxState)
     }
 
+    /// Session-scoped conversation cache key.
+    /// When switching sessions, set this to the new session's ID so the cache
+    /// reads/writes are isolated per session rather than sharing a single
+    /// global cache entry (which caused session B to load session A's history).
+    var currentSessionId: UUID? {
+        get {
+            guard let raw = defaults.string(forKey: "herald.activeSessionId") else { return nil }
+            return UUID(uuidString: raw)
+        }
+        set {
+            if let id = newValue {
+                defaults.set(id.uuidString, forKey: "herald.activeSessionId")
+            } else {
+                defaults.removeObject(forKey: "herald.activeSessionId")
+            }
+        }
+    }
+
+    private var scopedConversationKey: String {
+        if let sid = currentSessionId {
+            return "\(Keys.conversationCache).\(sid.uuidString)"
+        }
+        return Keys.conversationCache
+    }
+
     func loadConversationCache() -> Conversation? {
-        load(Conversation.self, key: Keys.conversationCache)
+        load(Conversation.self, key: scopedConversationKey)
     }
 
     func saveConversationCache(_ conversation: Conversation) {
-        save(conversation, key: Keys.conversationCache)
+        save(conversation, key: scopedConversationKey)
     }
 
     func clearConversationCache() {
+        defaults.removeObject(forKey: scopedConversationKey)
+        // Also clean the legacy unscoped key for migration
         defaults.removeObject(forKey: Keys.conversationCache)
     }
 

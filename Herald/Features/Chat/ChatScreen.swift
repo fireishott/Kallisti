@@ -12,6 +12,7 @@ struct ChatScreen: View {
     @Environment(ThemeManager.self) private var themeManager
     @Environment(TabRouter.self) private var router
     @Environment(HeraldCanvasStore.self) private var canvasStore
+    @Environment(SessionListStore.self) private var sessionListStore
     @Binding var isSessionDrawerOpen: Bool
 
     @State private var messageText = ""
@@ -21,11 +22,13 @@ struct ChatScreen: View {
     @State private var scrollProxy: ScrollViewProxy?
     @FocusState private var isComposerFocused: Bool
 
-    // Scroll throttling during streaming — prevents the chat flying off screen
-    // when 30fps delta flushes fight withAnimation scrollToBottom calls.
-    @State private var lastAutoScrollTime: Date = .distantPast
+    // Scroll debounce during streaming — coalesces multiple scrollToBottom()
+    // triggers from different onChange handlers into one per ~100ms, preventing
+    // the "chats fly off screen" effect when delta flushes and stream-end both
+    // fire scroll requests in the same run loop.
+    @State private var autoScrollTask: Task<Void, Never>?
     @State private var isUserScrolling = false
-    private static let scrollThrottleInterval: TimeInterval = 0.5
+    private static let scrollDebounceInterval: Duration = .milliseconds(100)
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
@@ -123,16 +126,21 @@ struct ChatScreen: View {
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
             if old != nil && new == nil {
-                // Streaming just ended — scroll to the last message so the
-                // user sees the full response, not the user message they sent.
+                // Streaming just ended. Delay scroll + haptic by one frame
+                // (~100ms) so the placeholder→resolved message replacement has
+                // rendered before we scroll or buzz. Fixes the "thinking
+                // disappears, haptic fires, but no response visible" race.
                 isUserScrolling = false  // Reset scroll state for next stream
-                if let lastID = chatStore.conversation?.messages.last?.id {
-                    withAnimation(Design.Motion.standard) {
-                        scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    if let lastID = chatStore.conversation?.messages.last?.id {
+                        withAnimation(Design.Motion.standard) {
+                            scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                        }
                     }
-                }
-                if settingsStore.settings.hapticFeedbackEnabled {
-                    HapticEngine.responseReceived()
+                    if settingsStore.settings.hapticFeedbackEnabled {
+                        HapticEngine.responseReceived()
+                    }
                 }
             }
         }
@@ -255,7 +263,7 @@ struct ChatScreen: View {
                 HStack(spacing: Design.Spacing.sm) {
                     canvasButton
                     GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
-                        router.presentSheet(.settings)
+                        router.switchToTab(.settings)
                     }
                 }
                 // Compact: Canvas only (Settings accessible via sidebar)
@@ -849,7 +857,7 @@ struct ChatScreen: View {
             .foregroundStyle(Design.Brand.accent)
 
             Button("New") {
-                Task { await performClear() }
+                Task { await createNewSessionAndSwitch() }
             }
             .font(Design.Typography.caption)
             .foregroundStyle(Design.Colors.secondaryForeground)
@@ -1004,7 +1012,7 @@ struct ChatScreen: View {
 
         switch command.name {
         case "new", "reset":
-            Task { await performClear() }
+            Task { await createNewSessionAndSwitch() }
         case "clear":
             showClearConfirmation = true
 
@@ -1078,6 +1086,20 @@ struct ChatScreen: View {
         appendSystemMessage("Compressing session context…")
         await chatStore.sendMessage(compressPrompt, attachments: [])
         scrollToBottom()
+    }
+
+    /// Creates a new session on the server and switches to it, replacing the
+    /// current conversation. This is the correct "new chat" path — unlike
+    /// `performClear()` which clears the current conversation in-place (and
+    /// can race with relay state), this creates a fresh session with its own
+    /// immutable UUID via `POST /sessions`.
+    private func createNewSessionAndSwitch() async {
+        showStatusCard = false
+        await sessionListStore.createNewSession()
+        // Scroll to top — new session's conversation is empty
+        withAnimation(Design.Motion.standard) {
+            scrollProxy?.scrollTo("top", anchor: .top)
+        }
     }
 
     private func performClear() async {
@@ -1188,15 +1210,21 @@ struct ChatScreen: View {
 
     private func scrollToBottom() {
         guard let lastID = chatStore.conversation?.messages.last?.id else { return }
-        // Throttle auto-scroll during streaming to once per ~500ms.
-        // Without this, 30fps delta flushes fight withAnimation and the
-        // chat flies off screen.
+        // During streaming, debounce scroll requests — multiple onChange
+        // handlers (message count, streamingContentLength, streamingMessageID)
+        // can fire in the same run loop. A single debounce Task coalesces them
+        // into one scroll per ~100ms.
         if chatStore.isStreaming {
-            let now = Date()
-            guard now.timeIntervalSince(lastAutoScrollTime) >= Self.scrollThrottleInterval else { return }
-            lastAutoScrollTime = now
-            // Defer to user — if they've scrolled up manually, don't yank them back down.
             guard !isUserScrolling else { return }
+            autoScrollTask?.cancel()
+            autoScrollTask = Task { @MainActor in
+                try? await Task.sleep(for: Self.scrollDebounceInterval)
+                guard !Task.isCancelled, !isUserScrolling else { return }
+                withAnimation(Design.Motion.standard) {
+                    scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                }
+            }
+            return
         }
         withAnimation(Design.Motion.standard) {
             scrollProxy?.scrollTo(lastID, anchor: .bottom)

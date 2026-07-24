@@ -269,13 +269,23 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             donePayload = nil
                         }
 
-                        let refreshedConversation = await self.reloadConversationForStreaming()
-                        let finalMessage = self.resolveFinalMessage(
-                            jobId: jobId,
-                            donePayload: donePayload,
-                            conversation: refreshedConversation ?? self.currentConversation
-                        )
-                        let usage: TokenUsage? = donePayload?.usage ?? refreshedConversation?.latestUsage
+                        // Skip the extra server round-trip when the SSE done
+                        // payload already carries the canonical message. This
+                        // removes ~200-500ms of latency on every stream completion.
+                        let finalMessage: Message
+                        let usage: TokenUsage?
+                        if let doneMessage = donePayload?.message {
+                            finalMessage = self.mapMessage(doneMessage)
+                            usage = donePayload?.usage
+                        } else {
+                            let refreshedConversation = await self.reloadConversationForStreaming()
+                            finalMessage = self.resolveFinalMessage(
+                                jobId: jobId,
+                                donePayload: donePayload,
+                                conversation: refreshedConversation ?? self.currentConversation
+                            )
+                            usage = donePayload?.usage ?? refreshedConversation?.latestUsage
+                        }
                         let context: ContextInfo? = donePayload?.context
                         continuation.yield(.finished(finalMessage, usage, nil, context))
                     case .failed:

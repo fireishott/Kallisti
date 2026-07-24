@@ -16,6 +16,7 @@ protocol AppPersistenceStoreProtocol {
     func loadSensorOutboxState() -> SensorOutboxState
     func saveSensorOutboxState(_ state: SensorOutboxState)
     func clearSensorOutboxState()
+    var currentSessionId: UUID? { get set }
     func loadConversationCache() -> Conversation?
     func saveConversationCache(_ conversation: Conversation)
     func clearConversationCache()

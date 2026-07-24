@@ -1,5 +1,70 @@
 # Changelog
 
+## [2.2.6] - 2026-07-24
+
+### Fixed
+
+- **TalkAudioCapture crash (P0)**: Extracted audio tap callback into a
+  `nonisolated static` factory method so Swift 6 no longer infers `@MainActor`
+  isolation on the closure. Eliminates `dispatch_assert_queue_fail` →
+  `swift_task_checkIsolatedSwift` crash on Talk mode start.
+- **`/new` routes to random chats**: `/new`, `/reset`, and the context warning
+  "New" button now call `SessionListStore.createNewSession()` (→ `POST /sessions`)
+  instead of `clearConversation()` (→ `POST /conversations/current/clear`).
+  Each new chat gets its own immutable session UUID — no more stale "current
+  conversation" pointer races.
+- **Thinking → haptic → no visible response**: Delayed scroll + haptic by 100ms
+  after stream end so the placeholder→resolved message replacement renders
+  before the user perceives the completion.
+- **Streaming watchdog too slow**: Reduced from 90s to 30s — users now get
+  feedback within 30s instead of staring at "Waiting for host..." for 2 minutes.
+- **Reasoning disappears on completion**: When the model outputs chain-of-thought
+  as inline `<think>` tags (DeepSeek, Qwen), the content is now extracted into
+  `message.reasoning` BEFORE the tags are stripped from the visible content.
+  Fixes "I saw thinking but then it vanished."
+- **Streaming latency**: Delta flush interval reduced from 33ms to 16ms (60fps).
+  Removed unnecessary `reloadConversationForStreaming()` HTTP round-trip when
+  the SSE `done` payload already carries the canonical message.
+- **Settings bounce**: Gear icon in chat toolbar now switches to the Settings
+  tab (`switchToTab(.settings)`) instead of presenting a sheet with a single
+  `.large` detent that bounced on swipe. Also eliminates TabView spring-bounce
+  when swiping past the rightmost tab.
+- **Chats fly off screen**: Replaced shared 500ms throttle with a Task-based
+  100ms debounce. Multiple `onChange` handlers firing `scrollToBottom()` in the
+  same run loop are coalesced into one scroll.
+- **Inbox/action center always empty**: Inbox items are now created directly
+  in the WebSocket `job.result` handler, independent of push notification
+  delivery. Previously, inbox items were a side-effect of `maybe_send_message_push`,
+  which silently returned when APNs wasn't configured.
+- **Auto-compress at 85% context**: After each response, if `contextPercent > 85%`,
+  `/compress` is sent automatically as a system directive. Only fires once per
+  conversation to avoid compression loops.
+- **Session isolation**: Conversation cache is now scoped per session ID
+  (`currentSessionId` on persistence store). Switching sessions no longer loads
+  another session's cached history. `SessionListStore.switchToSession()` and
+  `createNewSession()` set the scope automatically.
+
+### Changed
+
+- Delta coalescing flush rate: 33ms → 16ms (30fps → 60fps cap)
+- Streaming stall watchdog: 90s → 30s
+- Settings access from chat toolbar: sheet → tab switch
+- `AppPersistenceStoreProtocol`: added `currentSessionId` property
+
+### Server (Relay)
+
+- Inbox items created independently of push delivery in WebSocket handler
+- Inbox items created in synchronous POST /messages handler as well
+
+## [2.2.5] - 2026-07-24
+
+### Fixed
+
+- Relay: orphaned job cleanup on startup (prevents replay storms)
+- Relay: fix duplicate operation ID in talk_mcp.py
+- Push: remove APNS_ENVIRONMENT=development override (fixes 100% push rejection)
+- Infra: close Postgres port exposure (127.0.0.1 binding)
+
 ## [2.2.4] - 2026-07-24
 
 ### Fixed

@@ -13,6 +13,7 @@ final class ChatStore {
             // not on in-place updates (merge, message appends) to the same conversation.
             if oldValue?.id != conversation?.id {
                 autoTitleAttempted = false
+                autoCompressAttempted = false
             }
         }
     }
@@ -38,11 +39,11 @@ final class ChatStore {
     /// silently stalled/dropped — see `runStreamingAttempt`.
     /// Mutable so tests can set it to milliseconds.
     ///
-    /// Set to 90s to allow for slow LLM time-to-first-token (cold starts,
-    /// reasoning phases, queued jobs). The JobStreamCoordinator's own
-    /// watchdog (120s) acts as the outer bound; this ChatStore watchdog
-    /// is an early-stall detector, not a hard timeout.
-    static var watchdogTimeout: Duration = .seconds(90)
+    /// Set to 30s — the connector has its own 120s watchdog, and 90s was too
+    /// long for users staring at "Waiting for host..." with no feedback.
+    /// If no text/reasoning/tool/finished event arrives within this window,
+    /// the job is treated as stalled.
+    static var watchdogTimeout: Duration = .seconds(30)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
@@ -55,7 +56,7 @@ final class ChatStore {
     }
     private var deltaBuffers: [UUID: DeltaBuffer] = [:]
     private var reasoningBuffers: [UUID: DeltaBuffer] = [:]
-    private static let deltaFlushInterval: Duration = .milliseconds(33)
+    private static let deltaFlushInterval: Duration = .milliseconds(16)  // 60 fps cap
     private static let deltaFlushByteThreshold = 4_096
 
     /// Whether `autoTitleIfNeeded` has already been attempted for the current
@@ -374,9 +375,33 @@ final class ChatStore {
                                 resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
                             }
                         }
-                        // Always strip <think>…</think> from content — whether or not we
-                        // streamed reasoning. NSRegularExpression with
-                        // .dotMatchesLineSeparators handles multiline blocks reliably.
+                        // If no reasoning arrived via the dedicated reasoningDelta channel
+                        // (common with DeepSeek/Qwen models that embed chain-of-thought
+                        // as <think> tags inline), extract those tags into the reasoning
+                        // field BEFORE stripping them from the displayed content.
+                        if resolved.reasoning.isEmpty {
+                            if let thinkRegex = try? NSRegularExpression(
+                                pattern: "<think>(.*?)</think>",
+                                options: [.dotMatchesLineSeparators]
+                            ) {
+                                let nsContent = resolved.content as NSString
+                                let matches = thinkRegex.matches(
+                                    in: resolved.content,
+                                    range: NSRange(location: 0, length: nsContent.length)
+                                )
+                                let extracted = matches.compactMap { match -> String? in
+                                    guard match.numberOfRanges > 1 else { return nil }
+                                    return nsContent.substring(with: match.range(at: 1))
+                                }.joined(separator: "\n")
+                                if !extracted.isEmpty {
+                                    resolved.reasoning = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if let startedAt = reasoningStartedAt {
+                                        resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                                    }
+                                }
+                            }
+                        }
+                        // Always strip <think>…</think> tags from the visible content.
                         if let regex = try? NSRegularExpression(pattern: "<think>.*?</think>", options: [.dotMatchesLineSeparators]) {
                             let range = NSRange(resolved.content.startIndex..., in: resolved.content)
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
@@ -416,6 +441,13 @@ final class ChatStore {
                         self.onTitleChanged?(conv.id, conv.title)
                     }
                     await self.autoTitleIfNeeded()
+
+                    // Auto-compress when context exceeds 85% — sends /compress
+                    // as a system directive so the user doesn't have to hit the
+                    // banner button manually.
+                    if let pct = self.conversation?.contextPercent, pct > 0.85 {
+                        await self.autoCompress()
+                    }
 
                     // Post local notification if app is in background
                     if UIApplication.shared.applicationState == .background {
@@ -766,6 +798,55 @@ final class ChatStore {
         if let conversation {
             persistence.saveConversationCache(conversation)
             onTitleChanged?(conversation.id, title)
+            onConversationChanged?()
+        }
+    }
+
+    /// Automatically sends `/compress` when context exceeds 85%.
+    /// Only triggers once per conversation to avoid compression loops.
+    /// The compress directive is sent as a system message so the agent
+    /// summarizes existing context and the user perceives a seamless
+    /// continuation rather than a disruptive reload.
+    private var autoCompressAttempted = false
+
+    private func autoCompress() async {
+        guard !autoCompressAttempted else { return }
+        autoCompressAttempted = true
+        Self.logger.info("Auto-compressing at \(self.conversation?.contextPercent ?? 0) context")
+
+        // Reuse the same message-send pipeline; the agent handles /compress
+        // natively, producing a summary then resuming normal conversation.
+        let clientMessageID = UUID()
+        let compressMsg = Message(
+            id: clientMessageID,
+            clientMessageID: clientMessageID,
+            sender: .user,
+            content: "/compress",
+            status: .sending
+        )
+        if conversation == nil {
+            conversation = Conversation(title: "New Chat")
+        }
+        conversation?.messages.append(compressMsg)
+        conversation?.lastActivity = compressMsg.timestamp
+
+        // Don't use streaming for compress — it's a fast system directive.
+        let response = await heraldClient.send(
+            message: "/compress",
+            attachments: [],
+            clientMessageID: clientMessageID
+        )
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+            conversation?.messages[idx].status = .delivered
+        }
+        conversation?.messages.append(response)
+        conversation?.lastActivity = response.timestamp
+        // Usage comes from the current conversation metadata, not the Message object
+        if let latestUsage = heraldClient.currentConversation?.latestUsage {
+            lastTokenUsage = latestUsage
+        }
+        if let conversation {
+            persistence.saveConversationCache(conversation)
             onConversationChanged?()
         }
     }
