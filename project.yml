@@ -58,7 +58,7 @@ targets:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
         com.apple.developer.healthkit.background-delivery: true
-        com.apple.developer.aps-environment: development
+        com.apple.developer.aps-environment: production
         com.apple.developer.carplay-communications: true
         com.apple.security.application-groups:
           - group.net.fihonline.herald
@@ -66,6 +66,9 @@ targets:
       - path: Herald
         excludes:
           - "**/.DS_Store"
+      - path: HeraldWidgets/HeraldAppState.swift
+      - path: HeraldWidgets/GatewayState.swift
+      - path: HeraldWidgets/HeraldActivityAttributes.swift
     resources:
       - path: Herald/Resources
         optional: true
@@ -76,8 +79,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
-        MARKETING_VERSION: "2.3.0"
-        CURRENT_PROJECT_VERSION: "71"
+        MARKETING_VERSION: "2.3.1"
+        CURRENT_PROJECT_VERSION: "72"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -139,6 +142,7 @@ targets:
     platform: iOS
     sources:
       - path: HeraldWidgets
+      - path: Herald/Services/Support/RelayAPIClient.swift
     entitlements:
       path: HeraldWidgets/HeraldWidgets.entitlements
       properties:
@@ -156,8 +160,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
-        MARKETING_VERSION: "2.3.0"
-        CURRENT_PROJECT_VERSION: "71"
+        MARKETING_VERSION: "2.3.1"
+        CURRENT_PROJECT_VERSION: "72"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -181,8 +185,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
         PRODUCT_NAME: HeraldNotificationService
-        MARKETING_VERSION: "2.3.0"
-        CURRENT_PROJECT_VERSION: "71"
+        MARKETING_VERSION: "2.3.1"
+        CURRENT_PROJECT_VERSION: "72"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -217,8 +221,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
         PRODUCT_NAME: HeraldIntents
-        MARKETING_VERSION: "2.3.0"
-        CURRENT_PROJECT_VERSION: "71"
+        MARKETING_VERSION: "2.3.1"
+        CURRENT_PROJECT_VERSION: "72"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -234,8 +238,8 @@ targets:
       base:
         INFOPLIST_FILE: HeraldControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Controls
-        MARKETING_VERSION: "2.3.0"
-        CURRENT_PROJECT_VERSION: "71"
+        MARKETING_VERSION: "2.3.1"
+        CURRENT_PROJECT_VERSION: "72"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

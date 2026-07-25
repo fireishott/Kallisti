@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.3.1] - 2026-07-25 — Push, Controls & Live Activity Fix
+
+### Fixed
+
+- **APNs environment (P0):** Changed aps-environment entitlement from `development`
+  to `production`. TestFlight uses the production APNs environment — the previous
+  `development` setting caused iOS to issue development tokens that the production
+  APNs server silently rejected. Push notifications now deliver reliably.
+  Also fixed deploy scripts that forced `push_environment='development'` in the DB.
+- **Control Center widgets (P0):** Created the missing `HeraldAppState` and
+  `GatewayState` classes that the Control Center widgets referenced but didn't
+  exist. Widgets now compile and can communicate with the relay via shared
+  App Group UserDefaults.
+- **Live Activity rendering (P0):** Fixed ContentState mismatch between the main
+  app (6 fields) and widget extension (11 fields with gateway telemetry). The
+  widget's decoder now tolerates missing telemetry keys from older encoded states.
+  Duplicate `HeraldActivityAttributes` removed; single shared file compiled into
+  both targets.
+- **Live Activity push token:** Token is now registered with the relay via the
+  standard `push/register` endpoint, enabling remote Lock Screen updates.
+
+### Added
+
+- **Gateway controls in Settings:** New Gateway section with restart buttons
+  (relay, connector, Hermes agent), gateway status navigation, and log viewer.
+- **Gateway Status screen:** Real-time telemetry dashboard showing relay/connector/
+  Hermes connection status, system stats (CPU, memory, uptime), active jobs, and
+  alerts. Auto-refreshes every 10s.
+- **Gateway Logs screen:** Live log viewer with level filtering (debug/info/warning/
+  error), search, and optional SSE streaming for real-time log tail.
+- **Streaming phase indicator:** `StreamingPhase` enum exposed in ChatStore tracks
+  the SSE pipeline state (idle → sending → waitingForJob → streaming →
+  reconnecting → stalled) for UI feedback.
+
+### Changed
+
+- Streaming watchdog reduced from 120s to 30s for faster failure detection
+- SSE reconnect backoff capped at 15s (was 60s)
+- Gateway state auto-published to App Group UserDefaults for Control Center widgets
+- Relay push environment now defaults to `production` in all deploy scripts
+- Version bumped: relay 1.2.0, connector 0.5.0, iOS 2.3.1 (build 72)
+
 ## [2.3.0] - 2026-07-25 — "The Realtime Edition"
 
 ### Added

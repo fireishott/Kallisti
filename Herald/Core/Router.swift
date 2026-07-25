@@ -6,6 +6,8 @@ enum Route: Hashable {
     case permissions
     case capture
     case connectHost
+    case gatewayStatus
+    case gatewayLogs
 }
 
 // MARK: - Sheet Destinations

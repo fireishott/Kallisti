@@ -26,6 +26,7 @@ struct SettingsScreen: View {
                 VStack(spacing: Design.Spacing.lg) {
                     connectionSection
                     relaySection
+                    gatewaySection
                     if settingsStore.availableEnvironments.count > 1 {
                         environmentSection
                     }
@@ -134,6 +135,9 @@ struct SettingsScreen: View {
 
     @State private var isRestarting = false
     @State private var restartResult: RestartResult?
+    @State private var isRestartingGW = false
+    @State private var gwRestartTarget: String?
+    @State private var gwRestartResult: String?
 
     private enum RestartResult {
         case success
@@ -334,6 +338,155 @@ struct SettingsScreen: View {
         case .notConnected:
             return "Not Connected"
         }
+    }
+
+    // MARK: - Gateway
+
+    private var gatewaySection: some View {
+        SettingsSectionView(title: "Gateway") {
+            VStack(spacing: 0) {
+                // Gateway status summary
+                NavigationLink(value: Route.gatewayStatus) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: hostStore.isHostOnline ? "network" : "network.slash")
+                            .font(.system(size: 14))
+                            .foregroundStyle(hostStore.isHostOnline ? Design.Colors.success : Design.Colors.warning)
+                            .frame(width: 20, alignment: .center)
+
+                        Text("Gateway Status")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+
+                        Spacer()
+
+                        Text(hostStore.isHostOnline ? "Online" : "Offline")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+
+                sectionDivider
+
+                // Restart gateway (relay container)
+                gatewayRestartButton(label: "Restart Relay", target: "relay")
+
+                sectionDivider
+
+                // Restart connector
+                gatewayRestartButton(label: "Restart Connector", target: "connector")
+
+                sectionDivider
+
+                // Restart Hermes agent
+                gatewayRestartButton(label: "Restart Hermes Agent", target: "hermes")
+
+                sectionDivider
+
+                // View logs entry
+                NavigationLink(value: Route.gatewayLogs) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.blue)
+                            .frame(width: 20, alignment: .center)
+
+                        Text("View Logs")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func gatewayRestartButton(label: String, target: String) -> some View {
+        Button {
+            Task { await restartGateway(target: target) }
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                if isRestartingGW && gwRestartTarget == target {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.orange)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.orange)
+                        .frame(width: 20)
+                }
+
+                Text(isRestartingGW && gwRestartTarget == target ? "Restarting…" : label)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(isRestartingGW ? Design.Colors.secondaryForeground : Design.Colors.foreground)
+
+                Spacer()
+
+                if let result = gwRestartResult, gwRestartTarget == target {
+                    Text(result)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                }
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRestartingGW)
+    }
+
+    private func restartGateway(target: String) async {
+        isRestartingGW = true
+        gwRestartTarget = target
+        gwRestartResult = nil
+
+        do {
+            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+                ?? "https://herald-host.internal:8010/v1"
+            let token = await sessionStore.currentAccessToken()
+            let client = RelayAPIClient { relayBase }
+
+            struct RestartRequest: Encodable { let target: String }
+            struct RestartResponse: Decodable {
+                struct Data: Decodable {
+                    let restarting: Bool
+                    let target: String
+                    let message: String?
+                }
+                let data: Data
+            }
+
+            let body = RestartRequest(target: target)
+            let response: RestartResponse = try await client.post(
+                path: "gw/restart",
+                body: body,
+                accessToken: token
+            )
+            gwRestartResult = response.data.restarting
+                ? "\(target) restarting…"
+                : "Failed: \(response.data.message ?? "unknown")"
+        } catch {
+            gwRestartResult = "Error: \(error.localizedDescription)"
+        }
+
+        isRestartingGW = false
+        try? await Task.sleep(for: .seconds(3))
+        gwRestartResult = nil
     }
 
     private var environmentSection: some View {

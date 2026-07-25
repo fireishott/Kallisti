@@ -58,7 +58,7 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Herald accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>
-	<string>Herald uses Siri to send and read messages with voice commands.</string>
+	<string>Herald uses Siri to send and read messages on CarPlay and with voice commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Herald uses speech recognition for voice commands and local transcription.</string>
 	<key>NSSupportsLiveActivities</key>
@@ -73,6 +73,20 @@
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>CarPlay</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
 	</dict>
 	<key>UIBackgroundModes</key>
 	<array>

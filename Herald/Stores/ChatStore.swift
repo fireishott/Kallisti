@@ -3,6 +3,16 @@ import os
 import UIKit
 import UserNotifications
 
+/// Indicates the current phase of the streaming pipeline for UI feedback.
+enum StreamingPhase: Sendable {
+    case idle
+    case sending            // POST /messages — waiting for relay to accept
+    case waitingForJob      // Job accepted, waiting for first event (connector warming up)
+    case streaming          // Receiving text/reasoning/tool deltas
+    case reconnecting       // Transport dropped — cursor-based resume in progress
+    case stalled            // Watchdog is about to fire — showing "Waiting…"
+}
+
 @MainActor
 @Observable
 final class ChatStore {
@@ -26,6 +36,9 @@ final class ChatStore {
     var lastErrorAction: String?
     /// Live log entries for the iPad inspector panel's Logs tab.
     var logEntries: [LogEntry] = []
+    /// Streaming phase for UI indicators (e.g. "Sending…", "Waiting…", "Streaming…").
+    /// Updated by `runStreamingAttempt` as the job progresses through the SSE pipeline.
+    var streamingPhase: StreamingPhase = .idle
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
@@ -249,6 +262,7 @@ final class ChatStore {
         guard stalled else { return }
 
         // Watchdog fired. Show "Waiting for host..." state
+        streamingPhase = .stalled
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
@@ -293,6 +307,8 @@ final class ChatStore {
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
 
+        streamingPhase = .sending
+
         var progressContinuation: AsyncStream<Void>.Continuation?
         let progressSignal = AsyncStream<Void> { continuation in
             progressContinuation = continuation
@@ -307,6 +323,7 @@ final class ChatStore {
                 case .messageSent(let jobID):
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
+                    self.streamingPhase = .waitingForJob
                     self.activeStreams[jobID] = placeholderID
                     // Arm the polling safety net. If the SSE stream fails silently
                     // (transport drop, proxy timeout, connector stall), polling
@@ -323,6 +340,7 @@ final class ChatStore {
 
                 case .textDelta(let delta):
                     progressContinuation?.yield(())
+                    self.streamingPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
                     self.enqueueDelta(delta, placeholderID: placeholderID)
@@ -439,6 +457,7 @@ final class ChatStore {
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
+                    self.streamingPhase = .idle
 
                     // Finish TTS streaming — flush any remaining buffered text
                     self.ttsService?.finishStream()
@@ -489,6 +508,7 @@ final class ChatStore {
 
                 case .reconnecting:
                     self.appendLog(level: .warn, "Stream reconnecting...")
+                    self.streamingPhase = .reconnecting
                     progressContinuation?.yield(())
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
@@ -517,6 +537,7 @@ final class ChatStore {
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
+                    self.streamingPhase = .idle
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = .delivered
                     }
@@ -563,6 +584,7 @@ final class ChatStore {
                     }
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.chatLiveActivity.endActivity()
+                    self.streamingPhase = .idle
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
                     }
@@ -654,6 +676,7 @@ final class ChatStore {
         }
         activeStreams.removeAll()
         pendingMessageSentAt = nil
+        streamingPhase = .idle
         chatLiveActivity.endActivity()
     }
 

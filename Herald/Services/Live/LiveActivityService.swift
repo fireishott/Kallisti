@@ -19,7 +19,7 @@ final class LiveActivityService {
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
-        let state = HeraldActivityAttributes.ContentState(
+        let state = makeContentState(
             status: "Listening", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "voice",
             emoji: emojiForPhase("listening", sessionType: "voice")
         )
@@ -43,7 +43,7 @@ final class LiveActivityService {
 
     func updateVoiceState(_ status: String, toolName: String? = nil) {
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
-        let state = HeraldActivityAttributes.ContentState(
+        let state = makeContentState(
             status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "voice",
             emoji: emojiForPhase(status, sessionType: "voice")
         )
@@ -57,8 +57,8 @@ final class LiveActivityService {
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
-        let state = HeraldActivityAttributes.ContentState(
-            status: "Thinking", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "chat",
+        let state = makeContentState(
+            status: "Thinking", startDate: now, sessionType: "chat",
             emoji: emojiForPhase("thinking", sessionType: "chat")
         )
         if currentActivity != nil {
@@ -82,7 +82,7 @@ final class LiveActivityService {
     func updatePhase(_ status: String) {
         guard currentActivity != nil else { return }
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
-        let state = HeraldActivityAttributes.ContentState(
+        let state = makeContentState(
             status: status, toolName: nil, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat",
             emoji: emojiForPhase(status, sessionType: "chat")
         )
@@ -96,7 +96,7 @@ final class LiveActivityService {
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
-        let state = HeraldActivityAttributes.ContentState(
+        let state = makeContentState(
             status: "Working...", toolName: toolName, elapsedSeconds: 0, startDate: now, sessionType: "tool",
             emoji: emojiForPhase("working", sessionType: "tool")
         )
@@ -120,7 +120,7 @@ final class LiveActivityService {
 
     func updateToolProgress(_ status: String, toolName: String? = nil) {
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
-        let state = HeraldActivityAttributes.ContentState(
+        let state = makeContentState(
             status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool",
             emoji: emojiForPhase(status, sessionType: "tool")
         )
@@ -149,6 +149,10 @@ final class LiveActivityService {
 
     // MARK: - Push Token Registration
 
+    /// Notification posted when a new Live Activity push token is available.
+    /// AppContainer observes this to register the token with the relay.
+    static let pushTokenDidUpdateNotification = Notification.Name("HeraldLiveActivityPushTokenDidUpdate")
+
     /// Observe push token updates from the current activity and deliver them
     /// to the relay for remote activity updates.
     func observePushTokens() {
@@ -157,13 +161,24 @@ final class LiveActivityService {
         Task {
             for await token in activityRef.pushTokenUpdates {
                 let tokenHex = token.map { String(format: "%02x", $0) }.joined()
-                self.registerLiveActivityPushTokenSync(tokenHex)
+                Self.registerLiveActivityPushToken(tokenHex)
             }
         }
     }
 
-    private nonisolated func registerLiveActivityPushTokenSync(_ token: String) {
-        UserDefaults.standard.set(token, forKey: "herald.liveActivity.pushToken")
+    /// Store the push token and notify AppContainer to register it with the relay.
+    private static func registerLiveActivityPushToken(_ token: String) {
+        // Store for cross-process access (widget extension can also read this)
+        if let defaults = UserDefaults(suiteName: "group.net.fihonline.herald") {
+            defaults.set(token, forKey: "herald.liveActivity.pushToken")
+        }
+        // Notify AppContainer to send the token to the relay
+        Task { @MainActor in
+            NotificationCenter.default.post(
+                name: pushTokenDidUpdateNotification,
+                object: token
+            )
+        }
     }
 
     // MARK: - Private
@@ -200,6 +215,36 @@ final class LiveActivityService {
                 await activity.end(finalContent, dismissalPolicy: .immediate)
             }
         }
+    }
+
+    /// Build a ContentState enriched with current gateway telemetry from the
+    /// shared App Group store. All parameters except status have sensible defaults.
+    private func makeContentState(
+        status: String,
+        toolName: String? = nil,
+        elapsedSeconds: Int = 0,
+        startDate: Date? = nil,
+        sessionType: String = "chat",
+        emoji: String? = nil
+    ) -> HeraldActivityAttributes.ContentState {
+        let gw = GatewayState.shared
+        return HeraldActivityAttributes.ContentState(
+            status: status,
+            toolName: toolName,
+            elapsedSeconds: elapsedSeconds,
+            startDate: startDate,
+            sessionType: sessionType,
+            emoji: emoji,
+            gatewayConnected: gw.isConnected,
+            activeQueries: gw.activeJobs,
+            modelName: gw.model,
+            version: gw.version,
+            cpuPercent: gw.cpuPercent,
+            memoryUsedGb: gw.memoryUsedGb,
+            memoryTotalGb: gw.memoryTotalGb,
+            uptimeHours: Double(gw.uptimeSeconds) / 3600.0,
+            alertCount: gw.alertCount
+        )
     }
 
     private func adoptExistingActivityIfNeeded() {

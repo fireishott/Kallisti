@@ -39,13 +39,14 @@ actor JobStreamCoordinator {
     private var lastAttempt: Int = 0
     private var isCancelled = false
     private var backoffSeconds: TimeInterval = 1.0
-    private static let maxBackoff: TimeInterval = 60.0
+    private static let maxBackoff: TimeInterval = 15.0
     private var pendingContextWindow: Int?
     private var pendingContextUsed: Int?
 
     /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
     /// arrives within this window, the stream is considered dead.
-    private static let watchdogTimeoutSeconds: TimeInterval = 120.0
+    /// Reduced from 120s to 30s so users get faster feedback on silent failures.
+    private static let watchdogTimeoutSeconds: TimeInterval = 30.0
     private var lastSSEDataTime: Date = .distantPast
 
     struct JobStatusSnapshot: Sendable {

@@ -169,6 +169,16 @@ final class AppContainer {
             apiClient: apiClient ?? RelayAPIClient { "" },
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
+
+        // Observe Live Activity push token updates and register with relay
+        NotificationCenter.default.addObserver(
+            forName: LiveActivityService.pushTokenDidUpdateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, let token = notification.object as? String else { return }
+            Task { await self.registerLiveActivityPushToken(token) }
+        }
     }
 
     static func sharedDefault() -> AppContainer {
@@ -512,6 +522,10 @@ final class AppContainer {
         await hostStore.refresh()
         lastKnownHostOnline = hostStore.isHostOnline
         await chatStore.loadConversationIfNeeded()
+
+        // Update shared state for Control Center widgets
+        updateSharedAppState()
+        updateSharedGatewayState()
         await inboxStore.loadInbox()
         await sessionListStore.loadSessions()
         await refreshCommandCatalog(force: true)
@@ -664,6 +678,7 @@ final class AppContainer {
         await permissionsStore.reloadCapabilities()
         await hostStore.refresh()
         lastKnownHostOnline = hostStore.isHostOnline
+        updateSharedGatewayState()
         await refreshCommandCatalog(force: true)
         await registerStoredPushTokenIfNeeded()
         await sensorUploadService?.handleAppDidBecomeActive()
@@ -794,10 +809,10 @@ final class AppContainer {
             return
         }
 
-        // Herald is TestFlight-only (not App Store). The aps-environment
-        // entitlement is hardcoded to "development", so iOS always issues
-        // development tokens. The relay must match: APNS_ENVIRONMENT=development.
-        let pushEnvironment = "development"
+        // TestFlight builds use the production APNs environment. The
+        // aps-environment entitlement must be "production" so iOS issues
+        // production tokens that the relay can deliver via APNs production.
+        let pushEnvironment = "production"
 
         do {
             let didRegister = try await pushRegistrationCoordinator?.registerPushToken(
@@ -862,6 +877,43 @@ final class AppContainer {
     private func registerStoredPushTokenIfNeeded() async {
         guard let storedToken = await currentStoredAPNsToken() else { return }
         await registerPushTokenIfNeeded(storedToken)
+    }
+
+    /// Register a Live Activity push token with the relay so it can push
+    /// remote updates to the Lock Screen / Dynamic Island activity.
+    /// Uses the standard push/register endpoint with transport=liveactivity.
+    private func registerLiveActivityPushToken(_ token: String) async {
+        guard let accessToken = await sessionStore.currentAccessToken(),
+              let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString,
+              !relayURL.isEmpty,
+              let deviceID = sessionStore.state.deviceID
+        else { return }
+
+        let client = RelayAPIClient { relayURL }
+        struct Body: Encodable {
+            let deviceId: String
+            let transport: String
+            let apnsToken: String
+            let pushEnvironment: String
+            let bundleId: String
+        }
+        let body = Body(
+            deviceId: deviceID,
+            transport: "direct",
+            apnsToken: token,
+            pushEnvironment: "production",
+            bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.herald"
+        )
+        do {
+            let _ = try await client.post(
+                path: "push/register",
+                body: body,
+                accessToken: accessToken
+            ) as [String: Any]
+        } catch {
+            // Non-critical — will be retried on next token rotation
+        }
     }
 
     /// Reads the APNs token from Keychain. On first launch after upgrading from
@@ -1096,5 +1148,29 @@ final class AppContainer {
             return
         }
         LiveActivityService.endAllActivities()
+    }
+
+    // MARK: - Shared State (Control Center)
+
+    /// Persist relay URL and access token to App Group UserDefaults so the
+    /// Control Center widgets (HeraldControls extension) can make authenticated
+    /// HTTP calls without launching the main app.
+    private func updateSharedAppState() {
+        let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            ?? "https://herald-host.internal:8010/v1"
+        let token = sessionStore.state.accessToken
+        HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: token)
+    }
+
+    /// Persist gateway health to App Group UserDefaults for Control Center
+    /// widget display. Called after host refresh and on app foreground.
+    private func updateSharedGatewayState() {
+        GatewayState.shared.update(
+            connected: hostStore.isHostOnline,
+            activeJobs: chatStore.isStreaming ? 1 : 0,
+            model: settingsStore.settings.model,
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        )
     }
 }
