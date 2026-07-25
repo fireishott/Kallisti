@@ -19,7 +19,7 @@ import json
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -3673,6 +3673,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── Hermes Desktop compatibility endpoints ──────────────────────────
     # These mirror the API surface the desktop expects so it can connect
     # to Herald as a remote gateway.
+
+    @app.get("/login")
+    async def login_page(request: Request):
+        """Redirect desktop OAuth attempts to token-based setup instructions."""
+        return JSONResponse({
+            "status": "ok",
+            "version": settings.version,
+            "message": "Herald uses token-based auth. Configure your desktop with a static API token — no OAuth login page needed.",
+            "auth_required": False,
+            "token_instructions": "In Hermes Desktop Settings → Gateway, set Mode=Remote, URL=<this host>, Auth=Token, and paste your Herald API key as the token."
+        })
+
+    @app.get("/")
+    async def root_redirect(request: Request):
+        """Root: redirect to status for health checks."""
+        return RedirectResponse(url="/api/status")
+
+    @app.get("/auth/login")
+    @app.get("/api/auth/ws-ticket")
+    async def oauth_stub(request: Request):
+        """Stub OAuth paths: tell the desktop to use token auth."""
+        return JSONResponse({
+            "error": "OAuth not supported",
+            "message": "Herald does not implement OAuth. Use token-based auth with your Herald API key.",
+            "auth_required": False,
+        })
 
     @app.get("/api/status")
     async def api_status(request: Request) -> dict:
