@@ -139,6 +139,9 @@ from .services import (
     record_voice_turn,
 )
 from .talk_mcp import register_talk_mcp_routes
+from .telemetry import TelemetryService
+from .gateway_control import GatewayController
+from .log_service import LogService
 
 
 def success(data: dict) -> dict:
@@ -335,6 +338,96 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(note_runs_router)
     app.state.event_fanout = EventFanout()
 
+    # ── Herald 2.3.0: telemetry, gateway control, log service ──────────
+    # Connection state tracking for telemetry queries
+    _connection_state: dict = {"state": "disconnected", "last_heartbeat": 0.0}
+
+    def _connector_state() -> str:
+        return _connection_state.get("state", "disconnected")
+
+    def _ws_count() -> int:
+        return getattr(app.state, "_ws_connection_count", 0)
+
+    def _sse_count() -> int:
+        return getattr(app.state, "_sse_connection_count", 0)
+
+    app.state._ws_connection_count = 0
+    app.state._sse_connection_count = 0
+
+    app.state.telemetry = TelemetryService(
+        settings,
+        database.session,
+        get_connector_state=_connector_state,
+        get_connector_version=lambda: getattr(
+            next(iter(app.state.connector_sessions.values()), None),
+            "connector_version", None
+        ) if app.state.connector_sessions else None,
+        get_active_job_count=lambda: sum(
+            1 for s in app.state.connector_sessions.values()
+            if getattr(s, "in_flight_job_id", None)
+        ),
+        get_ws_connection_count=_ws_count,
+        get_sse_connection_count=_sse_count,
+    )
+
+    # Control-channel broadcaster: sends to all /ws/control subscribers
+    _control_subscribers: list[asyncio.Queue] = []
+
+    async def _broadcast_control(msg: dict) -> None:
+        dead = []
+        for q in _control_subscribers:
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait(msg)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            try:
+                _control_subscribers.remove(q)
+            except ValueError:
+                pass
+
+    # Inject the broadcaster into gateway_controller so restart progress
+    # reaches control WS clients.
+    app.state.gateway_controller = GatewayController(
+        settings,
+        connector_rpc=lambda method, params=None, timeout_seconds=30.0: send_connector_rpc(
+            next(iter(app.state.connector_sessions.values())).user_id
+            if app.state.connector_sessions else "",
+            method=method,
+            params=params,
+            timeout_seconds=timeout_seconds,
+        ),
+        active_job_count=lambda: sum(
+            1 for s in app.state.connector_sessions.values()
+            if getattr(s, "in_flight_job_id", None)
+        ),
+        get_broadcaster=lambda: _broadcast_control,
+    )
+
+    app.state.log_service = LogService(settings)
+
+    # Start telemetry in the lifespan
+    _original_lifespan = lifespan
+
+    @asynccontextmanager
+    async def _wrapped_lifespan(app: FastAPI):
+        async with _original_lifespan(app):
+            await app.state.telemetry.start(
+                interval=settings.telemetry_interval_seconds
+            )
+            try:
+                yield
+            finally:
+                await app.state.telemetry.stop()
+
+    app.router.lifespan_context = _wrapped_lifespan
+
     async def subscribe_job_events(job_id: str) -> asyncio.Queue:
         """Subscribe to wake signals via EventFanout (DB-backed replay)."""
         return await app.state.event_fanout.subscribe(job_id)
@@ -405,6 +498,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def set_connector_session(user_id: str, session: ConnectorSession) -> None:
         app.state.connector_sessions[user_id] = session
+        # Track connection state for telemetry
+        _connection_state["state"] = "connected"
+        _connection_state["last_heartbeat"] = time.time()
 
     def clear_connector_session(user_id: str | None, connection_nonce: str | None) -> None:
         if user_id is None or connection_nonce is None:
@@ -413,6 +509,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if session is None or session.connection_nonce != connection_nonce:
             return
         app.state.connector_sessions.pop(user_id, None)
+        # Track connection state for telemetry
+        if not app.state.connector_sessions:
+            _connection_state["state"] = "disconnected"
 
     async def default_push_broker_sender(
         *,
@@ -541,6 +640,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expires_at=None,
         )
         db.commit()
+
+    async def send_completion_push(
+        *,
+        db: Session,
+        user_id: str,
+        job_id: str,
+        result_text: str | None,
+        error_text: str | None,
+    ) -> None:
+        """Send a push notification when a job completes (Herald 2.3.0).
+
+        If the user's device is in the background, sends an APNs push
+        with a response preview. The NotificationService extension
+        formats it based on the pushType field.
+        """
+        apns_client = app.state.apns_client
+        if apns_client is None:
+            return
+
+        is_error = error_text is not None
+        push_type = "job.failed" if is_error else "job.completed"
+        body_text = error_text if is_error else (result_text or "")
+        preview = " ".join((body_text or "").split()).strip()[:200]
+
+        for device, registration in active_push_registrations_for_user(db, user_id=user_id):
+            if device_is_foreground(device, stale_seconds=settings.app_presence_stale_seconds):
+                continue
+
+            user_info: dict = {
+                "jobId": job_id,
+                "pushType": push_type,
+            }
+            if not is_error and result_text:
+                user_info["response"] = result_text
+            if is_error and error_text:
+                user_info["error"] = error_text
+
+            if registration.transport == "relay":
+                try:
+                    await app.state.push_broker_sender(
+                        registration=registration,
+                        title="Herald Response" if not is_error else "Herald Error",
+                        body=preview,
+                        job_id=job_id,
+                        category=push_type,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Completion push broker delivery failed for device %s",
+                        device.id, exc_info=True,
+                    )
+                continue
+
+            result = await apns_client.send_alert_push(
+                registration.apns_token,
+                title="Herald Response" if not is_error else "Herald Error",
+                body=preview,
+                category=push_type,
+                bundle_id=registration.bundle_id,
+                environment=registration.push_environment,
+                user_info=user_info,
+            )
+            if result == PushResult.TOKEN_INVALID:
+                registration.is_active = False
+                db.commit()
+            elif result == PushResult.SENT:
+                logger.info("Completion push sent to device %s (type=%s)", device.id, push_type)
 
     def resolve_sensor_delivery(delivery_id: str | None, *, delivered: bool) -> None:
         if delivery_id is None:
@@ -3069,6 +3235,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                 category="HERALD_MESSAGE_READY",
                                                 force=(job_duration > 60),
                                             )
+                                            # Herald 2.3.0: send enhanced completion push with response preview
+                                            await send_completion_push(
+                                                db=db,
+                                                user_id=completed.user_id,
+                                                job_id=claimed_job.id,
+                                                result_text=completed_message.text,
+                                                error_text=None,
+                                            )
                                 done_event_data: dict = {
                                     "jobId": claimed_job.id,
                                     "status": "completed",
@@ -3102,6 +3276,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         serialize_message(db.get(Message, failed.result_message_id), job=failed)
                                         if failed.result_message_id and db.get(Message, failed.result_message_id) is not None
                                         else None
+                                    )
+                                    db.commit()
+                                    # Herald 2.3.0: send failure push notification
+                                    await send_completion_push(
+                                        db=db,
+                                        user_id=failed.user_id,
+                                        job_id=claimed_job.id,
+                                        result_text=None,
+                                        error_text=failed.error_text,
                                     )
                                 if failed.status != "queued":
                                     publish_job_event(claimed_job.id, {
@@ -3196,6 +3379,652 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 clear_connector_session(user_id, connection_nonce)
                 with database.session() as db:
                     deactivate_herald_host_connection(db, host_id=host_id, connection_nonce=connection_nonce)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Herald 2.3.0 — Gateway Control Plane & Desktop Compatibility
+    # ═══════════════════════════════════════════════════════════════════
+
+    if settings.enable_gateway_control:
+
+        # ── Telemetry ──────────────────────────────────────────────────
+
+        @app.get("/gw/telemetry")
+        async def gw_telemetry(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Full telemetry snapshot."""
+            snapshot = app.state.telemetry.snapshot()
+            if snapshot is None:
+                return success({"message": "Telemetry not yet collected"})
+            from dataclasses import asdict
+            return success(asdict(snapshot))
+
+        @app.get("/gw/telemetry/stream")
+        async def gw_telemetry_stream(
+            auth: AuthContext = Depends(get_auth_context),
+        ):
+            """SSE stream of telemetry snapshots (every collection interval)."""
+            queue = await app.state.telemetry.subscribe()
+            try:
+                async def _stream():
+                    while True:
+                        try:
+                            snapshot = await asyncio.wait_for(queue.get(), timeout=30.0)
+                            from dataclasses import asdict
+                            yield f"data: {json.dumps(asdict(snapshot), default=str)}\n\n"
+                        except asyncio.TimeoutError:
+                            yield ": keepalive\n\n"
+                return StreamingResponse(
+                    _stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+            finally:
+                await app.state.telemetry.unsubscribe(queue)
+
+        @app.get("/gw/status")
+        async def gw_status(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Quick status: connected/disconnected + active job count."""
+            snapshot = app.state.telemetry.snapshot()
+            if snapshot is None:
+                return success({
+                    "connected": False,
+                    "active_jobs": 0,
+                    "model": None,
+                    "version": settings.version,
+                    "uptime_seconds": 0,
+                })
+            return success({
+                "connected": snapshot.connection["state"] == "connected",
+                "active_jobs": snapshot.performance.get("active_jobs", 0),
+                "model": snapshot.model.get("name"),
+                "version": snapshot.gateway["version"],
+                "uptime_seconds": snapshot.gateway["uptime_seconds"],
+            })
+
+        @app.get("/gw/version")
+        async def gw_version(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Herald + connector + Hermes versions."""
+            return success({
+                "herald": settings.version,
+                "connector": app.state.telemetry._get_connector_version(),
+                "hermes": app.state.telemetry._get_hermes_version(),
+            })
+
+        # ── Logs ───────────────────────────────────────────────────────
+
+        @app.get("/gw/logs")
+        async def gw_logs(
+            tail: int = 200,
+            level: str = "INFO",
+            since: str = "",
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Filtered log tail."""
+            result = await app.state.log_service.tail(
+                tail=tail,
+                level=level,
+                since=since if since else None,
+            )
+            return success(result)
+
+        @app.get("/gw/logs/stream")
+        async def gw_logs_stream(
+            level: str = "INFO",
+            auth: AuthContext = Depends(get_auth_context),
+        ):
+            """SSE stream of live log lines."""
+            queue = await app.state.log_service.stream(level=level)
+            try:
+                async def _log_stream():
+                    while True:
+                        try:
+                            line = await asyncio.wait_for(queue.get(), timeout=30.0)
+                            yield f"data: {line}\n\n"
+                        except asyncio.TimeoutError:
+                            yield ": keepalive\n\n"
+                return StreamingResponse(
+                    _log_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+            finally:
+                queue.put_nowait  # Let GC clean up; the ring handler will stop enqueuing
+
+        # ── Restart ────────────────────────────────────────────────────
+
+        @app.post("/gw/restart")
+        async def gw_restart(
+            body: dict = Body(...),
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Restart relay, connector, or hermes."""
+            target = body.get("target", "relay") if body else "relay"
+            result = await app.state.gateway_controller.restart(target=target)
+            try:
+                with database.session() as db:
+                    record_audit(
+                        db,
+                        actor_type="user",
+                        actor_id=auth.user.id,
+                        action="gateway.restart",
+                        entity_type="gateway",
+                        entity_id=target,
+                    )
+            except Exception:
+                pass  # Audit is best-effort
+            return success(result)
+
+        @app.post("/gw/restart/connector")
+        async def gw_restart_connector(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Restart connector only."""
+            result = await app.state.gateway_controller.restart(target="connector")
+            return success(result)
+
+        @app.post("/gw/restart/hermes")
+        async def gw_restart_hermes(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Restart Hermes agent only."""
+            result = await app.state.gateway_controller.restart(target="hermes")
+            return success(result)
+
+        # ── Update ─────────────────────────────────────────────────────
+
+        @app.post("/gw/update")
+        async def gw_update(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Request Docker image pull + restart."""
+            result = await app.state.gateway_controller.update()
+            return success(result)
+
+        @app.post("/gw/update/check")
+        async def gw_update_check(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Check for available updates on GitHub."""
+            result = await app.state.gateway_controller.update_check()
+            return success(result)
+
+        # ── Model ──────────────────────────────────────────────────────
+
+        @app.post("/gw/model/switch")
+        async def gw_model_switch(
+            body: dict = Body(...),
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Switch the active model."""
+            model = (body or {}).get("model", "")
+            if not model:
+                raise HTTPException(status_code=400, detail="model is required")
+            result = await app.state.gateway_controller.model_switch(model=model)
+            return success(result)
+
+        # ── Config ─────────────────────────────────────────────────────
+
+        @app.post("/gw/config/reload")
+        async def gw_config_reload(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Reload mutable runtime configuration."""
+            result = await app.state.gateway_controller.config_reload()
+            return success(result)
+
+        # ── WebSocket control channel ──────────────────────────────────
+
+        @app.websocket("/ws/control")
+        async def control_websocket(websocket: WebSocket) -> None:
+            await websocket.accept()
+            queue: asyncio.Queue = asyncio.Queue(maxsize=32)
+            _control_subscribers.append(queue)
+
+            # Push initial telemetry snapshot
+            snapshot = app.state.telemetry.snapshot()
+            if snapshot:
+                from dataclasses import asdict
+                await websocket.send_json({
+                    "type": "telemetry",
+                    "data": asdict(snapshot),
+                })
+
+            # Telemetry push task
+            async def _push_telemetry():
+                tele_q = await app.state.telemetry.subscribe()
+                try:
+                    while True:
+                        snap = await tele_q.get()
+                        from dataclasses import asdict
+                        try:
+                            await websocket.send_json({
+                                "type": "telemetry",
+                                "data": asdict(snap),
+                            })
+                        except Exception:
+                            break
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    await app.state.telemetry.unsubscribe(tele_q)
+
+            tele_task = asyncio.create_task(_push_telemetry(), name="ctrl-ws-telemetry")
+
+            try:
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(websocket.receive_json(), timeout=60.0)
+                    except asyncio.TimeoutError:
+                        # Send keepalive ping
+                        try:
+                            await websocket.send_json({"type": "ping"})
+                        except Exception:
+                            break
+                        continue
+
+                    cmd = raw.get("type", "")
+                    if cmd == "restart":
+                        target = raw.get("target", "relay")
+                        result = await app.state.gateway_controller.restart(target=target)
+                        await websocket.send_json({"type": "restart_result", "data": result})
+                    elif cmd == "model_switch":
+                        model = raw.get("model", "")
+                        if model:
+                            result = await app.state.gateway_controller.model_switch(model=model)
+                            await websocket.send_json({"type": "model_switch_result", "data": result})
+                    elif cmd == "config_reload":
+                        result = await app.state.gateway_controller.config_reload()
+                        await websocket.send_json({"type": "config_reload_result", "data": result})
+                    elif cmd == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "data": {"message": f"Unknown command: {cmd}"},
+                        })
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                logger.debug("Control WS error", exc_info=True)
+            finally:
+                tele_task.cancel()
+                try:
+                    await tele_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    _control_subscribers.remove(queue)
+                except ValueError:
+                    pass
+
+    # ── Hermes Desktop compatibility endpoints ──────────────────────────
+    # These mirror the API surface the desktop expects so it can connect
+    # to Herald as a remote gateway.
+
+    @app.get("/api/status")
+    async def api_status(request: Request) -> dict:
+        """Health check the desktop polls before opening WebSocket."""
+        snapshot = app.state.telemetry.snapshot()
+        return {
+            "status": "ok",
+            "version": settings.version,
+            "auth_required": settings.internal_api_key != "replace-me",
+            "gateway": {
+                "connected": snapshot.connection["state"] == "connected" if snapshot else False,
+                "model": snapshot.model.get("name") if snapshot else None,
+            } if snapshot else {},
+        }
+
+    @app.get("/api/gateway/status")
+    async def api_gateway_status(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Full gateway telemetry for desktop."""
+        snapshot = app.state.telemetry.snapshot()
+        if snapshot is None:
+            return success({"message": "Telemetry not yet collected"})
+        from dataclasses import asdict
+        return success(asdict(snapshot))
+
+    @app.get("/api/logs")
+    async def api_logs(
+        tail: int = 100,
+        level: str = "INFO",
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Log tail for desktop."""
+        result = await app.state.log_service.tail(tail=tail, level=level)
+        return success(result)
+
+    @app.get("/api/model/info")
+    async def api_model_info(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Model info — proxied from connector if available."""
+        try:
+            if app.state.connector_sessions:
+                user_id = next(iter(app.state.connector_sessions.values())).user_id
+                result = await send_connector_rpc(
+                    user_id,
+                    method="models.list",
+                    timeout_seconds=5.0,
+                )
+                return {
+                    "current": result.get("activeModel"),
+                    "options": result.get("models", []),
+                }
+        except Exception:
+            pass
+        return {"current": None, "options": []}
+
+    # ── JSON-RPC 2.0 WebSocket for Hermes Desktop ─────────────────────
+
+    if settings.enable_json_rpc:
+
+        from .json_rpc_bridge import (
+            JsonRpcBridge, _push_event, _rpc_error, PARSE_ERROR,
+        )
+
+        @app.websocket("/api/ws")
+        async def api_websocket(websocket: WebSocket) -> None:
+            """JSON-RPC 2.0 WebSocket for Hermes Desktop."""
+            await websocket.accept()
+            app.state._ws_connection_count += 1
+
+            bridge = JsonRpcBridge(
+                settings=settings,
+                db_factory=database.session,
+                event_fanout=app.state.event_fanout,
+                get_connector_session=lambda: (
+                    next(iter(app.state.connector_sessions.values()), None)
+                    if app.state.connector_sessions else None
+                ),
+                send_connector_rpc=(
+                    lambda uid, method, params=None, timeout_seconds=30.0: send_connector_rpc(
+                        uid, method=method, params=params, timeout_seconds=timeout_seconds
+                    )
+                ),
+                telemetry_service=app.state.telemetry,
+                gateway_controller=app.state.gateway_controller,
+            )
+
+            # Send gateway.ready event
+            await websocket.send_json(
+                _push_event(
+                    "gateway.ready",
+                    {
+                        "version": settings.version,
+                        "capabilities": [
+                            "chat", "tools", "streaming", "voice",
+                        ],
+                    },
+                )
+            )
+
+            # Telemetry push task
+            tele_q = await app.state.telemetry.subscribe()
+            async def _push_status():
+                try:
+                    while True:
+                        snap = await tele_q.get()
+                        await websocket.send_json(
+                            _push_event(
+                                "status.update",
+                                {
+                                    "connected": snap.connection["state"] == "connected",
+                                    "active_jobs": snap.performance.get("active_jobs", 0),
+                                    "model": snap.model.get("name"),
+                                },
+                            )
+                        )
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            status_task = asyncio.create_task(_push_status(), name="api-ws-status")
+
+            try:
+                async for raw_text in websocket.iter_text():
+                    try:
+                        raw = json.loads(raw_text)
+                    except json.JSONDecodeError:
+                        await websocket.send_json(
+                            _rpc_error(None, PARSE_ERROR, "Parse error")
+                        )
+                        continue
+
+                    response = await bridge.handle_message(websocket, raw)
+                    if response is not None:
+                        await websocket.send_json(response)
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                logger.debug("API WS error", exc_info=True)
+            finally:
+                status_task.cancel()
+                try:
+                    await status_task
+                except asyncio.CancelledError:
+                    pass
+                await app.state.telemetry.unsubscribe(tele_q)
+                await bridge.cleanup()
+                app.state._ws_connection_count -= 1
+
+        # ── Desktop-compatible REST endpoints ─────────────────────────
+
+        @app.get("/api/sessions")
+        async def api_sessions(
+            limit: int = 50,
+            offset: int = 0,
+            min_messages: int = 0,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """List sessions for Hermes Desktop."""
+            db = database.session()
+            try:
+                from .services import list_sessions
+
+                sessions = list_sessions(db, limit=limit, offset=offset)
+                return {
+                    "sessions": [
+                        {
+                            "id": s["id"],
+                            "title": s.get("title", ""),
+                            "created_at": str(s.get("created_at", "")),
+                            "updated_at": str(s.get("updated_at", "")),
+                            "message_count": s.get("message_count", 0),
+                            "archived": s.get("archived", False),
+                            "pinned": s.get("pinned", False),
+                        }
+                        for s in sessions
+                    ]
+                }
+            finally:
+                db.close()
+
+        @app.post("/api/sessions")
+        async def api_sessions_create(
+            body: CreateSessionBody,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Create a session for Hermes Desktop."""
+            db = database.session()
+            try:
+                from .services import create_session
+
+                session = create_session(
+                    db,
+                    user_id=auth.user.id,
+                    title=body.title or "New Chat",
+                )
+                db.commit()
+                return success({
+                    "session": {
+                        "id": session.id,
+                        "title": session.title,
+                        "created_at": str(session.created_at),
+                    }
+                })
+            finally:
+                db.close()
+
+        @app.get("/api/sessions/{session_id}")
+        async def api_session_get(
+            session_id: str,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Get a session."""
+            db = database.session()
+            try:
+                from .services import get_session
+
+                session = get_session(db, session_id=session_id)
+                if session is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+                return success({
+                    "session": {
+                        "id": session.id,
+                        "title": session.title,
+                        "created_at": str(session.created_at),
+                        "updated_at": str(session.updated_at),
+                    }
+                })
+            finally:
+                db.close()
+
+        @app.patch("/api/sessions/{session_id}")
+        async def api_session_update(
+            session_id: str,
+            body: RenameSessionBody,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Rename a session."""
+            db = database.session()
+            try:
+                from .services import rename_session, toggle_pin_session
+
+                session = rename_session(db, session_id=session_id, title=body.title)
+                db.commit()
+                return success({
+                    "session": {
+                        "id": session.id,
+                        "title": session.title,
+                    }
+                })
+            finally:
+                db.close()
+
+        @app.delete("/api/sessions/{session_id}")
+        async def api_session_delete(
+            session_id: str,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Delete a session."""
+            db = database.session()
+            try:
+                from .services import delete_session
+
+                delete_session(db, session_id=session_id)
+                db.commit()
+                return success({"deleted": True})
+            finally:
+                db.close()
+
+        @app.get("/api/sessions/{session_id}/messages")
+        async def api_session_messages(
+            session_id: str,
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Get session messages."""
+            db = database.session()
+            try:
+                from .services import get_session, list_conversation_messages
+                from .models import Conversation
+
+                session = get_session(db, session_id=session_id)
+                if session is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                conversation = (
+                    db.query(Conversation)
+                    .filter(Conversation.id == session_id)
+                    .first()
+                )
+                if conversation is None:
+                    return success({"messages": []})
+
+                messages = list_conversation_messages(
+                    db, conversation_id=conversation.id
+                )
+                return success({
+                    "messages": [
+                        {
+                            "id": m["id"],
+                            "role": m.get("role", ""),
+                            "content": m.get("content", ""),
+                            "created_at": str(m.get("created_at", "")),
+                        }
+                        for m in messages
+                    ]
+                })
+            finally:
+                db.close()
+
+        @app.get("/api/sessions/search")
+        async def api_sessions_search(
+            q: str = "",
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Search sessions."""
+            db = database.session()
+            try:
+                from .services import search_sessions
+
+                results = search_sessions(db, query=q)
+                return success({
+                    "results": [
+                        {
+                            "id": r["id"],
+                            "title": r.get("title", ""),
+                            "snippet": r.get("snippet", ""),
+                        }
+                        for r in results
+                    ]
+                })
+            finally:
+                db.close()
+
+        @app.get("/api/skills")
+        async def api_skills(
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """List skills (proxied from connector)."""
+            try:
+                if app.state.connector_sessions:
+                    user_id = next(iter(app.state.connector_sessions.values())).user_id
+                    result = await send_connector_rpc(
+                        user_id,
+                        method="skills.list",
+                        timeout_seconds=5.0,
+                    )
+                    return success(result)
+            except Exception:
+                pass
+            return success({"skills": []})
+
+    # ── Notes: the talk MCP routes are the last registered routes ──────
 
     return app
 

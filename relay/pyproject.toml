@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "herald-relay"
-version = "1.1.0"
+version = "1.2.0"
 description = "FastAPI relay for Herald."
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "httpx[http2]>=0.28.0,<1.0.0",
   "PyJWT[crypto]>=2.9.0,<3.0.0",
   "mcp>=1.0.0,<2.0.0",
+  "psutil>=5.9.0,<7.0.0",
   "psycopg[binary]>=3.2.0,<4.0.0",
   "python-dotenv>=1.0.0,<2.0.0",
   "qrcode>=8.2,<9.0",

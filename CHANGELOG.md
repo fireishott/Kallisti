@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.3.0] - 2026-07-25 — "The Realtime Edition"
+
+### Added
+
+- **Gateway telemetry (`/gw/telemetry`)**: Real-time system stats, job metrics,
+  connector health, and alerting. Available as REST snapshot, SSE stream, and
+  WebSocket push via `/ws/control`.
+- **Gateway control plane (`/gw/*`)**: REST endpoints for restart
+  (relay/connector/hermes), update check, model switch, config reload, and
+  filtered log tail/stream.
+- **Control WebSocket (`/ws/control`)**: Bidirectional channel for telemetry
+  push, restart commands, and live state change notifications.
+- **JSON-RPC 2.0 bridge (`/api/ws`)**: Hermes Desktop can now connect to Herald
+  as a remote gateway. Full prompt submission, session management, model/profile
+  listing, and streaming event push via WebSocket.
+- **Desktop compatibility endpoints (`/api/*`)**: REST endpoints for sessions,
+  skills, model info, logs, and gateway status — mirroring the Hermes Desktop
+  API surface.
+- **Job completion push notifications**: Enhanced push notifications on job
+  completion with response previews formatted by `NotificationService`.
+  Distinguishes `job.completed` vs `job.failed` vs `gateway.alert` types.
+- **iOS Control Center widgets** (iOS 18+): `HeraldControls` target with
+  Gateway Status, Restart, and Model Switch controls.
+- **Token batcher**: Reduces streaming UI updates from 50-80/sec to ~20/sec
+  via 50ms coalescing windows.
+- **Enhanced Live Activity attributes**: Added gateway telemetry fields
+  (connected state, active queries, model name, system stats, alerts).
+- **`psutil` dependency**: System stat collection for telemetry.
+
+### Changed
+
+- Relay version bumped to 1.2.0
+- Connector version bumped to 0.5.0
+- iOS app version bumped to 2.3.0 (build 71)
+- New env vars: `HERALD_ENABLE_JSON_RPC`, `HERALD_ENABLE_GATEWAY_CONTROL`,
+  `HERALD_TELEMETRY_INTERVAL`, `HERALD_LOG_LEVEL`, `HERALD_LOG_FILE`,
+  `HERALD_UPDATE_SENTINEL`
+
+### Architecture
+
+- Zero modifications to Hermes agent code. All changes are additive to Herald
+  and the Hermes iOS app extension targets.
+- Gateway control plane uses filesystem-based log access and update sentinel
+  pattern (no Docker socket dependency).
+- JSON-RPC bridge translates Hermes Desktop protocol to Herald's internal
+  job/event model with DB-backed event replay.
+
 ## [2.2.7] - 2026-07-24
 
 ### Fixed

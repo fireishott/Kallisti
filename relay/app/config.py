@@ -64,10 +64,16 @@ class Settings:
     orphaned_job_expiry_seconds: int = 300  # 5 minutes for jobs with no host
     stale_job_warning_seconds: int = 60  # Warning threshold for stale queued jobs
     max_job_attempts: int = 3
+    # ── Herald 2.3.0: gateway control & telemetry ──────────────────────
+    enable_json_rpc: bool = True
+    enable_gateway_control: bool = True
+    telemetry_interval_seconds: int = 15
+    log_level: str = "INFO"
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
+            version=os.getenv("HERALD_VERSION", "0.1.0"),
             environment=os.getenv("RELAY_ENVIRONMENT", "development"),
             public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000/v1"),
             database_url=normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./relay.db")),
@@ -108,4 +114,8 @@ class Settings:
             push_broker_challenge_ttl_seconds=int(os.getenv("PUSH_BROKER_CHALLENGE_TTL_SECONDS", "300")),
             push_broker_grant_ttl_seconds=int(os.getenv("PUSH_BROKER_GRANT_TTL_SECONDS", str(60 * 60 * 24 * 30))),
             max_job_attempts=int(os.getenv("MAX_JOB_ATTEMPTS", "3")),
+            enable_json_rpc=os.getenv("HERALD_ENABLE_JSON_RPC", "true").lower() != "false",
+            enable_gateway_control=os.getenv("HERALD_ENABLE_GATEWAY_CONTROL", "true").lower() != "false",
+            telemetry_interval_seconds=int(os.getenv("HERALD_TELEMETRY_INTERVAL", "15")),
+            log_level=os.getenv("HERALD_LOG_LEVEL", "INFO"),
         )
