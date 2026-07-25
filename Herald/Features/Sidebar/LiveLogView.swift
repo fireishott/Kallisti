@@ -19,13 +19,9 @@ struct LiveLogView: View {
     private var displayEntries: [LogEntry] {
         if !logService.logLines.isEmpty {
             return logService.logLines.map { line in
-                LogEntry(
-                    id: line.id,
-                    timestamp: line.timestamp,
-                    level: line.level,
-                    message: line.message,
-                    source: line.source
-                )
+                var entry = LogEntry(level: line.level, message: line.message)
+                entry.source = line.source
+                return entry
             }
         }
         // Fall back to local log entries from ChatStore
