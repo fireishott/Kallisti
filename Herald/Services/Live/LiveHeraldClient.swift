@@ -193,34 +193,96 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
 
-                    // Synchronous (non-pending) reply — yield as completed without
-                    // fake word-by-word deltas. Real streaming requires replyState=pending
-                    // and an SSE job event stream.
+                    // Synchronous reply — the relay returned a complete response
+                    // without a pending job (replyState != "pending"). Simulate
+                    // streaming client-side so the user sees text appear progressively,
+                    // Live Activities fire, and reasoning blocks display correctly.
                     if response.replyState != "pending" {
+                        let mappedMsg: Message
                         if let msg = response.message {
-                            let mapped = self.mapMessage(msg)
-                            continuation.yield(.finished(mapped, response.usage, response.diff, response.context))
+                            mappedMsg = self.mapMessage(msg)
                         } else {
                             continuation.yield(.finished(
                                 Message(sender: .system, content: "Herald did not return a message.", status: .failed),
                                 nil, nil, nil
                             ))
+                            continuation.finish()
+                            return
                         }
+
+                        // Emit a synthetic messageSent so the Live Activity starts
+                        let syntheticJobID = UUID()
+                        continuation.yield(.messageSent(jobID: syntheticJobID))
+
+                        let fullText = mappedMsg.content
+                        let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
+
+                        // Stream reasoning first if present
+                        if !reasoning.isEmpty {
+                            // Yield reasoning in chunks for visual streaming
+                            let reasoningChunks = Self.chunkTextForStreaming(reasoning)
+                            for chunk in reasoningChunks {
+                                continuation.yield(.reasoningDelta(chunk))
+                                try? await Task.sleep(for: .milliseconds(12))
+                            }
+                        }
+
+                        // Stream visible text word-by-word
+                        let textChunks = Self.chunkTextForStreaming(visibleText)
+                        for chunk in textChunks {
+                            continuation.yield(.textDelta(chunk))
+                            try? await Task.sleep(for: .milliseconds(16))
+                        }
+
+                        // Build the final message with reasoning extracted
+                        var finalMsg = mappedMsg
+                        if !reasoning.isEmpty {
+                            finalMsg.reasoning = reasoning
+                            finalMsg.reasoningDuration = 0  // Synthetic, no real timing
+                        }
+                        finalMsg.content = visibleText
+                        continuation.yield(.finished(finalMsg, response.usage, response.diff, response.context))
                         continuation.finish()
                         return
                     }
 
                     // Reply is pending — stream job events via SSE
                     guard let jobId = response.jobId else {
-                        // No jobId available, fall back to non-streaming result
+                        // No jobId available — relay wants streaming but didn't
+                        // give us a job to stream. Simulate streaming client-side
+                        // from whatever message the relay returned.
+                        let mappedMsg: Message
                         if let msg = response.message ?? response.userMessage {
-                            continuation.yield(.finished(self.mapMessage(msg), response.usage, response.diff, response.context))
+                            mappedMsg = self.mapMessage(msg)
                         } else {
-                            continuation.yield(.finished(
-                                Message(sender: .user, content: content, status: .sent),
-                                nil, nil, nil
-                            ))
+                            mappedMsg = Message(sender: .user, content: content, status: .sent)
                         }
+
+                        let syntheticJobID = UUID()
+                        continuation.yield(.messageSent(jobID: syntheticJobID))
+
+                        let fullText = mappedMsg.content
+                        let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
+
+                        if !reasoning.isEmpty {
+                            for chunk in Self.chunkTextForStreaming(reasoning) {
+                                continuation.yield(.reasoningDelta(chunk))
+                                try? await Task.sleep(for: .milliseconds(12))
+                            }
+                        }
+
+                        for chunk in Self.chunkTextForStreaming(visibleText) {
+                            continuation.yield(.textDelta(chunk))
+                            try? await Task.sleep(for: .milliseconds(16))
+                        }
+
+                        var finalMsg = mappedMsg
+                        if !reasoning.isEmpty {
+                            finalMsg.reasoning = reasoning
+                            finalMsg.reasoningDuration = 0
+                        }
+                        finalMsg.content = visibleText
+                        continuation.yield(.finished(finalMsg, response.usage, response.diff, response.context))
                         continuation.finish()
                         return
                     }
@@ -892,5 +954,64 @@ extension LiveHeraldClient {
         // Exhausted all poll attempts
         Self.logger.error("Exhausted polling attempts for job \(jobId.uuidString.prefix(8))")
         continuation.yield(.failed("Stream interrupted — job did not complete in time"))
+    }
+
+    // MARK: - Client-Side Streaming Simulation
+
+    /// Splits text into word-level chunks for client-side streaming simulation.
+    /// Preserves whitespace and punctuation attachment so the rendered output
+    /// reads naturally as words appear.
+    private static func chunkTextForStreaming(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        // Split on word boundaries but keep whitespace attached to the trailing word
+        var chunks: [String] = []
+        var current = ""
+        for char in text {
+            current.append(char)
+            if char == " " || char == "\n" {
+                chunks.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty {
+            chunks.append(current)
+        }
+        // If chunking produced nothing useful (e.g., no spaces in short text),
+        // fall back to character-level chunks
+        if chunks.isEmpty {
+            chunks = text.map { String($0) }
+        }
+        return chunks
+    }
+
+    /// Extracts `<think>…</think>` blocks from response text.
+    /// Returns (reasoning, visibleText) — reasoning is the concatenated
+    /// content of all think blocks, visibleText is everything else.
+    private static func splitThinkingBlocks(_ text: String) -> (reasoning: String, visible: String) {
+        guard let regex = try? NSRegularExpression(
+            pattern: "<think>(.*?)</think>",
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return ("", text)
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        guard !matches.isEmpty else { return ("", text) }
+
+        let reasoning = matches.compactMap { match -> String? in
+            guard match.numberOfRanges > 1 else { return nil }
+            return nsText.substring(with: match.range(at: 1))
+        }.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let visible = regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(location: 0, length: nsText.length),
+            withTemplate: ""
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return (reasoning, visible)
     }
 }
