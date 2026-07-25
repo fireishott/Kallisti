@@ -133,9 +133,14 @@ final class ChatStore {
     func loadConversationIfNeeded() async {
         if conversation == nil {
             conversation = persistence.loadConversationCache()
-            if let cachedUsage = conversation?.latestUsage {
-                lastTokenUsage = cachedUsage
-            }
+            // IMPORTANT: Do NOT trust cached contextPercent or latestUsage —
+            // they're stale by definition (the model's context window may have
+            // changed, a different model may be active, or the relay may report
+            // completely different usage after the next response). Restoring
+            // stale usage causes fabricated "Session nearly full" banners on
+            // first launch and after session switches.
+            conversation?.contextPercent = nil
+            conversation?.latestUsage = nil
         }
         // After clearConversation(), bypass the local cache and force a
         // server fetch so the UI never shows the stale archived conversation.
@@ -158,7 +163,12 @@ final class ChatStore {
             lastTokenUsage = latestUsage
         }
         if let conversation {
-            persistence.saveConversationCache(conversation)
+            // Strip transient relay-reported fields before caching so stale
+            // context percent / token usage never survive a relaunch.
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
         restartPendingPollingIfNeeded()
@@ -236,7 +246,12 @@ final class ChatStore {
         }
 
         if let conversation {
-            persistence.saveConversationCache(conversation)
+            // Strip transient relay-reported fields before caching so stale
+            // context percent / token usage never survive a relaunch.
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
     }
@@ -459,6 +474,11 @@ final class ChatStore {
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
 
+                    // Haptic feedback on response completion — fired immediately
+                    // in the stream handler so it's synchronous with the content
+                    // appearing, not delayed by the ChatScreen's onChange observer.
+                    HapticEngine.responseReceived()
+
                     // Finish TTS streaming — flush any remaining buffered text
                     self.ttsService?.finishStream()
                     // Notify if merge changed the title (server-derived title)
@@ -662,10 +682,12 @@ final class ChatStore {
     private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
         let errorText = failureMessage()
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-            // Replace with error message but keep the same ID so a late
-            // .finished can still find and replace it with the actual response.
+            // Use a NEW id so a late .finished event or polling merge can't
+            // silently overwrite this error with the real response. The error
+            // stays visible; if the response eventually arrives, it appears as
+            // a separate message via the next polling refresh.
             conversation?.messages[idx] = Message(
-                id: placeholderID,
+                id: UUID(),
                 sender: .system,
                 content: errorText,
                 status: .failed
@@ -690,7 +712,19 @@ final class ChatStore {
         // server returns a fresh conversation that still carries stale usage.
         lastTokenUsage = nil
         lastContextInfo = nil
-        let fresh = try await heraldClient.clearConversation()
+
+        let fresh: Conversation
+        do {
+            fresh = try await heraldClient.clearConversation()
+        } catch {
+            // If the relay is unreachable (502, network error, etc.), fall back
+            // to a local-only clear. The user gets a blank conversation immediately
+            // rather than an "internal error" dialog. The old conversation will
+            // be archived on the relay next time it's reachable.
+            Self.logger.warning("Relay clear failed, using local fallback: \(error.localizedDescription)")
+            fresh = Conversation(title: "New Chat")
+        }
+
         conversation = fresh
         lastTokenUsage = fresh.latestUsage
         lastContextInfo = nil
@@ -771,7 +805,12 @@ final class ChatStore {
         pendingMessageSentAt = nil
 
         if let conversation {
-            persistence.saveConversationCache(conversation)
+            // Strip transient relay-reported fields before caching so stale
+            // context percent / token usage never survive a relaunch.
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
     }
@@ -885,7 +924,12 @@ final class ChatStore {
             lastTokenUsage = latestUsage
         }
         if let conversation {
-            persistence.saveConversationCache(conversation)
+            // Strip transient relay-reported fields before caching so stale
+            // context percent / token usage never survive a relaunch.
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
     }

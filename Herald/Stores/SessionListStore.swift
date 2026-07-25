@@ -216,15 +216,20 @@ final class SessionListStore {
     }
 
     func deleteSession(_ session: SessionSummary) async {
+        // Always remove locally first so the UI responds immediately.
+        pinnedSessions.removeAll { $0.id == session.id }
+        recentSessions.removeAll { $0.id == session.id }
+        archivedSessions.removeAll { $0.id == session.id }
+        searchResults?.removeAll { $0.id == session.id }
+        saveCachedSessions()
+
         do {
             try await heraldClient.deleteSession(id: session.id)
-            pinnedSessions.removeAll { $0.id == session.id }
-            recentSessions.removeAll { $0.id == session.id }
-            archivedSessions.removeAll { $0.id == session.id }
-            searchResults?.removeAll { $0.id == session.id }
-            saveCachedSessions()
         } catch {
-            errorMessage = error.localizedDescription
+            // Relay deletion failed, but local state is already updated.
+            // The session won't reappear unless the relay re-lists it.
+            // Show a brief warning rather than blocking the user.
+            errorMessage = "Removed locally — sync failed: \(error.localizedDescription)"
         }
     }
 
