@@ -68,7 +68,7 @@ final class LiveHealthService: HealthServiceProtocol {
         // verifyEntitlements misinterprets as a user action rather than a
         // build-configuration issue. The result: users are told to manage
         // Health permissions in Settings, but Herald doesn't appear there.
-        guard bundleHasHealthKitEntitlement() else {
+        guard Self.bundleHasHealthKitEntitlement() else {
             self.store = nil
             self.metricDescriptors = [:]
             self.authorizationStatus = .unsupported
@@ -86,7 +86,7 @@ final class LiveHealthService: HealthServiceProtocol {
     /// TestFlight/App Store builds that strip entitlements won't have this,
     /// and we can report `.unsupported` immediately without triggering a
     /// misleading .errorAuthorizationDenied from the system.
-    private func bundleHasHealthKitEntitlement() -> Bool {
+    private static func bundleHasHealthKitEntitlement() -> Bool {
         guard let entitlements = Bundle.main.infoDictionary?["com.apple.developer.healthkit"] as? Bool else {
             return false
         }
