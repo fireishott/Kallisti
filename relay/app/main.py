@@ -2650,25 +2650,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 last_seq = terminal_seq
                 return f"id: {terminal_seq}\nevent: done\ndata: {json.dumps(jsonable_encoder(terminal_payload))}\n\n"
 
-            # --- Phase 1: Replay persisted events from DB ---
+            # --- Phase 1: Subscribe to EventFanout BEFORE replaying DB events ---
+            # This ordering is critical: if we replay first then subscribe, any
+            # events published by the connector between the replay query and the
+            # subscribe() call are silently dropped — their wake signals have no
+            # subscriber queue to land in. By subscribing first, the queue exists
+            # before we replay, so any event published at any point is either:
+            #   a) already in the DB (caught by the replay below), or
+            #   b) published after subscribe (captured by the fanout queue).
+            # The last_seq cursor prevents double-emission of events caught by both.
+            wake_queue = await subscribe_job_events(job_id)
+
+            # --- Phase 2: Replay persisted events from DB (catch-up) ---
             with database.session() as replay_db:
                 persisted = get_job_events_after(replay_db, job_id, after_seq=cursor)
 
             for evt in persisted:
                 yield emit_db_event(evt)
                 if evt.get("type") in ("completed", "failed", "cancelled", "done"):
+                    # Unsubscribe before returning — the finally block won't
+                    # execute because we're inside the try that starts below,
+                    # but we haven't entered it yet. Clean up manually.
+                    await unsubscribe_job_events(job_id, wake_queue)
                     return
 
-            # --- Phase 1b: If job already terminal, emit terminal event and close ---
+            # --- Phase 2b: If job already terminal, emit terminal event and close ---
             with database.session() as check_db:
                 current_job = get_message_job(check_db, job_id=job_id)
                 if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
+                    await unsubscribe_job_events(job_id, wake_queue)
                     yield build_terminal_event(current_job.status, current_job)
                     return
 
-            # --- Phase 2: Subscribe to EventFanout for live events ---
-            wake_queue = await subscribe_job_events(job_id)
-
+            # --- Phase 3: Wait for live events via EventFanout ---
             try:
                 while True:
                     try:

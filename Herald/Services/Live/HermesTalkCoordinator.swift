@@ -5,7 +5,7 @@ import os
 final class HermesTalkCoordinator {
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "HermesTalk")
 
-    enum State: Sendable, Equatable {
+    enum State: Sendable, Equatable, Hashable {
         case idle
         case preparing
         case listening

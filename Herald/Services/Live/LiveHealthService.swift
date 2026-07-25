@@ -154,36 +154,40 @@ final class LiveHealthService: HealthServiceProtocol {
             return verified
         }
 
-        // Probe with a minimal anchored query on step count.
-        // If entitlements are missing, the system returns an authorization error
-        // even though we never showed the permission dialog.
-        let stepType = HKQuantityType(.stepCount)
-        let result: Bool = await withCheckedContinuation { continuation in
-            let query = HKAnchoredObjectQuery(
-                type: stepType,
-                predicate: nil,
-                anchor: nil,
-                limit: 1
-            ) { _, _, _, _, error in
-                if let hkError = error as? HKError,
-                   hkError.code == .errorAuthorizationDenied {
-                    let hasShownDialog = UserDefaults.standard.bool(
-                        forKey: Self.healthAuthRequestedKey
-                    )
-                    if !hasShownDialog {
-                        continuation.resume(returning: false)
-                        return
-                    }
-                }
-                // Query succeeded (possibly with empty results) or error is
-                // not entitlement-related — entitlements are present.
-                continuation.resume(returning: true)
-            }
-            store.execute(query)
+        // First: check basic availability. If HealthKit isn't available on this
+        // device (iPad, iPod touch without Watch), bail early.
+        guard HKHealthStore.isHealthDataAvailable() else {
+            entitlementsVerified = false
+            return false
         }
 
-        entitlementsVerified = result
-        return result
+        // Second: try to actually request authorization. This is the definitive
+        // test — if the app lacks HealthKit entitlements, the system will throw
+        // an error (not just deny). If the user has already denied, we still
+        // know entitlements work — we just can't read data.
+        let sampleTypes: Set<HKSampleType> = Set(
+            [HKQuantityType(.stepCount)]
+        )
+        do {
+            try await store.requestAuthorization(toShare: [], read: sampleTypes)
+            entitlementsVerified = true
+            return true
+        } catch let hkError as HKError {
+            // .errorAuthorizationDenied means entitlements ARE present but user
+            // said no — that's still "verified" (the build can use HealthKit).
+            if hkError.code == .errorAuthorizationDenied {
+                entitlementsVerified = true
+                return true
+            }
+            // Any other error means the build genuinely lacks entitlements.
+            entitlementsVerified = false
+            return false
+        } catch {
+            // Non-HKError — likely a system issue, not entitlement-related.
+            // Be permissive: assume entitlements are present.
+            entitlementsVerified = true
+            return true
+        }
     }
 
     func startMonitoring() {

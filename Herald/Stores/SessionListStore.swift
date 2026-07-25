@@ -75,6 +75,11 @@ final class SessionListStore {
     /// Freshness interval — skip network if loaded within this window.
     private let freshnessInterval: TimeInterval = 30
 
+    /// Periodic auto-refresh task for title updates and new sessions.
+    private var autoRefreshTask: Task<Void, Never>?
+    /// Auto-refresh interval when the session list is visible (every 30s).
+    private let autoRefreshInterval: TimeInterval = 30
+
     init(heraldClient: any HeraldClientProtocol, chatStore: ChatStore, settingsStore: SettingsStore, persistence: any AppPersistenceStoreProtocol) {
         self.heraldClient = heraldClient
         self.chatStore = chatStore
@@ -327,6 +332,8 @@ final class SessionListStore {
     }
 
     func reset() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
         pinnedSessions = []
         recentSessions = []
         archivedSessions = []
@@ -342,6 +349,28 @@ final class SessionListStore {
         searchTask = nil
         loadTask?.cancel()
         loadTask = nil
+    }
+
+    // MARK: - Auto-Refresh
+
+    /// Start periodic background refresh so session titles, previews, and
+    /// last-activity timestamps stay current without a manual pull-down.
+    /// Runs every 30s; stops when the store is reset.
+    func startAutoRefresh() {
+        guard autoRefreshTask == nil else { return }
+        autoRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self.autoRefreshInterval))
+                guard !Task.isCancelled else { break }
+                await self.loadSessions(forceRefresh: true)
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
     }
 
     // MARK: - Private

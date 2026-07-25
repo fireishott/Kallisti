@@ -167,7 +167,7 @@
 		9ACA459C3AE47D462A1877D8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 950C501C931A4628EADF5421 /* CodeBlockView.swift */; };
 		9D519FAED2B0031F3581BC6A /* SpeechSynthesizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084D3A13A3C9C996A7888932 /* SpeechSynthesizing.swift */; };
 		9DF4044B611AEF08DDECE3A5 /* VoiceSessionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */; };
-		9E42A7FAD8FAA1965DB261EA /* SiriVocabulary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */; };
+		9E42A7FAD8FAA1965DB261EA /* AppIntentVocabulary.plist in Resources */ = {isa = PBXBuildFile; fileRef = 4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */; };
 		9EAF5CA0B81815F92BFA4B01 /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77999D56108FB7AF8368C7DB /* MockSyncCoordinator.swift */; };
 		9EF3B2B4A9A5C0492AFE2876 /* PairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A312A723CB0C58F828248F /* PairingStore.swift */; };
 		A3417E2AF1578789D1F239FE /* MimoFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */; };
@@ -393,7 +393,7 @@
 		47B56823EBDD93AC6067B894 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		47C2C1D400AFD2DBBC90FCCA /* InboxActionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionDescriptor.swift; sourceTree = "<group>"; };
 		488D5E4529626CDECE8B25CB /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
-		4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = SiriVocabulary.plist; sourceTree = "<group>"; };
+		4899E1896E5CEDF69C1A169E /* AppIntentVocabulary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = en.lproj/AppIntentVocabulary.plist; sourceTree = "<group>"; };
 		494FEFB282E50AC8AB9D2D31 /* NotesIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationTests.swift; sourceTree = "<group>"; };
 		4B676DFB8C5EBF36F1477C83 /* MimoTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoTTSService.swift; sourceTree = "<group>"; };
 		4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
@@ -890,7 +890,7 @@
 				3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */,
 				6458A1B911F83B73E45C8025 /* Assets.xcassets */,
 				C8222F56AD06B3CDA4D55239 /* Info.plist */,
-				4899E1896E5CEDF69C1A169E /* SiriVocabulary.plist */,
+				4899E1896E5CEDF69C1A169E /* AppIntentVocabulary.plist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -1371,7 +1371,7 @@
 			files = (
 				1B0B577FDAE58A91BE53693A /* AppIcon.png in Resources */,
 				55DEB789574DE6E8D4743E8F /* Assets.xcassets in Resources */,
-				9E42A7FAD8FAA1965DB261EA /* SiriVocabulary.plist in Resources */,
+				9E42A7FAD8FAA1965DB261EA /* AppIntentVocabulary.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

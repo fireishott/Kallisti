@@ -15,8 +15,8 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
         category: "MimoTTS"
     )
 
-    private static let baseURL = "https://api.xiaomimimo.com/v1"
-    private static let model = "mimo-v2.5-tts"
+    private let baseURL: String
+    private let model: String
     private static let sessionTimeout: TimeInterval = 30
 
     private(set) var isPlaying = false
@@ -28,7 +28,13 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
     private var audioPlayer: AVAudioPlayer?
     private var currentStreamingTask: Task<Void, Never>?
 
-    init(apiKeyProvider: @escaping @MainActor () -> String?) {
+    init(
+        apiKeyProvider: @escaping @MainActor () -> String?,
+        baseURL: String = "https://api.xiaomimimo.com/v1",
+        model: String = "mimo-v2.5-tts"
+    ) {
+        self.baseURL = baseURL
+        self.model = model
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = Self.sessionTimeout
         config.timeoutIntervalForResource = Self.sessionTimeout
@@ -48,7 +54,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
             throw TTSError.noAPIKey
         }
 
-        guard let url = URL(string: "\(Self.baseURL)/chat/completions") else {
+        guard let url = URL(string: "\(baseURL)/chat/completions") else {
             throw TTSError.invalidURL
         }
 
@@ -62,7 +68,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
         messages.append(["role": "assistant", "content": text])
 
         let body: [String: Any] = [
-            "model": Self.model,
+            "model": model,
             "messages": messages,
             "audio": [
                 "format": "wav",
@@ -154,7 +160,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
                         throw TTSError.noAPIKey
                     }
 
-                    guard let url = URL(string: "\(Self.baseURL)/chat/completions") else {
+                    guard let url = URL(string: "\(baseURL)/chat/completions") else {
                         throw TTSError.invalidURL
                     }
 
@@ -165,7 +171,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
                     messages.append(["role": "assistant", "content": text])
 
                     let body: [String: Any] = [
-                        "model": Self.model,
+                        "model": model,
                         "messages": messages,
                         "stream": true,
                         "audio": [

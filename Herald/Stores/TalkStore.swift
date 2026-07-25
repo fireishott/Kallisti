@@ -64,11 +64,32 @@ final class TalkStore {
 
     /// Push-to-talk: start recording (user presses mic button).
     func startListening() {
-        guard let coordinator = hermesCoordinator else { return }
+        guard let coordinator = hermesCoordinator else {
+            statusMessage = "Talk coordinator not available"
+            return
+        }
+        // Don't start if the coordinator is in a transitional state;
+        // the guard in coordinator.startListening() would silently return,
+        // leaving isSessionActive = true with no actual recording.
+        let blockedStates: Set<HermesTalkCoordinator.State> = [
+            .preparing, .listening, .endpointing, .transcribing,
+            .thinking, .synthesizing, .speaking, .ending
+        ]
+        if blockedStates.contains(coordinator.state) {
+            statusMessage = "Already active — wait for current turn to finish"
+            return
+        }
         isSessionActive = true
         connectionState = .connected
         voiceSessionID = coordinator.conversationId
         coordinator.startListening()
+        // If coordinator rejected the start (state guard hit during
+        // the async transition), surface that to the user.
+        if case .failed(let msg) = coordinator.state {
+            isSessionActive = false
+            connectionState = .failed
+            statusMessage = msg
+        }
     }
 
     /// Push-to-talk: stop recording and process (user releases mic button).
