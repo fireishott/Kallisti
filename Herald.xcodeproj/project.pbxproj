@@ -34,7 +34,6 @@
 		1B0B577FDAE58A91BE53693A /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */; };
 		1BDB9E2972386D7B5B5F8E3B /* HostStatusStreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BB0FCDC533F2E31D863DBAB /* HostStatusStreamService.swift */; };
 		1CB7DA5C804F3AABE4F9E0A7 /* NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */; };
-		1D56BF3B6C15DCE1625A4708 /* RelayAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D8CE1AB325DB26452D90ED1 /* RelayAPIClient.swift */; };
 		1ECF9245B171D9B33C8D8587 /* stream_v2_error.json in Resources */ = {isa = PBXBuildFile; fileRef = 24618D668A621746F3C0A41E /* stream_v2_error.json */; };
 		2058D4034B69B28FA7F979F1 /* HealthServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6147223A6404B126D3F471 /* HealthServiceTests.swift */; };
 		2308A971737799CD545ECAA1 /* SessionListStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9167E97BDC536DFCD5EFE8A5 /* SessionListStore.swift */; };
@@ -1728,7 +1727,6 @@
 				D16D4EFEE59D8B6CC64F6474 /* HeraldTimelineProvider.swift in Sources */,
 				3CC14ADD39BE1B55E2C60A1D /* HeraldWidgetBundle.swift in Sources */,
 				EB093E02240495353C32F6A7 /* HeraldWidgetData.swift in Sources */,
-				1D56BF3B6C15DCE1625A4708 /* RelayAPIClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -30,7 +30,8 @@ struct GatewayStatusScreen: View {
                         systemStatsSection(t)
 
                         // Active jobs
-                        if let jobs = t.activeJobs, !jobs.isEmpty {
+                        let jobs = t.jobs
+                        if !jobs.isEmpty {
                             jobsSection(jobs)
                         }
 
@@ -125,7 +126,7 @@ struct GatewayStatusScreen: View {
                 sectionDivider
                 statRow(label: "Uptime", value: formatUptime(t.uptimeSeconds ?? 0))
                 sectionDivider
-                statRow(label: "Active Jobs", value: "\(t.activeJobs ?? 0)")
+                statRow(label: "Active Jobs", value: "\(t.jobCount)")
                 sectionDivider
                 statRow(label: "Version", value: t.version ?? "—")
                 if let model = t.modelName {
@@ -239,7 +240,7 @@ struct GatewayStatusScreen: View {
             // Update shared state for Control Center
             GatewayState.shared.update(
                 connected: response.data.relayConnected ?? true,
-                activeJobs: response.data.activeJobs,
+                activeJobs: response.data.jobCount,
                 model: response.data.modelName,
                 version: response.data.version,
                 uptimeSeconds: response.data.uptimeSeconds,
@@ -289,7 +290,8 @@ struct GatewayTelemetry: Decodable {
     let activeJobsList: [GatewayJobInfo]?
     let alerts: [GatewayAlert]?
 
-    var activeJobs: [GatewayJobInfo]? { activeJobsList }
+    var jobs: [GatewayJobInfo] { activeJobsList ?? [] }
+    var jobCount: Int { activeJobs ?? activeJobsList?.count ?? 0 }
 }
 
 struct GatewayJobInfo: Decodable {

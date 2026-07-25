@@ -898,19 +898,26 @@ final class AppContainer {
             let pushEnvironment: String
             let bundleId: String
         }
+        struct RegisterResponse: Decodable {
+            struct Data: Decodable {
+                let registered: Bool
+                let updatedAt: String?
+            }
+            let data: Data
+        }
         let body = Body(
-            deviceId: deviceID,
+            deviceId: deviceID.uuidString.lowercased(),
             transport: "direct",
             apnsToken: token,
             pushEnvironment: "production",
             bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.herald"
         )
         do {
-            let _ = try await client.post(
+            let _: RegisterResponse = try await client.post(
                 path: "push/register",
                 body: body,
                 accessToken: accessToken
-            ) as [String: Any]
+            )
         } catch {
             // Non-critical — will be retried on next token rotation
         }
@@ -1159,8 +1166,10 @@ final class AppContainer {
         let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString
             ?? "https://herald-host.internal:8010/v1"
-        let token = sessionStore.state.accessToken
-        HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: token)
+        Task {
+            let token = await sessionStore.currentAccessToken()
+            HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: token)
+        }
     }
 
     /// Persist gateway health to App Group UserDefaults for Control Center
@@ -1169,7 +1178,6 @@ final class AppContainer {
         GatewayState.shared.update(
             connected: hostStore.isHostOnline,
             activeJobs: chatStore.isStreaming ? 1 : 0,
-            model: settingsStore.settings.model,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         )
     }

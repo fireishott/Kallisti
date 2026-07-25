@@ -168,6 +168,10 @@ struct AdaptiveRootView: View {
             CaptureScreen()
         case .connectHost:
             ConnectHeraldHostScreen()
+        case .gatewayStatus:
+            GatewayStatusScreen()
+        case .gatewayLogs:
+            GatewayLogsScreen()
         }
     }
 
