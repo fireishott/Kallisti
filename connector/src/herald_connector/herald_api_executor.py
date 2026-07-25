@@ -206,7 +206,7 @@ class HeraldAPIExecutor:
                 )
                 if response.status_code == 200:
                     body = response.json()
-                    return body.get("data", {}).get("status") == "ok"
+                    return body.get("status") == "ok" or body.get("data", {}).get("status") == "ok"
         except Exception:  # noqa: BLE001
             pass
         return False

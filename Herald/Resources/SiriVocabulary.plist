@@ -7,6 +7,19 @@
 		<string>Ask Herald</string>
 		<string>Tell Herald</string>
 		<string>Message Herald</string>
+		<string>Send a message to Herald</string>
+	</array>
+	<key>INSearchForMessagesIntent</key>
+	<array>
+		<string>Search messages from Herald</string>
+		<string>Find messages from Herald</string>
+		<string>Search for messages in Herald</string>
+	</array>
+	<key>INSetMessageAttributeIntent</key>
+	<array>
+		<string>Mark Herald message as read</string>
+		<string>Mark messages in Herald as read</string>
+		<string>Set read status in Herald</string>
 	</array>
 </dict>
 </plist>

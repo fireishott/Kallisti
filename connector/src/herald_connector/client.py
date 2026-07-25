@@ -3013,7 +3013,6 @@ You MUST return a JSON object with exactly these fields:
 
         logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
-        self._health_cache = (now, cli_adapter)
         self._active_adapter_mode = "openai_v1_fallback"
         return cli_adapter
 

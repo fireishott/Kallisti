@@ -794,11 +794,10 @@ final class AppContainer {
             return
         }
 
-        #if DEBUG
+        // Herald is TestFlight-only (not App Store). The aps-environment
+        // entitlement is hardcoded to "development", so iOS always issues
+        // development tokens. The relay must match: APNS_ENVIRONMENT=development.
         let pushEnvironment = "development"
-        #else
-        let pushEnvironment = "production"
-        #endif
 
         do {
             let didRegister = try await pushRegistrationCoordinator?.registerPushToken(
