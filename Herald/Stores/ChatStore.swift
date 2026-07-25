@@ -605,9 +605,13 @@ final class ChatStore {
         await consumerTask.value
         streamingTask = nil
 
-        // If streaming failed after the job was accepted, immediately refresh once
-        // and then fall back to polling only if the server still hasn't delivered.
+        // If streaming failed after the job was accepted, give the relay a grace
+        // period to finish delivering events before falling back to polling.
+        // SSE streams can end prematurely due to proxy timeouts or mobile network
+        // transitions, but the relay may still be writing events. A 10-second
+        // pause prevents the polling safety net from racing a healthy SSE stream.
         if needsPollingFallback {
+            try? await Task.sleep(for: .seconds(10))
             let refreshed = await refreshActiveConversation()
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
             if let latestUsage = conversation?.latestUsage {

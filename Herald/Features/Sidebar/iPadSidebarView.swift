@@ -97,7 +97,10 @@ struct iPadSidebarView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(Design.Colors.background)
-        .task { await sessionStore.loadSessions() }
+        .task {
+            await sessionStore.loadSessions()
+            sessionStore.startAutoRefresh()
+        }
         .alert("Rename Session", isPresented: .init(
             get: { renamingSession != nil },
             set: { if !$0 { renamingSession = nil } }
@@ -118,6 +121,9 @@ struct iPadSidebarView: View {
             Button("OK", role: .cancel) { sessionStore.errorMessage = nil }
         } message: {
             Text(sessionStore.errorMessage ?? "")
+        }
+        .onDisappear {
+            sessionStore.stopAutoRefresh()
         }
     }
 

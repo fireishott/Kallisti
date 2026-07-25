@@ -196,6 +196,11 @@ final class SessionListStore {
 
     func switchToSession(_ session: SessionSummary) async {
         do {
+            // Clear stale context metrics from the previous session so the
+            // new session doesn't incorrectly show a "Session nearly full"
+            // warning before the relay reports its real usage.
+            chatStore.lastTokenUsage = nil
+            chatStore.lastContextInfo = nil
             // Scope the conversation cache to this session so that switching
             // back later loads the correct history, not another session's.
             persistence.currentSessionId = session.id

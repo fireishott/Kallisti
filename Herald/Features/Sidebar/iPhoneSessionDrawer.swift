@@ -90,6 +90,7 @@ struct iPhoneSessionDrawer: View {
         )
         .task {
             await sessionStore.loadSessions()
+            sessionStore.startAutoRefresh()
         }
         .alert("Error", isPresented: Binding(
             get: { sessionStore.errorMessage != nil },
@@ -98,6 +99,9 @@ struct iPhoneSessionDrawer: View {
             Button("OK", role: .cancel) { sessionStore.errorMessage = nil }
         } message: {
             Text(sessionStore.errorMessage ?? "")
+        }
+        .onDisappear {
+            sessionStore.stopAutoRefresh()
         }
     }
 
