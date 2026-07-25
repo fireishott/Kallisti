@@ -420,9 +420,10 @@ final class ChatStore {
                         // as <think> tags inline), extract those tags into the reasoning
                         // field BEFORE stripping them from the displayed content.
                         if resolved.reasoning.isEmpty {
+                            // Match <think> or <thinking> tags (some model variants).
                             if let thinkRegex = try? NSRegularExpression(
-                                pattern: "<think>(.*?)</think>",
-                                options: [.dotMatchesLineSeparators]
+                                pattern: "<think(?:ing)?>(.*?)</think(?:ing)?>",
+                                options: [.dotMatchesLineSeparators, .caseInsensitive]
                             ) {
                                 let nsContent = resolved.content as NSString
                                 let matches = thinkRegex.matches(
@@ -441,8 +442,9 @@ final class ChatStore {
                                 }
                             }
                         }
-                        // Always strip <think>…</think> tags from the visible content.
-                        if let regex = try? NSRegularExpression(pattern: "<think>.*?</think>", options: [.dotMatchesLineSeparators]) {
+                        // Always strip <think>…</think> (and <thinking>…</thinking>)
+                        // tags from the visible content.
+                        if let regex = try? NSRegularExpression(pattern: "<think(?:ing)?>.*?</think(?:ing)?>", options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                             let range = NSRange(resolved.content.startIndex..., in: resolved.content)
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1369,12 +1371,29 @@ final class ChatStore {
             }
         }
 
-        // Preserve local-only streaming placeholders while the server is still
-        // catching up, so polling doesn't make the active reply disappear.
+        // Preserve local-only messages while the server is still catching up,
+        // so polling doesn't make the active reply — including its reasoning
+        // and tool activities — disappear. The .finished handler replaces the
+        // streaming placeholder with a resolved (non-streaming) message that
+        // carries artifacts; that message must survive the merge even though
+        // the stale server-side conversation doesn't know about it yet.
         let refreshedIDs = Set(refreshedConversation.messages.map(\.id))
         let localStreamingPlaceholders = localConversation.messages.filter {
             $0.isStreaming && !refreshedIDs.contains($0.id)
         }
+        // Also preserve recently-resolved messages (isStreaming=false but
+        // carry reasoning/toolActivities/codeDiff) that the server hasn't
+        // returned yet. Without this, simple-turn reasoning vanishes after
+        // mergeConversationMetadata because the resolved message isn't a
+        // streaming placeholder and the stale currentConversation has no
+        // matching entry.
+        let localResolvedNotOnServer = localConversation.messages.filter {
+            !$0.isStreaming
+                && !refreshedIDs.contains($0.id)
+                && $0.sender == .herald
+                && (!$0.reasoning.isEmpty || !$0.toolActivities.isEmpty || $0.codeDiff != nil)
+        }
+        refreshedConversation.messages.append(contentsOf: localResolvedNotOnServer)
         refreshedConversation.messages.append(contentsOf: localStreamingPlaceholders)
 
         return refreshedConversation
