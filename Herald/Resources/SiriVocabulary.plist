@@ -2,24 +2,39 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>INSendMessageIntent</key>
+	<key>IntentPhrases</key>
 	<array>
-		<string>Ask Herald</string>
-		<string>Tell Herald</string>
-		<string>Message Herald</string>
-		<string>Send a message to Herald</string>
-	</array>
-	<key>INSearchForMessagesIntent</key>
-	<array>
-		<string>Search messages from Herald</string>
-		<string>Find messages from Herald</string>
-		<string>Search for messages in Herald</string>
-	</array>
-	<key>INSetMessageAttributeIntent</key>
-	<array>
-		<string>Mark Herald message as read</string>
-		<string>Mark messages in Herald as read</string>
-		<string>Set read status in Herald</string>
+		<dict>
+			<key>IntentName</key>
+			<string>INSendMessageIntent</string>
+			<key>IntentExamples</key>
+			<array>
+				<string>Ask Herald</string>
+				<string>Tell Herald</string>
+				<string>Message Herald</string>
+				<string>Send a message to Herald</string>
+			</array>
+		</dict>
+		<dict>
+			<key>IntentName</key>
+			<string>INSearchForMessagesIntent</string>
+			<key>IntentExamples</key>
+			<array>
+				<string>Search messages from Herald</string>
+				<string>Find messages from Herald</string>
+				<string>Search for messages in Herald</string>
+			</array>
+		</dict>
+		<dict>
+			<key>IntentName</key>
+			<string>INSetMessageAttributeIntent</string>
+			<key>IntentExamples</key>
+			<array>
+				<string>Mark Herald message as read</string>
+				<string>Mark messages in Herald as read</string>
+				<string>Set read status in Herald</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

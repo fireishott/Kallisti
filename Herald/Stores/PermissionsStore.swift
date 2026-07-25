@@ -167,14 +167,19 @@ final class PermissionsStore {
     private func requestSpeechAuthorization() async {
         guard #available(iOS 26.0, *) else { return }
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
-        await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { _ in
-                // Resume on main actor to avoid thread-safety issues that can
-                // cause crashes on iOS 18 when the TCC dialog dismisses.
-                Task { @MainActor in
-                    continuation.resume()
-                }
-            }
+
+        // SFSpeechRecognizer.requestAuthorization + withCheckedContinuation
+        // crashes on iOS 18+ when the TCC dialog dismisses (the callback
+        // can arrive during deallocation of the async frame). Fire the
+        // system dialog on the main actor, then poll for the result.
+        await MainActor.run {
+            SFSpeechRecognizer.requestAuthorization { _ in }
+        }
+
+        // Wait for the TCC dialog to be dismissed (up to 15 s)
+        for _ in 0..<30 {
+            if SFSpeechRecognizer.authorizationStatus() != .notDetermined { break }
+            try? await Task.sleep(for: .milliseconds(500))
         }
     }
 

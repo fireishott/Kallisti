@@ -8,7 +8,7 @@ struct PermissionsScreen: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            ScrollView {
+            ScrollView(.vertical) {
                 VStack(spacing: Design.Spacing.md) {
                     headerText
 

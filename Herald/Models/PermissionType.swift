@@ -72,6 +72,6 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         }
     }
 
-    /// Permissions shown during onboarding. Camera, Photos, and Speech Recognition are deferred to Settings.
-    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .motion]
+    /// Permissions shown during onboarding.
+    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .motion, .photos]
 }

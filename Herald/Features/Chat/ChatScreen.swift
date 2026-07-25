@@ -363,8 +363,16 @@ struct ChatScreen: View {
         return msg.content.count + msg.reasoning.count
     }
 
-    /// Context usage as 0.0–1.0. Shows 0 when no usage data yet.
+    /// Context usage as 0.0–1.0. Uses the relay-reported percentage when
+    /// available (authored by the model itself via its real context window),
+    /// falling back to a locally-computed estimate only when the relay has
+    /// not yet delivered usage data.
     private var contextProgress: Double {
+        // Authoritative: the relay reports context from the model's actual window
+        if let percent = chatStore.conversation?.contextPercent {
+            return percent / 100.0
+        }
+        // Fallback: local estimate from prompt tokens / inferred window
         guard let usedTokens = currentContextTokens,
               let maxCtx = effectiveContextWindow, maxCtx > 0
         else { return 0 }
@@ -747,7 +755,7 @@ struct ChatScreen: View {
 
     private var messageList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            ScrollView(.vertical) {
                 LazyVStack(spacing: Design.Spacing.md) {
                     // Top anchor for scrolling to empty state after /new
                     Color.clear
@@ -801,6 +809,26 @@ struct ChatScreen: View {
                     .onChanged { _ in isUserScrolling = true }
             )
             .onAppear { scrollProxy = proxy }
+            .overlay(alignment: .bottomTrailing) {
+                // Jump-to-bottom arrow — visible when user has scrolled up
+                if isUserScrolling {
+                    Button {
+                        isUserScrolling = false
+                        scrollToBottom()
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(Design.Brand.accent)
+                            .background(Circle().fill(Design.Colors.surface).shadow(radius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, Design.Spacing.md)
+                    .padding(.bottom, Design.Spacing.xs)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .animation(Design.Motion.standard, value: isUserScrolling)
+            .scrollBounceBehavior(.basedOnSize)
         }
     }
 

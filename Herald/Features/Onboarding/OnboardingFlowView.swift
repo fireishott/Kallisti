@@ -43,6 +43,7 @@ struct OnboardingFlowView: View {
     @State private var setupCode: String = ""
     @State private var isScannerPresented: Bool = false
     @State private var localErrorMessage: String?
+    @State private var isRelayValidationInProgress = false
     @FocusState private var isSetupCodeFocused: Bool
     @FocusState private var isRelayURLFocused: Bool
 
@@ -61,7 +62,25 @@ struct OnboardingFlowView: View {
                     .padding(.top, Design.Spacing.xs)
 
                 if let kicker = step.stepKicker, let index = step.progressIndex {
-                    OnboardingStepHeader(kicker: kicker, step: index, total: 4)
+                    HStack(alignment: .firstTextBaseline) {
+                        if canGoBack {
+                            Button {
+                                goBack()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("BACK")
+                                        .font(Design.Typography.caption2)
+                                        .tracking(0.5)
+                                }
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                            .accessibilityLabel("Go back")
+                        }
+                        Spacer()
+                        OnboardingStepHeader(kicker: kicker, step: index, total: 4)
+                    }
                         .padding(.top, Design.Spacing.sm)
                 }
 
@@ -90,12 +109,13 @@ struct OnboardingFlowView: View {
                 relayConfiguration: relayConfiguration,
                 validationMessage: relayConfiguration.validationMessage,
                 errorMessage: localErrorMessage,
+                isValidating: isRelayValidationInProgress,
                 connectionModeBinding: connectionModeBinding,
                 customRelayURLBinding: customRelayURLBinding,
                 isRelayURLFocused: $isRelayURLFocused,
                 onPaste: pasteRelayURL,
                 onScan: { isScannerPresented = true },
-                onContinue: { advance(to: .pairing) }
+                onContinue: { Task { await validateRelayServerAndAdvance() } }
             )
         case .pairing:
             PairingStepView(
@@ -165,6 +185,65 @@ struct OnboardingFlowView: View {
     private func advance(to next: OnboardingStep) {
         localErrorMessage = nil
         step = next
+    }
+
+    /// Validate that the relay server is reachable before advancing to pairing.
+    private func validateRelayServerAndAdvance() async {
+        guard relayConfiguration.validationMessage == nil else {
+            localErrorMessage = relayConfiguration.validationMessage
+            return
+        }
+
+        guard let baseURL = relayConfiguration.activeBaseURLString,
+              let url = URL(string: baseURL.hasSuffix("/v1") ? baseURL : "\(baseURL)/health") else {
+            localErrorMessage = "Invalid relay URL."
+            return
+        }
+
+        isRelayValidationInProgress = true
+        localErrorMessage = nil
+        defer { isRelayValidationInProgress = false }
+
+        // Try a lightweight HEAD/GET to verify the relay is reachable
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            // Accept 2xx, 3xx, 401 (unauthorized — means server is there, just needs auth),
+            // and 404 (endpoint not found — server is reachable but /health not implemented)
+            if (200...499).contains(statusCode) {
+                let host = url.host ?? baseURL
+                localErrorMessage = nil
+                // Server is reachable — advance to pairing
+                advance(to: .pairing)
+            } else {
+                localErrorMessage = "Server returned status \(statusCode). Check your relay URL."
+            }
+        } catch let error as URLError where error.code == .timedOut {
+            localErrorMessage = "Could not reach relay server — connection timed out."
+        } catch let error as URLError where error.code == .cannotFindHost || error.code == .cannotConnectToHost {
+            localErrorMessage = "Could not reach relay server — host not found."
+        } catch {
+            localErrorMessage = "Could not reach relay server: \(error.localizedDescription)"
+        }
+    }
+
+    private func goBack() {
+        guard let currentIndex = OnboardingStep.allCases.firstIndex(of: step),
+              currentIndex > 0 else { return }
+        localErrorMessage = nil
+        // Skip .welcome (step 0) — go back one step from current position
+        let previousIndex = currentIndex - 1
+        step = OnboardingStep.allCases[previousIndex]
+    }
+
+    /// Whether the back button should be visible on the current step.
+    private var canGoBack: Bool {
+        guard let idx = OnboardingStep.allCases.firstIndex(of: step) else { return false }
+        return idx > 0 && step != .ready
     }
 
     private func pasteRelayURL() {
@@ -333,6 +412,7 @@ private struct RelayStepView: View {
     let relayConfiguration: RelayConfiguration
     let validationMessage: String?
     let errorMessage: String?
+    let isValidating: Bool
     let connectionModeBinding: Binding<RelayConnectionMode>
     let customRelayURLBinding: Binding<String>
     var isRelayURLFocused: FocusState<Bool>.Binding
@@ -430,9 +510,28 @@ private struct RelayStepView: View {
                     OnboardingGhostCta(title: "SCAN QR", action: onScan)
                 }
 
-                OnboardingPrimaryCta(title: "Continue") { onContinue() }
-                    .disabled(validationMessage != nil)
-                    .opacity(validationMessage == nil ? 1 : 0.5)
+                Button(action: onContinue) {
+                    Group {
+                        if isValidating {
+                            ProgressView().tint(Design.Colors.background)
+                        } else {
+                            HStack(spacing: Design.Spacing.xs) {
+                                Text("Continue")
+                                Text("→").accessibilityHidden(true)
+                            }
+                            .font(Design.Typography.headline)
+                            .tracking(0.5)
+                            .textCase(.uppercase)
+                            .foregroundStyle(Design.Colors.background)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Design.Spacing.sm + 2)
+                }
+                .background(Design.Brand.accent)
+                .clipShape(Capsule())
+                .disabled(validationMessage != nil || isValidating)
+                .opacity(validationMessage == nil && !isValidating ? 1 : 0.5)
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)

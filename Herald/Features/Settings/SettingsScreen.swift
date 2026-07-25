@@ -22,7 +22,7 @@ struct SettingsScreen: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            ScrollView {
+            ScrollView(.vertical) {
                 VStack(spacing: Design.Spacing.lg) {
                     connectionSection
                     relaySection
@@ -39,6 +39,7 @@ struct SettingsScreen: View {
                 .padding(.horizontal, Design.Spacing.md)
                 .padding(.vertical, Design.Spacing.sm)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)

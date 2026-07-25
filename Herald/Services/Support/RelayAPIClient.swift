@@ -3,47 +3,63 @@ import os
 
 private let sseLogger = Logger(subsystem: "net.fihonline.herald", category: "SSE")
 
-// MARK: - SSE Line Iterator (preserves empty lines)
+// MARK: - SSE Line Iterator (chunked, delegate-driven)
 
-/// Foundation's `AsyncLineSequence` silently drops empty lines, but in SSE
-/// empty lines are critical — they act as event delimiters between frames.
-/// This custom iterator preserves empty strings so the SSE parser can detect
-/// `\n\n` boundaries and dispatch accumulated events.
+/// `URLSession.AsyncBytes` iterates one byte at a time and is known to stall
+/// on iOS when the server doesn't flush after every byte (which no real server
+/// does). Instead we use a `URLSessionDataDelegate` that receives data in
+/// chunks, drain lines from a buffer, and preserve empty lines (critical SSE
+/// event delimiters that `AsyncLineSequence` silently drops).
 ///
-/// Reference: dochi PR #388 "Replace AsyncLineSequence with custom SSELineIterator"
-extension URLSession.AsyncBytes {
-    /// An async sequence of SSE-compliant lines where empty strings (produced
-    /// by consecutive newline characters in the byte stream) are preserved.
-    /// Lines are yielded incrementally as newline bytes arrive.
-    var sseLines: AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                var buffer = Data()
-                do {
-                    for try await byte in self {
-                        buffer.append(byte)
-                        // Only drain when we hit a newline — avoids O(n²)
-                        // scanning of the buffer on every byte.
-                        if byte == 0x0A {
-                            for line in drainSSELines(from: &buffer) {
-                                continuation.yield(line)
-                            }
-                        }
-                    }
-                    // Flush remaining buffer — trailing content without a
-                    // final newline is yielded as-is.
-                    if !buffer.isEmpty {
-                        continuation.yield(String(data: buffer, encoding: .utf8) ?? "")
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+/// This delegate-based approach has been reliable since iOS 7 and avoids the
+/// hang/stall issue that made streaming broken across 60+ releases.
+final class StreamingDataDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let chunkContinuation: AsyncStream<Data>.Continuation
+    private let completionContinuation: AsyncStream<Result<Void, Error>>.Continuation
+
+    init(
+        chunkContinuation: AsyncStream<Data>.Continuation,
+        completionContinuation: AsyncStream<Result<Void, Error>>.Continuation
+    ) {
+        self.chunkContinuation = chunkContinuation
+        self.completionContinuation = completionContinuation
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        chunkContinuation.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            completionContinuation.yield(.failure(error))
+        } else {
+            completionContinuation.yield(.success(()))
+        }
+        chunkContinuation.finish()
+        completionContinuation.finish()
+    }
+}
+
+/// Drains complete lines from the buffer into an async stream. Empty strings
+/// (from `\n\n`) are preserved as SSE event delimiters.
+func sseLines(from dataStream: AsyncStream<Data>) -> AsyncThrowingStream<String, Error> {
+    AsyncThrowingStream { continuation in
+        let task = Task {
+            var buffer = Data()
+            for await chunk in dataStream {
+                if Task.isCancelled { break }
+                buffer.append(chunk)
+                for line in drainSSELines(from: &buffer) {
+                    continuation.yield(line)
                 }
             }
-            continuation.onTermination = { _ in
-                task.cancel()
+            // Flush whatever remains
+            if !buffer.isEmpty {
+                continuation.yield(String(data: buffer, encoding: .utf8) ?? "")
             }
+            continuation.finish()
         }
+        continuation.onTermination = { _ in task.cancel() }
     }
 }
 
@@ -273,9 +289,10 @@ final class RelayAPIClient {
 
     /// Opens an SSE stream to the given path and yields parsed events.
     ///
-    /// The stream handles `event:` / `data:` lines per the SSE spec,
-    /// ignores keepalive comments (lines starting with `:`), and
-    /// terminates when the server closes the connection.
+    /// Uses a `URLSessionDataDelegate` to receive data in chunks (not the
+    /// broken byte-by-byte `AsyncBytes` iterator), drains lines preserving
+    /// empty SSE delimiters, and parses `event:` / `data:` / `id:` fields
+    /// per the SSE spec.
     nonisolated func streamEvents(
         path: String,
         accessToken: String?,
@@ -298,22 +315,25 @@ final class RelayAPIClient {
                     }
                     request.timeoutInterval = TimeInterval(Int.max)
 
-                    let (bytes, response) = try await session.bytes(for: request)
-                    let httpResponse = response as? HTTPURLResponse
+                    // Build the delegate-driven pipeline: chunks → lines → SSE events
+                    var chunkContinuation: AsyncStream<Data>.Continuation!
+                    let dataStream = AsyncStream<Data> { chunkContinuation = $0 }
 
-                    sseLogger.info("SSE connected status=\(httpResponse?.statusCode ?? 0) path=\(path)")
+                    var completionContinuation: AsyncStream<Result<Void, Error>>.Continuation!
+                    let completionStream = AsyncStream<Result<Void, Error>> { completionContinuation = $0 }
 
-                    guard let httpResponse, (200 ..< 300).contains(httpResponse.statusCode) else {
-                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                        sseLogger.error("SSE connection failed status=\(code) path=\(path)")
-                        if code == 401 {
-                            continuation.finish(throwing: ClientError.unauthorized("Unauthorized"))
-                        } else {
-                            continuation.finish(throwing: ClientError.requestFailed(
-                                "SSE stream failed with status \(code)."
-                            ))
-                        }
-                        return
+                    let delegate = StreamingDataDelegate(
+                        chunkContinuation: chunkContinuation,
+                        completionContinuation: completionContinuation
+                    )
+                    let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+                    let dataTask = session.dataTask(with: request)
+                    dataTask.resume()
+
+                    // Ensure cleanup when the stream is cancelled
+                    continuation.onTermination = { _ in
+                        dataTask.cancel()
+                        session.invalidateAndCancel()
                     }
 
                     var currentEvent = "message"
@@ -321,10 +341,11 @@ final class RelayAPIClient {
                     var currentID: String?
                     var lastKeepaliveLogTime = Date.distantPast
 
-                    for try await line in bytes.sseLines {
+                    let lineStream = sseLines(from: dataStream)
+                    for try await line in lineStream {
                         if Task.isCancelled { break }
 
-                        // Keepalive comment — log periodically for liveness debugging
+                        // Keepalive comment — log periodically for liveness
                         if line.hasPrefix(":") {
                             let now = Date()
                             if now.timeIntervalSince(lastKeepaliveLogTime) >= 60 {
@@ -334,7 +355,7 @@ final class RelayAPIClient {
                             continue
                         }
 
-                        // Empty line = dispatch event
+                        // Empty line = dispatch accumulated event
                         if line.isEmpty {
                             if !currentData.isEmpty {
                                 sseLogger.debug("SSE dispatch event=\(currentEvent) id=\(currentID ?? "nil") bytes=\(currentData.utf8.count)")
@@ -364,15 +385,22 @@ final class RelayAPIClient {
                         }
                     }
 
-                    sseLogger.info("SSE stream ended path=\(path)")
-                    continuation.finish()
+                    // Check the completion result
+                    var errored = false
+                    for await result in completionStream {
+                        if case .failure(let error) = result {
+                            errored = true
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    if !errored {
+                        sseLogger.info("SSE stream ended path=\(path)")
+                        continuation.finish()
+                    }
                 } catch {
+                    sseLogger.error("SSE connection failed path=\(path) error=\(error.localizedDescription)")
                     continuation.finish(throwing: error)
                 }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
             }
         }
     }

@@ -119,7 +119,6 @@
 		66832AC0216748472D050A35 /* PairedRelayConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF7771986FA2150AEF34153 /* PairedRelayConfiguration.swift */; };
 		66E9BC186B7CB840FD68EC1B /* AuthenticatedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D3C11B115527992FE8196F4 /* AuthenticatedAsyncImage.swift */; };
 		6D3C39EAC3E337D98ABFB574 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1983D2D61C7DC8E9FAF7F3 /* Conversation.swift */; };
-		6DAF4770227CA600BAF2DE33 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65A748C07183D549471E976B /* CarPlaySceneDelegate.swift */; };
 		6E64A890D3675F7B50EDFD53 /* LiveSessionBootstrapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A65EB193F422B75698743CB5 /* LiveSessionBootstrapService.swift */; };
 		6F3CB0BD6A7F1ABBD2D6C6E9 /* InlineDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14DAAEE840F5A26697F06219 /* InlineDiffView.swift */; };
 		712546D8F2CA69435AECD156 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 488D5E4529626CDECE8B25CB /* ChatStore.swift */; };
@@ -153,7 +152,6 @@
 		8E69DE4854343828EABE3E03 /* LiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94BD10229197EB2804CF81C4 /* LiveActivityPreviews.swift */; };
 		8F6B6D2696F607D551B929E2 /* AppTemplateUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A40EB5BC4942655993A3286 /* AppTemplateUITests.swift */; };
 		8F8BF772B402389ABD59F3A5 /* QuickNoteActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554C23328FBA8D6CA2E44BDB /* QuickNoteActivity.swift */; };
-		923E82FAA2F0DB877674E780 /* CarPlayConversationListManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F62E0EFAC5E2E1E8C15F9C97 /* CarPlayConversationListManager.swift */; };
 		928CBFFC1C26EC3762788043 /* PushBrokerRegistrationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFFCBC1E31C90F7955825F3F /* PushBrokerRegistrationStore.swift */; };
 		944F3C4478D7D39127A7F75F /* SlashCommandMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBE7679F4118D199193E9D63 /* SlashCommandMenu.swift */; };
 		95A23F411FD6C90BDCE20BAE /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D2CF4A4D4466C2EACE7ED7C /* InboxStore.swift */; };
@@ -213,7 +211,6 @@
 		C607322B107EF91ABBC93D30 /* NoteDirective.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87729377A0556194DF8BFBF7 /* NoteDirective.swift */; };
 		C6E7C5406DC87E1337696D9E /* MockSessionBootstrapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E310AB9DB310B2F900FF99AF /* MockSessionBootstrapService.swift */; };
 		C6E9EDC9424308E71CD9CB15 /* tts_error_response.json in Resources */ = {isa = PBXBuildFile; fileRef = 79E8FDA74E8689EA4263AC54 /* tts_error_response.json */; };
-		C84AFE86EAAB752A4E86358A /* CarPlayVoiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E5EECD4A37679A849ADB3AB /* CarPlayVoiceManager.swift */; };
 		C9C6E26215098E1D1E637B0C /* NotesRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A92BA46D91D651F1354E6F /* NotesRepository.swift */; };
 		C9F5EC4643193793CA897075 /* PermissionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFDB6498238FCB0CFD3C359B /* PermissionsStore.swift */; };
 		CBFC8F204BB6B4542E2BEFC1 /* StatusIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1424CE6AD0EA1FCEF74BB84 /* StatusIndicator.swift */; };
@@ -429,7 +426,6 @@
 		6351F3BCF7008B9D2E4AF84B /* AppTemplateUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		6458A1B911F83B73E45C8025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		64F5F06670020BB6FC843019 /* ProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileStore.swift; sourceTree = "<group>"; };
-		65A748C07183D549471E976B /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		660D3914500E5EAF0A22B8F5 /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
 		674210B133840B32753E5B8F /* LiveMotionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMotionService.swift; sourceTree = "<group>"; };
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
@@ -473,7 +469,6 @@
 		89583DC26484BE1D61CD0CFB /* ProfileSelectorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSelectorSheet.swift; sourceTree = "<group>"; };
 		89BE15FD4F6761362E992750 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
 		8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
-		8E5EECD4A37679A849ADB3AB /* CarPlayVoiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayVoiceManager.swift; sourceTree = "<group>"; };
 		8FC392ED86295411DCB768B5 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
 		9167E97BDC536DFCD5EFE8A5 /* SessionListStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListStore.swift; sourceTree = "<group>"; };
 		91C3EC13DA4272428D489B6E /* MessageStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageStatus.swift; sourceTree = "<group>"; };
@@ -576,7 +571,6 @@
 		F278F18617421C07FD526CA9 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		F2DE9E10D6772C6627EC6904 /* Herald.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Herald.entitlements; sourceTree = "<group>"; };
 		F3C879D7DE3CC826078723BE /* LiveLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveLogView.swift; sourceTree = "<group>"; };
-		F62E0EFAC5E2E1E8C15F9C97 /* CarPlayConversationListManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayConversationListManager.swift; sourceTree = "<group>"; };
 		F6423EAA6221083F645AE41F /* SpeechTextRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTextRenderer.swift; sourceTree = "<group>"; };
 		F9EC61A24B6979033F9896A4 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		FA091035BFB4BAD3EFB013F6 /* JobStreamCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobStreamCoordinator.swift; sourceTree = "<group>"; };
@@ -704,7 +698,6 @@
 		2182C3A24530C6AFB4DB35C1 /* Herald */ = {
 			isa = PBXGroup;
 			children = (
-				E1E31394E5DA3E89276C89D5 /* CarPlay */,
 				77D000FB48AC886A8DA55DCF /* Components */,
 				A33D03FBDA01D7A9E2244C15 /* Core */,
 				16E5FFF2D5D77FAE0B7E6E5A /* Features */,
@@ -1147,16 +1140,6 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
-		E1E31394E5DA3E89276C89D5 /* CarPlay */ = {
-			isa = PBXGroup;
-			children = (
-				F62E0EFAC5E2E1E8C15F9C97 /* CarPlayConversationListManager.swift */,
-				65A748C07183D549471E976B /* CarPlaySceneDelegate.swift */,
-				8E5EECD4A37679A849ADB3AB /* CarPlayVoiceManager.swift */,
-			);
-			path = CarPlay;
-			sourceTree = "<group>";
-		};
 		E29278F72929FCD00F2F70CE /* StreamContractV2 */ = {
 			isa = PBXGroup;
 			children = (
@@ -1440,9 +1423,6 @@
 				66E9BC186B7CB840FD68EC1B /* AuthenticatedAsyncImage.swift in Sources */,
 				8E65554826FCB219698D2FB0 /* CanvasView.swift in Sources */,
 				128EFD665EE2825084B385D5 /* CaptureScreen.swift in Sources */,
-				923E82FAA2F0DB877674E780 /* CarPlayConversationListManager.swift in Sources */,
-				6DAF4770227CA600BAF2DE33 /* CarPlaySceneDelegate.swift in Sources */,
-				C84AFE86EAAB752A4E86358A /* CarPlayVoiceManager.swift in Sources */,
 				264D3D870922431680F88729 /* ChatInputBar.swift in Sources */,
 				D784039C81E632AE96747E13 /* ChatScreen.swift in Sources */,
 				712546D8F2CA69435AECD156 /* ChatStore.swift in Sources */,
@@ -1721,10 +1701,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1745,10 +1725,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1778,10 +1758,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;
@@ -1810,10 +1790,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.NotificationService;
 				PRODUCT_NAME = HeraldNotificationService;
 				SWIFT_VERSION = 6.2;
@@ -1826,11 +1806,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1850,11 +1830,11 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
 				PRODUCT_NAME = Herald;
 			};
@@ -1865,10 +1845,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Intents;
 				PRODUCT_NAME = HeraldIntents;
 				SWIFT_VERSION = 6.2;
@@ -1881,10 +1861,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 67;
+				CURRENT_PROJECT_VERSION = 69;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
-				MARKETING_VERSION = 2.2.9;
+				MARKETING_VERSION = 2.2.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Widgets;
 				PRODUCT_NAME = HeraldWidgets;
 				SWIFT_VERSION = 6.2;
