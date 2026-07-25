@@ -52,11 +52,12 @@ final class ChatStore {
     /// silently stalled/dropped — see `runStreamingAttempt`.
     /// Mutable so tests can set it to milliseconds.
     ///
-    /// Set to 30s — the connector has its own 120s watchdog, and 90s was too
-    /// long for users staring at "Waiting for host..." with no feedback.
+    /// Set to 60s — large models can take 30-45s to load/prefill before the
+    /// first token, and the connector has its own 120s watchdog. 30s was too
+    /// tight for real-world usage with local models on constrained hardware.
     /// If no text/reasoning/tool/finished event arrives within this window,
     /// the job is treated as stalled.
-    static var watchdogTimeout: Duration = .seconds(30)
+    static var watchdogTimeout: Duration = .seconds(60)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
@@ -962,8 +963,16 @@ final class ChatStore {
             return
         }
 
-        // Deterministic local fallback: truncated first message
-        let title = raw.count > 60 ? String(raw.prefix(57)) + "..." : raw
+        // Deterministic local fallback: smart truncation of first message.
+        // Strip leading slash commands and common prefixes, then use the
+        // first meaningful line as the title.
+        let cleaned = raw
+            .replacingOccurrences(of: #"^/\w+\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = cleaned.split(separator: "\n").first.map(String.init) ?? cleaned
+        let title = firstLine.count > 50
+            ? String(firstLine.prefix(47)).trimmingCharacters(in: .whitespaces) + "..."
+            : firstLine
         do {
             _ = try await heraldClient.renameSession(id: conv.id, title: title)
             if let current = conversation, defaultTitles.contains(current.title) {
@@ -980,7 +989,7 @@ final class ChatStore {
     /// Returns nil on failure (all attempts exhausted or timeout).
     private func generateTitleWithRetry(sessionId: UUID, userMessage: String, assistantMessage: String) async -> String? {
         let maxAttempts = 2
-        let timeoutSeconds: TimeInterval = 5
+        let timeoutSeconds: TimeInterval = 12  // Relay has a 15s timeout; stay under it
 
         for attempt in 1...maxAttempts {
             let title: String? = await withCheckedContinuation { continuation in

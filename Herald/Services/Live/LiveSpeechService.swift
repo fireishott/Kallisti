@@ -46,14 +46,29 @@ final class LiveSpeechService {
             return currentStatus
         }
 
-        let status: SFSpeechRecognizerAuthorizationStatus = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
+        // SFSpeechRecognizer.requestAuthorization + withCheckedContinuation
+        // crashes on iOS 18+ when the TCC dialog dismisses (the callback
+        // can arrive during deallocation of the async frame). Fire the
+        // system dialog on the main actor, then poll for the result.
+        await MainActor.run {
+            SFSpeechRecognizer.requestAuthorization { _ in }
         }
-        authorizationStatus = status
-        Self.logger.info("Speech authorization callback returned: \(String(describing: status), privacy: .public)")
-        return status
+
+        // Wait for the TCC dialog to be dismissed (up to 15 s)
+        for _ in 0..<30 {
+            let status = SFSpeechRecognizer.authorizationStatus()
+            if status != .notDetermined {
+                authorizationStatus = status
+                Self.logger.info("Speech authorization resolved via polling: \(String(describing: status), privacy: .public)")
+                return status
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+
+        // Fallback — shouldn't normally be reached
+        authorizationStatus = .notDetermined
+        Self.logger.warning("Speech authorization polling timed out")
+        return .notDetermined
     }
 
     func startListening() async throws {

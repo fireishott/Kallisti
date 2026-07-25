@@ -4,6 +4,7 @@ import SwiftUI
 /// with optional level filtering and live streaming via SSE.
 struct GatewayLogsScreen: View {
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -154,7 +155,11 @@ struct GatewayLogsScreen: View {
 
         do {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-                ?? "https://herald-host.internal:8010/v1"
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            guard let relayBase else {
+                errorMessage = "No relay configured. Add your relay URL in Settings."
+                return
+            }
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 
@@ -169,6 +174,17 @@ struct GatewayLogsScreen: View {
                 accessToken: token
             )
             logLines = response.data.lines
+        } catch let error as RelayAPIClient.ClientError {
+            switch error {
+            case .serverError(let code, _, _, let status):
+                if status == 404 {
+                    errorMessage = "The relay does not expose gateway logs. Update your connector to a version that supports the /gw/logs endpoint."
+                } else {
+                    errorMessage = "[\(code)] \(error.localizedDescription)"
+                }
+            default:
+                errorMessage = error.localizedDescription
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -187,7 +203,11 @@ struct GatewayLogsScreen: View {
     private func startLiveStream() {
         streamTask = Task {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-                ?? "https://herald-host.internal:8010/v1"
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            guard let relayBase else {
+                errorMessage = "No relay configured. Add your relay URL in Settings."
+                return
+            }
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 

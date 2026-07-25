@@ -196,6 +196,12 @@ final class SessionListStore {
 
     func switchToSession(_ session: SessionSummary) async {
         do {
+            // Cancel any in-flight streaming from the previous session.
+            // Without this, switching sessions mid-stream leaves the stop
+            // button visible on the new chat (activeStreams survives the
+            // conversation swap and makes isStreaming return true).
+            chatStore.cancelStreaming()
+
             // Clear stale context metrics from the previous session so the
             // new session doesn't incorrectly show a "Session nearly full"
             // warning before the relay reports its real usage.

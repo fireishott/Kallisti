@@ -367,7 +367,8 @@ final class AppContainer {
                 inboxService: inboxService,
                 persistence: persistence,
                 sessionStore: sessionStore,
-                allowDemoFallback: allowMockFallbacks
+                allowDemoFallback: allowMockFallbacks,
+                isPairedProvider: { activePairingStore?.isPaired == true }
             ),
             permissionsStore: PermissionsStore(
                 locationService: liveLocationService,
@@ -1163,9 +1164,9 @@ final class AppContainer {
     /// Control Center widgets (HeraldControls extension) can make authenticated
     /// HTTP calls without launching the main app.
     private func updateSharedAppState() {
-        let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
+        guard let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString
-            ?? "https://herald-host.internal:8010/v1"
+        else { return }
         Task {
             let token = await sessionStore.currentAccessToken()
             HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: token)

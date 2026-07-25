@@ -11,6 +11,7 @@ final class InboxStore {
     private let persistence: any AppPersistenceStoreProtocol
     private let sessionStore: AppSessionStore
     private let allowDemoFallback: Bool
+    private let isPairedProvider: @MainActor () -> Bool
     private var localState: InboxLocalState {
         didSet { persistence.saveInboxState(localState) }
     }
@@ -19,12 +20,14 @@ final class InboxStore {
         inboxService: any InboxServiceProtocol,
         persistence: any AppPersistenceStoreProtocol,
         sessionStore: AppSessionStore,
-        allowDemoFallback: Bool = true
+        allowDemoFallback: Bool = true,
+        isPairedProvider: @escaping @MainActor () -> Bool = { false }
     ) {
         self.inboxService = inboxService
         self.persistence = persistence
         self.sessionStore = sessionStore
         self.allowDemoFallback = allowDemoFallback
+        self.isPairedProvider = isPairedProvider
         self.localState = persistence.loadInboxState()
     }
 
@@ -45,7 +48,11 @@ final class InboxStore {
             items = applyLocalState(to: fetchedItems)
         } catch {
             lastErrorMessage = error.localizedDescription
-            items = allowDemoFallback ? applyLocalState(to: DemoData.sampleInboxItems) : []
+            // Never show demo data for paired users — they have a real relay
+            // and an empty inbox is preferable to fake items that look like
+            // the user's old chats.
+            let shouldShowDemo = allowDemoFallback && !isPairedProvider()
+            items = shouldShowDemo ? applyLocalState(to: DemoData.sampleInboxItems) : []
         }
     }
 

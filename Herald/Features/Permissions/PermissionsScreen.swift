@@ -14,7 +14,13 @@ struct PermissionsScreen: View {
 
                     ForEach(permissionsStore.capabilities) { capability in
                         PermissionCard(capability: capability) {
-                            if capability.status == .denied {
+                            // HealthKit read-only status cannot be reliably detected —
+                            // Apple's authorizationStatus(for:) only reflects write
+                            // access. Always attempt the request flow first so the
+                            // system can show the proper dialog if needed.
+                            if capability.permissionType == .health {
+                                Task { await permissionsStore.requestPermission(for: .health) }
+                            } else if capability.status == .denied {
                                 // iOS won't re-prompt after denial — open Settings instead
                                 if let url = URL(string: UIApplication.openSettingsURLString) {
                                     UIApplication.shared.open(url)

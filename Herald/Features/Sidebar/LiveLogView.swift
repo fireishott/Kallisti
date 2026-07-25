@@ -1,14 +1,36 @@
 import SwiftUI
 
-/// Displays live log entries from the Herald dashboard (`:9119`).
+/// Displays live log entries from the Herald dashboard (`:9119`) with a
+/// local fallback from ChatStore's in-memory log buffer.
 ///
-/// Shows a scrollable list of log entries with level filtering and
-/// reconnection status. Designed to be used in the iPad 3-pane layout
-/// as the detail column.
+/// When the dashboard is disconnected or its log stream is empty, the view
+/// automatically falls back to showing local log entries from the active
+/// chat session — so users always have visibility into what's happening.
+///
+/// Designed to be used in the iPad 3-pane layout as the detail column.
 struct LiveLogView: View {
     @Environment(DashboardLogService.self) private var logService
+    @Environment(ChatStore.self) private var chatStore
     @State private var selectedLevel: LogLevel?
     @State private var autoScroll = true
+
+    /// Merged log entries: prefer dashboard logs when available, fall back
+    /// to local ChatStore entries when the dashboard is disconnected/empty.
+    private var displayEntries: [LogEntry] {
+        if !logService.logLines.isEmpty {
+            return logService.logLines.map { line in
+                LogEntry(
+                    id: line.id,
+                    timestamp: line.timestamp,
+                    level: line.level,
+                    message: line.message,
+                    source: line.source
+                )
+            }
+        }
+        // Fall back to local log entries from ChatStore
+        return chatStore.logEntries
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +38,7 @@ struct LiveLogView: View {
             filterBar
             Divider()
 
-            if logService.logLines.isEmpty {
+            if displayEntries.isEmpty {
                 emptyState
             } else {
                 logList
@@ -127,14 +149,14 @@ struct LiveLogView: View {
         }
     }
 
-    private var filteredLogs: [DashboardLogService.LogLine] {
+    private var filteredLogs: [LogEntry] {
         if let selectedLevel {
-            return logService.logLines.filter { $0.level == selectedLevel }
+            return displayEntries.filter { $0.level == selectedLevel }
         }
-        return logService.logLines
+        return displayEntries
     }
 
-    private func logRow(_ entry: DashboardLogService.LogLine) -> some View {
+    private func logRow(_ entry: LogEntry) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(entry.timestamp, style: .time)
                 .font(.system(size: 10, design: .monospaced))
@@ -164,7 +186,7 @@ struct LiveLogView: View {
         .padding(.horizontal, Design.Spacing.sm)
         .padding(.vertical, 3)
         .background(
-            entry.id == logService.logLines.last?.id
+            entry.id == displayEntries.last?.id
                 ? Design.Brand.accent.opacity(0.06)
                 : Color.clear
         )
@@ -252,7 +274,7 @@ struct LiveLogView: View {
 
             Spacer()
 
-            Text("\(logService.logLines.count) entries")
+            Text("\(displayEntries.count) entries")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.7))
         }
@@ -265,6 +287,11 @@ struct LiveLogView: View {
     }
 
     private var statusColor: Color {
+        // When showing local fallback entries, use a distinct color to
+        // indicate the dashboard isn't the source.
+        if logService.logLines.isEmpty && !chatStore.logEntries.isEmpty {
+            return .blue
+        }
         switch logService.connectionState {
         case .connected: return .green
         case .connecting, .reconnecting: return .orange
@@ -274,6 +301,9 @@ struct LiveLogView: View {
     }
 
     private var statusText: String {
+        if logService.logLines.isEmpty && !chatStore.logEntries.isEmpty {
+            return "Local (\(chatStore.logEntries.count) entries)"
+        }
         switch logService.connectionState {
         case .connected: return "Connected"
         case .connecting: return "Connecting..."

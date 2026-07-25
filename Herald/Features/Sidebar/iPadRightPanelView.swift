@@ -277,4 +277,5 @@ struct LogEntry: Identifiable {
     let timestamp = Date()
     let level: LogLevel
     let message: String
+    var source: String? = nil
 }

@@ -40,7 +40,6 @@ struct SettingsScreen: View {
                 .padding(.horizontal, Design.Spacing.md)
                 .padding(.vertical, Design.Spacing.sm)
             }
-            .scrollBounceBehavior(.basedOnSize)
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -67,12 +66,19 @@ struct SettingsScreen: View {
     ///
     /// Uses the actual relay connection status from `ChatStore` (which tracks
     /// `LiveHeraldClient.connectionStatus`) when it reflects an error, falling
-    /// back to the bootstrap session status. This prevents the settings screen
-    /// from showing "Connected" while the chat screen shows a relay error.
+    /// back to the bootstrap session status. When the host is definitively
+    /// online (gateway confirms connectivity), a transient WS "connecting"
+    /// state is suppressed so the UI doesn't contradict the gateway dashboard.
     private var effectiveConnectionStatus: ConnectionStatus {
         let relayStatus = chatStore.connectionStatus
-        if relayStatus == .error || relayStatus == .connecting {
+        if relayStatus == .error {
             return relayStatus
+        }
+        // If the host is confirmed online, don't show "connecting" — the WS
+        // handshake may just be in progress. The gateway status page already
+        // shows the definitive state.
+        if relayStatus == .connecting && hostStore.isHostOnline {
+            return .connected
         }
         return sessionStore.state.connectionStatus
     }
@@ -161,7 +167,7 @@ struct SettingsScreen: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isRestarting ? "Reconnecting…" : "Restart Connection")
+                    Text(isRestarting ? "Restarting Hermes…" : "Restart Hermes Agent")
                         .font(Design.Typography.body)
                         .foregroundStyle(isRestarting ? Design.Colors.secondaryForeground : Design.Colors.foreground)
 
@@ -199,16 +205,53 @@ struct SettingsScreen: View {
         isRestarting = true
         restartResult = nil
 
-        do {
-            // Reload conversation from relay to verify connection
-            _ = await chatStore.loadConversation()
-            await hostStore.refresh()
+        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+        guard let relayBase else {
+            restartResult = .failed("No relay configured.")
+            isRestarting = false
+            return
+        }
 
-            if chatStore.connectionStatus == .connected || hostStore.isHostOnline {
+        do {
+            let token = await sessionStore.currentAccessToken()
+            let client = RelayAPIClient { relayBase }
+
+            struct RestartRequest: Encodable { let target: String }
+            struct RestartResponse: Decodable {
+                struct Data: Decodable {
+                    let restarting: Bool
+                    let target: String
+                    let message: String?
+                }
+                let data: Data
+            }
+
+            let body = RestartRequest(target: "hermes")
+            let response: RestartResponse = try await client.post(
+                path: "gw/restart",
+                body: body,
+                accessToken: token
+            )
+
+            if response.data.restarting {
                 restartResult = .success
             } else {
-                restartResult = .failed("Host is \(hostStore.isHostOnline ? "online" : "offline")")
+                restartResult = .failed(response.data.message ?? "Gateway refused restart")
             }
+        } catch let error as RelayAPIClient.ClientError {
+            switch error {
+            case .serverError(let code, _, _, let status):
+                if status == 404 {
+                    restartResult = .failed("Gateway control not available — update connector")
+                } else {
+                    restartResult = .failed("[\(code)] \(error.localizedDescription)")
+                }
+            default:
+                restartResult = .failed(error.localizedDescription)
+            }
+        } catch {
+            restartResult = .failed(error.localizedDescription)
         }
 
         isRestarting = false
@@ -457,7 +500,11 @@ struct SettingsScreen: View {
         do {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString
-                ?? "https://herald-host.internal:8010/v1"
+            guard let relayBase else {
+                gwRestartResult = "No relay configured. Add your relay URL in Settings."
+                isRestartingGW = false
+                return
+            }
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 

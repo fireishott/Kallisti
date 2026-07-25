@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -1799,6 +1799,10 @@ def delete_session(db: Session, *, session_id: str) -> bool:
     conversation = db.get(Conversation, session_id)
     if conversation is None:
         return False
+    # Delete associated messages first to avoid FK violation.
+    # The messages table has a foreign key to conversations without
+    # ON DELETE CASCADE, so we must clear messages before the conversation.
+    db.execute(delete(Message).where(Message.conversation_id == session_id))
     db.delete(conversation)
     db.commit()
     return True

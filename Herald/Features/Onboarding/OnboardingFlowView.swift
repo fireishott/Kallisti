@@ -430,7 +430,7 @@ private struct RelayStepView: View {
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("where your Herald is reachable.")
+                Text("where your Hermes is reachable.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }

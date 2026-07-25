@@ -5,6 +5,7 @@ import SwiftUI
 struct GatewayStatusScreen: View {
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -227,7 +228,11 @@ struct GatewayStatusScreen: View {
 
         do {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-                ?? "https://herald-host.internal:8010/v1"
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            guard let relayBase else {
+                errorMessage = "No relay configured. Add your relay URL in Settings."
+                return
+            }
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 

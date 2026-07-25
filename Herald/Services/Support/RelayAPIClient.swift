@@ -436,7 +436,18 @@ final class RelayAPIClient {
                 throw ClientError.requestFailed(envelope.detail)
             }
 
-            throw ClientError.requestFailed("Relay request failed with status \(status).")
+            let hint: String
+            switch status {
+            case 502:
+                hint = "Relay gateway error (502) — the relay cannot reach the connector backend. Check that the connector is running on the host."
+            case 503:
+                hint = "Relay temporarily unavailable (503) — the service may be restarting. Retry in a moment."
+            case 504:
+                hint = "Relay gateway timeout (504) — the connector did not respond in time. The host may be overloaded."
+            default:
+                hint = "Relay request failed with status \(status)."
+            }
+            throw ClientError.requestFailed(hint)
         }
 
         return try decoder.decode(Envelope<T>.self, from: data).data

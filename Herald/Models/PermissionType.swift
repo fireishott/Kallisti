@@ -73,5 +73,5 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     }
 
     /// Permissions shown during onboarding.
-    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .motion, .photos]
+    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .camera, .motion, .photos]
 }

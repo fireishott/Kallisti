@@ -62,10 +62,35 @@ final class LiveHealthService: HealthServiceProtocol {
             return
         }
 
+        // Check for the HealthKit entitlement in the bundle BEFORE creating
+        // the store. TestFlight builds strip this entitlement, and without it
+        // requestAuthorization throws .errorAuthorizationDenied — which
+        // verifyEntitlements misinterprets as a user action rather than a
+        // build-configuration issue. The result: users are told to manage
+        // Health permissions in Settings, but Herald doesn't appear there.
+        guard bundleHasHealthKitEntitlement() else {
+            self.store = nil
+            self.metricDescriptors = [:]
+            self.authorizationStatus = .unsupported
+            self.entitlementsVerified = false
+            return
+        }
+
         let store = HKHealthStore()
         self.store = store
         self.metricDescriptors = LiveHealthService.makeMetricDescriptors()
         self.authorizationStatus = .notDetermined
+    }
+
+    /// Check whether the app bundle declares the HealthKit entitlement.
+    /// TestFlight/App Store builds that strip entitlements won't have this,
+    /// and we can report `.unsupported` immediately without triggering a
+    /// misleading .errorAuthorizationDenied from the system.
+    private func bundleHasHealthKitEntitlement() -> Bool {
+        guard let entitlements = Bundle.main.infoDictionary?["com.apple.developer.healthkit"] as? Bool else {
+            return false
+        }
+        return entitlements
     }
 
     func requestAuthorization() async -> PermissionStatus {

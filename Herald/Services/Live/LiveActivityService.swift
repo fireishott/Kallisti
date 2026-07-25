@@ -136,13 +136,16 @@ final class LiveActivityService {
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
                 status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
-                emoji: nil
+                emoji: "\u{2705}"  // ✅ checkmark
             ),
             staleDate: nil
         )
         Task.detached {
             for activity in Activity<HeraldActivityAttributes>.activities {
-                await activity.end(finalContent, dismissalPolicy: .immediate)
+                // Use .default dismissal so the activity remains visible on the
+                // Lock Screen and Dynamic Island for ~4 seconds after completion.
+                // .immediate makes it vanish before the user can glance at it.
+                await activity.end(finalContent, dismissalPolicy: .default)
             }
         }
     }
@@ -206,13 +209,13 @@ final class LiveActivityService {
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
                 status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
-                emoji: nil
+                emoji: "\u{2705}"
             ),
             staleDate: nil
         )
         Task.detached {
             for activity in Activity<HeraldActivityAttributes>.activities {
-                await activity.end(finalContent, dismissalPolicy: .immediate)
+                await activity.end(finalContent, dismissalPolicy: .default)
             }
         }
     }

@@ -126,10 +126,10 @@ struct ChatScreen: View {
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
             if old != nil && new == nil {
-                // Streaming just ended. Delay scroll + haptic by one frame
-                // (~100ms) so the placeholder→resolved message replacement has
-                // rendered before we scroll or buzz. Fixes the "thinking
-                // disappears, haptic fires, but no response visible" race.
+                // Streaming just ended. Delay scroll by one frame (~100ms) so
+                // the placeholder→resolved message replacement has rendered
+                // before we scroll. Haptic fires immediately in ChatStore when
+                // the .finished event arrives — no delay needed here.
                 isUserScrolling = false  // Reset scroll state for next stream
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(100))
@@ -137,9 +137,6 @@ struct ChatScreen: View {
                         withAnimation(Design.Motion.standard) {
                             scrollProxy?.scrollTo(lastID, anchor: .bottom)
                         }
-                    }
-                    if settingsStore.settings.hapticFeedbackEnabled {
-                        HapticEngine.responseReceived()
                     }
                 }
             }
@@ -680,6 +677,12 @@ struct ChatScreen: View {
             )
 
             infraStatusRow(
+                "Hermes",
+                status: hostStore.currentHost?.heraldVersion ?? "—",
+                detail: hostStore.currentHost?.heraldCommand
+            )
+
+            infraStatusRow(
                 "Model",
                 status: displayedModelName.flatMap { $0 } ?? "Unknown",
                 detail: nil
@@ -1123,6 +1126,11 @@ struct ChatScreen: View {
     /// immutable UUID via `POST /sessions`.
     private func createNewSessionAndSwitch() async {
         showStatusCard = false
+        // Cancel any in-flight streaming before switching sessions.
+        // Without this, the new chat inherits the old session's streaming
+        // state (activeStreams, streamingTask) and shows a stop button
+        // for a chat that doesn't belong to it.
+        chatStore.cancelStreaming()
         await sessionListStore.createNewSession()
         // Scroll to top — new session's conversation is empty
         withAnimation(Design.Motion.standard) {
