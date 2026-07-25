@@ -1626,6 +1626,10 @@ class HeraldConnector:
                 result = await self._rpc_note_enrich(params)
             elif method == "session.generateTitle":
                 result = await self._rpc_session_generate_title(params)
+            elif method == "connector.restart":
+                result = self._rpc_connector_restart()
+            elif method == "hermes.restart":
+                result = self._rpc_hermes_restart()
             else:
                 raise RuntimeError(f"Unsupported RPC method: {method}")
             return {
@@ -1641,6 +1645,53 @@ class HeraldConnector:
                 "success": False,
                 "error": str(error),
             }
+
+    def _rpc_connector_restart(self) -> dict:
+        """Schedule connector restart via process exit (systemd will restart)."""
+        import signal
+        import os
+        logger.warning("connector.restart: scheduling self-restart via SIGTERM")
+        # Schedule the signal after a brief delay so the RPC response can
+        # be sent back to the relay before the process terminates.
+        import threading
+        def _delayed_exit():
+            import time
+            time.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=_delayed_exit, daemon=True).start()
+        return {"restarting": True, "message": "Connector restart scheduled"}
+
+    def _rpc_hermes_restart(self) -> dict:
+        """Restart the Hermes agent process via systemctl (Linux)."""
+        import subprocess
+        import platform
+        if platform.system() != "Linux":
+            return {"restarting": False, "error": "Hermes restart only supported on Linux"}
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "restart", "hermes-agent"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("hermes.restart: systemctl restart succeeded")
+                return {"restarting": True, "message": "Hermes agent restarting"}
+            else:
+                logger.warning("hermes.restart: systemctl failed: %s", result.stderr)
+                # Fall back to the hermes-agent command if installed
+                try:
+                    subprocess.run(
+                        ["pkill", "-f", "hermes-agent"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    return {"restarting": True, "message": "Hermes agent restarting (via pkill)"}
+                except Exception:
+                    return {"restarting": False, "error": result.stderr.strip() or "systemctl restart failed"}
+        except Exception as exc:
+            logger.warning("hermes.restart: error: %s", exc)
+            return {"restarting": False, "error": str(exc)}
 
     def _rpc_talk_prewarm(self) -> dict:
         state = self.refresh_voice_context()

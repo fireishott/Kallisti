@@ -193,6 +193,10 @@ final class TalkStore {
             onSessionStateChanged?()
             return
         }
+        // Start Live Activity so it appears on Lock Screen / Dynamic Island
+        // during the voice session. updateVoiceState() alone is a no-op until
+        // an activity has been created via startVoiceSession().
+        liveActivity.startVoiceSession()
         await coordinator.startListeningWithVAD()
         // Only mark active if the coordinator actually started listening.
         // If it hit a guard (e.g. state already .preparing) or failed, stay inactive.

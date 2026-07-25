@@ -14,6 +14,8 @@ struct SettingsScreen: View {
     @State private var mimoAPIKey: String = ""
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
+    @State private var safariURL: URL?
+    @State private var showSafari = false
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.herald.session")
     @Environment(ThemeManager.self) private var themeManager
 
@@ -22,23 +24,27 @@ struct SettingsScreen: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            ScrollView(.vertical) {
-                VStack(spacing: Design.Spacing.lg) {
-                    connectionSection
-                    relaySection
-                    gatewaySection
-                    if settingsStore.availableEnvironments.count > 1 {
-                        environmentSection
+            GeometryReader { geo in
+                ScrollView(.vertical) {
+                    VStack(spacing: Design.Spacing.lg) {
+                        connectionSection
+                        relaySection
+                        gatewaySection
+                        if settingsStore.availableEnvironments.count > 1 {
+                            environmentSection
+                        }
+                        appearanceSection
+                        preferencesSection
+                        voiceSection
+                        locationSection
+                        privacySection
+                        aboutSection
                     }
-                    appearanceSection
-                    preferencesSection
-                    voiceSection
-                    locationSection
-                    privacySection
-                    aboutSection
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, Design.Spacing.md)
+                    .padding(.vertical, Design.Spacing.sm)
                 }
-                .padding(.horizontal, Design.Spacing.md)
-                .padding(.vertical, Design.Spacing.sm)
+                .frame(width: geo.size.width)
             }
         }
         .navigationTitle("Settings")
@@ -57,6 +63,11 @@ struct SettingsScreen: View {
         .task {
             await hostStore.refresh()
             await permissionsStore.reloadCapabilities()
+        }
+        .sheet(isPresented: $showSafari) {
+            if let url = safariURL {
+                SafariView(url: url)
+            }
         }
     }
 
@@ -131,134 +142,13 @@ struct SettingsScreen: View {
                     title: "Auto-Connect",
                     isOn: autoConnectBinding
                 )
-
-                sectionDivider
-
-                restartConnectionRow
             }
         }
     }
 
-    @State private var isRestarting = false
-    @State private var restartResult: RestartResult?
     @State private var isRestartingGW = false
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
-
-    private enum RestartResult {
-        case success
-        case failed(String)
-    }
-
-    private var restartConnectionRow: some View {
-        Button {
-            Task { await restartConnection() }
-        } label: {
-            HStack(spacing: Design.Spacing.sm) {
-                if isRestarting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(Design.Brand.accent)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Design.Brand.accent)
-                        .frame(width: 20)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(isRestarting ? "Restarting Hermes…" : "Restart Hermes Agent")
-                        .font(Design.Typography.body)
-                        .foregroundStyle(isRestarting ? Design.Colors.secondaryForeground : Design.Colors.foreground)
-
-                    if let result = restartResult {
-                        switch result {
-                        case .success:
-                            Text("Reconnected successfully")
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.success)
-                        case .failed(let msg):
-                            Text(msg)
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.danger)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                if !isRestarting {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                }
-            }
-            .frame(minHeight: Design.Size.minTapTarget)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isRestarting)
-    }
-
-    private func restartConnection() async {
-        isRestarting = true
-        restartResult = nil
-
-        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-            ?? pairingStore.pairedRelayConfiguration?.baseURLString
-        guard let relayBase else {
-            restartResult = .failed("No relay configured.")
-            isRestarting = false
-            return
-        }
-
-        do {
-            let token = await sessionStore.currentAccessToken()
-            let client = RelayAPIClient { relayBase }
-
-            struct RestartRequest: Encodable { let target: String }
-            struct RestartResponse: Decodable {
-                struct Data: Decodable {
-                    let restarting: Bool
-                    let target: String
-                    let message: String?
-                }
-                let data: Data
-            }
-
-            let body = RestartRequest(target: "hermes")
-            let response: RestartResponse = try await client.post(
-                path: "gw/restart",
-                body: body,
-                accessToken: token
-            )
-
-            if response.data.restarting {
-                restartResult = .success
-            } else {
-                restartResult = .failed(response.data.message ?? "Gateway refused restart")
-            }
-        } catch let error as RelayAPIClient.ClientError {
-            switch error {
-            case .serverError(let code, _, _, let status):
-                if status == 404 {
-                    restartResult = .failed("Gateway control not available — update connector")
-                } else {
-                    restartResult = .failed("[\(code)] \(error.localizedDescription)")
-                }
-            default:
-                restartResult = .failed(error.localizedDescription)
-            }
-        } catch {
-            restartResult = .failed(error.localizedDescription)
-        }
-
-        isRestarting = false
-        // Clear result after 3 seconds
-        try? await Task.sleep(for: .seconds(3))
-        restartResult = nil
-    }
 
     // MARK: - Environment
 
@@ -497,38 +387,46 @@ struct SettingsScreen: View {
         gwRestartTarget = target
         gwRestartResult = nil
 
-        do {
-            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-                ?? pairingStore.pairedRelayConfiguration?.baseURLString
-            guard let relayBase else {
-                gwRestartResult = "No relay configured. Add your relay URL in Settings."
-                isRestartingGW = false
-                return
-            }
-            let token = await sessionStore.currentAccessToken()
-            let client = RelayAPIClient { relayBase }
-
-            struct RestartRequest: Encodable { let target: String }
-            struct RestartResponse: Decodable {
-                struct Data: Decodable {
-                    let restarting: Bool
-                    let target: String
-                    let message: String?
+        // Use a 15-second timeout so the user doesn't wait forever when
+        // the relay's connector RPC hangs (known issue with hermes.restart).
+        let result = await withTimeout(seconds: 15) {
+            do {
+                let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+                    ?? pairingStore.pairedRelayConfiguration?.baseURLString
+                guard let relayBase else {
+                    gwRestartResult = "No relay configured."
+                    isRestartingGW = false
+                    return
                 }
-                let data: Data
-            }
+                let token = await sessionStore.currentAccessToken()
+                let client = RelayAPIClient { relayBase }
 
-            let body = RestartRequest(target: target)
-            let response: RestartResponse = try await client.post(
-                path: "gw/restart",
-                body: body,
-                accessToken: token
-            )
-            gwRestartResult = response.data.restarting
-                ? "\(target) restarting…"
-                : "Failed: \(response.data.message ?? "unknown")"
-        } catch {
-            gwRestartResult = "Error: \(error.localizedDescription)"
+                struct RestartRequest: Encodable { let target: String }
+                struct RestartResponse: Decodable {
+                    struct Data: Decodable {
+                        let restarting: Bool
+                        let target: String
+                        let message: String?
+                    }
+                    let data: Data
+                }
+
+                let body = RestartRequest(target: target)
+                let response: RestartResponse = try await client.post(
+                    path: "gw/restart",
+                    body: body,
+                    accessToken: token
+                )
+                gwRestartResult = response.data.restarting
+                    ? "\(target) restarting…"
+                    : "Failed: \(response.data.message ?? "unknown")"
+            } catch {
+                gwRestartResult = "Error: \(error.localizedDescription)"
+            }
+        }
+
+        if result == .timedOut {
+            gwRestartResult = "Request timed out — check the host"
         }
 
         isRestartingGW = false
@@ -1338,8 +1236,45 @@ struct SettingsScreen: View {
     }
 
     private func openConfiguredURL(_ url: URL?) {
-        guard let url else { return }
-        openURL(url)
+        guard let url else {
+            // Fallback: the key was missing from Info.plist — try the
+            // hardcoded herald.fihonline.net links.
+            if let fallback = URL(string: "https://herald.fihonline.net") {
+                openURL(fallback)
+            }
+            return
+        }
+        safariURL = url
+        showSafari = true
+    }
+
+    // MARK: - Timeout Helper
+
+    private enum TimeoutResult {
+        case completed
+        case timedOut
+    }
+
+    /// Run `body` with a deadline. Returns `.timedOut` if the deadline fires
+    /// before `body` completes. The inner task is cancelled on timeout.
+    @MainActor
+    private func withTimeout(seconds: TimeInterval, body: @escaping @MainActor () async -> Void) async -> TimeoutResult {
+        let bodyTask = Task { @MainActor in
+            await body()
+            return TimeoutResult.completed
+        }
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            return TimeoutResult.timedOut
+        }
+        return await withTaskCancellationHandler {
+            let result = await bodyTask.value
+            timeoutTask.cancel()
+            return result
+        } onCancel: {
+            bodyTask.cancel()
+            timeoutTask.cancel()
+        }
     }
 
     private func testAppleTTS() async {

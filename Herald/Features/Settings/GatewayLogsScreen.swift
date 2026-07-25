@@ -15,6 +15,8 @@ struct GatewayLogsScreen: View {
     @State private var isLiveStreaming = false
     @State private var streamTask: Task<Void, Never>?
     @State private var searchText = ""
+    @State private var liveIngestedCount = 0
+    @State private var streamConnectionError: String?
 
     private let levels = ["debug", "info", "warning", "error"]
 
@@ -51,6 +53,8 @@ struct GatewayLogsScreen: View {
                         .buttonStyle(.borderedProminent)
                     }
                     Spacer()
+                } else if logLines.isEmpty && !isLoading {
+                    emptyStateView
                 } else {
                     logList
                 }
@@ -65,9 +69,9 @@ struct GatewayLogsScreen: View {
                 } label: {
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(isLiveStreaming ? Design.Colors.success : Design.Colors.secondaryForeground)
+                            .fill(statusDotColor)
                             .frame(width: 6, height: 6)
-                        Text(isLiveStreaming ? "Live" : "Paused")
+                        Text(statusLabel)
                             .font(Design.Typography.caption)
                     }
                 }
@@ -193,9 +197,13 @@ struct GatewayLogsScreen: View {
     private func toggleLiveStream() {
         if isLiveStreaming {
             streamTask?.cancel()
+            streamTask = nil
             isLiveStreaming = false
+            streamConnectionError = nil
         } else {
             isLiveStreaming = true
+            liveIngestedCount = 0
+            streamConnectionError = nil
             startLiveStream()
         }
     }
@@ -205,7 +213,10 @@ struct GatewayLogsScreen: View {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString
             guard let relayBase else {
-                errorMessage = "No relay configured. Add your relay URL in Settings."
+                await MainActor.run {
+                    errorMessage = "No relay configured. Add your relay URL in Settings."
+                    isLiveStreaming = false
+                }
                 return
             }
             let token = await sessionStore.currentAccessToken()
@@ -225,6 +236,7 @@ struct GatewayLogsScreen: View {
                        let line = try? JSONDecoder().decode(LogLine.self, from: data) {
                         await MainActor.run {
                             logLines.append(line)
+                            liveIngestedCount += 1
                             // Keep only last 500 lines
                             if logLines.count > 500 {
                                 logLines.removeFirst(logLines.count - 500)
@@ -234,9 +246,58 @@ struct GatewayLogsScreen: View {
                 }
             } catch {
                 if !Task.isCancelled {
-                    await MainActor.run { isLiveStreaming = false }
+                    await MainActor.run {
+                        isLiveStreaming = false
+                        streamConnectionError = error.localizedDescription
+                    }
                 }
             }
+        }
+    }
+
+    // MARK: - Status
+
+    private var statusDotColor: Color {
+        if streamConnectionError != nil { return Design.Colors.danger }
+        if isLiveStreaming { return Design.Colors.success }
+        return Design.Colors.secondaryForeground
+    }
+
+    private var statusLabel: String {
+        if let _ = streamConnectionError {
+            return "Error"
+        }
+        if isLiveStreaming {
+            if liveIngestedCount > 0 {
+                return "Live (\(liveIngestedCount))"
+            }
+            return "Live"
+        }
+        return "Paused"
+    }
+
+    // MARK: - Empty State
+
+    private var emptyStateView: some View {
+        VStack(spacing: Design.Spacing.md) {
+            Spacer()
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.5))
+            Text("No Log Entries")
+                .font(Design.Typography.headline)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+            Text("The relay returned no log entries for level \"\(selectedLevel)\". Try a different level or toggle Live mode to wait for new entries.")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Design.Spacing.lg)
+            if let error = streamConnectionError {
+                Text("Stream error: \(error)")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+            }
+            Spacer()
         }
     }
 

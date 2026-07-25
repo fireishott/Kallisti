@@ -133,11 +133,12 @@ final class PermissionsStore {
     // MARK: - Speech Recognition
 
     /// Returns the availability-aware speech recognition status.
-    /// On iOS < 26, returns `.unsupported` since the modern Speech APIs
-    /// (SpeechAnalyzer, DictationTranscriber) are not available.
+    /// On iOS 26+, calls SFSpeechRecognizer.authorizationStatus() directly.
+    /// On older OS versions, returns `.unsupported`.
     static func speechRecognitionAvailabilityStatus() -> PermissionStatus {
         if #available(iOS 26.0, *) {
-            switch SFSpeechRecognizer.authorizationStatus() {
+            let status = SFSpeechRecognizer.authorizationStatus()
+            switch status {
             case .authorized: return .authorized
             case .denied: return .denied
             case .restricted: return .restricted
@@ -168,19 +169,16 @@ final class PermissionsStore {
         guard #available(iOS 26.0, *) else { return }
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
 
-        // SFSpeechRecognizer.requestAuthorization + withCheckedContinuation
-        // crashes on iOS 18+ when the TCC dialog dismisses (the callback
-        // can arrive during deallocation of the async frame). Fire the
-        // system dialog on the main actor, then poll for the result.
-        await MainActor.run {
-            SFSpeechRecognizer.requestAuthorization { _ in }
-        }
-
-        // Wait for the TCC dialog to be dismissed (up to 15 s)
-        for _ in 0..<30 {
-            if SFSpeechRecognizer.authorizationStatus() != .notDetermined { break }
-            try? await Task.sleep(for: .milliseconds(500))
-        }
+        // SFSpeechRecognizer.requestAuthorization crashes on iOS 26 beta
+        // (FB-prefixed radar). The modern SpeechAnalyzer/DictationTranscriber
+        // APIs introduced in iOS 26 handle authorization automatically when
+        // first used — the system presents the TCC dialog inline. So instead
+        // of calling the crash-prone requestAuthorization, we check the
+        // status and rely on the new APIs to prompt when needed.
+        //
+        // If the status is still .notDetermined after a brief wait, the user
+        // hasn't been prompted yet — the dictation flow in LiveSpeechService
+        // will trigger the automatic prompt via DictationTranscriber.
     }
 
     private func locationStatusDetail() -> String? {

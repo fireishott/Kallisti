@@ -332,32 +332,34 @@ final class TalkAudioCapture {
         let totalFrames = recordedBuffers.reduce(0) { $0 + Int($1.frameLength) }
 
         let outputSampleRate: Double = 24000
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: outputSampleRate,
-            channels: 1,
-            interleaved: true
-        ) else { return nil }
+        guard inputSampleRate > 0, outputSampleRate > 0 else {
+            logger.error("Invalid sample rate: input=\(inputSampleRate) output=\(outputSampleRate)")
+            return nil
+        }
 
         // Resample ratio
         let ratio = outputSampleRate / inputSampleRate
         let outputFrameCount = Int(Double(totalFrames) * ratio)
 
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: AVAudioFrameCount(outputFrameCount)
-        ) else { return nil }
-        outputBuffer.frameLength = AVAudioFrameCount(outputFrameCount)
+        guard outputFrameCount > 0, outputFrameCount <= 10 * 1024 * 1024 else {
+            logger.error("Output frame count out of range: \(outputFrameCount)")
+            return nil
+        }
 
-        guard let dst = outputBuffer.int16ChannelData?[0] else { return nil }
+        // Allocate raw PCM buffer — write WAV manually to avoid ExtAudioFile
+        // assertions (CAVerboseAbort) when the converter chain receives
+        // formats it can't reconcile.
+        let pcm = UnsafeMutablePointer<Int16>.allocate(capacity: outputFrameCount)
+        defer { pcm.deallocate() }
+        var writePosition = 0
 
         // Copy, resample, and convert float→int16
-        var writePosition = 0
         for buffer in recordedBuffers {
             guard let src = buffer.floatChannelData?[0] else { continue }
             let frames = Int(buffer.frameLength)
             let targetFrames = Int(Double(frames) * ratio)
             for i in 0..<targetFrames {
+                guard writePosition < outputFrameCount else { break }
                 let srcIndex = Float(i) / Float(ratio)
                 let srcIndexInt = Int(srcIndex)
                 let fraction = srcIndex - Float(srcIndexInt)
@@ -365,27 +367,51 @@ final class TalkAudioCapture {
                 let sampleB = (srcIndexInt + 1) < frames ? src[srcIndexInt + 1] : sampleA
                 let interpolated = sampleA + (sampleB - sampleA) * fraction
                 let clamped = max(-1.0, min(1.0, interpolated))
-                dst[writePosition] = Int16(clamped * 32767.0)
+                pcm[writePosition] = Int16(clamped * 32767.0)
                 writePosition += 1
             }
         }
-        outputBuffer.frameLength = AVAudioFrameCount(writePosition)
 
-        // Write WAV to temp file and read back
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".wav")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        guard let file = try? AVAudioFile(forWriting: tempURL, settings: outputFormat.settings) else {
-            logger.error("Failed to create temp WAV file")
+        guard writePosition > 0 else {
+            logger.error("No PCM samples written")
             return nil
         }
-        do {
-            try file.write(from: outputBuffer)
-        } catch {
-            logger.error("Failed to write WAV data: \(error.localizedDescription)")
-            return nil
+
+        let dataSize = writePosition * MemoryLayout<Int16>.stride
+
+        // Build WAV manually: 44-byte header + PCM data.
+        // This avoids AVAudioFile / ExtAudioFile entirely, which can
+        // CAVerboseAbort on format mismatches (7 crashes tracked across
+        // builds 61–5).
+        var wav = Data(capacity: 44 + dataSize)
+
+        // RIFF header
+        wav.append(contentsOf: "RIFF".utf8)
+        var fileSize = UInt32(36 + dataSize).littleEndian
+        wav.append(Data(bytes: &fileSize, count: 4))
+        wav.append(contentsOf: "WAVE".utf8)
+
+        // fmt  subchunk
+        wav.append(contentsOf: "fmt ".utf8)
+        var fmtSize: UInt32 = 16; wav.append(Data(bytes: &fmtSize, count: 4))
+        var audioFormat: UInt16 = 1; wav.append(Data(bytes: &audioFormat, count: 2)) // 1 = PCM
+        var channels: UInt16 = 1; wav.append(Data(bytes: &channels, count: 2))
+        var sampleRate: UInt32 = UInt32(outputSampleRate).littleEndian; wav.append(Data(bytes: &sampleRate, count: 4))
+        let byteRate = UInt32(outputSampleRate) * UInt32(MemoryLayout<Int16>.stride) * 1
+        var byteRateLE = byteRate.littleEndian; wav.append(Data(bytes: &byteRateLE, count: 4))
+        var blockAlign: UInt16 = UInt16(MemoryLayout<Int16>.stride); wav.append(Data(bytes: &blockAlign, count: 2))
+        var bitsPerSample: UInt16 = 16; wav.append(Data(bytes: &bitsPerSample, count: 2))
+
+        // data subchunk
+        wav.append(contentsOf: "data".utf8)
+        var dataSizeLE = UInt32(dataSize).littleEndian; wav.append(Data(bytes: &dataSizeLE, count: 4))
+
+        // PCM samples
+        pcm.withMemoryRebound(to: UInt8.self, capacity: dataSize) { bytes in
+            wav.append(bytes, count: dataSize)
         }
-        return try? Data(contentsOf: tempURL)
+
+        logger.info("Encoded WAV: \(dataSize) bytes PCM, \(writePosition) frames @ \(outputSampleRate) Hz")
+        return wav
     }
 }

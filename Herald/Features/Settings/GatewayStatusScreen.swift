@@ -226,6 +226,42 @@ struct GatewayStatusScreen: View {
         errorMessage = nil
         defer { isLoading = false }
 
+        // Time out after 10 seconds — the relay's gw/status endpoint can hang
+        // when the connector is wedged, and the user needs to know.
+        let result = await withTimeout(seconds: 10) {
+            await fetchTelemetryInner()
+        }
+        if case .timedOut = result, errorMessage == nil {
+            errorMessage = "Gateway status request timed out. The host may be overloaded — try again."
+        }
+    }
+
+    private enum TimeoutResult {
+        case completed
+        case timedOut
+    }
+
+    @MainActor
+    private func withTimeout(seconds: TimeInterval, body: @escaping @MainActor () async -> Void) async -> TimeoutResult {
+        let bodyTask = Task { @MainActor in
+            await body()
+            return TimeoutResult.completed
+        }
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            return TimeoutResult.timedOut
+        }
+        return await withTaskCancellationHandler {
+            let result = await bodyTask.value
+            timeoutTask.cancel()
+            return result
+        } onCancel: {
+            bodyTask.cancel()
+            timeoutTask.cancel()
+        }
+    }
+
+    private func fetchTelemetryInner() async {
         do {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString

@@ -62,20 +62,6 @@ final class LiveHealthService: HealthServiceProtocol {
             return
         }
 
-        // Check for the HealthKit entitlement in the bundle BEFORE creating
-        // the store. TestFlight builds strip this entitlement, and without it
-        // requestAuthorization throws .errorAuthorizationDenied — which
-        // verifyEntitlements misinterprets as a user action rather than a
-        // build-configuration issue. The result: users are told to manage
-        // Health permissions in Settings, but Herald doesn't appear there.
-        guard Self.bundleHasHealthKitEntitlement() else {
-            self.store = nil
-            self.metricDescriptors = [:]
-            self.authorizationStatus = .unsupported
-            self.entitlementsVerified = false
-            return
-        }
-
         let store = HKHealthStore()
         self.store = store
         self.metricDescriptors = LiveHealthService.makeMetricDescriptors()
@@ -99,8 +85,9 @@ final class LiveHealthService: HealthServiceProtocol {
             return .unsupported
         }
 
-        // Verify entitlements before attempting authorization.
-        // If the build lacks HealthKit entitlements, report unavailable immediately.
+        // Verify entitlements before attempting full authorization.
+        // If the build lacks HealthKit entitlements, report unavailable
+        // immediately rather than showing a misleading system dialog.
         guard await verifyEntitlements(store: store) else {
             authorizationStatus = .unsupported
             backgroundDeliveryEnabled = false
@@ -190,6 +177,12 @@ final class LiveHealthService: HealthServiceProtocol {
         // test — if the app lacks HealthKit entitlements, the system will throw
         // an error (not just deny). If the user has already denied, we still
         // know entitlements work — we just can't read data.
+        //
+        // Apple throws .errorAuthorizationDenied both when the user has denied
+        // AND when the build lacks entitlements entirely. To disambiguate, we
+        // check whether the Info.plist declares the HealthKit capability. If it
+        // doesn't (stripped entitlements / wrong provisioning profile), treat
+        // the error as "unsupported" rather than "user denied".
         let sampleTypes: Set<HKSampleType> = Set(
             [HKQuantityType(.stepCount)]
         )
@@ -198,11 +191,15 @@ final class LiveHealthService: HealthServiceProtocol {
             entitlementsVerified = true
             return true
         } catch let hkError as HKError {
-            // .errorAuthorizationDenied means entitlements ARE present but user
-            // said no — that's still "verified" (the build can use HealthKit).
             if hkError.code == .errorAuthorizationDenied {
-                entitlementsVerified = true
-                return true
+                // Disambiguate: if the plist declares HealthKit, the user
+                // genuinely denied. Otherwise the build lacks entitlements.
+                if Self.bundleHasHealthKitEntitlement() {
+                    entitlementsVerified = true
+                    return true
+                }
+                entitlementsVerified = false
+                return false
             }
             // Any other error means the build genuinely lacks entitlements.
             entitlementsVerified = false

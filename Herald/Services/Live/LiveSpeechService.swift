@@ -46,28 +46,27 @@ final class LiveSpeechService {
             return currentStatus
         }
 
-        // SFSpeechRecognizer.requestAuthorization + withCheckedContinuation
-        // crashes on iOS 18+ when the TCC dialog dismisses (the callback
-        // can arrive during deallocation of the async frame). Fire the
-        // system dialog on the main actor, then poll for the result.
-        await MainActor.run {
-            SFSpeechRecognizer.requestAuthorization { _ in }
-        }
-
-        // Wait for the TCC dialog to be dismissed (up to 15 s)
-        for _ in 0..<30 {
+        // SFSpeechRecognizer.requestAuthorization crashes on iOS 26 beta
+        // (FB-prefixed radar). The DictationTranscriber API handles
+        // authorization automatically when first used — the system presents
+        // the TCC dialog inline. We rely on that path instead of the
+        // crash-prone explicit request.
+        //
+        // Try a brief poll in case another process triggered the dialog,
+        // but don't call requestAuthorization ourselves.
+        for _ in 0..<10 {
             let status = SFSpeechRecognizer.authorizationStatus()
             if status != .notDetermined {
                 authorizationStatus = status
-                Self.logger.info("Speech authorization resolved via polling: \(String(describing: status), privacy: .public)")
+                Self.logger.info("Speech authorization resolved: \(String(describing: status), privacy: .public)")
                 return status
             }
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .milliseconds(200))
         }
 
-        // Fallback — shouldn't normally be reached
-        authorizationStatus = .notDetermined
-        Self.logger.warning("Speech authorization polling timed out")
+        // Status is still .notDetermined — the DictationTranscriber will
+        // trigger the system prompt when startListening() is called.
+        Self.logger.info("Speech authorization not yet determined; will prompt via DictationTranscriber")
         return .notDetermined
     }
 

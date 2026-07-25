@@ -90,6 +90,7 @@
 		4C1AB358EBA5771D622304B3 /* stream_v2_goal_continuation.json in Resources */ = {isa = PBXBuildFile; fileRef = 4CDDA61B61B5B16A13D3413F /* stream_v2_goal_continuation.json */; };
 		4E444730C90C27E90A3FC56B /* HeraldWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CD8CC41F0A9739AAE02DF1F8 /* HeraldWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		4ED062C79B3B1AA71F0E4B76 /* SSELineIteratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E02CFB97A48CB9069E5136E /* SSELineIteratorTests.swift */; };
+		506D1AD53978819A9DD21A39 /* SafariView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF16622CC224C8189080F013 /* SafariView.swift */; };
 		514CAEB01797DFCA6F403B2B /* InboxActionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */; };
 		515DCD2A02EBAE07F2D3AA33 /* MockMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */; };
 		51CD65E5412309DDE98C8162 /* GlassCircleButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD34D02337E841475436E38 /* GlassCircleButton.swift */; };
@@ -203,6 +204,7 @@
 		B1DACC517FAF8137C899A28E /* GatewayLogsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */; };
 		B3230FFE37EB3C2B064B5FF1 /* TableBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08827897CC69610DD892AF43 /* TableBlockView.swift */; };
 		B370A9FB5DEE55E52D216E4D /* HeraldNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605DD1AA9F59AF394AA92F81 /* HeraldNote.swift */; };
+		B413F37C97844329E06F726A /* Herald.entitlements.bak in Resources */ = {isa = PBXBuildFile; fileRef = 3EDD90A4E5A095E30CC47FE5 /* Herald.entitlements.bak */; };
 		B5E28F2CA9BDC56255740CCC /* asr_streaming_response.json in Resources */ = {isa = PBXBuildFile; fileRef = 2D00BF28AF995CA1CEC5C39E /* asr_streaming_response.json */; };
 		B65E7B0F3EDA146AD689C648 /* LiveMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 860E5A710E08ADEC8B39EFE6 /* LiveMediaService.swift */; };
 		B9F7F95878DA9495E49DC970 /* JobEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A94D5780D164E87A1D7A54EF /* JobEvent.swift */; };
@@ -398,6 +400,7 @@
 		39B60ECC6CC1BFB903A5E5DE /* HeraldControlsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldControlsBundle.swift; sourceTree = "<group>"; };
 		3E857F239BD33E0037CCFDFA /* NoteRecognitionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRecognitionCoordinatorTests.swift; sourceTree = "<group>"; };
 		3E9AB09E27CE9C9FC3A6B199 /* stream_v2_cancelled.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_cancelled.json; sourceTree = "<group>"; };
+		3EDD90A4E5A095E30CC47FE5 /* Herald.entitlements.bak */ = {isa = PBXFileReference; path = Herald.entitlements.bak; sourceTree = "<group>"; };
 		3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
 		3FB367EBF1680BB4107EC26C /* NoteRecognition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRecognition.swift; sourceTree = "<group>"; };
 		4036FEA694D563E58E6E3E11 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
@@ -541,6 +544,7 @@
 		BA1B30BA1EBCE116E6F9987E /* RestartGatewayControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RestartGatewayControl.swift; sourceTree = "<group>"; };
 		BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobEventReducer.swift; sourceTree = "<group>"; };
 		BDABEF77381354E50E1106E2 /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		BF16622CC224C8189080F013 /* SafariView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariView.swift; sourceTree = "<group>"; };
 		C1424CE6AD0EA1FCEF74BB84 /* StatusIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusIndicator.swift; sourceTree = "<group>"; };
 		C2BD518984239FFDE549937B /* HeraldHealthWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldHealthWidget.swift; sourceTree = "<group>"; };
 		C382C287A04B063179F255B2 /* ChatInputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInputBar.swift; sourceTree = "<group>"; };
@@ -736,6 +740,7 @@
 				2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */,
 				EBD3AA591BF3A81689A9C404 /* ContentView.swift */,
 				F2DE9E10D6772C6627EC6904 /* Herald.entitlements */,
+				3EDD90A4E5A095E30CC47FE5 /* Herald.entitlements.bak */,
 			);
 			path = Herald;
 			sourceTree = "<group>";
@@ -986,6 +991,7 @@
 			children = (
 				660D3914500E5EAF0A22B8F5 /* DemoData.swift */,
 				4FD34D02337E841475436E38 /* GlassCircleButton.swift */,
+				BF16622CC224C8189080F013 /* SafariView.swift */,
 				C1424CE6AD0EA1FCEF74BB84 /* StatusIndicator.swift */,
 			);
 			path = Components;
@@ -1441,6 +1447,7 @@
 				1B0B577FDAE58A91BE53693A /* AppIcon.png in Resources */,
 				C721F835729C050099101124 /* AppIntentVocabulary.plist in Resources */,
 				55DEB789574DE6E8D4743E8F /* Assets.xcassets in Resources */,
+				B413F37C97844329E06F726A /* Herald.entitlements.bak in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1647,6 +1654,7 @@
 				42767942768171F1659F2948 /* ResilientSessionBootstrapService.swift in Sources */,
 				99A145314C797E4D6D5191A6 /* Router.swift in Sources */,
 				37E80B9225E933052E213626 /* SSEEvent.swift in Sources */,
+				506D1AD53978819A9DD21A39 /* SafariView.swift in Sources */,
 				658446EBB585EBE86410B6E0 /* SecureStoreProtocol.swift in Sources */,
 				E9D7F65ED188244E84626F35 /* SensorUploadService.swift in Sources */,
 				486E229253EFBF2D10EA7A69 /* SessionBootstrapResponse.swift in Sources */,
@@ -1804,7 +1812,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.3.3;
@@ -1828,7 +1836,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.3.3;
@@ -1861,7 +1869,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.3.3;
@@ -1893,12 +1901,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 2.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Controls;
+				PRODUCT_NAME = HeraldControls;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1908,7 +1917,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.3.3;
@@ -1924,7 +1933,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1948,7 +1957,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1962,12 +1971,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 2.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.Controls;
+				PRODUCT_NAME = HeraldControls;
 				SWIFT_VERSION = 6.2;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -1978,7 +1988,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.3.3;
@@ -1994,7 +2004,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.3.3;
