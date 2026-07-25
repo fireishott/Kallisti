@@ -3676,12 +3676,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/status")
     async def api_status(request: Request) -> dict:
-        """Health check the desktop polls before opening WebSocket."""
+        """Health check the desktop polls before opening WebSocket.
+
+        Returns auth_required: false so Hermes Desktop uses token auth
+        (JWT bearer in ?token= query param on the WebSocket upgrade).
+        OAuth mode would require /api/auth/ws-ticket which we don't
+        implement — the desktop falls back to token mode cleanly.
+        """
         snapshot = app.state.telemetry.snapshot()
         return {
             "status": "ok",
             "version": settings.version,
-            "auth_required": settings.internal_api_key != "replace-me",
+            "auth_required": False,
             "gateway": {
                 "connected": snapshot.connection["state"] == "connected" if snapshot else False,
                 "model": snapshot.model.get("name") if snapshot else None,
