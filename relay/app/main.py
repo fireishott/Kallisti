@@ -55,6 +55,7 @@ from .schemas import (
     InternalInboxCreateRequest,
     MessageCreateRequest,
     ModelSetRequest,
+    ProfileSetRequest,
     PairingRedeemRequest,
     PhonePairingRedeemRequest,
     RenameSessionBody,
@@ -1574,6 +1575,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 auth.user.id,
                 method="model.set",
                 params=body.model_dump(),
+                timeout_seconds=10.0,
+            )
+            return success(result)
+        except HTTPException as exc:
+            raise exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.post("/v1/profile")
+    async def set_active_profile(
+        body: ProfileSetRequest,
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> dict:
+        """Set the active Hermes profile.
+
+        Forwards to the connector's profile.set RPC, which updates the
+        Hermes host's active profile. The next GET /v1/profiles reflects
+        the change so the iOS app stays in sync.
+        """
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="profile.set",
+                params={"name": body.name},
                 timeout_seconds=10.0,
             )
             return success(result)

@@ -27,6 +27,12 @@
   `.task` and `disconnect()` in `.onDisappear` — live logs were never connecting
   because `connect()` was never called. iPhone access path via Settings → Gateway
   → View Logs was already working.
+- **Profile persistence (P1):** Added `POST /v1/profile` relay endpoint and
+  `profile.set` connector RPC handler so profile switching goes through a proper
+  API call instead of a chat message hack (`/profile <name>`). `ProfileStore`
+  now has `switchProfile(to:)` that calls the API and reloads the catalog.
+  `activeProfileName` preserved when server returns nil — no more profile chip
+  vanishing mid-session.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

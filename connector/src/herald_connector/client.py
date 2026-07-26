@@ -1618,6 +1618,8 @@ class HeraldConnector:
                 result = await self._rpc_model_set(params)
             elif method == "profiles.list":
                 result = await self._rpc_profiles_list()
+            elif method == "profile.set":
+                result = await self._rpc_profile_set(params)
             elif method == "skills.list":
                 result = await self._rpc_skills_list()
             elif method == "cron.list":
@@ -1895,6 +1897,46 @@ class HeraldConnector:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
         return {"activeModel": self._read_active_model(hermes_home)}
+
+    async def _rpc_profile_set(self, params: dict) -> dict:
+        """Set the active Hermes profile in ~/.hermes/config.yaml.
+
+        Writes the profile name so the host remembers it across restarts.
+        The next profiles.list call reflects the change.
+        """
+        hermes_home = self._resolve_hermes_home()
+        config_path = hermes_home / "config.yaml"
+        name = params.get("name")
+        if not name:
+            raise RuntimeError("profile.set requires 'name'")
+
+        if not config_path.is_file():
+            raise RuntimeError("config.yaml not found")
+
+        try:
+            from ruamel.yaml import YAML
+
+            yaml_engine = YAML()
+            yaml_engine.preserve_quotes = True
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml_engine.load(f) or {}
+            round_trip = True
+        except ImportError:
+            import yaml as yaml_engine
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml_engine.safe_load(f) or {}
+            round_trip = False
+
+        config["profile"] = name
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            if round_trip:
+                yaml_engine.dump(config, f)
+            else:
+                yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+
+        return {"activeProfile": name}
 
     @staticmethod
     def _read_available_models(hermes_home: Path) -> list[dict]:

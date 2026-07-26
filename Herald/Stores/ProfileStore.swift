@@ -2,10 +2,9 @@ import Foundation
 
 /// Loads the profile catalog from the connected Hermes host via the relay.
 ///
-/// Listing comes from `GET /profiles` (the profile tree on the host).
-/// Active-profile switching is dispatched through the chat path, so this store
-/// is read-only apart from an optimistic active-profile update while the
-/// gateway confirmation streams back.
+/// Profile listing comes from `GET /v1/profiles`. Active-profile switching
+/// uses `POST /v1/profile` to set the profile on the host, then reloads the
+/// catalog to confirm.
 @MainActor
 @Observable
 final class ProfileStore {
@@ -20,6 +19,10 @@ final class ProfileStore {
     private struct ProfileCatalogResponse: Decodable {
         let activeProfile: HeraldProfile?
         let profiles: [HeraldProfile]
+    }
+
+    private struct ProfileSetResponse: Decodable {
+        let activeProfile: String?
     }
 
     var profiles: [HeraldProfile] = []
@@ -73,8 +76,11 @@ final class ProfileStore {
             // profiles = [] as an intermediate step, which would cause the
             // profile/model chips to vanish mid-session.
             profiles = response.profiles
-            activeProfileName = response.activeProfile?.name
+            // Only update activeProfileName if the server actually returns one.
+            // A nil response means the connector doesn't track active profiles —
+            // preserve our local state so the chip doesn't vanish.
             if let name = response.activeProfile?.name {
+                activeProfileName = name
                 UserDefaults.standard.set(name, forKey: Self.activeProfileKey)
             }
             lastLoadedAt = .now
@@ -84,8 +90,30 @@ final class ProfileStore {
         }
     }
 
-    /// Optimistically marks a profile active while the profile-switch command's
-    /// confirmation streams back through the chat path.
+    /// Optimistically marks a profile active and calls the relay endpoint
+    /// to persist the selection on the host.
+    func switchProfile(to name: String) async throws {
+        guard let apiClient, let token = await accessTokenProvider() else {
+            errorMessage = "Not connected to a relay."
+            return
+        }
+
+        // Optimistic local update before the network call
+        markActive(name)
+
+        let body = ["name": name]
+        let _: ProfileSetResponse = try await apiClient.post(
+            path: "profile",
+            body: body,
+            accessToken: token
+        )
+
+        // Confirm by reloading the catalog from the server
+        await loadProfiles(force: true)
+    }
+
+    /// Optimistically marks a profile active — used when the chat path
+    /// detects a profile switch in the agent's response text.
     func markActive(_ name: String) {
         activeProfileName = name
         UserDefaults.standard.set(name, forKey: Self.activeProfileKey)

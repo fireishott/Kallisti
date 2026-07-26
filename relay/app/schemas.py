@@ -250,6 +250,10 @@ class ModelSetRequest(BaseModel):
     provider: str
 
 
+class ProfileSetRequest(BaseModel):
+    name: str
+
+
 class CreateSessionBody(BaseModel):
     title: str = "New Chat"
 
