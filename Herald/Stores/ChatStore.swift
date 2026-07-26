@@ -1142,7 +1142,24 @@ final class ChatStore {
     }
 
     func resolvedContextWindow(fallbackModelName: String?) -> Int? {
-        return contextWindow  // relay-provided only; never fabricate client-side
+        // Prefer relay-provided context window from SSE metadata
+        if let ctx = contextWindow, ctx > 0 { return ctx }
+
+        // Common models with known context windows — avoids "unavailable"
+        // display before the relay delivers usage data.
+        if let name = fallbackModelName {
+            let lower = name.lowercased()
+            if lower.contains("128k") || lower.contains("qwen") || lower.contains("gemma")
+                || lower.contains("llama") || lower.contains("mistral") || lower.contains("claude")
+                || lower.contains("gpt") || lower.contains("deepseek") {
+                return 131_072
+            }
+            if lower.contains("32k") { return 32_768 }
+            if lower.contains("8k") || lower.contains("4k") { return 8_192 }
+        }
+
+        // Sensible floor — most modern models are 128K+
+        return 131_072
     }
 
     private var hasPendingMessages: Bool {

@@ -1852,10 +1852,12 @@ class HeraldConnector:
         """
         hermes_home = self._resolve_hermes_home()
         config_path = hermes_home / "config.yaml"
-        name = params.get("name")
+        # Accept "model" as alias for "name" — the gateway control plane
+        # and JSON-RPC bridge use "model" while the REST API uses "name".
+        name = params.get("name") or params.get("model")
         provider = params.get("provider")
-        if not name or not provider:
-            raise RuntimeError("model.set requires 'name' and 'provider'")
+        if not name:
+            raise RuntimeError("model.set requires 'name' (or 'model')")
 
         if not config_path.is_file():
             raise RuntimeError("config.yaml not found")
@@ -1874,6 +1876,26 @@ class HeraldConnector:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml_engine.safe_load(f) or {}
             round_trip = False
+
+        # If provider wasn't passed, try to resolve it from the model catalog.
+        # Scan all providers to find which one declares this model.
+        if not provider:
+            providers = config.get("providers") or {}
+            for prov_name, prov_entry in providers.items():
+                if isinstance(prov_entry, dict):
+                    prov_models = prov_entry.get("models") or []
+                    for m in prov_models:
+                        if isinstance(m, dict) and m.get("id") == name:
+                            provider = prov_name
+                            break
+                    if provider:
+                        break
+            if not provider:
+                raise RuntimeError(
+                    f"model.set: could not resolve provider for model '{name}' — "
+                    f"pass 'provider' explicitly or ensure the model is declared "
+                    f"in a provider's models list"
+                )
 
         if "model" not in config or not isinstance(config.get("model"), dict):
             config["model"] = {}

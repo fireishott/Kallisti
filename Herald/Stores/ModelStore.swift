@@ -101,20 +101,47 @@ final class ModelStore {
         }
     }
 
-    /// Switches the active model via `POST /v1/model`. The relay edits the
-    /// host's config.yaml and returns the resulting active model, which is
-    /// applied directly here — no optimistic guessing.
+    /// Switches the active model via `POST /v1/model`. Falls back to
+    /// `POST /gw/model/switch` if the connector RPC path fails (e.g. connector
+    /// offline). The relay edits the host's config.yaml and returns the
+    /// resulting active model.
     func switchModel(to name: String, provider: String) async throws {
         guard let apiClient, let token = await accessTokenProvider() else {
-            errorMessage = "Not connected to a relay."
-            return
+            throw ModelStoreError.notConnected
         }
-        let body = ["name": name, "provider": provider]
-        let response: ModelSetResponse = try await apiClient.post(
-            path: "model", body: body, accessToken: token
-        )
-        if let updated = response.activeModel {
-            activeModel = updated
+
+        do {
+            // Primary path: connector RPC via relay
+            let body = ["name": name, "provider": provider]
+            let response: ModelSetResponse = try await apiClient.post(
+                path: "model", body: body, accessToken: token
+            )
+            if let updated = response.activeModel {
+                activeModel = updated
+            }
+        } catch {
+            // Fallback: gateway control plane (model name only)
+            let gwBody: [String: String] = ["model": name]
+            let _: GatewayResponse = try await apiClient.post(
+                path: "gw/model/switch", body: gwBody, accessToken: token
+            )
+            // Optimistic — reload catalog to confirm
+            await loadModels(force: true)
+        }
+    }
+
+    private struct GatewayResponse: Decodable {
+        let switched: Bool?
+        let model: String?
+    }
+
+    enum ModelStoreError: Error, LocalizedError {
+        case notConnected
+
+        var errorDescription: String? {
+            switch self {
+            case .notConnected: "Not connected to a relay."
+            }
         }
     }
 

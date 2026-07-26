@@ -33,6 +33,13 @@
   now has `switchProfile(to:)` that calls the API and reloads the catalog.
   `activeProfileName` preserved when server returns nil — no more profile chip
   vanishing mid-session.
+- **Model selection (P1):** Connector `_rpc_model_set` now accepts `model` as
+  alias for `name` and auto-resolves `provider` from the config catalog — fixes
+  the `/gw/model/switch` and JSON-RPC `model.set` paths that were passing wrong
+  params. `ModelStore.switchModel()` falls back to `/gw/model/switch` on failure
+  and properly throws on errors. Context window defaults to 128K for modern
+  models instead of showing "unavailable". Added "Check for Updates" and
+  "Update Agent" buttons to Settings → Gateway.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

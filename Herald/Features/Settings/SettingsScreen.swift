@@ -344,7 +344,94 @@ struct SettingsScreen: View {
                     .frame(minHeight: Design.Size.minTapTarget)
                 }
                 .buttonStyle(.plain)
+
+                sectionDivider
+
+                // Check for updates
+                gatewayActionButton(
+                    label: "Check for Updates",
+                    icon: "arrow.triangle.2.circlepath",
+                    action: { await checkForUpdates() }
+                )
+
+                // Update agent
+                gatewayActionButton(
+                    label: "Update Agent",
+                    icon: "arrow.down.to.line",
+                    action: { await updateAgent() }
+                )
             }
+        }
+    }
+
+    private func gatewayActionButton(
+        label: String,
+        icon: String,
+        action: @escaping () async -> Void
+    ) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.blue)
+                    .frame(width: 20, alignment: .center)
+
+                Text(label)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+
+                Spacer()
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func checkForUpdates() async {
+        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+        guard let relayBase else { return }
+        let token = await sessionStore.currentAccessToken()
+        let client = RelayAPIClient { relayBase }
+
+        struct EmptyRequest: Encodable {}
+        struct UpdateStatus: Decodable {
+            let status: String?
+            let message: String?
+        }
+        do {
+            let _: UpdateStatus = try await client.post(
+                path: "gw/update/check",
+                body: EmptyRequest(),
+                accessToken: token ?? ""
+            )
+        } catch {
+            // Silently fail — the gateway section is informational
+        }
+    }
+
+    private func updateAgent() async {
+        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+        guard let relayBase else { return }
+        let token = await sessionStore.currentAccessToken()
+        let client = RelayAPIClient { relayBase }
+
+        struct EmptyRequest: Encodable {}
+        struct UpdateStatus: Decodable {
+            let status: String?
+            let message: String?
+        }
+        do {
+            let _: UpdateStatus = try await client.post(
+                path: "gw/update",
+                body: EmptyRequest(),
+                accessToken: token ?? ""
+            )
+        } catch {
+            // Silently fail
         }
     }
 
