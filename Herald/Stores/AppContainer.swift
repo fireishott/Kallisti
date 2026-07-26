@@ -349,7 +349,15 @@ final class AppContainer {
             motionService: liveMotionService
         )
         let dashboardLogService = DashboardLogService(
-            baseURLProvider: { settingsStore.settings.dashboardURL ?? "http://localhost:9119" },
+            baseURLProvider: {
+                // Derive dashboard URL from the relay host when paired,
+                // falling back to the user-configured URL or localhost.
+                if let relayURL = activePairingStore?.pairedRelayConfiguration?.baseURLString,
+                   let host = URL(string: relayURL)?.host {
+                    return "http://\(host):9119"
+                }
+                return settingsStore.settings.dashboardURL ?? "http://localhost:9119"
+            },
             credentialsProvider: {
                 guard let user = settingsStore.settings.dashboardUsername,
                       let pass = settingsStore.settings.dashboardPassword else { return nil }

@@ -169,6 +169,10 @@ struct ChatScreen: View {
         }
         .sheet(isPresented: $showHeraldHub) {
             HeraldSelectorSheet(initialTab: heraldHubInitialTab)
+                .environment(modelStore)
+                .environment(chatStore)
+                .environment(profileStore)
+                .environment(hostStore)
                 .presentationDetents([.large, .medium])
                 .presentationDragIndicator(.visible)
         }
