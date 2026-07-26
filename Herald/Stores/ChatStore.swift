@@ -536,7 +536,7 @@ final class ChatStore {
                     // Auto-compress when context exceeds 85% — sends /compress
                     // as a system directive so the user doesn't have to hit the
                     // banner button manually.
-                    if let pct = self.conversation?.contextPercent, pct > 0.85 {
+                    if let pct = self.conversation?.contextPercent, pct > 85.0 {
                         await self.autoCompress()
                     }
 
@@ -968,6 +968,8 @@ final class ChatStore {
             cacheCopy.contextPercent = nil
             cacheCopy.latestUsage = nil
             persistence.saveConversationCache(cacheCopy)
+            // Also reset in-memory state so the UI reflects post-compress.
+            self.conversation?.contextPercent = nil
             onConversationChanged?()
         }
     }

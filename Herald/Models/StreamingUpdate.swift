@@ -4,7 +4,8 @@ struct ContextInfo: Codable, Hashable, Sendable {
     let window: Int
     let used: Int
     var percentUsed: Double {
-        window > 0 ? Double(used) / Double(window) * 100.0 : 0
+        guard window > 0 else { return 0 }
+        return min(Double(used) / Double(window) * 100.0, 100.0)
     }
 }
 

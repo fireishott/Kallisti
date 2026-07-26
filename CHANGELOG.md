@@ -47,6 +47,11 @@
   iOS 26 beta). Added `LegacySpeechService` using the classic SFSpeechRecognizer
   + audio buffer path for iOS 18-25 fallback. `createSpeechDictationService()`
   returns `LegacySpeechService()` on iOS < 26 instead of `nil`.
+- **Context percentage (P1):** `percentUsed` capped at 100% (was uncapped —
+  could show 1600% when used exceeded window). Auto-compress threshold fixed
+  from `pct > 0.85` (firing at 0.85% usage) to `pct > 85.0` (firing at 85%).
+  In-memory `contextPercent` now reset after auto-compress so the UI updates
+  immediately instead of showing stale pre-compress values.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 
