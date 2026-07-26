@@ -543,21 +543,17 @@ final class AppContainer {
         // Register notification categories before remote notifications can be acted on
         notificationService?.registerCategories()
 
-        // Parallelize independent network calls — these don't depend on each other
-        // and running them sequentially adds unnecessary launch latency.
-        async let hostRefresh: () = hostStore.refresh()
-        async let chatLoad: () = chatStore.loadConversationIfNeeded()
-        async let inboxLoad: () = inboxStore.loadInbox()
-        async let sessionLoad: () = sessionListStore.loadSessions()
-        async let commandRefresh: () = refreshCommandCatalog(force: true)
-        async let pushRegister: () = registerStoredPushTokenIfNeeded()
-
-        _ = await (hostRefresh, chatLoad, inboxLoad, sessionLoad, commandRefresh, pushRegister)
+        await hostStore.refresh()
         lastKnownHostOnline = hostStore.isHostOnline
+        await chatStore.loadConversationIfNeeded()
 
         // Update shared state for Control Center widgets
         updateSharedAppState()
         updateSharedGatewayState()
+        await inboxStore.loadInbox()
+        await sessionListStore.loadSessions()
+        await refreshCommandCatalog(force: true)
+        await registerStoredPushTokenIfNeeded()
         sensorUploadService?.start()
         await sensorUploadService?.handleAppDidBecomeActive()
         reconcileLiveActivities()
