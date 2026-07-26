@@ -93,6 +93,11 @@ struct PermissionCard: View {
            capability.status == .denied || capability.status == .restricted {
             return nil
         }
+        // Show a settings fallback for unsupported — the user may need to
+        // check system-level Health permissions or device compatibility.
+        if capability.status == .unsupported {
+            return "Open Settings"
+        }
         return capability.status.actionLabel
     }
 

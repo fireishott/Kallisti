@@ -68,15 +68,12 @@ final class LiveHealthService: HealthServiceProtocol {
         self.authorizationStatus = .notDetermined
     }
 
-    /// Check whether the app bundle declares the HealthKit entitlement.
-    /// TestFlight/App Store builds that strip entitlements won't have this,
-    /// and we can report `.unsupported` immediately without triggering a
-    /// misleading .errorAuthorizationDenied from the system.
+    /// Check whether HealthKit is available on this device.
+    /// Uses the system framework's own availability check rather than probing
+    /// Info.plist (which never contains entitlement keys — those live in the
+    /// code signature, not Info.plist).
     private static func bundleHasHealthKitEntitlement() -> Bool {
-        guard let entitlements = Bundle.main.infoDictionary?["com.apple.developer.healthkit"] as? Bool else {
-            return false
-        }
-        return entitlements
+        return HKHealthStore.isHealthDataAvailable()
     }
 
     func requestAuthorization() async -> PermissionStatus {
@@ -152,12 +149,11 @@ final class LiveHealthService: HealthServiceProtocol {
 
     // MARK: - Entitlement Verification
 
-    /// Verifies that the app has HealthKit entitlements by probing the store.
+    /// Verifies that HealthKit is available on this device.
     ///
-    /// Apple intentionally limits read-authorization disclosure: a query returning
-    /// no samples does NOT mean the user granted read access. This method checks
-    /// whether the build is *capable* of using HealthKit (i.e., has entitlements),
-    /// not whether the user has authorized read access.
+    /// Does NOT probe with requestAuthorization — that triggers the system
+    /// permission dialog as a side effect. The actual user-facing authorization
+    /// request happens in requestAuthorization(), not here.
     ///
     /// The result is cached so subsequent calls are free.
     /// Internal access for testing.
@@ -166,50 +162,15 @@ final class LiveHealthService: HealthServiceProtocol {
             return verified
         }
 
-        // First: check basic availability. If HealthKit isn't available on this
-        // device (iPad, iPod touch without Watch), bail early.
         guard HKHealthStore.isHealthDataAvailable() else {
             entitlementsVerified = false
             return false
         }
 
-        // Second: try to actually request authorization. This is the definitive
-        // test — if the app lacks HealthKit entitlements, the system will throw
-        // an error (not just deny). If the user has already denied, we still
-        // know entitlements work — we just can't read data.
-        //
-        // Apple throws .errorAuthorizationDenied both when the user has denied
-        // AND when the build lacks entitlements entirely. To disambiguate, we
-        // check whether the Info.plist declares the HealthKit capability. If it
-        // doesn't (stripped entitlements / wrong provisioning profile), treat
-        // the error as "unsupported" rather than "user denied".
-        let sampleTypes: Set<HKSampleType> = Set(
-            [HKQuantityType(.stepCount)]
-        )
-        do {
-            try await store.requestAuthorization(toShare: [], read: sampleTypes)
-            entitlementsVerified = true
-            return true
-        } catch let hkError as HKError {
-            if hkError.code == .errorAuthorizationDenied {
-                // Disambiguate: if the plist declares HealthKit, the user
-                // genuinely denied. Otherwise the build lacks entitlements.
-                if Self.bundleHasHealthKitEntitlement() {
-                    entitlementsVerified = true
-                    return true
-                }
-                entitlementsVerified = false
-                return false
-            }
-            // Any other error means the build genuinely lacks entitlements.
-            entitlementsVerified = false
-            return false
-        } catch {
-            // Non-HKError — likely a system issue, not entitlement-related.
-            // Be permissive: assume entitlements are present.
-            entitlementsVerified = true
-            return true
-        }
+        // HealthKit is available. We don't probe further — the real test
+        // happens when the user taps Allow and requestAuthorization() is called.
+        entitlementsVerified = true
+        return true
     }
 
     func startMonitoring() {

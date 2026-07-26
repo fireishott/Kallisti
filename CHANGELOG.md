@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.6] - 2026-07-26 — Bug Sweep
+
+### Fixed
+- **HealthKit probe (P0):** `bundleHasHealthKitEntitlement()` now uses
+  `HKHealthStore.isHealthDataAvailable()` instead of checking `Bundle.main.infoDictionary`
+  (which never contains entitlement keys). `verifyEntitlements()` no longer probes with
+  `requestAuthorization` — that was triggering the system permission dialog as a side
+  effect. `PermissionCard` now shows "Open Settings" fallback for `.unsupported` status.
+
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 
 ### Added
