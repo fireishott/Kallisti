@@ -179,6 +179,16 @@ final class AppContainer {
             guard let self, let token = notification.object as? String else { return }
             Task { await self.registerLiveActivityPushToken(token) }
         }
+
+        // When notification permission is granted mid-session, immediately
+        // register the stored APNs token so push works without an app restart.
+        NotificationCenter.default.addObserver(
+            forName: .heraldPushPermissionGranted,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { await self?.registerStoredPushTokenIfNeeded() }
+        }
     }
 
     static func sharedDefault() -> AppContainer {

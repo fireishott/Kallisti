@@ -43,7 +43,11 @@ final class PermissionsStore {
         case .health:
             _ = await healthService.requestAuthorization()
         case .notifications:
-            _ = await notificationService.requestAuthorization()
+            let status = await notificationService.requestAuthorization()
+            capabilities[.notifications]?.status = status
+            if status == .authorized {
+                NotificationCenter.default.post(name: .heraldPushPermissionGranted, object: nil)
+            }
         case .microphone:
             await requestMicrophoneAuthorization()
         case .camera:
@@ -203,4 +207,10 @@ final class PermissionsStore {
             return nil
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted when the user grants notification permission so that
+    /// AppContainer can trigger APNs token registration immediately.
+    static let heraldPushPermissionGranted = Notification.Name("HeraldPushPermissionGranted")
 }

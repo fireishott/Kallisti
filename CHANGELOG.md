@@ -8,6 +8,12 @@
   (which never contains entitlement keys). `verifyEntitlements()` no longer probes with
   `requestAuthorization` — that was triggering the system permission dialog as a side
   effect. `PermissionCard` now shows "Open Settings" fallback for `.unsupported` status.
+- **Push registration (P0):** `requestAuthorization()` now triggers
+  `UIApplication.shared.registerForRemoteNotifications()` immediately after the user
+  grants notification permission, so APNs tokens are available without an app restart.
+  `AppContainer` observes `heraldPushPermissionGranted` to call `registerStoredPushTokenIfNeeded()`.
+  Deploy script `push_environment` fixed from `'development'` → `'production'` to match
+  the app's hardcoded environment.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

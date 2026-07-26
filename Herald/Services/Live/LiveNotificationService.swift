@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import UserNotifications
 
 @MainActor
@@ -24,6 +25,14 @@ final class LiveNotificationService: NotificationServiceProtocol {
         do {
             let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
             authorizationStatus = granted ? .authorized : .denied
+            if granted {
+                // Trigger APNs token registration now that permission is granted.
+                // Without this, the push token won't be available until the next
+                // app launch — leaving push non-functional for the entire session.
+                await MainActor.run {
+                    UIApplication.shared.registerForRemoteNotifications()
+                }
+            }
         } catch {
             authorizationStatus = .denied
         }
