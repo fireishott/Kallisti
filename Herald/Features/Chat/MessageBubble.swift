@@ -185,6 +185,16 @@ struct MessageBubble: View, Equatable {
                     .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
             }
             .buttonStyle(.plain)
+        case "empty_response":
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.warning.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
         default:
             Button { onRetry?(message) } label: {
                 Label("Retry", systemImage: "arrow.clockwise")

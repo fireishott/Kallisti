@@ -56,8 +56,8 @@ final class ChatStore {
     /// first token, and the connector has its own 120s watchdog. 30s was too
     /// tight for real-world usage with local models on constrained hardware.
     /// If no text/reasoning/tool/finished event arrives within this window,
-    /// the job is treated as stalled.
-    static var watchdogTimeout: Duration = .seconds(60)
+    /// the job is treated as stalled and parallel polling begins.
+    static var watchdogTimeout: Duration = .seconds(90)
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
@@ -259,10 +259,13 @@ final class ChatStore {
 
     /// Drives a single streaming attempt for an outgoing message.
     ///
-    /// A ~120s watchdog guards the attempt (see `runStreamingAttempt`): if no
-    /// progress event arrives in that window, the job is treated as silently
-    /// dropped. The relay now owns retries via leases, so the client never
-    /// resubmits the same message — it just shows a waiting state.
+    /// If the SSE stream stalls (no progress events within the watchdog window)
+    /// we start parallel HTTP polling rather than failing the message.  The
+    /// relay owns retries via leases, so the client never resubmits the same
+    /// message — it just keeps waiting until the relay resolves the job.
+    ///
+    /// Only an explicit ``.failed`` event from the relay causes a "tap to retry"
+    /// error to appear.  A stalled stream is a transport concern, not a failure.
     private func runAttemptLoop(
         content: String,
         attachments: [PendingAttachment],
@@ -275,34 +278,56 @@ final class ChatStore {
             clientMessageID: clientMessageID,
             placeholderID: placeholderID
         )
+
+        // If the stream completed normally (including explicit .failed), done.
         guard stalled else { return }
 
-        // Watchdog fired. Show "Waiting for host..." state
+        // — Stream stalled — start parallel polling indefinitely —
         streamingPhase = .stalled
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
 
-        // Grace period with progress checking
-        for i in 0..<3 {
+        // Poll until the job resolves.  The relay will eventually complete or
+        // fail the job; we just keep checking.  No forced client-side timeout.
+        var pollCount = 0
+        while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(10))
+            pollCount += 1
 
-            // Check if answered during grace period
             let refreshed = await refreshActiveConversation()
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
-            if let msg = conversation?.messages.first(where: { $0.id == placeholderID }),
-               msg.status == .delivered || !msg.content.isEmpty {
+
+            // Check if the placeholder was resolved by a late SSE event or polling
+            if let msg = conversation?.messages.first(where: { $0.id == placeholderID }) {
+                if msg.status == .delivered || msg.status == .failed {
+                    streamingPhase = .idle
+                    chatLiveActivity.endActivity()
+                    return
+                }
+                if !msg.content.isEmpty && msg.status != .sending {
+                    streamingPhase = .idle
+                    chatLiveActivity.endActivity()
+                    return
+                }
+            }
+
+            // Check whether the original user message was marked failed
+            if let userMsg = conversation?.messages.first(where: { $0.id == clientMessageID }),
+               userMsg.status == .failed {
+                streamingPhase = .idle
+                chatLiveActivity.endActivity()
                 return
             }
 
-            // Update status message
+            // Update waiting indicator periodically
             if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                conversation?.messages[idx].toolActivity = "Still waiting... (\((i + 1) * 10)s)"
+                let mins = pollCount / 6
+                if mins > 0 {
+                    conversation?.messages[idx].toolActivity = "Waiting... (\(mins)m)"
+                }
             }
         }
-
-        // No response after 30s — fail with tap-to-retry
-        failStalledMessage(clientMessageID: clientMessageID, placeholderID: placeholderID)
     }
 
     /// Runs a single streaming attempt, racing the update stream against a
@@ -638,12 +663,10 @@ final class ChatStore {
         }
 
         if watchdogFired {
-            // No progress at all — cancel this attempt's stream so any events
-            // that trickle in late can't clobber the retry's state (the loop
-            // above checks Task.isCancelled before every write).
-            consumerTask.cancel()
-            streamingTask = nil
-            chatLiveActivity.endActivity()
+            // No progress arrived within the watchdog window.  Do NOT cancel the
+            // consumer task — it may still receive events.  Instead, signal the
+            // caller to start parallel polling (which will resolve the message
+            // when the relay eventually completes or fails the job).
             return true
         }
 
@@ -671,38 +694,20 @@ final class ChatStore {
 
     /// The user-facing failure copy, using the active profile name when
     /// available and falling back to "Herald".
-    func failureMessage() -> String {
+    func failureMessage(for category: String? = nil) -> String {
         let name = profileStore?.activeProfile?.name ?? "Herald"
-        return "\(name) didn't respond. Tap to retry."
-    }
-
-    /// Marks a message as failed with real, actionable error text after both
-    /// the initial attempt and the automatic retry have stalled with zero
-    /// progress. Mirrors the shape of the existing `.failed` stream-event
-    /// handling above (Herald placeholder becomes a system error message, user
-    /// message flips to `.failed`) so the existing manual "tap to retry" flow
-    /// (`retryMessage(_:)`, wired up in `MessageBubble`) keeps working unchanged.
-    private func failStalledMessage(clientMessageID: UUID, placeholderID: UUID) {
-        let errorText = failureMessage()
-        if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-            // Use a NEW id so a late .finished event or polling merge can't
-            // silently overwrite this error with the real response. The error
-            // stays visible; if the response eventually arrives, it appears as
-            // a separate message via the next polling refresh.
-            conversation?.messages[idx] = Message(
-                id: UUID(),
-                sender: .system,
-                content: errorText,
-                status: .failed
-            )
+        switch category {
+        case "context_exceeded":
+            return "Session too long. Start a new chat."
+        case "rate_limited":
+            return "\(name) is rate-limited. Wait and retry."
+        case "timeout":
+            return "\(name) took too long. Tap to retry."
+        case "empty_response":
+            return "\(name) returned an empty response. Tap to retry."
+        default:
+            return "\(name) didn't respond. Tap to retry."
         }
-        if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-            conversation?.messages[idx].status = .failed
-        }
-        activeStreams.removeAll()
-        pendingMessageSentAt = nil
-        streamingPhase = .idle
-        chatLiveActivity.endActivity()
     }
 
     func clearConversation() async throws {
@@ -1029,10 +1034,7 @@ final class ChatStore {
     }
 
     func retryMessage(_ message: Message) async {
-        // Remove the failed message
-        conversation?.messages.removeAll { $0.id == message.id }
-
-        // Determine the user content to retry (attachments can't be recovered from metadata)
+        // Determine the user content to retry.
         let sourceMessage: Message?
         if message.sender == .user {
             sourceMessage = message
@@ -1042,11 +1044,25 @@ final class ChatStore {
 
         guard let sourceMessage else { return }
         let attachments = sourceMessage.attachments.compactMap(PendingAttachment.restore)
-        let content = normalizedRetryContent(for: sourceMessage)
+        var content = normalizedRetryContent(for: sourceMessage)
         guard !content.isEmpty || !attachments.isEmpty else { return }
 
-        // Reuse the original clientMessageId so the server can deduplicate
-        await sendMessage(content, attachments: attachments, clientMessageID: sourceMessage.clientMessageID)
+        // If the failed message was an assistant response that had partial
+        // content (truncated/incomplete), prepend a continuation hint so the
+        // agent knows to pick up where it left off rather than restarting.
+        if message.sender != .user && !message.content.isEmpty {
+            // Only remove the failed assistant message — keep the user message.
+            conversation?.messages.removeAll { $0.id == message.id }
+            let tail = String(message.content.suffix(120))
+            content = "[Your previous response was cut off. It ended with: \"\(tail)\". Continue from where you stopped.]\n\n\(content)"
+        } else {
+            // Failed user message or empty assistant response — remove and resend fresh.
+            conversation?.messages.removeAll { $0.id == message.id }
+        }
+
+        // Always use a fresh clientMessageID so the relay processes this as a
+        // new message rather than deduplicating against the failed attempt.
+        await sendMessage(content, attachments: attachments, clientMessageID: UUID())
     }
 
     func setPollingEnabled(_ isEnabled: Bool) {
@@ -1096,7 +1112,7 @@ final class ChatStore {
     }
 
     func resolvedContextWindow(fallbackModelName: String?) -> Int? {
-        contextWindow ?? Self.inferredContextWindow(for: fallbackModelName)
+        return contextWindow  // relay-provided only; never fabricate client-side
     }
 
     private var hasPendingMessages: Bool {
@@ -1480,31 +1496,8 @@ final class ChatStore {
 
     /// Fallback-only lookup for cases where the connector has not yet provided
     /// an explicit context window. This should never overwrite a known value.
-    static func inferredContextWindow(for modelName: String?) -> Int? {
-        guard let modelName, !modelName.isEmpty else { return nil }
-        let n = modelName.lowercased()
-
-        if n.contains("claude-opus-4-6") || n.contains("claude-opus-4.6")
-            || n.contains("claude-sonnet-4-6") || n.contains("claude-sonnet-4.6") {
-            return 1_000_000
-        }
-        if n.contains("claude") { return 200_000 }
-        if n.contains("gpt-4.1") { return 1_047_576 }
-        if n.contains("gpt-5") { return 128_000 }
-        if n.contains("gpt-4") { return 128_000 }
-        if n.contains("gemini") { return 1_048_576 }
-        if n.contains("gemma-4-31b") || n.contains("gemma-4-26b") { return 256_000 }
-        if n.contains("gemma-3") { return 131_072 }
-        if n.contains("gemma") { return 8_192 }
-        if n.contains("deepseek") { return 128_000 }
-        if n.contains("llama") { return 131_072 }
-        if n.contains("qwen") { return 131_072 }
-        if n.contains("minimax") { return 204_800 }
-        if n.contains("glm") { return 202_752 }
-        if n.contains("kimi") { return 262_144 }
-        if n.contains("mimo-v2-pro") || n.contains("mimo-v2-omni") { return 1_048_576 }
-        return 128_000
-    }
+    // REMOVED: inferredContextWindow — all context info now comes from the
+    // relay model catalog. Never fabricate context limits client-side.
 }
 
 private extension Array {

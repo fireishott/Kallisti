@@ -437,7 +437,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await app.state.event_fanout.unsubscribe(job_id, queue)
 
     def publish_job_event(job_id: str, event: dict) -> None:
-        # Persist to durable DB log + wake EventFanout subscribers
+        # Persist to durable DB log + push directly to EventFanout subscribers.
+        # Live events bypass the DB-polling round-trip: after persisting (so
+        # cursor-based reconnect works), we push a pre-formatted event dict
+        # directly into the fanout queues.  SSE writers drain the queue and
+        # yield SSE frames without querying the DB.
+        persisted_seq: int | None = None
+        persisted_type: str = "progress"
+        persisted_payload: dict = {}
+
         try:
             event_type = event.get("event", "progress")
             payload = event.get("data", {})
@@ -464,13 +472,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db.commit()
                 if result is not None:
                     event["eventId"] = result["seq"]
+                    persisted_seq = result["seq"]
+                    persisted_type = event_type
+                    persisted_payload = safe_payload
         except Exception:
             logger.warning("Failed to persist job event for %s", job_id, exc_info=True)
 
-        # Wake EventFanout subscribers
+        # Push directly to EventFanout subscribers so the SSE writer can
+        # format and yield the frame without a DB round-trip.  Falls back
+        # to the legacy wake(True) signal if persistence didn't produce a seq.
         try:
             loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(app.state.event_fanout.wake, job_id)
+            if persisted_seq is not None:
+                loop.call_soon_threadsafe(
+                    app.state.event_fanout.push,
+                    job_id,
+                    {"seq": persisted_seq, "type": persisted_type, "payload": persisted_payload},
+                )
+            else:
+                loop.call_soon_threadsafe(app.state.event_fanout.wake, job_id)
         except RuntimeError:
             pass
 
@@ -2848,34 +2868,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     yield build_terminal_event(current_job.status, current_job)
                     return
 
-            # --- Phase 3: Wait for live events via EventFanout ---
+            # --- Phase 3: Live events via EventFanout (direct-push + DB fallback) ---
+            # The fanout queue now receives pre-formatted event dicts
+            # ({"seq", "type", "payload"}) from publish_job_event, so the
+            # common path yields an SSE frame with NO DB round-trip.
+            # Legacy wake signals (True) fall back to the DB-polling path.
             try:
                 while True:
                     try:
-                        await asyncio.wait_for(wake_queue.get(), timeout=float(settings.sse_keepalive_seconds))
+                        item = await asyncio.wait_for(
+                            wake_queue.get(),
+                            timeout=float(settings.sse_keepalive_seconds),
+                        )
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                         continue
 
-                    # Got a signal — query DB for new events
-                    with database.session() as live_db:
-                        new_events = get_job_events_after(live_db, job_id, after_seq=last_seq)
+                    if isinstance(item, dict):
+                        # ── Direct push: format and yield immediately ──
+                        evt_type = str(item.get("type", "progress"))
+                        seq = int(item.get("seq", 0))
+                        last_seq = seq
+                        evt_payload = item.get("payload", {})
+                        data = json.dumps(jsonable_encoder(evt_payload))
+                        yield f"id: {seq}\nevent: {evt_type}\ndata: {data}\n\n"
 
-                    for evt in new_events:
-                        yield emit_db_event(evt)
-                        if evt.get("type") in ("completed", "failed", "cancelled", "done"):
-                            # Terminal event received — drain remaining and close
-                            with database.session() as drain_db:
-                                remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
-                            for evt in remaining:
-                                yield emit_db_event(evt)
+                        if evt_type in ("completed", "failed", "cancelled", "done"):
                             return
+                    else:
+                        # ── Legacy wake signal: fall back to DB query ──
+                        with database.session() as live_db:
+                            new_events = get_job_events_after(live_db, job_id, after_seq=last_seq)
 
-                    # Check if job became terminal
+                        for evt in new_events:
+                            yield emit_db_event(evt)
+                            if evt.get("type") in ("completed", "failed", "cancelled", "done"):
+                                # Drain remaining and close
+                                with database.session() as drain_db:
+                                    remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
+                                for evt in remaining:
+                                    yield emit_db_event(evt)
+                                return
+
+                    # Check if job became terminal (safety net for direct-push path)
                     with database.session() as check_db:
                         current_job = get_message_job(check_db, job_id=job_id)
                         if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
-                            # Drain any remaining events
+                            # Drain any remaining events from DB, then emit terminal frame
                             with database.session() as drain_db:
                                 remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
                             for evt in remaining:
