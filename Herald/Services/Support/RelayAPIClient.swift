@@ -283,6 +283,7 @@ final class RelayAPIClient {
         }
 
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-ID")
+        request.timeoutInterval = 15  // Fail fast on dropped connections (was default 60s)
 
         return request
     }

@@ -117,9 +117,10 @@ final class SessionListStore {
 
         do {
             let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
-            currentOffset = response.sessions.count
+            currentOffset = pageSize  // Use the requested page size, not actual count returned
             totalCount = response.total
-            splitSessions(response.sessions)
+            // Merge with existing sessions to preserve locally-cached data across refreshes
+            mergeSessions(response.sessions)
             lastLoadAt = Date()
             saveCachedSessions()
         } catch {
@@ -390,6 +391,14 @@ final class SessionListStore {
     }
 
     // MARK: - Private
+
+    /// Merges incoming sessions with the existing list, preserving locally-cached
+    /// data across refresh cycles. Sessions are deduplicated by ID.
+    private func mergeSessions(_ sessions: [SessionSummary]) {
+        let existingIDs = Set(pinnedSessions.map(\.id) + recentSessions.map(\.id) + archivedSessions.map(\.id))
+        let newSessions = sessions.filter { !existingIDs.contains($0.id) }
+        splitSessions(pinnedSessions + newSessions + recentSessions + archivedSessions)
+    }
 
     private func splitSessions(_ sessions: [SessionSummary]) {
         let nonArchived = sessions.filter { !$0.isArchived }

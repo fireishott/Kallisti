@@ -141,7 +141,21 @@ class HeraldRelayServer:
         """Handle a single gateway WebSocket connection."""
         logger.info("Gateway connected from %s", websocket.remote_address)
 
-        # Only allow one gateway connection at a time
+        # Only allow one gateway connection at a time.
+        # If the existing connection is dead (network blip, crashed gateway),
+        # clean it up and allow the reconnect instead of rejecting with 4409.
+        if self._gateway_connection is not None:
+            try:
+                pong = await asyncio.wait_for(
+                    self._gateway_connection.ping(), timeout=3.0
+                )
+                await pong
+            except Exception:
+                # Dead connection — clean up and allow reconnect
+                logger.info("Existing gateway connection is dead — allowing reconnect")
+                self._gateway_connection = None
+                self._connected = False
+
         if self._gateway_connection is not None:
             logger.warning("Rejecting duplicate gateway connection")
             await websocket.close(4409, "Already connected")

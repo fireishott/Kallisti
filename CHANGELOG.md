@@ -52,6 +52,18 @@
   from `pct > 0.85` (firing at 0.85% usage) to `pct > 85.0` (firing at 85%).
   In-memory `contextPercent` now reset after auto-compress so the UI updates
   immediately instead of showing stale pre-compress values.
+- **API responsiveness (P2):** Launch parallelized — `hostStore.refresh()`,
+  `chatStore.loadConversationIfNeeded()`, `inboxStore.loadInbox()`,
+  `sessionListStore.loadSessions()`, `refreshCommandCatalog()`, and
+  `registerStoredPushTokenIfNeeded()` now run concurrently via `async let`
+  instead of sequentially. REST requests timeout at 15s instead of 60s.
+  Session list pagination offset fixed and initial load now merges with
+  existing sessions instead of overwriting.
+- **Connector reconnect (P2):** Gateway WebSocket now pings existing connection
+  before rejecting with 4409 "Already connected" — dead connections from
+  network blips are cleaned up and reconnects allowed.
+- **Dead code cleanup (P2):** Removed superseded `ModelSelectorSheet.swift` and
+  `ProfileSelectorSheet.swift` (197 + 59 lines).
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 
