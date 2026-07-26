@@ -67,6 +67,9 @@ struct ChatScreen: View {
                 if contextProgress > 0.85 {
                     contextWarningBanner
                 }
+                if chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
+                    streamingPhaseBanner
+                }
                 messageList
                 ChatInputBar(
                     text: $messageText,
@@ -795,6 +798,32 @@ struct ChatScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
         .padding(.horizontal, Design.Spacing.md)
         .padding(.top, Design.Spacing.md)
+    }
+
+    /// Subtle streaming phase indicator — shown when the stream reconnects
+    /// or stalls, so the user knows the app hasn't frozen.
+    private var streamingPhaseBanner: some View {
+        HStack(spacing: 4) {
+            if chatStore.streamingPhase == .stalled {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Design.Colors.warning)
+                Text("Stream stalled — retrying…")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+            } else if chatStore.streamingPhase == .reconnecting {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .tint(Design.Colors.warning)
+                Text("Reconnecting…")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, 4)
+        .background(Design.Colors.warning.opacity(0.08))
     }
 
     private var contextWarningBanner: some View {

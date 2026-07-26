@@ -14,6 +14,15 @@
   `AppContainer` observes `heraldPushPermissionGranted` to call `registerStoredPushTokenIfNeeded()`.
   Deploy script `push_environment` fixed from `'development'` → `'production'` to match
   the app's hardcoded environment.
+- **Streaming watchdog (P0):** Replaced the one-shot `withTaskGroup` race with a
+  continuous timestamp-based monitor that checks every 5s. The old watchdog would
+  satisfy on the first progress signal then never check again, so mid-stream SSE
+  drops hung forever. The new monitor resets on every delta and fires when no
+  progress arrives within 90s. Added streaming phase banner to ChatScreen for
+  `.stalled` and `.reconnecting` states so users see what's happening.
+- **MessageSent progress:** `.messageSent` now yields to the progress signal so
+  the relay accepting the job counts as proof the connection is alive — keeping
+  the watchdog satisfied during long model prefill (30-45s).
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

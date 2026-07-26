@@ -59,6 +59,11 @@ final class ChatStore {
     /// the job is treated as stalled and parallel polling begins.
     static var watchdogTimeout: Duration = .seconds(90)
 
+    /// Timestamp of the last streaming progress signal. Updated on every
+    /// textDelta, reasoningDelta, toolActivity, keepalive, and messageSent.
+    /// The continuous watchdog checks this to detect mid-stream stalls.
+    private var streamingProgressAt: Date = .now
+
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
     // concat) and flush onto the placeholder at ~30fps so every append triggers
@@ -382,11 +387,15 @@ final class ChatStore {
                         conv.messages[idx].toolActivity = "Model loading…"
                         self.conversation = conv
                     }
-                    // Do NOT yield progress — .messageSent is the relay accepting the job,
-                    // not the connector producing real progress. The watchdog must keep
-                    // waiting for actual content (text/tool/reasoning/terminal).
+                    // Yield progress — the relay accepting the job IS proof the
+                    // connection is alive. This keeps the continuous watchdog
+                    // satisfied during long model loads (30-45s prefill on
+                    // constrained hardware).
+                    self.streamingProgressAt = .now
+                    progressContinuation?.yield(())
 
                 case .textDelta(let delta):
+                    self.streamingProgressAt = .now
                     progressContinuation?.yield(())
                     self.streamingPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
@@ -401,12 +410,14 @@ final class ChatStore {
                     }
 
                 case .reasoningDelta(let delta):
+                    self.streamingProgressAt = .now
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
                 case .toolActivity(let label):
+                    self.streamingProgressAt = .now
                     progressContinuation?.yield(())
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if var conv = self.conversation,
@@ -661,25 +672,31 @@ final class ChatStore {
         }
         streamingTask = consumerTask
 
-        let watchdogFired = await withTaskGroup(of: Bool.self) { group -> Bool in
-            group.addTask {
-                for await _ in progressSignal { return false }
-                return false
+        // Continuous watchdog — monitors progress at 5s intervals instead of
+        // a one-shot race. This catches mid-stream stalls (e.g. SSE transport
+        // drop after the first token), not just complete silence before the
+        // first event. The old one-shot race would satisfy on the first
+        // progress signal then never check again.
+        self.streamingProgressAt = .now
+        var stallDetected = false
+        while !consumerTask.isCancelled {
+            // Check if the consumer finished while we were sleeping
+            if streamingTask == nil { break }
+
+            try? await Task.sleep(for: .seconds(5))
+
+            let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
+
+            if elapsed > Self.watchdogTimeout {
+                self.streamingPhase = .stalled
+                stallDetected = true
+                break
             }
-            group.addTask {
-                try? await Task.sleep(for: Self.watchdogTimeout)
-                return true
-            }
-            let outcome = await group.next() ?? false
-            group.cancelAll()
-            return outcome
         }
 
-        if watchdogFired {
-            // No progress arrived within the watchdog window.  Do NOT cancel the
-            // consumer task — it may still receive events.  Instead, signal the
-            // caller to start parallel polling (which will resolve the message
-            // when the relay eventually completes or fails the job).
+        if stallDetected {
+            // Progress stalled — do NOT cancel the consumer task; it may still
+            // receive events. Signal the caller to start parallel polling.
             return true
         }
 
