@@ -107,7 +107,7 @@ struct HeraldSelectorSheet: View {
                         .fill(hostStore.isHostOnline ? Design.Colors.success : Design.Colors.warning)
                         .frame(width: 6, height: 6)
                     Text(profileStore.activeProfileName ?? "default")
-                        .font(.system(.subheadline, weight: .semibold))
+                        .font(Design.Typography.headline)
                         .foregroundStyle(Design.Colors.foreground)
                 }
                 if let profile = profileStore.activeProfile {
@@ -131,7 +131,7 @@ struct HeraldSelectorSheet: View {
                         .font(.system(size: 10))
                         .foregroundStyle(Design.Colors.secondaryForeground)
                     Text(modelStore.activeModel?.name ?? chatStore.activeModelName ?? "—")
-                        .font(.system(.subheadline, weight: .semibold, design: .monospaced))
+                        .font(Design.Typography.headline)
                         .foregroundStyle(Design.Colors.foreground)
                         .lineLimit(1)
                 }

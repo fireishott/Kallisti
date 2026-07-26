@@ -47,27 +47,18 @@ final class LiveSpeechService {
         }
 
         // SFSpeechRecognizer.requestAuthorization crashes on iOS 26 beta
-        // (FB-prefixed radar). The DictationTranscriber API handles
-        // authorization automatically when first used — the system presents
-        // the TCC dialog inline. We rely on that path instead of the
-        // crash-prone explicit request.
-        //
-        // Try a brief poll in case another process triggered the dialog,
-        // but don't call requestAuthorization ourselves.
-        for _ in 0..<10 {
-            let status = SFSpeechRecognizer.authorizationStatus()
-            if status != .notDetermined {
-                authorizationStatus = status
-                Self.logger.info("Speech authorization resolved: \(String(describing: status), privacy: .public)")
-                return status
+        // (FB-prefixed radar). For release builds, call the API and catch
+        // any crash via an async task with timeout. If that fails or
+        // times out, we rely on DictationTranscriber to trigger the TCC
+        // dialog when first used.
+        let status = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
             }
-            try? await Task.sleep(for: .milliseconds(200))
         }
-
-        // Status is still .notDetermined — the DictationTranscriber will
-        // trigger the system prompt when startListening() is called.
-        Self.logger.info("Speech authorization not yet determined; will prompt via DictationTranscriber")
-        return .notDetermined
+        authorizationStatus = status
+        Self.logger.info("Speech authorization result: \(String(describing: status), privacy: .public)")
+        return status
     }
 
     func startListening() async throws {

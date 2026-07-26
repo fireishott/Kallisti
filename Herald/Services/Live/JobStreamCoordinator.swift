@@ -125,14 +125,18 @@ actor JobStreamCoordinator {
                         continue
                     }
 
-                    // Detect seq gaps
-                    if envelope.seq > seqBefore + 1 {
+                    // Detect seq gaps (only after first event — we don't know
+                    // the relay's starting sequence number until we've seen one).
+                    if seqBefore > 0 && envelope.seq > seqBefore + 1 {
                         self.logger.warning("Seq gap detected: expected \(seqBefore + 1), got \(envelope.seq). Reconnecting.")
                         break  // Reconnect from lastAppliedSeq
                     }
 
-                    // Skip duplicates (compare against snapshot, not mutated value)
-                    if envelope.seq <= seqBefore {
+                    // Skip duplicates (compare against snapshot, not mutated value).
+                    // Allow seq == 0 when lastAppliedSeq is 0 (initial state) so
+                    // relays that number events from 0 don't have their first
+                    // event silently dropped.
+                    if seqBefore > 0 && envelope.seq <= seqBefore {
                         continue
                     }
 
@@ -282,7 +286,7 @@ actor JobStreamCoordinator {
             ?? self.jobId.uuidString.lowercased()
 
         let seq: Int
-        if let idString = sseEvent.id, let parsedSeq = Int(idString), parsedSeq > 0 {
+        if let idString = sseEvent.id, let parsedSeq = Int(idString) {
             seq = parsedSeq
         } else {
             seq = self.lastAppliedSeq + 1

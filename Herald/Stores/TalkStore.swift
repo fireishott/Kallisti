@@ -193,6 +193,18 @@ final class TalkStore {
             onSessionStateChanged?()
             return
         }
+        // Check for Mimo API key before starting — the coordinator will fail
+        // silently without one, leaving the user confused.
+        if let apiKeyHolder {
+            await apiKeyHolder.refresh()
+        }
+        guard let apiKeyHolder, let key = apiKeyHolder.get(), !key.isEmpty else {
+            blockedReason = "Mimo API key required — add it in Settings → Voice"
+            statusMessage = "API key missing"
+            canStartSession = false
+            onSessionStateChanged?()
+            return
+        }
         // Start Live Activity so it appears on Lock Screen / Dynamic Island
         // during the voice session. updateVoiceState() alone is a no-op until
         // an activity has been created via startVoiceSession().

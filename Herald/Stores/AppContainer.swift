@@ -660,7 +660,13 @@ final class AppContainer {
             return
         }
 
-        // Load the specific conversation by ID — never fall back to "current" conversation
+        // Load the specific conversation by ID — never fall back to "current" conversation.
+        // Clear any stale streaming state first: if the app was suspended mid-stream,
+        // the SSE connection is dead, but activeStreams/streamingPhase/pendingMessageSentAt
+        // may still be set, causing the UI to show a perpetual "thinking" placeholder
+        // even though the relay has already completed the response.
+        chatStore.cancelStreaming()
+
         do {
             let conversation = try await chatStore.heraldClient.loadConversation(id: conversationID)
             chatStore.conversation = conversation
