@@ -410,6 +410,18 @@ def _read_dynamic_catalog_models(hermes_home: Path, config: dict) -> list[dict]:
             raw_context = limit.get("context")
             if isinstance(raw_context, (int, float)):
                 context_limit = int(raw_context)
+        # Fall back to runtime probing when limit.context is absent.
+        # _context_window_for() calls Hermes's model_metadata resolver
+        # (same one the TUI status bar uses) and falls back to 256K on failure.
+        if context_limit is None:
+            try:
+                context_limit = _context_window_for(
+                    str(model_id),
+                    base_url=provider_entry.get("base_url"),
+                    provider=str(matched_provider_key),
+                )
+            except Exception:
+                context_limit = None
         results.append({
             "name": str(model_id),
             "provider": str(matched_provider_key),

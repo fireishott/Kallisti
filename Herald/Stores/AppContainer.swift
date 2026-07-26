@@ -391,7 +391,9 @@ final class AppContainer {
                 let apiKeyHolder = APIKeyHolder(secureStore: secureStore)
                 // Load the key from Keychain
                 Task { await apiKeyHolder.refresh() }
-                let tts = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
+                let mimoTTSService = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
+                let appleTTSService = AppleTTSService()
+                let tts = FallbackTTSService(primary: mimoTTSService, fallback: appleTTSService)
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
@@ -406,7 +408,7 @@ final class AppContainer {
                     let coordinator = HermesTalkCoordinator(
                         capture: capture,
                         asr: asr,
-                        tts: tts,
+                        tts: mimoTTSService,
                         turnClient: turnClient,
                         playback: playback,
                         conversationId: conversationId
@@ -426,7 +428,10 @@ final class AppContainer {
         )
 
         chatStore.profileStore = container.profileStore
-        chatStore.useStreaming = settingsStore.settings.useStreaming
+        // Streaming forced on — the sync (non-streaming) path has known bugs
+        // with progress tracking, watchdog management, and LiveActivity lifecycle.
+        // When the sync path is intentionally surfaced as a user toggle, remove this.
+        chatStore.useStreaming = true
         chatStore.ttsService = container.talkStore.ttsService
         chatStore.ttsSettingsProvider = {
             let s = settingsStore.settings

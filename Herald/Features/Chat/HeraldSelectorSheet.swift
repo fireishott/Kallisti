@@ -375,6 +375,11 @@ struct HeraldSelectorSheet: View {
         profileStore.markActive(profile.name)
         Task {
             await chatStore.sendMessage("/profile \(profile.name)")
+            // sendMessage is fire-and-forget — it doesn't throw. Profile switch
+            // confirmation streams back through the chat path (ChatStore detects
+            // the profile in response text and calls profileStore.markActive).
+            // On failure, the optimistic markActive is reverted when the next
+            // loadProfiles completes (the server reports the actual active profile).
             isSwitching = false
             dismiss()
         }

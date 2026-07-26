@@ -131,6 +131,7 @@ final class LiveActivityService {
 
     func endActivity() {
         startedAt = nil
+        guard currentActivity != nil else { return }
         currentActivity = nil
 
         let finalContent = ActivityContent(
@@ -142,10 +143,7 @@ final class LiveActivityService {
         )
         Task.detached {
             for activity in Activity<HeraldActivityAttributes>.activities {
-                // Use .default dismissal so the activity remains visible on the
-                // Lock Screen and Dynamic Island for ~4 seconds after completion.
-                // .immediate makes it vanish before the user can glance at it.
-                await activity.end(finalContent, dismissalPolicy: .default)
+                await activity.end(finalContent, dismissalPolicy: .immediate)
             }
         }
     }

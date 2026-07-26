@@ -29,6 +29,7 @@ final class ProfileStore {
     private var lastLoadedAt: Date?
 
     private static let refreshInterval: TimeInterval = 60
+    private static let activeProfileKey = "herald.activeProfileName"
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
@@ -36,6 +37,9 @@ final class ProfileStore {
     init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        // Restore cached profile name immediately so ChatInputBar placeholder
+        // reads correctly before the first network load completes.
+        activeProfileName = UserDefaults.standard.string(forKey: Self.activeProfileKey)
     }
 
     /// The full profile object for the currently active profile, if any.
@@ -70,6 +74,9 @@ final class ProfileStore {
             // profile/model chips to vanish mid-session.
             profiles = response.profiles
             activeProfileName = response.activeProfile?.name
+            if let name = response.activeProfile?.name {
+                UserDefaults.standard.set(name, forKey: Self.activeProfileKey)
+            }
             lastLoadedAt = .now
         } catch {
             // Keep existing profiles on transient errors so chips don't vanish.
@@ -81,6 +88,7 @@ final class ProfileStore {
     /// confirmation streams back through the chat path.
     func markActive(_ name: String) {
         activeProfileName = name
+        UserDefaults.standard.set(name, forKey: Self.activeProfileKey)
     }
 
     func reset() {
@@ -88,5 +96,6 @@ final class ProfileStore {
         activeProfileName = nil
         errorMessage = nil
         lastLoadedAt = nil
+        UserDefaults.standard.removeObject(forKey: Self.activeProfileKey)
     }
 }

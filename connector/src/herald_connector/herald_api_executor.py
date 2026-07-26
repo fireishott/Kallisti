@@ -114,6 +114,18 @@ class HeraldAPIExecutor:
     def _base_url(self) -> str:
         return self.api_server_url.rstrip("/")
 
+    def _is_llama_backend(self) -> bool:
+        """True if the backend is a llama.cpp/llama-server instance.
+
+        llama-server doesn't recognize the ``think`` parameter (it's a
+        hermes-agent convention). Thinking tokens from llama.cpp appear
+        inline as ``<think>...</think>`` blocks and are handled by
+        InlineThinkParser — the ``think`` param must be skipped for
+        these backends to avoid HTTP 400 errors.
+        """
+        url_lower = self.api_server_url.lower()
+        return "llama" in url_lower or "11435" in url_lower
+
     def _auth_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
         if self.api_server_key:
@@ -222,6 +234,7 @@ class HeraldAPIExecutor:
         history: list[HeraldConversationMessage] | None = None,
         session_id: str | None = None,
         attachments: list[dict] | None = None,
+        reasoning_effort: str | None = None,
     ) -> HeraldChatResult:
         """Send a single message and wait for the full response."""
         headers = {
@@ -240,6 +253,17 @@ class HeraldAPIExecutor:
             ),
             "stream": False,
         }
+
+        # Control thinking based on reasoning_effort.
+        # Skip for llama-server backends — they don't recognize the think
+        # param (it's a hermes-agent convention) and would return HTTP 400.
+        # llama.cpp emits thinking tokens inline as <think>...</think>, which
+        # InlineThinkParser handles regardless of the think param.
+        if not self._is_llama_backend():
+            if reasoning_effort == "off":
+                payload["think"] = False
+            elif reasoning_effort is not None:
+                payload["think"] = True
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
@@ -299,12 +323,15 @@ class HeraldAPIExecutor:
             "stream": True,
         }
 
-        # Control thinking based on reasoning_effort
-        # "off" disables thinking; all other values enable it
-        if reasoning_effort == "off":
-            payload["think"] = False
-        elif reasoning_effort is not None:
-            payload["think"] = True
+        # Control thinking based on reasoning_effort.
+        # Skip for llama-server backends — they don't recognize the think
+        # param and emit thinking tokens inline as <think>...</think>, which
+        # InlineThinkParser handles.
+        if not self._is_llama_backend():
+            if reasoning_effort == "off":
+                payload["think"] = False
+            elif reasoning_effort is not None:
+                payload["think"] = True
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),

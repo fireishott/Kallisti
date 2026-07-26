@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.3.6] - 2026-07-26 — WIP Consolidation
+
+### Added
+- **TTS fallback:** `FallbackTTSService` wraps Mimo TTS with Apple TTS fallback when
+  the Mimo API key isn't available or the service fails.
+- **Build validation script:** `deploy/scripts/validate-entitlements.sh` for CI/CD
+  entitlement checks.
+
+### Changed
+- **Streaming forced on:** `useStreaming` hardcoded to `true` — the sync path has
+  known bugs with progress tracking, watchdog, and Live Activity lifecycle.
+- **Profile persistence:** `ProfileStore` now persists active profile name to
+  UserDefaults and restores it on init for immediate UI correctness.
+- **Connector context window:** Models missing `limit.context` get runtime context
+  window probing via Hermes model_metadata resolver.
+- **llama-backend detection:** `HeraldAPIExecutor` skips the `think` param for
+  llama-server backends (which emit `<think>` tags inline).
+
+### Fixed
+- **Live Activity:** Dismissal policy changed to `.immediate` to prevent stale
+  activities lingering on the Lock Screen.
+
 ## [2.3.1] - 2026-07-25 — Push, Controls & Live Activity Fix
 
 ### Fixed
