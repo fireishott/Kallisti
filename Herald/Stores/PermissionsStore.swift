@@ -44,7 +44,9 @@ final class PermissionsStore {
             _ = await healthService.requestAuthorization()
         case .notifications:
             let status = await notificationService.requestAuthorization()
-            capabilities[.notifications]?.status = status
+            if let idx = capabilities.firstIndex(where: { $0.permissionType == .notifications }) {
+                capabilities[idx].status = status
+            }
             if status == .authorized {
                 NotificationCenter.default.post(name: .heraldPushPermissionGranted, object: nil)
             }
