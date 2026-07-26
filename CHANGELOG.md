@@ -23,6 +23,10 @@
 - **MessageSent progress:** `.messageSent` now yields to the progress signal so
   the relay accepting the job counts as proof the connection is alive — keeping
   the watchdog satisfied during long model prefill (30-45s).
+- **Live logs lifecycle (P0):** `LiveLogView` now calls `logService.connect()` in
+  `.task` and `disconnect()` in `.onDisappear` — live logs were never connecting
+  because `connect()` was never called. iPhone access path via Settings → Gateway
+  → View Logs was already working.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

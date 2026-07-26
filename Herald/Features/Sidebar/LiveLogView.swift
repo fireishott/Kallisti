@@ -43,6 +43,12 @@ struct LiveLogView: View {
             statusBar
         }
         .background(Design.Colors.background)
+        .task {
+            logService.connect()
+        }
+        .onDisappear {
+            logService.disconnect()
+        }
     }
 
     // MARK: - Header
