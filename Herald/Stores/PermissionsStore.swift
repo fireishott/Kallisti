@@ -137,29 +137,24 @@ final class PermissionsStore {
     // MARK: - Speech Recognition
 
     /// Returns the availability-aware speech recognition status.
-    /// On iOS 26+, calls SFSpeechRecognizer.authorizationStatus() directly.
-    /// On older OS versions, returns `.unsupported`.
+    /// SFSpeechRecognizer.authorizationStatus() works on all iOS versions
+    /// since iOS 10. The deployment target is iOS 18.
     static func speechRecognitionAvailabilityStatus() -> PermissionStatus {
-        if #available(iOS 26.0, *) {
-            let status = SFSpeechRecognizer.authorizationStatus()
-            switch status {
-            case .authorized: return .authorized
-            case .denied: return .denied
-            case .restricted: return .restricted
-            case .notDetermined: return .notDetermined
-            @unknown default: return .notDetermined
-            }
-        } else {
-            return .unsupported
+        let status = SFSpeechRecognizer.authorizationStatus()
+        switch status {
+        case .authorized: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
         }
     }
 
     /// Returns a user-facing status detail for speech recognition.
-    /// On iOS < 26, explains that the feature requires a newer OS.
     static func speechRecognitionStatusDetail(for status: PermissionStatus) -> String? {
         switch status {
-        case .unsupported:
-            return "Requires iOS 26 or later"
+        case .restricted:
+            return "Speech recognition is restricted on this device"
         default:
             return nil
         }
@@ -170,19 +165,23 @@ final class PermissionsStore {
     }
 
     private func requestSpeechAuthorization() async {
-        guard #available(iOS 26.0, *) else { return }
-        guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
-
-        // SFSpeechRecognizer.requestAuthorization crashes on iOS 26 beta
-        // (FB-prefixed radar). The modern SpeechAnalyzer/DictationTranscriber
-        // APIs introduced in iOS 26 handle authorization automatically when
-        // first used — the system presents the TCC dialog inline. So instead
-        // of calling the crash-prone requestAuthorization, we check the
-        // status and rely on the new APIs to prompt when needed.
-        //
-        // If the status is still .notDetermined after a brief wait, the user
-        // hasn't been prompted yet — the dictation flow in LiveSpeechService
-        // will trigger the automatic prompt via DictationTranscriber.
+        if #available(iOS 26.0, *) {
+            // iOS 26+: SFSpeechRecognizer.requestAuthorization crashes on beta
+            // (FB-prefixed radar). The modern SpeechAnalyzer/DictationTranscriber
+            // APIs handle authorization automatically when first used — the
+            // system presents the TCC dialog inline. Just wait for the status
+            // to change from notDetermined.
+            guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
+            // Rely on the new APIs to prompt — nothing to do here
+        } else {
+            // iOS 18-25: SFSpeechRecognizer.requestAuthorization() works correctly
+            guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
+            await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume()
+                }
+            }
+        }
     }
 
     private func locationStatusDetail() -> String? {

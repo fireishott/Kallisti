@@ -40,6 +40,13 @@
   and properly throws on errors. Context window defaults to 128K for modern
   models instead of showing "unavailable". Added "Check for Updates" and
   "Update Agent" buttons to Settings → Gateway.
+- **Speech recognition (P1):** Removed `#available(iOS 26.0, *)` gate from
+  `speechRecognitionAvailabilityStatus()` — `SFSpeechRecognizer.authorizationStatus()`
+  works since iOS 10. `requestSpeechAuthorization()` now calls the old
+  `SFSpeechRecognizer.requestAuthorization()` on iOS 18-25 (it only crashes on
+  iOS 26 beta). Added `LegacySpeechService` using the classic SFSpeechRecognizer
+  + audio buffer path for iOS 18-25 fallback. `createSpeechDictationService()`
+  returns `LegacySpeechService()` on iOS < 26 instead of `nil`.
 
 ## [2.3.6] - 2026-07-26 — WIP Consolidation
 

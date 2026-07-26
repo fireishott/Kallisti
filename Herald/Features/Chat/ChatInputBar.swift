@@ -15,13 +15,15 @@ protocol SpeechDictationService: AnyObject, Sendable {
 @available(iOS 26.0, *)
 extension LiveSpeechService: SpeechDictationService {}
 
-/// Creates a speech dictation service if the current iOS version supports it.
+/// Creates a speech dictation service for the current iOS version.
+/// - iOS 26+: Modern DictationTranscriber / SpeechAnalyzer stack
+/// - iOS 18-25: Classic SFSpeechRecognizer fallback
 @MainActor
 func createSpeechDictationService() -> (any SpeechDictationService)? {
     if #available(iOS 26.0, *) {
         return LiveSpeechService()
     }
-    return nil
+    return LegacySpeechService()
 }
 
 struct ChatInputBar: View {
