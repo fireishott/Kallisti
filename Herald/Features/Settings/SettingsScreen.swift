@@ -6,6 +6,7 @@ struct SettingsScreen: View {
     @Environment(\.openURL) private var openURL
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(ChatStore.self) private var chatStore
+    @Environment(ModelStore.self) private var modelStore
     @Environment(HeraldHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(PermissionsStore.self) private var permissionsStore
@@ -30,6 +31,7 @@ struct SettingsScreen: View {
                         connectionSection
                         relaySection
                         gatewaySection
+                        infrastructureSection
                         if settingsStore.availableEnvironments.count > 1 {
                             environmentSection
                         }
@@ -432,6 +434,95 @@ struct SettingsScreen: View {
         isRestartingGW = false
         try? await Task.sleep(for: .seconds(3))
         gwRestartResult = nil
+    }
+
+    // MARK: - Infrastructure
+
+    private var infrastructureSection: some View {
+        SettingsSectionView(title: "Infrastructure") {
+            VStack(spacing: 0) {
+                // Hermes Host
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: hostStatusRowIcon)
+                        .font(.system(size: 14))
+                        .foregroundStyle(hostStatusRowColor)
+                        .frame(width: 20, alignment: .center)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Hermes Host")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        if let host = hostStore.currentHost {
+                            Text(host.resolvedDisplayName)
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+
+                    Spacer()
+
+                    Text(hostStatusRowValue)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+                .frame(minHeight: Design.Size.minTapTarget)
+
+                sectionDivider
+
+                // Connector Version
+                settingsRow(
+                    icon: "arrow.triangle.swap",
+                    iconColor: .blue,
+                    title: "Connector",
+                    value: hostStore.currentHost?.connectorVersion ?? "—"
+                )
+
+                sectionDivider
+
+                // Hermes Agent Version
+                settingsRow(
+                    icon: "brain.head.profile",
+                    iconColor: .purple,
+                    title: "Hermes Agent",
+                    value: hostStore.currentHost?.heraldVersion ?? "—"
+                )
+
+                sectionDivider
+
+                // Active Model
+                settingsRow(
+                    icon: "cpu",
+                    iconColor: .orange,
+                    title: "Active Model",
+                    value: modelStore.activeModel?.name
+                        ?? chatStore.activeModelName
+                        ?? hostStore.currentHost?.heraldModel
+                        ?? "—"
+                )
+
+                sectionDivider
+
+                // Relay URL
+                settingsRow(
+                    icon: "point.3.connected.trianglepath.dotted",
+                    iconColor: Design.Colors.foreground,
+                    title: "Relay",
+                    value: pairingStore.pairedRelayConfiguration?.hostDisplayName
+                        ?? settingsStore.settings.relayConfiguration.relayOriginLabel
+                )
+
+                sectionDivider
+
+                // Push Notifications Status
+                settingsRow(
+                    icon: "bell.badge.fill",
+                    iconColor: .red,
+                    title: "Push",
+                    value: UIApplication.shared.isRegisteredForRemoteNotifications
+                        ? "Registered" : "Not Registered"
+                )
+            }
+        }
     }
 
     private var environmentSection: some View {

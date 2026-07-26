@@ -375,6 +375,13 @@ final class ChatStore {
                     // Start Live Activity with "Thinking" phase — the agent is
                     // processing but hasn't begun streaming content yet.
                     self.chatLiveActivity.startThinking()
+                    // Show a phase indicator on the streaming placeholder so the
+                    // user knows the app isn't frozen during long model loads.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = "Model loading…"
+                        self.conversation = conv
+                    }
                     // Do NOT yield progress — .messageSent is the relay accepting the job,
                     // not the connector producing real progress. The watchdog must keep
                     // waiting for actual content (text/tool/reasoning/terminal).
@@ -537,7 +544,7 @@ final class ChatStore {
                         }
 
                         let request = UNNotificationRequest(
-                            identifier: "herald-response-\(UUID().uuidString)",
+                            identifier: "herald-response-\(finalMessage.id.uuidString)",
                             content: content,
                             trigger: nil
                         )
@@ -548,6 +555,12 @@ final class ChatStore {
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updateToolProgress(phase)
+                    // Update the placeholder to show what the model is doing
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = phase
+                        self.conversation = conv
+                    }
 
                 case .heartbeat(let phase):
                     // Heartbeat resets the watchdog — job is alive

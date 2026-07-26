@@ -32,8 +32,14 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
-    @State private var showInfraDetails = false
 
+    // Scroll-to-bottom arrow: only show when the user has actually scrolled
+    // away from the bottom, not on every drag gesture. Uses onScrollGeometryChange
+    // (iOS 18+) to detect proximity to the content bottom.
+    @State private var isNearBottom = true
+    private var showScrollArrow: Bool {
+        isUserScrolling && !isNearBottom
+    }
 
     var body: some View {
         ZStack {
@@ -161,11 +167,8 @@ struct ChatScreen: View {
             .presentationDetents([.height(220)])
             .presentationDragIndicator(.hidden)
         }
-        .sheet(isPresented: $showModelSelector) {
-            // The sheet performs the switch itself via
-            // ModelStore.switchModel(to:provider:) and only calls back on
-            // success; nothing further to do here.
-            ModelSelectorSheet { _, _ in }
+        .sheet(isPresented: $showHeraldHub) {
+            HeraldSelectorSheet(initialTab: heraldHubInitialTab)
                 .presentationDetents([.large, .medium])
                 .presentationDragIndicator(.visible)
         }
@@ -290,17 +293,11 @@ struct ChatScreen: View {
     /// Width-bounded to prevent system overflow ellipsis.
     private var compactStatusControl: some View {
         HStack(spacing: 4) {
-            // Connection dot with separate tap handler for infra details
+            // Connection dot — visual status indicator only.
+            // Full infrastructure details are in Settings → Infrastructure.
             Circle()
                 .fill(connectionIndicatorColor)
                 .frame(width: 6, height: 6)
-                .onTapGesture {
-                    showInfraDetails = true
-                }
-                .popover(isPresented: $showInfraDetails) {
-                    infraDetailsPopover
-                        .presentationCompactAdaptation(.popover)
-                }
 
             // Model name + context ring with tap handler for context popover
             Button {
@@ -331,8 +328,8 @@ struct ChatScreen: View {
     }
 
     @State private var showContextPopover = false
-    @State private var showModelSelector = false
-    @State private var showProfileSelector = false
+    @State private var showHeraldHub = false
+    @State private var heraldHubInitialTab: HeraldSelectorSheet.Tab = .models
 
     /// `ModelStore.activeModel` is the authoritative source once populated —
     /// it's set from the `POST /v1/model` response after a direct switch, so
@@ -382,7 +379,8 @@ struct ChatScreen: View {
         Group {
             if !profileStore.profiles.isEmpty {
                 Button {
-                    showProfileSelector = true
+                    heraldHubInitialTab = .profiles
+                    showHeraldHub = true
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "brain.head.profile")
@@ -392,17 +390,6 @@ struct ChatScreen: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
-                }
-                .sheet(isPresented: $showProfileSelector) {
-                    ProfileSelectorSheet(
-                        profiles: profileStore.profiles,
-                        activeProfileName: profileStore.activeProfileName
-                    ) { name in
-                        profileStore.markActive(name)
-                        Task { await chatStore.sendMessage("/profile \(name)") }
-                    }
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
                 }
             }
         }
@@ -444,17 +431,11 @@ struct ChatScreen: View {
 
     private var modelStatusChip: some View {
         HStack(spacing: Design.Spacing.xs) {
-            // Connection dot with separate tap handler for infra details
+            // Connection dot — visual status indicator only.
+            // Full infrastructure details are in Settings → Infrastructure.
             Circle()
                 .fill(connectionIndicatorColor)
                 .frame(width: 6, height: 6)
-                .onTapGesture {
-                    showInfraDetails = true
-                }
-                .popover(isPresented: $showInfraDetails) {
-                    infraDetailsPopover
-                        .presentationCompactAdaptation(.popover)
-                }
 
             // Model name + context ring with tap handler for context popover
             Button {
@@ -626,7 +607,8 @@ struct ChatScreen: View {
                 // Let the popover finish dismissing before presenting the sheet
                 Task {
                     try? await Task.sleep(for: .milliseconds(350))
-                    showModelSelector = true
+                    heraldHubInitialTab = .models
+                    showHeraldHub = true
                 }
             } label: {
                 HStack {
@@ -649,73 +631,6 @@ struct ChatScreen: View {
         .padding(.vertical, Design.Spacing.lg)
     }
 
-    // MARK: - Popover: Infrastructure Status Details
-
-    private var infraDetailsPopover: some View {
-        VStack(alignment: .leading, spacing: Design.Spacing.md) {
-            HStack(spacing: Design.Spacing.xs) {
-                Circle()
-                    .fill(connectionIndicatorColor)
-                    .frame(width: 7, height: 7)
-                Text("Infrastructure Status")
-                    .font(.system(.subheadline, weight: .semibold))
-                    .foregroundStyle(Design.Colors.foreground)
-            }
-
-            Divider()
-
-            infraStatusRow(
-                "Relay",
-                status: hostStore.connectionState == .online ? "Online" : "Offline",
-                detail: settingsStore.settings.relayConfiguration.customRelayBaseURL
-            )
-
-            infraStatusRow(
-                "Connector",
-                status: hostStore.isHostOnline ? "Connected" : "Disconnected",
-                detail: hostStore.currentHost?.connectorVersion
-            )
-
-            infraStatusRow(
-                "Hermes",
-                status: hostStore.currentHost?.heraldVersion ?? "—",
-                detail: hostStore.currentHost?.heraldCommand
-            )
-
-            infraStatusRow(
-                "Model",
-                status: displayedModelName.flatMap { $0 } ?? "Unknown",
-                detail: nil
-            )
-
-            infraStatusRow(
-                "Push",
-                status: "Active",
-                detail: "1 registered device"
-            )
-        }
-        .frame(width: 250, alignment: .leading)
-        .padding(.horizontal, Design.Spacing.lg)
-        .padding(.vertical, Design.Spacing.lg)
-    }
-
-    private func infraStatusRow(_ label: String, status: String, detail: String?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(label)
-                    .brandEyebrow()
-                Spacer()
-                Text(status)
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.foreground)
-            }
-            if let detail {
-                Text(detail)
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-            }
-        }
-    }
 
     private func contextColor(_ progress: Double) -> Color {
         if progress > 0.85 { return Design.Colors.danger }
@@ -812,9 +727,23 @@ struct ChatScreen: View {
                     .onChanged { _ in isUserScrolling = true }
             )
             .onAppear { scrollProxy = proxy }
-            .overlay(alignment: .bottomTrailing) {
-                // Jump-to-bottom arrow — visible when user has scrolled up
-                if isUserScrolling {
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Consider "near bottom" when the visible rect's bottom edge
+                // is within 44pt of the content's bottom edge.
+                let bottomY = geometry.contentOffset.y + geometry.visibleRect.size.height
+                let contentBottom = geometry.contentSize.height + geometry.contentInsets.bottom
+                return bottomY >= contentBottom - 44
+            } action: { _, nearBottom in
+                isNearBottom = nearBottom
+                // Once user manually scrolls to the bottom, resume auto-scroll
+                if nearBottom && isUserScrolling {
+                    isUserScrolling = false
+                }
+            }
+            .overlay(alignment: .bottom) {
+                // Jump-to-bottom arrow — visible only when actually scrolled up,
+                // not on incidental drags. Centered above the input bar.
+                if showScrollArrow {
                     Button {
                         isUserScrolling = false
                         scrollToBottom()
@@ -825,12 +754,11 @@ struct ChatScreen: View {
                             .background(Circle().fill(Design.Colors.surface).shadow(radius: 4))
                     }
                     .buttonStyle(.plain)
-                    .padding(.trailing, Design.Spacing.md)
-                    .padding(.bottom, Design.Spacing.xs)
+                    .padding(.bottom, Design.Spacing.sm)
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            .animation(Design.Motion.standard, value: isUserScrolling)
+            .animation(Design.Motion.standard, value: showScrollArrow)
             .scrollBounceBehavior(.basedOnSize)
         }
     }
