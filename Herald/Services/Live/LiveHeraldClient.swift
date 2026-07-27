@@ -188,11 +188,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             switch status.status {
             case "completed":
                 if let message = status.message {
-                    var mapped = mapMessage(message)
-                    if let usage = status.usage, let idx = currentConversation?.messages.firstIndex(where: { $0.id == message.id }) {
-                        // Usage and context are attached by mapMessage; ensure they're present
-                    }
-                    return mapped
+                    return message
                 }
                 return Message(sender: .system, content: "Herald completed but returned no message.", status: .failed)
             case "failed":
