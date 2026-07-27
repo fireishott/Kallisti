@@ -89,7 +89,6 @@ For end-user setup and configuration, start with:
 - **Voice session indicator**: Lock Screen shows "Hermes is listening" with elapsed time — user knows the session is active without opening the app
 - **Tool call progress**: "Hermes is reading config.yaml..." visible on Lock Screen while phone is locked
 - **Future: Home Screen widgets**: Same Widget Extension target hosts static widgets showing health summary, last location, recent conversations
-- **Future: CarPlay**: Widget architecture enables CarPlay voice assistant integration
 - **Hermes Skill**: Agent could trigger Live Activities for long-running tasks — "I'll research that and update you" → Live Activity shows progress
 
 ---

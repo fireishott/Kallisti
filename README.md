@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Self-hosted AI companion for iPhone and iPad</strong>
   <br/>
-  <sub>Voice mode · Mimo TTS · Sensors · CarPlay · Rich Chat · Notes · Session management · Remote MCP</sub>
+  <sub>Voice mode · Mimo TTS · Sensors · Rich Chat · Notes · Session management · Remote MCP</sub>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ## What is HERALD?
 
-HERALD is a **native iOS client** for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) framework. It connects to your self-hosted Hermes instance through a native WebSocket relay channel, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, CarPlay, notes, and session management — without your data leaving your infrastructure.
+HERALD is a **native iOS client** for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) framework. It connects to your self-hosted Hermes instance through a native WebSocket relay channel, giving you a polished mobile experience — streaming chat, voice mode, health/location/motion sensors, notes, and session management — without your data leaving your infrastructure.
 
 HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
@@ -130,21 +130,6 @@ HERALD reads accelerometer, gyroscope, and activity data so your agent knows you
 - Motion data synced to your AI context
 
 </td>
-<td valign="top">
-
-### CarPlay
-HERALD ships a full CarPlay interface for hands-free AI from your dashboard.
-
-- Voice-driven conversation UI
-- Siri integration for hands-free activation
-- Session list browsing on the head unit
-- Message dictation and read-back
-- Navigation-aware context
-- Audio session management for in-car speakers
-
-</td>
-</tr>
-<tr>
 <td valign="top">
 
 ### Widgets and Live Activities

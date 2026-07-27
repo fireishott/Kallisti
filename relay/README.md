@@ -143,13 +143,6 @@ For public/self-hosted users, `connector` mode is the intended deployment model.
 - Set `CONNECTOR_SETUP_SECRET` if you do not want arbitrary connectors bootstrapping accounts on your relay.
 - Keep APNs secrets on the relay only, never on the connector.
 
-## APNs and CarPlay
-
-APNs and CarPlay are optional platform features. They are documented in [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md).
-
-- APNs is fully optional for base setup
-- CarPlay requires Apple approval for the entitlement and is inert when not configured
-
 ## Troubleshooting
 
 ### Relay won’t start

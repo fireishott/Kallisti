@@ -9,10 +9,10 @@ Tracked files should keep generic defaults. Real deployment values belong in loc
 1. Run the relay
 2. Run `hermes-mobile setup` on the Hermes host
 3. Pair the phone
-4. Add optional APNs or CarPlay later if you need them
+4. Add optional APNs later if you need them
 
 > [!TIP]
-> You do not need APNs or CarPlay to get started. The base app, relay, and connector flow works without them.
+> You do not need APNs to get started. The base app, relay, and connector flow works without them.
 
 ## Relay environment variables
 
@@ -153,23 +153,6 @@ APNS_ENVIRONMENT=development
 5. Allow notifications in iOS.
 
 The app will register its token automatically and report foreground/background presence so the relay can suppress alerts while the app is active.
-
-## CarPlay setup
-
-CarPlay is optional and requires Apple approval.
-
-### What you need
-
-1. Request the **Voice-Based Conversational** entitlement from Apple.
-2. Wait for approval.
-3. Add the entitlement in your local signing/capabilities setup.
-4. Rebuild the app.
-
-Without approval:
-
-- the app still builds and runs
-- the CarPlay scene stays inert
-- all non-CarPlay features are unaffected
 
 ## Same-network local development
 
