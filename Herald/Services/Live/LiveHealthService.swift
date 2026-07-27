@@ -93,10 +93,21 @@ final class LiveHealthService: HealthServiceProtocol {
 
         let previouslyRequested = UserDefaults.standard.bool(forKey: Self.healthAuthRequestedKey)
 
+        let readTypes = Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
+        // Defensive: never call requestAuthorization with empty type sets.
+        // Apple's validation layer crashes (SIGABRT) on iOS 26.6+ when both
+        // toShare and read are empty. If the metric descriptors somehow produce
+        // no types, treat it the same as missing entitlements.
+        guard !readTypes.isEmpty else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
+            return .unsupported
+        }
+
         do {
             try await store.requestAuthorization(
                 toShare: [],
-                read: Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
+                read: readTypes
             )
             authorizationStatus = .authorized
             UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
@@ -155,13 +166,20 @@ final class LiveHealthService: HealthServiceProtocol {
 
     // MARK: - Entitlement Verification
 
-    /// Verifies that the app's code signature includes HealthKit entitlements.
+    /// Verifies that HealthKit is available on this device.
     ///
-    /// Probes with an empty `requestAuthorization` call — empty type sets
-    /// never trigger the system permission dialog, but the framework still
-    /// validates the entitlement in the code signature and throws if it's
-    /// missing. This catches stripped-entitlement builds at startup rather
-    /// than waiting for the user to tap Enable.
+    /// Prior to iOS 26.6, this method probed entitlements by calling
+    /// `requestAuthorization(toShare: [], read: [])` with empty type sets —
+    /// which never triggered the system permission dialog but allowed the
+    /// framework to validate the code-signature entitlement and throw if it
+    /// was missing.
+    ///
+    /// As of iOS 26.6, Apple's validation layer **crashes** (SIGABRT) when
+    /// both type sets are empty, so we can no longer use the empty-set probe.
+    /// Instead we rely on `HKHealthStore.isHealthDataAvailable()` at init
+    /// time and defer entitlement validation to the real `requestAuthorization`
+    /// call in `requestAuthorization()`, which passes non-empty read types
+    /// and throws a catchable error if entitlements are absent.
     ///
     /// The result is cached so subsequent calls are free.
     /// Internal access for testing.
@@ -170,19 +188,19 @@ final class LiveHealthService: HealthServiceProtocol {
             return verified
         }
 
+        // HealthKit availability was already confirmed in init() when the
+        // store was created. Re-check here as belt-and-suspenders.
         guard HKHealthStore.isHealthDataAvailable() else {
             entitlementsVerified = false
             return false
         }
 
-        do {
-            try await store.requestAuthorization(toShare: [], read: [])
-            entitlementsVerified = true
-            return true
-        } catch {
-            entitlementsVerified = false
-            return false
-        }
+        // The store exists and isHealthDataAvailable is true. This does NOT
+        // confirm the code-signature entitlement — that validation is deferred
+        // to requestAuthorization(), which passes non-empty type sets and
+        // safely throws (rather than crashing) if entitlements are missing.
+        entitlementsVerified = true
+        return true
     }
 
     func startMonitoring() {

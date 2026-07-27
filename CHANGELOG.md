@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.9] (Build 24) - 2026-07-27 — HealthKit Crash Fix
+
+### Fixed
+- **HealthKit crash on iOS 26.6 (P0):** `verifyEntitlements(store:)` called
+  `requestAuthorization(toShare: [], read: [])` with empty type sets to probe
+  for HealthKit entitlements. On iOS 26.6, Apple's validation layer crashes
+  (SIGABRT) when both type sets are empty. Replaced the empty-set probe with
+  `HKHealthStore.isHealthDataAvailable()` and deferred entitlement validation
+  to the real authorization call, which passes non-empty read types and throws
+  a catchable error if entitlements are absent. Added a defensive non-empty
+  guard before the `requestAuthorization` call.
+
+### Changed
+- **Build number bumped** to 24. Marketing version unchanged (2.3.6).
+
 ## [2.3.8] (Build 23) - 2026-07-27 — Internal Relay Audit
 
 ### Changed
