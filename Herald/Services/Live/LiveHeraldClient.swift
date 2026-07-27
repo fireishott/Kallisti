@@ -152,17 +152,61 @@ final class LiveHeraldClient: HeraldClientProtocol {
             }
             currentConversation = mapConversation(response.conversation)
             connectionStatus = .connected
+
+            // Complete response returned synchronously
             if let message = response.message {
                 return mapMessage(message)
             }
             if let userMessage = response.userMessage {
                 return mapMessage(userMessage)
             }
+
+            // Build 28: If job is pending, poll until complete
+            if response.replyState == "pending", let jobId = response.jobId {
+                return await pollForJobCompletion(jobId: jobId)
+            }
+
             return Message(sender: .system, content: "Herald did not return a message.", status: .failed)
         } catch {
             connectionStatus = .error
             return Message(sender: .system, content: failureMessage(for: error), status: .failed)
         }
+    }
+
+    /// Poll job status until terminal, returning the completed or failed Message.
+    private func pollForJobCompletion(jobId: UUID) async -> Message {
+        let pollInterval: Duration = .seconds(1)
+        let maxWait: Duration = .seconds(180)  // matches relay max_job_duration_seconds
+
+        let deadline = ContinuousClock.now + maxWait
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: pollInterval)
+            try? Task.checkCancellation()
+
+            guard let status = await getJobStatus(jobId) else { continue }
+
+            switch status.status {
+            case "completed":
+                if let message = status.message {
+                    var mapped = mapMessage(message)
+                    if let usage = status.usage, let idx = currentConversation?.messages.firstIndex(where: { $0.id == message.id }) {
+                        // Usage and context are attached by mapMessage; ensure they're present
+                    }
+                    return mapped
+                }
+                return Message(sender: .system, content: "Herald completed but returned no message.", status: .failed)
+            case "failed":
+                let errorText = status.error ?? "An error occurred."
+                return Message(sender: .system, content: errorText, status: .failed)
+            case "cancelled":
+                return Message(sender: .system, content: "Request cancelled.", status: .failed)
+            case "queued", "running":
+                continue  // still in progress, poll again
+            default:
+                continue
+            }
+        }
+        return Message(sender: .system, content: "Request timed out.", status: .failed)
     }
 
     func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
@@ -193,10 +237,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
 
-                    // Synchronous reply — the relay returned a complete response
-                    // without a pending job (replyState != "pending"). Simulate
-                    // streaming client-side so the user sees text appear progressively,
-                    // Live Activities fire, and reasoning blocks display correctly.
+                    // Build 28: Synchronous reply — emit the complete message
+                    // once without client-side word splitting. The relay already
+                    // sanitized reasoning; client-side splitThinkingBlocks is
+                    // a safety net only.
                     if response.replyState != "pending" {
                         let mappedMsg: Message
                         if let msg = response.message {
@@ -214,31 +258,14 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         let syntheticJobID = UUID()
                         continuation.yield(.messageSent(jobID: syntheticJobID))
 
+                        // Sanitize any residual reasoning blocks (defense in depth)
                         let fullText = mappedMsg.content
                         let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
 
-                        // Stream reasoning first if present
-                        if !reasoning.isEmpty {
-                            // Yield reasoning in chunks for visual streaming
-                            let reasoningChunks = Self.chunkTextForStreaming(reasoning)
-                            for chunk in reasoningChunks {
-                                continuation.yield(.reasoningDelta(chunk))
-                                try? await Task.sleep(for: .milliseconds(12))
-                            }
-                        }
-
-                        // Stream visible text word-by-word
-                        let textChunks = Self.chunkTextForStreaming(visibleText)
-                        for chunk in textChunks {
-                            continuation.yield(.textDelta(chunk))
-                            try? await Task.sleep(for: .milliseconds(16))
-                        }
-
-                        // Build the final message with reasoning extracted
                         var finalMsg = mappedMsg
                         if !reasoning.isEmpty {
                             finalMsg.reasoning = reasoning
-                            finalMsg.reasoningDuration = 0  // Synthetic, no real timing
+                            finalMsg.reasoningDuration = 0
                         }
                         finalMsg.content = visibleText
                         continuation.yield(.finished(finalMsg, response.usage, response.diff, response.context))
@@ -246,11 +273,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         return
                     }
 
-                    // Reply is pending — stream job events via SSE
+                    // Build 28: Reply is pending — use simplified polling via
+                    // JobStreamCoordinator for the SSE path (still available
+                    // but rarely reached since useStreaming defaults to false).
                     guard let jobId = response.jobId else {
-                        // No jobId available — relay wants streaming but didn't
-                        // give us a job to stream. Simulate streaming client-side
-                        // from whatever message the relay returned.
+                        // No jobId — relay returned a message directly
                         let mappedMsg: Message
                         if let msg = response.message ?? response.userMessage {
                             mappedMsg = self.mapMessage(msg)
@@ -261,20 +288,9 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         let syntheticJobID = UUID()
                         continuation.yield(.messageSent(jobID: syntheticJobID))
 
+                        // Defense-in-depth reasoning strip (connector already sanitized)
                         let fullText = mappedMsg.content
                         let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
-
-                        if !reasoning.isEmpty {
-                            for chunk in Self.chunkTextForStreaming(reasoning) {
-                                continuation.yield(.reasoningDelta(chunk))
-                                try? await Task.sleep(for: .milliseconds(12))
-                            }
-                        }
-
-                        for chunk in Self.chunkTextForStreaming(visibleText) {
-                            continuation.yield(.textDelta(chunk))
-                            try? await Task.sleep(for: .milliseconds(16))
-                        }
 
                         var finalMsg = mappedMsg
                         if !reasoning.isEmpty {
@@ -984,13 +1000,17 @@ extension LiveHeraldClient {
         return chunks
     }
 
-    /// Extracts `<think>…</think>` blocks from response text.
-    /// Returns (reasoning, visibleText) — reasoning is the concatenated
-    /// content of all think blocks, visibleText is everything else.
+    /// Extracts reasoning blocks from response text.
+    /// Recognizes the same tag variants as the connector's reasoning_sanitizer:
+    /// think, thinking, reasoning, thought, REASONING_SCRATCHPAD
+    /// Returns (reasoning, visibleText) — reasoning is stripped content,
+    /// visibleText is everything else.
     private static func splitThinkingBlocks(_ text: String) -> (reasoning: String, visible: String) {
+        let tags = ["think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"]
+        let pattern = "<(" + tags.joined(separator: "|") + ")>(.*?)</\\1>"
         guard let regex = try? NSRegularExpression(
-            pattern: "<think>(.*?)</think>",
-            options: [.dotMatchesLineSeparators]
+            pattern: pattern,
+            options: [.dotMatchesLineSeparators, .caseInsensitive]
         ) else {
             return ("", text)
         }
@@ -1001,8 +1021,8 @@ extension LiveHeraldClient {
         guard !matches.isEmpty else { return ("", text) }
 
         let reasoning = matches.compactMap { match -> String? in
-            guard match.numberOfRanges > 1 else { return nil }
-            return nsText.substring(with: match.range(at: 1))
+            guard match.numberOfRanges > 2 else { return nil }
+            return nsText.substring(with: match.range(at: 2))
         }.joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 

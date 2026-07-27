@@ -220,7 +220,7 @@ async def list_commands(request: Request) -> JSONResponse:
 
 async def capabilities_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({
-        "supportsStreaming": True,
+        "supportsStreaming": False,
         "supportsModels": True,
         "supportsProfiles": True,
         "supportsAttachments": True,

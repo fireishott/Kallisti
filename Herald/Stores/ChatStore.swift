@@ -137,7 +137,7 @@ final class ChatStore {
     /// Called when the conversation title changes (server-derived or renamed).
     /// Used by SessionListStore to update sidebar immediately.
     var onTitleChanged: (@MainActor (_ conversationID: UUID, _ newTitle: String) -> Void)?
-    var useStreaming: Bool = true
+    var useStreaming: Bool = false
 
     /// Maximum number of log entries to keep in memory and on disk.
     private static let maxLogEntries = 500

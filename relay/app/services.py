@@ -1330,6 +1330,20 @@ def complete_message_job(
     if job.result_message_id is not None or job.status == "completed":
         return job
 
+    # Build 28: defense-in-depth reasoning sanitization.
+    # The connector already strips reasoning, but re-apply here so a
+    # connector bug or old-version connector can't persist reasoning
+    # into the canonical database row.
+    from .reasoning_sanitizer import sanitize_message_content
+    sanitized_text, was_stripped = sanitize_message_content(text)
+    if was_stripped:
+        import logging
+        logging.getLogger("herald.relay").info(
+            "Job %s: relay stripped residual reasoning (%d → %d chars)",
+            job_id, len(text), len(sanitized_text),
+        )
+    text = sanitized_text
+
     user_message = db.get(Message, job.user_message_id)
     conversation = db.get(Conversation, job.conversation_id)
     if user_message is None or conversation is None:

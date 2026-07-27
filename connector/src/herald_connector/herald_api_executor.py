@@ -254,16 +254,15 @@ class HeraldAPIExecutor:
             "stream": False,
         }
 
-        # Control thinking based on reasoning_effort.
+        # Build 28: thinking (reasoning) is off by default. Only enable it
+        # when reasoning_effort is explicitly set to a non-"off" value.
         # Skip for llama-server backends — they don't recognize the think
         # param (it's a hermes-agent convention) and would return HTTP 400.
-        # llama.cpp emits thinking tokens inline as <think>...</think>, which
-        # InlineThinkParser handles regardless of the think param.
         if not self._is_llama_backend():
-            if reasoning_effort == "off":
-                payload["think"] = False
-            elif reasoning_effort is not None:
+            if reasoning_effort and reasoning_effort != "off":
                 payload["think"] = True
+            else:
+                payload["think"] = False
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
@@ -324,14 +323,12 @@ class HeraldAPIExecutor:
         }
 
         # Control thinking based on reasoning_effort.
-        # Skip for llama-server backends — they don't recognize the think
-        # param and emit thinking tokens inline as <think>...</think>, which
-        # InlineThinkParser handles.
+        # Build 28: thinking is off by default — same logic as send_message.
         if not self._is_llama_backend():
-            if reasoning_effort == "off":
-                payload["think"] = False
-            elif reasoning_effort is not None:
+            if reasoning_effort and reasoning_effort != "off":
                 payload["think"] = True
+            else:
+                payload["think"] = False
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),

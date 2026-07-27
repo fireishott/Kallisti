@@ -1072,11 +1072,15 @@ class HeraldConnector:
 
         try:
             runtime = await self.runtime_adapter_for_state_async(state)
-            if not getattr(runtime, "supports_streaming", False):
+            # Build 28: responseMode defaults to "complete" — non-streaming only.
+            # Streaming is gated behind an off-by-default debug flag.
+            response_mode = job.get("responseMode", "complete")
+            if response_mode == "streaming" and getattr(runtime, "supports_streaming", False):
+                await self._handle_job_streaming(websocket, job, runtime, workdir=workdir)
+            elif not getattr(runtime, "supports_streaming", False):
                 await self._handle_job_cli(websocket, job, runtime)
-                return
-
-            await self._handle_job_streaming(websocket, job, runtime, workdir=workdir)
+            else:
+                await self._handle_job_complete(websocket, job, runtime, workdir=workdir)
         finally:
             # Clean up staged attachment files after job completes
             staging_dir = self.state_store.state_dir / "attachment_staging" / str(job["id"])
@@ -1112,19 +1116,85 @@ class HeraldConnector:
             task.cancel()
         self._job_phases.pop(job_id, None)
 
+    async def _auto_compact_session(self, *, session_id: str) -> bool:
+        """Run Hermes's compress command to summarise older conversation history.
+
+        Returns True if compaction succeeded, False otherwise.
+        The compressor preserves system/developer instructions and recent turns
+        while replacing older middle history with a bounded summary.
+        """
+        try:
+            settings = self.executor.settings
+            hermes_cmd = settings.herald_command
+            cmd = [hermes_cmd, "compress", "--resume", session_id]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=30.0,
+            )
+            if proc.returncode == 0:
+                logger.info(
+                    "Auto-compact session %s succeeded",
+                    session_id[:8] if session_id else "unknown",
+                )
+                return True
+            else:
+                stderr_text = stderr.decode("utf-8", errors="replace")[:200] if stderr else ""
+                logger.warning(
+                    "Auto-compact session %s failed (exit %d): %s",
+                    session_id[:8] if session_id else "unknown",
+                    proc.returncode, stderr_text,
+                )
+                return False
+        except asyncio.TimeoutError:
+            logger.warning("Auto-compact session %s timed out", session_id[:8])
+            return False
+        except FileNotFoundError:
+            logger.warning(
+                "Auto-compact: hermes command not found (%s)",
+                getattr(self.executor.settings, 'herald_command', 'unknown'),
+            )
+            return False
+        except Exception:
+            logger.warning("Auto-compact session %s error", session_id[:8], exc_info=True)
+            return False
+
     async def _handle_job_streaming(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
     ) -> None:
-        """Process a job using the Hermes API server with streaming events."""
+        """Process a job using the Hermes API server with streaming events.
+
+        Build 28: This method is gated behind responseMode="streaming" and
+        exists only for debugging. Production uses _handle_job_complete.
+        """
+        # Delegate to the complete path — streaming is disabled in Build 28.
+        # The streaming path is retained behind an off-by-default flag;
+        # if reached (via explicit responseMode override), delegate to the
+        # complete path anyway.
+        await self._handle_job_complete(websocket, job, runtime, workdir=workdir)
+
+    async def _handle_job_complete(
+        self, websocket, job: dict, runtime, *, workdir: str | None = None,
+    ) -> None:
+        """Process a job with a single non-streaming request/response.
+
+        Build 28 contract:
+        - One upstream request with stream: false
+        - One canonical sanitized answer
+        - One job.result sent to the relay
+        - No text_delta, reasoning_delta, or heartbeat events
+        """
+        from .reasoning_sanitizer import sanitize_message_content
+
         job_id = job["id"]
         try:
-            accumulated_text = ""
-            session_id: str | None = None
-            usage: dict | None = None
             attempt = job.get("attempt", 0)
-            source_seq = 0
 
-            # Emit job.started immediately, before waiting for first token
+            # Emit job.started so the relay transitions to "running"
             await websocket.send(json.dumps({
                 "type": "job.started",
                 "jobId": job_id,
@@ -1133,6 +1203,8 @@ class HeraldConnector:
                 "sourceSeq": 0,
             }))
             self._job_phases[job_id] = "starting"
+            # Heartbeat is still useful for the relay's lease renewal while
+            # the model is thinking (non-streaming mode can still take time).
             self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
 
             # Snapshot git state before Hermes runs so we can diff afterwards
@@ -1143,8 +1215,7 @@ class HeraldConnector:
                 for item in job.get("history", [])
             ]
 
-            # Prepend voice transcript context so the Hermes agent sees the
-            # voice conversation even when using its own session history.
+            # Prepend voice transcript context
             user_message = job["latestUserMessage"]
             voice_context = job.get("voiceTranscriptContext")
             if voice_context:
@@ -1188,76 +1259,81 @@ class HeraldConnector:
                 }))
                 self._stop_job_heartbeat(job_id)
                 return
-            elif estimated_tokens > context_window * 0.9:
+
+            # Build 28: auto-compact when context is nearly full.
+            # This runs hermes compress to summarise older history before
+            # the upstream request, preventing context_exceeded failures.
+            _COMPACT_THRESHOLD = 0.8
+            if estimated_tokens > context_window * _COMPACT_THRESHOLD and context_window > 0:
+                session_for_compact = job.get("sessionId")
+                if session_for_compact:
+                    try:
+                        compacted = await self._auto_compact_session(
+                            session_id=session_for_compact,
+                        )
+                        if compacted:
+                            # Re-estimate after compaction
+                            new_estimate = _estimate_payload_tokens(
+                                user_message=user_message,
+                                history=job.get("history", []),
+                                attachments=job.get("attachments"),
+                                provider=job.get("provider"),
+                            )
+                            logger.info(
+                                "Job %s: auto-compact reduced estimate from %d to %d tokens",
+                                job_id, estimated_tokens, new_estimate,
+                            )
+                            estimated_tokens = new_estimate
+                    except Exception:
+                        logger.warning(
+                            "Job %s: auto-compact failed, continuing with original context",
+                            job_id, exc_info=True,
+                        )
+
+            # Double-check after compaction attempt
+            if estimated_tokens > context_window:
                 await websocket.send(json.dumps({
-                    "type": "job.progress",
+                    "type": "job.failed",
                     "jobId": job_id,
-                    "kind": "context_warning",
-                    "estimatedTokens": estimated_tokens,
-                    "contextLimit": context_window,
-                    "message": "Approaching context limit. Consider starting a new session soon.",
+                    "retryable": False,
+                    "error": f"Session too long ({estimated_tokens} tokens) for model "
+                             f"{job.get('model', 'unknown')} ({context_window} token limit) "
+                             f"even after auto-compaction. Start a new session.",
+                    "errorCategory": "context_exceeded",
+                    "errorDetail": {
+                        "estimatedTokens": estimated_tokens,
+                        "contextLimit": context_window,
+                        "model": job.get("model"),
+                        "action": "new_session",
+                    },
                 }))
+                self._stop_job_heartbeat(job_id)
+                return
 
-            # Absolute job timeout — prevents a hung upstream model from keeping
-            # the job alive indefinitely via keepalives/heartbeats. The relay
-            # passes timeoutSeconds in the job payload; default to 180s.
+            # Job timeout
             job_timeout = job.get("timeoutSeconds", 180)
-            async with asyncio.timeout(job_timeout):
-                async for event in runtime.send_text_message_streaming(
-                        latest_user_message=user_message,
-                        history=history,
-                        session_id=job.get("sessionId"),
-                        attachments=job.get("attachments"),
-                        reasoning_effort=job.get("reasoningEffort"),
-                    ):
-                        if event.type == "text_delta":
-                            accumulated_text += event.data
-                            self._job_phases[job_id] = "writing"
-                            source_seq += 1
-                            await websocket.send(json.dumps({
-                                "type": "job.progress",
-                                "jobId": job_id,
-                                "kind": "text_delta",
-                                "delta": event.data,
-                                "attempt": attempt,
-                                "sourceSeq": source_seq,
-                            }))
-                        elif event.type == "reasoning_delta":
-                            self._job_phases[job_id] = "thinking"
-                            source_seq += 1
-                            await websocket.send(json.dumps({
-                                "type": "job.progress",
-                                "jobId": job_id,
-                                "kind": "reasoning_delta",
-                                "delta": event.data,
-                                "attempt": attempt,
-                                "sourceSeq": source_seq,
-                            }))
-                        elif event.type == "tool_activity":
-                            self._job_phases[job_id] = "tool"
-                            source_seq += 1
-                            await websocket.send(json.dumps({
-                                "type": "job.progress",
-                                "jobId": job_id,
-                                "kind": "tool_activity",
-                                "label": event.label,
-                                "attempt": attempt,
-                                "sourceSeq": source_seq,
-                            }))
-                        elif event.type == "keepalive":
-                            source_seq += 1
-                            await websocket.send(json.dumps({
-                                "type": "job.progress",
-                                "jobId": job["id"],
-                                "kind": "keepalive",
-                                "attempt": attempt,
-                                "sourceSeq": source_seq,
-                            }))
-                        elif event.type == "finish":
-                            session_id = event.session_id
-                            usage = event.usage
 
-            final_text = accumulated_text.strip()
+            # ----- Non-streaming request -----
+            async with asyncio.timeout(job_timeout):
+                result = runtime.send_text_message(
+                    latest_user_message=user_message,
+                    history=history,
+                    session_id=job.get("sessionId"),
+                )
+
+            raw_text = result.text
+            session_id = result.session_id
+            usage = result.usage
+
+            # ----- Sanitize reasoning from the response -----
+            sanitized_text, was_stripped = sanitize_message_content(raw_text)
+            if was_stripped:
+                logger.info(
+                    "Job %s: reasoning stripped from response (%d → %d chars)",
+                    job_id, len(raw_text), len(sanitized_text),
+                )
+
+            final_text = sanitized_text.strip()
             if not final_text:
                 raise StructuredJobError(
                     "Hermes API server returned an empty response.",
@@ -1273,8 +1349,7 @@ class HeraldConnector:
             # Capture what files Hermes changed during this job
             diff_data = await capture_diff(workdir, pre_snapshot) if pre_snapshot else None
 
-            # Extract MEDIA: tags from the response — same pattern the
-            # Hermes gateway uses to deliver files on Discord/Telegram.
+            # Extract MEDIA: tags from the response
             media_attachments, cleaned_text = _extract_media_from_response(final_text)
 
             result_payload: dict = {
@@ -1287,6 +1362,7 @@ class HeraldConnector:
                     "window": context_window,
                     "used": usage.get("total_tokens", 0) if usage else 0,
                 },
+                "reasoningStripped": was_stripped,
             }
             if media_attachments:
                 result_payload["attachments"] = media_attachments

@@ -927,6 +927,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if job.reasoning_effort:
             job_data["reasoningEffort"] = job.reasoning_effort
+        # Build 28: responseMode defaults to "complete" — non-streaming only
+        job_data["responseMode"] = "complete"
         if voice_transcript_lines:
             job_data["voiceTranscriptContext"] = "\n".join(voice_transcript_lines)
         if user_message.attachments_data:
@@ -2635,11 +2637,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         db.expire_all()
         payload_data, status_code = build_message_response_payload(db, conversation_id=conversation.id, job_id=job.id)
-        # For connector-backed jobs, ALWAYS return "pending" so the iOS client
-        # opens an SSE connection for streaming. If we return "delivered" here
-        # (because the connector finished before db.expire_all), the client
-        # skips SSE and never sees streaming events.
-        if request_settings.herald_adapter == "connector" and payload_data["replyState"] != "failed":
+        # Build 28: for connector-backed jobs, return the actual result when
+        # the job completed synchronously. Only force "pending" when the job
+        # is still queued/running and the client should poll for completion.
+        if request_settings.herald_adapter == "connector" and payload_data["replyState"] not in ("delivered", "failed"):
             payload_data["replyState"] = "pending"
             strip_current_job_result_from_pending_payload(payload_data, job_id=job.id)
             status_code = status.HTTP_202_ACCEPTED

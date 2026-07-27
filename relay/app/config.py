@@ -42,7 +42,7 @@ class Settings:
     herald_toolsets: str | None = None
     herald_source: str = "tool"
     herald_history_limit: int = 20
-    connector_sync_wait_seconds: int = 0
+    connector_sync_wait_seconds: int = 5
     connector_job_lease_seconds: int = 180
     connector_heartbeat_timeout_seconds: int = 30
     max_job_duration_seconds: int = 180  # Absolute cap — heartbeats cannot extend past this
@@ -96,7 +96,7 @@ class Settings:
             herald_toolsets=os.getenv("HERALD_TOOLSETS") or None,
             herald_source=os.getenv("HERALD_SOURCE", "tool"),
             herald_history_limit=int(os.getenv("HERALD_HISTORY_LIMIT", "20")),
-            connector_sync_wait_seconds=int(os.getenv("CONNECTOR_SYNC_WAIT_SECONDS", "0")),
+            connector_sync_wait_seconds=int(os.getenv("CONNECTOR_SYNC_WAIT_SECONDS", "5")),
             connector_job_lease_seconds=int(os.getenv("CONNECTOR_JOB_LEASE_SECONDS", "180")),
             connector_heartbeat_timeout_seconds=int(os.getenv("CONNECTOR_HEARTBEAT_TIMEOUT_SECONDS", "30")),
             max_job_duration_seconds=int(os.getenv("MAX_JOB_DURATION_SECONDS", "180")),
