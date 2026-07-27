@@ -14,13 +14,24 @@ struct PermissionsScreen: View {
 
                     ForEach(permissionsStore.capabilities) { capability in
                         PermissionCard(capability: capability) {
-                            if capability.status == .unsupported || capability.status == .denied {
+                            if capability.status == .denied || capability.status == .restricted {
+                                // Denied/restricted — user must enable in system Settings
                                 if let url = URL(string: UIApplication.openSettingsURLString) {
                                     UIApplication.shared.open(url)
                                 }
-                            } else if capability.permissionType == .health {
-                                Task { await permissionsStore.requestPermission(for: .health) }
+                            } else if capability.status == .unsupported {
+                                // Unsupported — only open Settings if the detail
+                                // text indicates a user-actionable fix (e.g.,
+                                // "Manage in Apple Health"). Build defects and
+                                // device limits get no action.
+                                if let detail = capability.statusDetail,
+                                   detail.contains("Settings") || detail.contains("Apple Health") {
+                                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                                        UIApplication.shared.open(url)
+                                    }
+                                }
                             } else {
+                                // Not determined — request permission
                                 Task { await permissionsStore.requestPermission(for: capability.permissionType) }
                             }
                         }

@@ -1,6 +1,7 @@
 import Foundation
 import os
 import BackgroundTasks
+import Speech
 import UserNotifications
 
 extension Logger {
@@ -383,16 +384,23 @@ final class AppContainer {
             mediaService: processEnvironment["UITEST_PAIRING_MODE"] != nil ? MockMediaService() : LiveMediaService(),
             motionService: liveMotionService
         )
-        // On iOS 26+, SFSpeechRecognizer.requestAuthorization crashes (FB radar).
-        // The modern SpeechAnalyzer/DictationTranscriber APIs auto-trigger the TCC
-        // dialog on first use. When the user taps Allow for speech in settings,
-        // briefly initializing a dictation service triggers that dialog.
+        // Speech authorization trigger: uses the version-appropriate API.
+        // On iOS 26+, prepareAuthorization() reserves the speech locale and
+        // checks asset status, which triggers the TCC dialog via the modern
+        // SpeechAnalyzer/DictationTranscriber APIs (SFSpeechRecognizer
+        // .requestAuthorization crashes on iOS 26 betas — FB radar).
+        // On iOS 18–25, it falls back to the legacy API.
         permissionsStore.speechAuthorizationTrigger = { @MainActor in
-            // LiveSpeechService.init() creates a DictationController which
-            // prompts the system TCC dialog for speech recognition on iOS 26+.
-            // We don't need to keep the instance — just constructing it is enough.
             if #available(iOS 26.0, *) {
-                _ = LiveSpeechService()
+                let speechService = LiveSpeechService()
+                return await speechService.prepareAuthorization()
+            } else {
+                // iOS 18–25: use the legacy SFSpeechRecognizer API
+                return await withCheckedContinuation { continuation in
+                    SFSpeechRecognizer.requestAuthorization { status in
+                        continuation.resume(returning: status)
+                    }
+                }
             }
         }
 

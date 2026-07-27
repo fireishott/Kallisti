@@ -1198,59 +1198,64 @@ class HeraldConnector:
                     "message": "Approaching context limit. Consider starting a new session soon.",
                 }))
 
-            async for event in runtime.send_text_message_streaming(
-                latest_user_message=user_message,
-                history=history,
-                session_id=job.get("sessionId"),
-                attachments=job.get("attachments"),
-                reasoning_effort=job.get("reasoningEffort"),
-            ):
-                if event.type == "text_delta":
-                    accumulated_text += event.data
-                    self._job_phases[job_id] = "writing"
-                    source_seq += 1
-                    await websocket.send(json.dumps({
-                        "type": "job.progress",
-                        "jobId": job_id,
-                        "kind": "text_delta",
-                        "delta": event.data,
-                        "attempt": attempt,
-                        "sourceSeq": source_seq,
-                    }))
-                elif event.type == "reasoning_delta":
-                    self._job_phases[job_id] = "thinking"
-                    source_seq += 1
-                    await websocket.send(json.dumps({
-                        "type": "job.progress",
-                        "jobId": job_id,
-                        "kind": "reasoning_delta",
-                        "delta": event.data,
-                        "attempt": attempt,
-                        "sourceSeq": source_seq,
-                    }))
-                elif event.type == "tool_activity":
-                    self._job_phases[job_id] = "tool"
-                    source_seq += 1
-                    await websocket.send(json.dumps({
-                        "type": "job.progress",
-                        "jobId": job_id,
-                        "kind": "tool_activity",
-                        "label": event.label,
-                        "attempt": attempt,
-                        "sourceSeq": source_seq,
-                    }))
-                elif event.type == "keepalive":
-                    source_seq += 1
-                    await websocket.send(json.dumps({
-                        "type": "job.progress",
-                        "jobId": job["id"],
-                        "kind": "keepalive",
-                        "attempt": attempt,
-                        "sourceSeq": source_seq,
-                    }))
-                elif event.type == "finish":
-                    session_id = event.session_id
-                    usage = event.usage
+            # Absolute job timeout — prevents a hung upstream model from keeping
+            # the job alive indefinitely via keepalives/heartbeats. The relay
+            # passes timeoutSeconds in the job payload; default to 180s.
+            job_timeout = job.get("timeoutSeconds", 180)
+            async with asyncio.timeout(job_timeout):
+                async for event in runtime.send_text_message_streaming(
+                        latest_user_message=user_message,
+                        history=history,
+                        session_id=job.get("sessionId"),
+                        attachments=job.get("attachments"),
+                        reasoning_effort=job.get("reasoningEffort"),
+                    ):
+                        if event.type == "text_delta":
+                            accumulated_text += event.data
+                            self._job_phases[job_id] = "writing"
+                            source_seq += 1
+                            await websocket.send(json.dumps({
+                                "type": "job.progress",
+                                "jobId": job_id,
+                                "kind": "text_delta",
+                                "delta": event.data,
+                                "attempt": attempt,
+                                "sourceSeq": source_seq,
+                            }))
+                        elif event.type == "reasoning_delta":
+                            self._job_phases[job_id] = "thinking"
+                            source_seq += 1
+                            await websocket.send(json.dumps({
+                                "type": "job.progress",
+                                "jobId": job_id,
+                                "kind": "reasoning_delta",
+                                "delta": event.data,
+                                "attempt": attempt,
+                                "sourceSeq": source_seq,
+                            }))
+                        elif event.type == "tool_activity":
+                            self._job_phases[job_id] = "tool"
+                            source_seq += 1
+                            await websocket.send(json.dumps({
+                                "type": "job.progress",
+                                "jobId": job_id,
+                                "kind": "tool_activity",
+                                "label": event.label,
+                                "attempt": attempt,
+                                "sourceSeq": source_seq,
+                            }))
+                        elif event.type == "keepalive":
+                            source_seq += 1
+                            await websocket.send(json.dumps({
+                                "type": "job.progress",
+                                "jobId": job["id"],
+                                "kind": "keepalive",
+                                "attempt": attempt,
+                                "sourceSeq": source_seq,
+                            }))
+                        elif event.type == "finish":
+                            session_id = event.session_id
+                            usage = event.usage
 
             final_text = accumulated_text.strip()
             if not final_text:
@@ -1294,6 +1299,23 @@ class HeraldConnector:
                 job_id,
                 cleaned_text,
                 category="HERALD_MESSAGE_READY",
+                conversation_id=job.get("conversationId"),
+            )
+        except TimeoutError:
+            self._stop_job_heartbeat(job_id)
+            logger.warning("Job %s timed out after %ds", job_id, job_timeout)
+            await websocket.send(json.dumps({
+                "type": "job.failed",
+                "jobId": job_id,
+                "retryable": True,
+                "error": f"Job timed out after {job_timeout}s.",
+                "errorCategory": "timeout",
+                "errorAction": "retry",
+            }))
+            await self._send_push_for_job(
+                job_id,
+                "Herald took too long. Tap to retry.",
+                category="HERALD_JOB_ACTIVE",
                 conversation_id=job.get("conversationId"),
             )
         except Exception as error:  # noqa: BLE001

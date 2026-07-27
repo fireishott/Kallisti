@@ -13,12 +13,11 @@ final class PermissionsStore {
     private let mediaService: any MediaServiceProtocol
     private let motionService: LiveMotionService?
 
-    /// Called on iOS 26+ when the user taps Allow for speech recognition.
-    /// SFSpeechRecognizer.requestAuthorization crashes on early iOS 26 betas
-    /// (FB-prefixed radar), so we rely on the new SpeechAnalyzer/DictationTranscriber
-    /// APIs to trigger the TCC dialog. This closure should instantiate and immediately
-    /// discard a speech recognizer to prompt the system dialog.
-    var speechAuthorizationTrigger: (@MainActor () async -> Void)?
+    /// Called when the user taps Allow for speech recognition. Returns the resolved
+    /// SFSpeechRecognizerAuthorizationStatus. On iOS 26+, this must use the modern
+    /// SpeechAnalyzer/DictationTranscriber APIs (not the crashing requestAuthorization).
+    /// On iOS 18-25, it may use the legacy SFSpeechRecognizer.requestAuthorization().
+    var speechAuthorizationTrigger: (@MainActor () async -> SFSpeechRecognizerAuthorizationStatus)?
 
     init(
         locationService: any LocationServiceProtocol,
@@ -174,24 +173,12 @@ final class PermissionsStore {
     }
 
     private func requestSpeechAuthorization() async {
-        if #available(iOS 26.0, *) {
-            // iOS 26+: SFSpeechRecognizer.requestAuthorization crashes on beta
-            // (FB-prefixed radar). The modern SpeechAnalyzer/DictationTranscriber
-            // APIs handle authorization automatically when first used — the
-            // system presents the TCC dialog inline. Trigger that initialization
-            // via the provided closure so the dialog actually appears.
-            guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
-            if let trigger = speechAuthorizationTrigger {
-                await trigger()
-            }
-        } else {
-            // iOS 18-25: SFSpeechRecognizer.requestAuthorization() works correctly
-            guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
-            await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { status in
-                    continuation.resume()
-                }
-            }
+        guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
+        // Delegate to the trigger closure, which uses the version-appropriate
+        // API (modern SpeechAnalyzer/DictationTranscriber on iOS 26+, legacy
+        // SFSpeechRecognizer.requestAuthorization() on iOS 18–25).
+        if let trigger = speechAuthorizationTrigger {
+            _ = await trigger()
         }
     }
 
@@ -210,7 +197,14 @@ final class PermissionsStore {
             let backgroundStatus = healthService.backgroundDeliveryEnabled ? "Background Sync On" : "Background Sync Off"
             return "Read Only • \(backgroundStatus)"
         case .unsupported:
-            return "Health data is not available in this build"
+            // Distinguish build defects from device limits.
+            // If the health service has a diagnostic error, surface a concise
+            // reason. Otherwise fall back to the generic message.
+            if (healthService as? LiveHealthService)?.lastAuthorizationError != nil {
+                // Entitlement/configuration errors are not user-actionable
+                return "Unavailable in this build"
+            }
+            return "Not available on this device"
         case .denied, .restricted:
             return "Manage in Apple Health or Settings > Privacy & Security > Health"
         default:

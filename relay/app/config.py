@@ -45,6 +45,7 @@ class Settings:
     connector_sync_wait_seconds: int = 0
     connector_job_lease_seconds: int = 180
     connector_heartbeat_timeout_seconds: int = 30
+    max_job_duration_seconds: int = 180  # Absolute cap — heartbeats cannot extend past this
     connector_idle_poll_interval_seconds: float = 0.1
     connector_sensor_ack_timeout_seconds: float = 3.0
     connector_rpc_timeout_seconds: float = 30.0
@@ -98,6 +99,7 @@ class Settings:
             connector_sync_wait_seconds=int(os.getenv("CONNECTOR_SYNC_WAIT_SECONDS", "0")),
             connector_job_lease_seconds=int(os.getenv("CONNECTOR_JOB_LEASE_SECONDS", "180")),
             connector_heartbeat_timeout_seconds=int(os.getenv("CONNECTOR_HEARTBEAT_TIMEOUT_SECONDS", "30")),
+            max_job_duration_seconds=int(os.getenv("MAX_JOB_DURATION_SECONDS", "180")),
             connector_idle_poll_interval_seconds=float(os.getenv("CONNECTOR_IDLE_POLL_INTERVAL_SECONDS", "0.1")),
             connector_sensor_ack_timeout_seconds=float(os.getenv("CONNECTOR_SENSOR_ACK_TIMEOUT_SECONDS", "3.0")),
             connector_rpc_timeout_seconds=float(os.getenv("CONNECTOR_RPC_TIMEOUT_SECONDS", "30.0")),

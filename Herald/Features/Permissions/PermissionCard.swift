@@ -3,6 +3,7 @@ import SwiftUI
 struct PermissionCard: View {
     let capability: DeviceCapability
     let onRequest: () -> Void
+    @State private var isRequesting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.sm) {
@@ -64,6 +65,7 @@ struct PermissionCard: View {
 
             if let actionLabel = actionLabelText {
                 Button {
+                    isRequesting = true
                     // Defer the system permission dialog by 100ms to avoid
                     // overlapping with SwiftUI render cycles that can crash
                     // AttributeGraph (BarEnvironmentViewModel visibility update
@@ -71,14 +73,23 @@ struct PermissionCard: View {
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(100))
                         onRequest()
+                        isRequesting = false
                     }
                 } label: {
-                    Text(actionLabel)
-                        .brandEyebrow(Design.Colors.background)
-                        .padding(.horizontal, Design.Spacing.md)
-                        .padding(.vertical, Design.Spacing.xs)
+                    HStack(spacing: 4) {
+                        if isRequesting {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                                .tint(Design.Colors.background)
+                        }
+                        Text(isRequesting ? "Requesting..." : actionLabel)
+                            .brandEyebrow(Design.Colors.background)
+                    }
+                    .padding(.horizontal, Design.Spacing.md)
+                    .padding(.vertical, Design.Spacing.xs)
                 }
-                .background(Design.Brand.accent)
+                .disabled(isRequesting)
+                .background(isRequesting ? Design.Colors.secondaryForeground : Design.Brand.accent)
                 .clipShape(Capsule())
             }
         }
@@ -89,14 +100,21 @@ struct PermissionCard: View {
     }
 
     private var actionLabelText: String? {
+        if isRequesting { return nil }
+        // Health denied/restricted — user must go to Apple Health, not app Settings
         if capability.permissionType == .health,
            capability.status == .denied || capability.status == .restricted {
             return nil
         }
-        // Show a settings fallback for unsupported — the user may need to
-        // check system-level Health permissions or device compatibility.
+        // Unsupported due to build defect (missing entitlements, device limit) —
+        // no Settings action can fix this. Show no button.
         if capability.status == .unsupported {
-            return "Open Settings"
+            // Only show Settings if the detail suggests a user-actionable fix
+            if let detail = capability.statusDetail,
+               detail.contains("Settings") || detail.contains("Apple Health") {
+                return "Open Settings"
+            }
+            return nil
         }
         return capability.status.actionLabel
     }

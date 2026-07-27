@@ -39,6 +39,9 @@ final class LiveHealthService: HealthServiceProtocol {
 
     private(set) var authorizationStatus: PermissionStatus
     private(set) var backgroundDeliveryEnabled = false
+    /// Sanitized diagnostic for the Logs tab when authorization fails.
+    /// Nil when the last request succeeded or hasn't been attempted.
+    private(set) var lastAuthorizationError: String?
     var onHealthUpdate: (@MainActor (Set<String>) -> Void)?
 
     private let store: HKHealthStore?
@@ -110,6 +113,7 @@ final class LiveHealthService: HealthServiceProtocol {
                 read: readTypes
             )
             authorizationStatus = .authorized
+            lastAuthorizationError = nil
             UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
             await configureBackgroundDeliveryIfNeeded()
         } catch {
@@ -119,6 +123,7 @@ final class LiveHealthService: HealthServiceProtocol {
             authorizationStatus = .unsupported
             entitlementsVerified = false
             backgroundDeliveryEnabled = false
+            lastAuthorizationError = "HealthKit authorization request failed: \(error.localizedDescription). Verify signed com.apple.developer.healthkit entitlement."
         }
 
         return authorizationStatus

@@ -923,7 +923,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "latestUserMessage": user_message.text,
             "history": regular_history,
             "sessionId": job.session_id_snapshot,
-            "timeoutSeconds": settings.connector_job_lease_seconds,
+            "timeoutSeconds": settings.max_job_duration_seconds,
         }
         if job.reasoning_effort:
             job_data["reasoningEffort"] = job.reasoning_effort
@@ -3204,6 +3204,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                             if message_type == "job.heartbeat" and incoming.get("jobId") == claimed_job.id:
                                 with database.session() as db:
+                                    current_job = get_message_job(db, job_id=claimed_job.id)
+                                    if current_job is not None:
+                                        # Enforce absolute job deadline. Heartbeats
+                                        # prove the connector is alive but must not
+                                        # extend a job past its immutable max duration.
+                                        job_age = (utcnow() - normalize_datetime(current_job.created_at)).total_seconds()
+                                        if job_age > settings.max_job_duration_seconds:
+                                            logger.warning(
+                                                "Job %s exceeded absolute deadline (%ds old, max %ds) — failing",
+                                                claimed_job.id, int(job_age), settings.max_job_duration_seconds,
+                                            )
+                                            fail_message_job(db, job_id=claimed_job.id, error="Job exceeded maximum duration.")
+                                            db.commit()
+                                            # Emit terminal failed event to SSE subscribers
+                                            publish_job_event(claimed_job.id, {
+                                                "event": "failed",
+                                                "data": {
+                                                    "jobId": claimed_job.id,
+                                                    "error": "Job timed out — exceeded maximum duration.",
+                                                    "errorCategory": "timeout",
+                                                    "errorAction": "retry",
+                                                },
+                                            })
+                                            in_flight_job_id = None
+                                            break
                                     renew_message_job_lease(db, job_id=claimed_job.id, connection_nonce=connection_nonce, settings=settings)
                                 heartbeat_event: dict = {
                                     "event": "heartbeat",

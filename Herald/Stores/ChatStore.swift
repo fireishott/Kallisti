@@ -59,6 +59,14 @@ final class ChatStore {
     /// the job is treated as stalled and parallel polling begins.
     static var watchdogTimeout: Duration = .seconds(90)
 
+    /// Absolute deadline for a single streaming job from message acceptance to
+    /// terminal resolution. After this duration, the polling loop forcibly
+    /// resolves the placeholder to a timeout failure, even if heartbeats are
+    /// still arriving. This prevents the "infinite thinking" bug where a hung
+    /// upstream model keeps the job alive via heartbeats forever.
+    /// Mirrors the relay's max_job_duration_seconds.
+    static var absoluteJobDeadline: Duration = .seconds(180)
+
     /// Timestamp of the last streaming progress signal. Updated on every
     /// textDelta, reasoningDelta, toolActivity, keepalive, and messageSent.
     /// The continuous watchdog checks this to detect mid-stream stalls.
@@ -278,14 +286,16 @@ final class ChatStore {
     /// relay owns retries via leases, so the client never resubmits the same
     /// message — it just keeps waiting until the relay resolves the job.
     ///
-    /// Only an explicit ``.failed`` event from the relay causes a "tap to retry"
-    /// error to appear.  A stalled stream is a transport concern, not a failure.
+    /// Only an explicit ``.failed`` event from the relay or exceeding the
+    /// absolute job deadline causes a "tap to retry" error to appear.
+    /// A stalled stream is a transport concern, not a failure.
     private func runAttemptLoop(
         content: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
         placeholderID: UUID
     ) async {
+        let jobAcceptedAt = Date.now
         let stalled = await runStreamingAttempt(
             content: content,
             attachments: attachments,
@@ -296,16 +306,43 @@ final class ChatStore {
         // If the stream completed normally (including explicit .failed), done.
         guard stalled else { return }
 
-        // — Stream stalled — start parallel polling indefinitely —
+        // — Stream stalled — start parallel polling —
         streamingPhase = .stalled
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
 
-        // Poll until the job resolves.  The relay will eventually complete or
-        // fail the job; we just keep checking.  No forced client-side timeout.
+        // Poll until the job resolves or the absolute deadline is exceeded.
+        // Heartbeats can keep a hung upstream job alive forever; this deadline
+        // guarantees a terminal user-visible state regardless of connector/relay
+        // behavior.
         var pollCount = 0
         while !Task.isCancelled {
+            // Check absolute deadline first
+            let elapsed = Date.now.timeIntervalSince(jobAcceptedAt)
+            let deadlineSeconds = Self.absoluteJobDeadline / .seconds(1)
+            if elapsed >= deadlineSeconds {
+                appendLog(level: .warn, "Job exceeded absolute deadline (\(Int(elapsed))s) — timing out")
+                flushPendingReasoning(placeholderID: placeholderID)
+                flushPendingDeltas(placeholderID: placeholderID)
+                if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+                    conversation?.messages[idx] = Message(
+                        sender: .system,
+                        content: failureMessage(for: "timeout"),
+                        status: .failed,
+                        errorCategory: "timeout"
+                    )
+                }
+                if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                    conversation?.messages[idx].status = .sending  // user message is retryable
+                }
+                activeStreams.removeAll()
+                streamingPhase = .idle
+                chatLiveActivity.endActivity()
+                pendingMessageSentAt = nil
+                return
+            }
+
             try? await Task.sleep(for: .seconds(10))
             pollCount += 1
 
@@ -334,11 +371,11 @@ final class ChatStore {
                 return
             }
 
-            // Update waiting indicator periodically
+            // Update waiting indicator with elapsed time
             if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                let mins = pollCount / 6
-                if mins > 0 {
-                    conversation?.messages[idx].toolActivity = "Waiting... (\(mins)m)"
+                let elapsedSecs = Int(Date.now.timeIntervalSince(jobAcceptedAt))
+                if elapsedSecs > 0 {
+                    conversation?.messages[idx].toolActivity = "Waiting... (\(elapsedSecs)s)"
                 }
             }
         }
@@ -444,7 +481,10 @@ final class ChatStore {
                     self.chatLiveActivity.updateToolProgress(label)
 
                 case .keepalive:
-                    progressContinuation?.yield(())
+                    // Transport keepalives prove the connection is alive but do
+                    // NOT prove the model is making progress. Do not reset the
+                    // watchdog — only text/reasoning/tool events count.
+                    break
 
                 case .finished(let finalMessage, let usage, let diff, let context):
                     progressContinuation?.yield(())
@@ -583,14 +623,17 @@ final class ChatStore {
                     }
 
                 case .heartbeat(let phase):
-                    // Heartbeat resets the watchdog — job is alive
-                    progressContinuation?.yield(())
+                    // Heartbeat proves the connector process is alive, but does
+                    // NOT prove the model is making progress. Do NOT reset the
+                    // watchdog — keepalive/transport liveness alone must not
+                    // prevent the stall detector from firing.
                     self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
 
                 case .reconnecting:
                     self.appendLog(level: .warn, "Stream reconnecting...")
                     self.streamingPhase = .reconnecting
-                    progressContinuation?.yield(())
+                    // Reconnection attempts are transport recovery, not model
+                    // progress. Do not reset the watchdog.
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         conv.messages[idx].toolActivity = "Reconnecting..."
@@ -686,13 +729,30 @@ final class ChatStore {
         // drop after the first token), not just complete silence before the
         // first event. The old one-shot race would satisfy on the first
         // progress signal then never check again.
+        //
+        // Also enforces the absolute job deadline — even if heartbeats or
+        // occasional text deltas keep arriving, the stream is terminated
+        // after absoluteJobDeadline to prevent infinite hangs.
         self.streamingProgressAt = .now
+        let jobAcceptedAt = Date.now
         var stallDetected = false
         while !consumerTask.isCancelled {
             // Check if the consumer finished while we were sleeping
             if streamingTask == nil { break }
 
             try? await Task.sleep(for: .seconds(5))
+
+            // Absolute deadline check — terminate even if progress events
+            // are still arriving, to prevent an infinite "Thinking..." hang
+            // when heartbeats keep the job alive but the model never finishes.
+            let wallElapsed = Date.now.timeIntervalSince(jobAcceptedAt)
+            let wallDeadline = Self.absoluteJobDeadline / .seconds(1)
+            if wallElapsed >= wallDeadline {
+                appendLog(level: .warn, "SSE stream exceeded absolute deadline (\(Int(wallElapsed))s)")
+                streamingPhase = .stalled
+                stallDetected = true
+                break
+            }
 
             let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
 
