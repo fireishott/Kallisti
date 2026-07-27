@@ -18,10 +18,10 @@ final class HeraldAppState: @unchecked Sendable {
     }()
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "AppState")
 
-    /// The relay base URL (e.g. https://herald-host.internal:8010/v1).
+    /// The relay base URL. Set by the main app after pairing.
+    /// Widgets read this from shared App Group UserDefaults.
     var relayBaseURL: String {
-        defaults.string(forKey: "herald.relayBaseURL")
-            ?? "https://herald-host.internal:8010/v1"
+        defaults.string(forKey: "herald.relayBaseURL") ?? ""
     }
 
     /// The current relay access token, if authenticated.
