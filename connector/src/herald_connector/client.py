@@ -817,6 +817,8 @@ class HeraldConnector:
             # can authenticate with the same token used for the FastAPI host WS.
             facade_ctx.paired_device_id = state.device_token
             facade_ctx.paired_user_id = state.user_id
+            facade_ctx.connector_credential = state.connector_credential
+            facade_ctx.public_base_url = state.relay_url or ""
             from .http_facade import set_token_validator, AccessTokenValidator
             if state.connector_credential:
                 validator = AccessTokenValidator({state.connector_credential})

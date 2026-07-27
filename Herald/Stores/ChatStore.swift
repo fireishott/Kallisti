@@ -1133,9 +1133,9 @@ final class ChatStore {
     func appendLog(level: LogLevel, _ message: String) {
         logEntries.append(LogEntry(level: level, message: message))
         if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(100) }
-        // Persist asynchronously so logging doesn't block the main thread
+        // Persist on the next main-actor cycle so logging doesn't stall
         let snapshot = logEntries
-        Task.detached(priority: .utility) { [persistence] in
+        Task { @MainActor [persistence] in
             persistence.saveLogEntries(snapshot)
         }
     }

@@ -93,6 +93,8 @@ class FacadeContext:
         self.health_check: Callable[[], Coroutine[Any, Any, bool]] | None = None
         self.paired_device_id: str | None = None
         self.paired_user_id: str | None = None
+        self.connector_credential: str | None = None
+        self.public_base_url: str = ""
 
 
 _context = FacadeContext()
@@ -258,6 +260,164 @@ async def send_message(request: Request) -> StreamingResponse:
     )
 
 
+# ── Pairing / Auth ───────────────────────────────────────────────────────
+
+# Phone pairing codes stored in-memory (no Postgres needed).
+# Maps normalized code → {expires_at, created_at}
+_pending_pairing_codes: dict[str, dict] = {}
+import hashlib, secrets as _secrets
+
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
+def _generate_pairing_code() -> tuple[str, str]:
+    """Returns (normalized_code, display_code). 8 alphanumeric chars."""
+    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    code = "".join(_secrets.choice(chars) for _ in range(8))
+    return code, f"{code[:4]}-{code[4:]}"
+
+
+async def create_phone_pairing_code(request: Request) -> JSONResponse:
+    """Create a phone pairing code. No auth needed — the connector calls this."""
+    import time as _time
+    code, display = _generate_pairing_code()
+    hashed = _hash_code(code)
+    expires = _time.time() + 600  # 10 minute expiry
+    _pending_pairing_codes[hashed] = {"expires_at": expires, "created_at": _time.time()}
+    # Clean expired codes
+    for k in list(_pending_pairing_codes):
+        if _pending_pairing_codes[k]["expires_at"] < _time.time():
+            del _pending_pairing_codes[k]
+    logger.info("Created pairing code: %s", display)
+    return JSONResponse({"code": code, "displayCode": display, "expiresAt": expires})
+
+
+async def redeem_phone_pairing(request: Request) -> JSONResponse:
+    """Redeem a phone pairing code. Returns access + refresh tokens."""
+    import time as _time
+    ctx = get_context()
+    body = await request.json()
+    code = (body.get("code") or "").upper().replace("-", "").replace(" ", "")
+    hashed = _hash_code(code)
+    stored = _pending_pairing_codes.pop(hashed, None)
+    if stored is None or stored["expires_at"] < _time.time():
+        raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
+    # The connector credential IS the access token
+    token = ctx.connector_credential or ctx.paired_device_id or "herald-connector"
+    _default_validator.add_token(token)
+    import uuid as _uuid
+    return JSONResponse({
+        "user": {"id": ctx.paired_user_id or str(_uuid.uuid4()), "displayName": "Herald User"},
+        "deviceId": str(_uuid.uuid4()),
+        "deviceRegistered": True,
+        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.paired_device_id or ctx.public_base_url, "lastSyncAt": None},
+        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time.time() + 86400},
+    })
+
+
+async def redeem_pairing(request: Request) -> JSONResponse:
+    """Redeem a host setup code (HC1:...). Returns access token if valid."""
+    import time as _time
+    ctx = get_context()
+    body = await request.json()
+    raw = (body.get("code") or body.get("setupCode") or "").strip()
+
+    if raw.startswith("HC1:"):
+        import base64 as _b64
+        try:
+            encoded = raw[4:]
+            padding = "=" * (-len(encoded) % 4)
+            decoded = _b64.urlsafe_b64decode((encoded + padding).encode()).decode()
+            payload = json.loads(decoded)
+            enrollment_token = payload.get("enrollment_token", "")
+            # Accept if enrollment token matches connector credential
+            expected = ctx.connector_credential or ctx.paired_device_id or ""
+            if enrollment_token and enrollment_token == expected:
+                token = enrollment_token
+                _default_validator.add_token(token)
+                import uuid as _uuid2
+                return JSONResponse({
+                    "user": {"id": str(_uuid2.uuid4()), "displayName": "Herald User"},
+                    "deviceId": str(_uuid2.uuid4()),
+                    "deviceRegistered": True,
+                    "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": payload.get("relay_url", ctx.public_base_url), "lastSyncAt": None},
+                    "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time.time() + 86400},
+                })
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail="Invalid setup code")
+
+
+async def refresh_auth(request: Request) -> JSONResponse:
+    """Refresh an access token. The connector credential never expires."""
+    await require_auth(request)
+    import time as _time
+    return JSONResponse({"accessToken": await _extract_token(request), "expiresAt": _time.time() + 86400})
+
+
+async def register_device(request: Request) -> JSONResponse:
+    """Register a device for push notifications."""
+    await require_auth(request)
+    body = await request.json()
+    token = body.get("pushToken") or body.get("deviceToken", "")
+    logger.info("Device registered for push: token=%s...", token[:16] if token else "none")
+    return JSONResponse({"registered": True})
+
+
+async def connector_events(request: Request) -> StreamingResponse:
+    """SSE stream of connector health events."""
+    import asyncio as _asyncio
+    async def stream():
+        yield "event: connected\ndata: {}\n\n"
+        while True:
+            try:
+                await _asyncio.sleep(30)
+                if await request.is_disconnected():
+                    break
+                yield "event: health_check\ndata: {\"status\": \"online\"}\n\n"
+            except Exception:
+                break
+    return StreamingResponse(stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+
+async def get_sessions(request: Request) -> JSONResponse:
+    """Return session list (stub)."""
+    await require_auth(request)
+    return JSONResponse({"sessions": []})
+
+
+async def get_inbox(request: Request) -> JSONResponse:
+    """Return inbox (stub)."""
+    await require_auth(request)
+    return JSONResponse({"items": []})
+
+
+async def push_register(request: Request) -> JSONResponse:
+    """Register for push notifications."""
+    await require_auth(request)
+    body = await request.json()
+    logger.info("Push registration: %s", body.get("deviceToken", "?")[:16])
+    return JSONResponse({"registered": True})
+
+
+async def host_current(request: Request) -> JSONResponse:
+    """Return current host info."""
+    await require_auth(request)
+    ctx = get_context()
+    return JSONResponse({"id": ctx.paired_device_id or "host", "displayName": "Herald Host", "isOnline": True})
+
+
+async def host_enrollment_codes(request: Request) -> JSONResponse:
+    """Create a host enrollment code."""
+    await require_auth(request)
+    code, display = _generate_pairing_code()
+    return JSONResponse({"code": code, "displayCode": display})
+
+
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -273,6 +433,18 @@ routes = [
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
     Route("/v1/capabilities", capabilities_endpoint, methods=["GET"]),
+    # Pairing & Auth
+    Route("/v1/connector/phone-pairing-codes", create_phone_pairing_code, methods=["POST"]),
+    Route("/v1/phone-pairing/redeem", redeem_phone_pairing, methods=["POST"]),
+    Route("/v1/pairing/redeem", redeem_pairing, methods=["POST"]),
+    Route("/v1/auth/refresh", refresh_auth, methods=["POST"]),
+    Route("/v1/device/register", register_device, methods=["POST"]),
+    Route("/v1/connector/events", connector_events, methods=["GET"]),
+    Route("/v1/sessions", get_sessions, methods=["GET"]),
+    Route("/v1/inbox", get_inbox, methods=["GET"]),
+    Route("/v1/push/register", push_register, methods=["POST"]),
+    Route("/v1/hosts/current", host_current, methods=["GET"]),
+    Route("/v1/hosts/enrollment-codes", host_enrollment_codes, methods=["POST"]),
 ]
 
 app = Starlette(debug=False, routes=routes)

@@ -247,7 +247,7 @@ enum RightPanelTab: String, CaseIterable, Identifiable {
 
 // MARK: - Log Entry
 
-enum LogLevel: String, CaseIterable {
+enum LogLevel: String, CaseIterable, Codable {
     case info, warn, error, debug, tool
 
     var label: String {
