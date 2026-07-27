@@ -23,7 +23,6 @@
 		0F0DAFCF7FA767631D7FFD9A /* ResilientInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A6239CAEC02D15C4FB3C6B1 /* ResilientInboxService.swift */; };
 		10250EAE82A59D5083B19812 /* InboxItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40A3575730BD9D3C7D9FFF05 /* InboxItem.swift */; };
 		11412A6BB69D8A43B09CA463 /* SlashCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88B179CF374730DABD661130 /* SlashCommand.swift */; };
-		128EFD665EE2825084B385D5 /* CaptureScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11DFE4BDB25AD09F475CF122 /* CaptureScreen.swift */; };
 		12E92DA10EC4BE2728D8EF9B /* GatewayStatusControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE2D9C6C2FEFF697D1BC4A77 /* GatewayStatusControl.swift */; };
 		168C374BDA6B4583C436E138 /* HeraldArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDFA3D939B6EB7724ADC925E /* HeraldArtifact.swift */; };
 		16BF53337FBEB543DAEDAD92 /* stream_v2_cancelled.json in Resources */ = {isa = PBXBuildFile; fileRef = 3E9AB09E27CE9C9FC3A6B199 /* stream_v2_cancelled.json */; };
@@ -349,7 +348,6 @@
 		0E6A99878F2B7A732EA227F9 /* HeraldAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldAvatar.swift; sourceTree = "<group>"; };
 		107DCFDC116A1FF30C36F8A3 /* NotesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesStoreTests.swift; sourceTree = "<group>"; };
 		11D93820460AEDF602ACFB9F /* PushRegistrationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrationCoordinator.swift; sourceTree = "<group>"; };
-		11DFE4BDB25AD09F475CF122 /* CaptureScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureScreen.swift; sourceTree = "<group>"; };
 		12390528FCB15F35578B47B0 /* TypingDotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingDotsView.swift; sourceTree = "<group>"; };
 		142F3F03FB5D8E8C680901D0 /* DeviceRegistrationRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceRegistrationRequest.swift; sourceTree = "<group>"; };
 		14DAAEE840F5A26697F06219 /* InlineDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineDiffView.swift; sourceTree = "<group>"; };
@@ -659,7 +657,6 @@
 			isa = PBXGroup;
 			children = (
 				0DFE0CF278566B3FAD88F695 /* Canvas */,
-				40FE584D8C59C0D663CB52BF /* Capture */,
 				4F06CE03B629E6D20FF30C54 /* Chat */,
 				84D199467E53FB17F9DE7E04 /* Cron */,
 				0D3BA87BF0E800828ADE86C8 /* Inbox */,
@@ -840,14 +837,6 @@
 			children = (
 			);
 			path = Streaming;
-			sourceTree = "<group>";
-		};
-		40FE584D8C59C0D663CB52BF /* Capture */ = {
-			isa = PBXGroup;
-			children = (
-				11DFE4BDB25AD09F475CF122 /* CaptureScreen.swift */,
-			);
-			path = Capture;
 			sourceTree = "<group>";
 		};
 		4C98655825F92734D14D2DAB /* Products */ = {
@@ -1508,7 +1497,6 @@
 				A8C4D48A1C62E715106E962F /* AuthTokens.swift in Sources */,
 				66E9BC186B7CB840FD68EC1B /* AuthenticatedAsyncImage.swift in Sources */,
 				8E65554826FCB219698D2FB0 /* CanvasView.swift in Sources */,
-				128EFD665EE2825084B385D5 /* CaptureScreen.swift in Sources */,
 				264D3D870922431680F88729 /* ChatInputBar.swift in Sources */,
 				D784039C81E632AE96747E13 /* ChatScreen.swift in Sources */,
 				712546D8F2CA69435AECD156 /* ChatStore.swift in Sources */,
@@ -1812,7 +1800,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.3.6;
@@ -1836,7 +1824,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.3.6;
@@ -1869,7 +1857,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.3.6;
@@ -1901,7 +1889,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -1917,7 +1905,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.3.6;
@@ -1933,7 +1921,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1957,7 +1945,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
@@ -1971,7 +1959,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -1988,7 +1976,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.3.6;
@@ -2004,7 +1992,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.3.6;

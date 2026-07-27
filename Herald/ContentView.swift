@@ -73,8 +73,6 @@ struct MainTabView: View {
         switch route {
         case .permissions:
             PermissionsScreen()
-        case .capture:
-            CaptureScreen()
         case .connectHost:
             ConnectHeraldHostScreen()
         case .gatewayStatus:

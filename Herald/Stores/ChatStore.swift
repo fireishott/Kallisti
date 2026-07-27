@@ -523,7 +523,7 @@ final class ChatStore {
                         self.lastContextInfo = context
                         self.conversation?.contextPercent = context.percentUsed
                     }
-                    self.detectProfileSwitch(in: finalMessage.content)
+                    await self.detectProfileSwitch(in: finalMessage.content)
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
@@ -1532,7 +1532,7 @@ final class ChatStore {
     /// Detect a profile switch from the agent's response text.
     /// Updates the active profile name on ProfileStore immediately so the
     /// toolbar chip reflects the change in the same render frame.
-    private func detectProfileSwitch(in text: String) {
+    private func detectProfileSwitch(in text: String) async {
         let patterns: [Regex<(Substring, Substring)>] = [
             /[Ss]witched\s+(?:to\s+)?profile\s+["'`]?(\w+)["'`]?/,
             /[Cc]hanged\s+(?:to\s+)?profile\s+["'`]?(\w+)["'`]?/,
@@ -1544,6 +1544,10 @@ final class ChatStore {
             if let match = text.firstMatch(of: pattern) {
                 let profileName = String(match.1)
                 profileStore?.markActive(profileName)
+                // Refresh the catalog so activeProfile computed property
+                // resolves immediately instead of waiting for the next
+                // automatic load (up to 60s away).
+                await profileStore?.loadProfiles(force: true)
                 return
             }
         }
