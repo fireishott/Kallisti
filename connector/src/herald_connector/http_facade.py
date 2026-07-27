@@ -11,6 +11,8 @@ WebSocket to HeraldRelayServer on :8765.  This module is the HTTP half.
 from __future__ import annotations
 
 import asyncio
+import datetime
+import inspect
 import json
 import logging
 import os
@@ -136,7 +138,9 @@ async def list_models(request: Request) -> JSONResponse:
     ctx = get_context()
     if ctx.model_catalog is None:
         return JSONResponse({"models": [], "activeModel": None})
-    result = await ctx.model_catalog()
+    result = ctx.model_catalog()
+    if inspect.isawaitable(result):
+        result = await result
     return JSONResponse(result)
 
 
@@ -150,7 +154,9 @@ async def switch_model(request: Request) -> JSONResponse:
     provider = body.get("provider")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    result = await ctx.model_switch(name, provider)
+    result = ctx.model_switch(name, provider)
+    if inspect.isawaitable(result):
+        result = await result
     return JSONResponse(result)
 
 
@@ -159,7 +165,9 @@ async def list_profiles(request: Request) -> JSONResponse:
     ctx = get_context()
     if ctx.profile_catalog is None:
         return JSONResponse({"profiles": [], "activeProfile": None})
-    result = await ctx.profile_catalog()
+    result = ctx.profile_catalog()
+    if inspect.isawaitable(result):
+        result = await result
     return JSONResponse(result)
 
 
@@ -172,18 +180,28 @@ async def switch_profile(request: Request) -> JSONResponse:
     name = body.get("name", "")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    result = await ctx.profile_switch(name)
+    result = ctx.profile_switch(name)
+    if inspect.isawaitable(result):
+        result = await result
     return JSONResponse(result)
 
 
 async def get_session(request: Request) -> JSONResponse:
     await require_auth(request)
     ctx = get_context()
+    import uuid as _uuid3
     return JSONResponse({
-        "deviceId": ctx.paired_device_id,
-        "userId": ctx.paired_user_id,
-        "connectorVersion": ctx.connector_version,
+        "user": {"id": str(_uuid3.uuid4()), "displayName": "Herald User"},
+        "device": {"id": str(_uuid3.uuid4()), "registered": True},
+        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
+        "push": {"tokenRegistered": False},
     })
+
+
+async def auth_revoke(request: Request) -> JSONResponse:
+    """Revoke the current session token."""
+    await require_auth(request)
+    return JSONResponse({"revoked": True})
 
 
 async def list_commands(request: Request) -> JSONResponse:
@@ -299,7 +317,9 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
     import time as _time
     ctx = get_context()
     body = await request.json()
+    logger.info("Redeem body keys: %s, code raw: %s", list(body.keys()), body.get("code","?")[:20])
     code = (body.get("code") or "").upper().replace("-", "").replace(" ", "")
+    logger.info("Redeem normalized code: %s", code)
     hashed = _hash_code(code)
     stored = _pending_pairing_codes.pop(hashed, None)
     if stored is None or stored["expires_at"] < _time.time():
@@ -313,7 +333,7 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
         "deviceId": str(_uuid.uuid4()),
         "deviceRegistered": True,
         "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.paired_device_id or ctx.public_base_url, "lastSyncAt": None},
-        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time.time() + 86400},
+        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
     })
 
 
@@ -343,7 +363,7 @@ async def redeem_pairing(request: Request) -> JSONResponse:
                     "deviceId": str(_uuid2.uuid4()),
                     "deviceRegistered": True,
                     "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": payload.get("relay_url", ctx.public_base_url), "lastSyncAt": None},
-                    "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time.time() + 86400},
+                    "auth": {"accessToken": token, "refreshToken": token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
                 })
         except Exception:
             pass
@@ -355,16 +375,24 @@ async def refresh_auth(request: Request) -> JSONResponse:
     """Refresh an access token. The connector credential never expires."""
     await require_auth(request)
     import time as _time
-    return JSONResponse({"accessToken": await _extract_token(request), "expiresAt": _time.time() + 86400})
+    return JSONResponse({"accessToken": await _extract_token(request), "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
 
 async def register_device(request: Request) -> JSONResponse:
-    """Register a device for push notifications."""
+    """Register a device. Returns session + auth matching DeviceRegisterResponse."""
     await require_auth(request)
+    ctx = get_context()
     body = await request.json()
-    token = body.get("pushToken") or body.get("deviceToken", "")
-    logger.info("Device registered for push: token=%s...", token[:16] if token else "none")
-    return JSONResponse({"registered": True})
+    dev = body.get("device", {})
+    logger.info("Device registered: %s", dev.get("deviceName", "?")[:30])
+    import time as _time3, uuid as _uuid4
+    token = ctx.connector_credential or str(_uuid4.uuid4())
+    return JSONResponse({
+        "deviceId": str(_uuid4.uuid4()),
+        "deviceRegistered": True,
+        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
+        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time3.time() + 86400},
+    })
 
 
 async def connector_events(request: Request) -> StreamingResponse:
@@ -438,6 +466,7 @@ routes = [
     Route("/v1/phone-pairing/redeem", redeem_phone_pairing, methods=["POST"]),
     Route("/v1/pairing/redeem", redeem_pairing, methods=["POST"]),
     Route("/v1/auth/refresh", refresh_auth, methods=["POST"]),
+    Route("/v1/auth/revoke", auth_revoke, methods=["POST"]),
     Route("/v1/device/register", register_device, methods=["POST"]),
     Route("/v1/connector/events", connector_events, methods=["GET"]),
     Route("/v1/sessions", get_sessions, methods=["GET"]),

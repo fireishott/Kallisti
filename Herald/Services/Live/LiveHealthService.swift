@@ -99,20 +99,14 @@ final class LiveHealthService: HealthServiceProtocol {
                 read: Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
             )
             authorizationStatus = .authorized
-            // Persist the flag BEFORE background delivery — a background-delivery
-            // failure must not revert the authorization status to denied.
             UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
             await configureBackgroundDeliveryIfNeeded()
         } catch {
-            // Only treat as denied if the user previously had access and revoked it.
-            // System-level errors (background delivery config, transient HealthKit
-            // failures) must not flip the status to denied — doing so causes the
-            // permission to oscillate between denied/notDetermined across launches.
-            if previouslyRequested {
-                authorizationStatus = .authorized
-            } else {
-                authorizationStatus = .notDetermined
-            }
+            // requestAuthorization throws for real system errors — most commonly
+            // missing HealthKit entitlements in the code signature. Do NOT trust
+            // stale UserDefaults from a prior build that had entitlements.
+            authorizationStatus = .unsupported
+            entitlementsVerified = false
             backgroundDeliveryEnabled = false
         }
 
@@ -161,11 +155,13 @@ final class LiveHealthService: HealthServiceProtocol {
 
     // MARK: - Entitlement Verification
 
-    /// Verifies that HealthKit is available on this device.
+    /// Verifies that the app's code signature includes HealthKit entitlements.
     ///
-    /// Does NOT probe with requestAuthorization — that triggers the system
-    /// permission dialog as a side effect. The actual user-facing authorization
-    /// request happens in requestAuthorization(), not here.
+    /// Probes with an empty `requestAuthorization` call — empty type sets
+    /// never trigger the system permission dialog, but the framework still
+    /// validates the entitlement in the code signature and throws if it's
+    /// missing. This catches stripped-entitlement builds at startup rather
+    /// than waiting for the user to tap Enable.
     ///
     /// The result is cached so subsequent calls are free.
     /// Internal access for testing.
@@ -179,14 +175,18 @@ final class LiveHealthService: HealthServiceProtocol {
             return false
         }
 
-        // HealthKit is available. We don't probe further — the real test
-        // happens when the user taps Allow and requestAuthorization() is called.
-        entitlementsVerified = true
-        return true
+        do {
+            try await store.requestAuthorization(toShare: [], read: [])
+            entitlementsVerified = true
+            return true
+        } catch {
+            entitlementsVerified = false
+            return false
+        }
     }
 
     func startMonitoring() {
-        guard let store, observerQueries.isEmpty else { return }
+        guard let store, observerQueries.isEmpty, authorizationStatus == .authorized else { return }
 
         for (identifier, descriptor) in metricDescriptors.sorted(by: { $0.key < $1.key }) {
             let query = HKObserverQuery(sampleType: descriptor.sampleType, predicate: nil) { [weak self] _, completionHandler, error in
