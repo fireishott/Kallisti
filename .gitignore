@@ -48,10 +48,20 @@ __pycache__/
 *.egg-info/
 *.db
 
-# Internal planning docs (contain personal paths)
+# Deploy scripts & build automation (internal only)
+deploy/
+
+# Internal planning & operational docs
 hermes-mobile-plans/
 build-log.md
 build-evidence.json
+DEPLOY_*.md
+HERALD_REMEDY_PLAN.md
+docs/pairing-props/
+docs/superpowers/
+docs/assets/rebrand-source/
+docs/TESTFLIGHT_PIPELINE.md
+docs/bug-remedy-build-*.md
 AuthKey_*.p8
 *.p8
 relay/relay.db-shm

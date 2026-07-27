@@ -1453,9 +1453,8 @@ struct SettingsScreen: View {
 
     private func openConfiguredURL(_ url: URL?) {
         guard let url else {
-            // Fallback: the key was missing from Info.plist — try the
-            // hardcoded herald.fihonline.net links.
-            if let fallback = URL(string: "https://herald.fihonline.net") {
+            // Fallback: the key was missing from Info.plist.
+            if let fallback = URL(string: "https://herald.example.com") {
                 openURL(fallback)
             }
             return

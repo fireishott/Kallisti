@@ -343,7 +343,7 @@ herald.example.com {
 ### 3. Build and install HERALD
 
 ```bash
-git clone https://github.com/fireishott/Herald.git
+git clone https://github.com/[user]/Herald.git
 cd Herald
 xcodegen generate
 open Herald.xcodeproj

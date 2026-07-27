@@ -1,6 +1,17 @@
 # Changelog
 
-## [2.3.9] (Build 24) - 2026-07-27 — HealthKit Crash Fix
+## 2.3.6 (Build 24) - 2026-07-27
+
+### Changed
+- **Internal relay enforcement:** Connector state on the host migrated from
+  remote relay to the internal Hermes relay. The iOS app now receives the internal relay
+  URL as `backendEndpoint` during pairing, eliminating the last remaining path
+  that could route traffic through an external relay.
+- **Profile switch detection hardened:** `detectProfileSwitch()` in ChatStore
+  now calls `profileStore.loadProfiles(force: true)` after `markActive()`, ensuring
+  the `activeProfile` computed property resolves immediately instead of waiting
+  up to 60s for the next automatic refresh.
+- **Build number bumped** to 24. Marketing version unchanged (2.3.6).
 
 ### Fixed
 - **HealthKit crash on iOS 26.6 (P0):** `verifyEntitlements(store:)` called
@@ -11,46 +22,6 @@
   to the real authorization call, which passes non-empty read types and throws
   a catchable error if entitlements are absent. Added a defensive non-empty
   guard before the `requestAuthorization` call.
-
-### Changed
-- **Build number bumped** to 24. Marketing version unchanged (2.3.6).
-
-## [2.3.8] (Build 23) - 2026-07-27 — Internal Relay Audit
-
-### Changed
-- **Internal relay enforcement:** Connector state on fih-ai-host migrated from
-  remote relay (`hermes-relay.fihonline.net`) to internal Hermes relay
-  (`http://herald-host.internal:8010/v1`). The iOS app now receives the internal relay
-  URL as `backendEndpoint` during pairing, eliminating the last remaining path
-  that could route traffic through an external relay.
-- **Profile switch detection hardened:** `detectProfileSwitch()` in ChatStore
-  now calls `profileStore.loadProfiles(force: true)` after `markActive()`, ensuring
-  the `activeProfile` computed property resolves immediately instead of waiting
-  up to 60s for the next automatic refresh.
-- **Build number bumped** to 23. Marketing version unchanged (2.3.6).
-
-### Removed
-- **`deploy/fix_state.py`:** Deleted. This script seeded the connector with a
-  remote relay URL (`hermes-relay.fihonline.net`). Unreferenced by any deploy
-  automation, but its existence was a footgun for manual recovery procedures.
-- **`Route.capture` / `CaptureScreen`:** Removed dead navigation route and view.
-  The capture route was defined in the Router enum and handled in both iPhone
-  and iPad route destinations but had zero UI triggers — no NavigationLink or
-  `router.navigate(to: .capture)` call anywhere in the codebase.
-
-### Verified
-- No remote relay fallback remains in the iOS app's active release path
-- Mock fallbacks (`ResilientSessionBootstrapService`, `ResilientInboxService`)
-  are correctly gated behind `UITEST_PAIRING_MODE == "mock"` only
-- Internal Hermes relay (`herald-host.internal:8010`) is the single source of truth
-  for all API calls, pairing, and push registration
-- iPad Settings navigation routes (permissions, connect host, gateway status,
-  gateway logs) all render correctly within the Settings NavigationStack
-- Relay event sequencing safely handles legacy unsequenced events (negative
-  `source_seq` surrogates) alongside current sequenced events
-- Streaming reply visibility protected by multiple watchdog layers (SSE 60s,
-  ChatStore progress 90s, parallel polling fallback) and delta coalescing
-  at 16ms/4KB to prevent re-render storms
 
 ## [2.3.7] - 2026-07-26 — Native Relay Migration
 

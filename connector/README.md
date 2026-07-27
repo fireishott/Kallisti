@@ -75,7 +75,7 @@ export CONNECTOR_SETUP_SECRET=replace-me
 ```
 
 > [!IMPORTANT]
-> A physical iPhone cannot reach `127.0.0.1` on your Mac. For same-network testing, use your Mac's LAN IP such as `http://192.168.1.10:8000/v1`.
+> A physical iPhone cannot reach `127.0.0.1` on your Mac. For same-network testing, use your Mac's LAN IP such as `http://[lan-ip]:8000/v1`.
 
 ### 3. Pair the phone
 

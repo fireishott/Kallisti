@@ -145,7 +145,7 @@ class GatewayController:
         current = self.settings.version
         try:
             req = urllib.request.Request(
-                "https://api.github.com/repos/fireishott/Herald/releases/latest",
+                f"https://api.github.com/repos/{os.environ.get('GITHUB_REPO', 'owner/repo')}/releases/latest",
                 headers={"Accept": "application/vnd.github+json"},
             )
             with urllib.request.urlopen(req, timeout=10.0) as resp:
