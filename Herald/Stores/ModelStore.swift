@@ -122,7 +122,7 @@ final class ModelStore {
         } catch {
             // Fallback: gateway control plane (model name only)
             let gwBody: [String: String] = ["model": name]
-            let _: GatewayResponse = try await apiClient.post(
+            let _: GatewayResponse = try await apiClient.postGateway(
                 path: "gw/model/switch", body: gwBody, accessToken: token
             )
             // Optimistic — reload catalog to confirm

@@ -259,6 +259,7 @@ from .state import (
 )
 from .relay_server import HeraldRelayServer, build_message_event
 from .talk_support import DEFAULT_REALTIME_MODELS, DEFAULT_REALTIME_VOICE, build_voice_context_snapshot
+from .http_facade import create_app, get_context as get_facade_context, serve as serve_http_facade
 
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 
@@ -759,12 +760,15 @@ class HeraldConnector:
 
 
     async def run_forever(self) -> None:
-        """Hybrid mode: native Hermes relay server + FastAPI host WebSocket.
+        """Hybrid mode: native Hermes relay server + HTTP facade + FastAPI host WS.
 
         Phone online/jobs still depend on FastAPI hosts/ws. Gateway uses :8765.
+        HTTP facade on :8010 replaces the Docker relay for iOS app communication.
         """
         native_enabled = os.getenv("HERALD_NATIVE_RELAY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
         fastapi_enabled = os.getenv("HERALD_FASTAPI_HOST_WS_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        http_facade_enabled = os.getenv("HERALD_HTTP_FACADE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        _http_task: asyncio.Task | None = None
 
         state = self.state_store.load()
         state = self.refresh_runtime_config(force=False)
@@ -796,6 +800,36 @@ class HeraldConnector:
             )
         else:
             logger.warning("HERALD_NATIVE_RELAY_ENABLED disabled — gateway path off")
+
+        # Start HTTP facade for iOS app (replaces Docker relay)
+        if http_facade_enabled:
+            http_port = int(os.getenv("HERALD_HTTP_FACADE_PORT", "8010"))
+            # Wire the facade context to the connector's RPC methods
+            facade_ctx = get_facade_context()
+            facade_ctx.model_catalog = self._rpc_models_list
+            facade_ctx.model_switch = self._rpc_model_set
+            facade_ctx.profile_catalog = self._rpc_profiles_list
+            facade_ctx.profile_switch = self._rpc_profile_set
+            facade_ctx.connector_version = self._detect_connector_version()
+            facade_ctx.message_handler = self._handle_http_message
+            facade_ctx.health_check = self._check_api_health
+            # Auth tokens: register the connector credential so the iOS app
+            # can authenticate with the same token used for the FastAPI host WS.
+            facade_ctx.paired_device_id = state.device_token
+            facade_ctx.paired_user_id = state.user_id
+            from .http_facade import set_token_validator, AccessTokenValidator
+            if state.connector_credential:
+                validator = AccessTokenValidator({state.connector_credential})
+                set_token_validator(validator)
+            _http_task = asyncio.create_task(
+                serve_http_facade(host="0.0.0.0", port=http_port)
+            )
+            logger.info(
+                "HTTP facade listening on port %d (iOS app path)",
+                http_port,
+            )
+        else:
+            logger.warning("HERALD_HTTP_FACADE_ENABLED disabled — iOS app path off")
 
         # Start MCP HTTP server alongside relay
         mcp_http_enabled = os.getenv("HERALD_MCP_HTTP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -852,6 +886,12 @@ class HeraldConnector:
                 self._mcp_task.cancel()
             if self._relay_server is not None:
                 await self._relay_server.stop()
+            if _http_task is not None:
+                _http_task.cancel()
+                try:
+                    await _http_task
+                except asyncio.CancelledError:
+                    pass
 
 
     async def _run_mcp_http_server(self, host: str, port: int) -> None:
@@ -1464,6 +1504,107 @@ class HeraldConnector:
     def relay_server(self) -> HeraldRelayServer | None:
         return self._relay_server
 
+    def _detect_connector_version(self) -> str:
+        """Best-effort connector version detection."""
+        try:
+            from . import __version__
+            return __version__
+        except Exception:
+            return os.getenv("HERALD_CONNECTOR_VERSION", "3.0.0")
+
+    async def _check_api_health(self) -> bool:
+        """Check whether the Hermes API server is reachable."""
+        config = self.state_store.load().runtime_config
+        api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL", "http://localhost:8642")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                resp = await client.get(f"{api_url.rstrip('/')}/v1/health")
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+    async def _handle_http_message(
+        self,
+        text: str,
+        history: list[dict],
+        session_id: str | None,
+        attachments: list[dict] | None,
+        reasoning_effort: str | None,
+    ):
+        """Handle a message from the iOS HTTP facade — yields SSE event dicts.
+
+        This replaces the FastAPI relay's job creation + SSE streaming path.
+        The HTTP facade calls this directly, bypassing the relay entirely.
+        """
+        state = self.state_store.load()
+        runtime = await self.runtime_adapter_for_state_async(state)
+
+        accumulated_text = ""
+        source_seq = 0
+
+        # Emit started event
+        yield {"type": "started", "data": {"phase": "starting"}}
+
+        try:
+            async for event in runtime.send_text_message_streaming(
+                latest_user_message=text,
+                history=[
+                    RuntimeConversationMessage(role=item.get("role", "user"), text=item.get("text", ""))
+                    for item in history
+                ],
+                session_id=session_id,
+                attachments=attachments,
+                reasoning_effort=reasoning_effort,
+            ):
+                if event.type == "text_delta":
+                    accumulated_text += event.data
+                    source_seq += 1
+                    yield {
+                        "type": "text_delta",
+                        "data": {"delta": event.data, "seq": source_seq},
+                    }
+                elif event.type == "reasoning_delta":
+                    source_seq += 1
+                    yield {
+                        "type": "reasoning_delta",
+                        "data": {"delta": event.data, "seq": source_seq},
+                    }
+                elif event.type == "tool_activity":
+                    source_seq += 1
+                    yield {
+                        "type": "tool_activity",
+                        "data": {"label": event.label, "seq": source_seq},
+                    }
+                elif event.type == "keepalive":
+                    source_seq += 1
+                    yield {
+                        "type": "heartbeat",
+                        "data": {"seq": source_seq},
+                    }
+                elif event.type == "finish":
+                    yield {
+                        "type": "done",
+                        "data": {
+                            "status": "completed",
+                            "text": accumulated_text.strip(),
+                            "sessionId": event.session_id or session_id,
+                            "usage": event.usage,
+                        },
+                    }
+                    return
+
+        except Exception as exc:
+            error_category, error_action = self._classify_error(exc)
+            yield {
+                "type": "done",
+                "data": {
+                    "status": "failed",
+                    "error": str(exc),
+                    "errorCategory": error_category,
+                    "errorAction": error_action,
+                },
+            }
+
     async def _handle_relay_outbound(self, request_id: str, action: dict) -> dict:
         """Handle an outbound action from the gateway (agent response → deliver to iOS via APNs)."""
         logger.info("Outbound action received: requestId=%s, type=%s", request_id, action.get("type"))
@@ -1924,7 +2065,9 @@ class HeraldConnector:
         """Set the active Hermes profile in ~/.hermes/config.yaml.
 
         Writes the profile name so the host remembers it across restarts.
-        The next profiles.list call reflects the change.
+        After writing the config, restarts the Hermes agent so the new
+        profile takes effect immediately (HERMES_HOME is updated via
+        systemd environment before restart).
         """
         hermes_home = self._resolve_hermes_home()
         config_path = hermes_home / "config.yaml"
@@ -1958,7 +2101,51 @@ class HeraldConnector:
             else:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
+        # Resolve the new profile's HERMES_HOME so the gateway can be restarted
+        # with the correct directory. Profiles live as sibling directories under
+        # the parent of the current HERMES_HOME (e.g. ~/.hermes/profiles/<name>/).
+        parent_dir = hermes_home.parent
+        new_home = parent_dir / name
+        if not new_home.is_dir():
+            # Maybe profiles live directly under ~/.hermes/ (legacy layout)
+            new_home = hermes_home.parent.parent / "profiles" / name
+        if new_home.is_dir():
+            # Update systemd user env so the restarted gateway uses the new profile.
+            self._set_systemd_hermes_home(str(new_home))
+            # Restart the Hermes agent to pick up the new profile.
+            self._rpc_hermes_restart()
+            logger.info("profile.set: switched to '%s', HERMES_HOME=%s, gateway restarting", name, new_home)
+        else:
+            logger.warning(
+                "profile.set: wrote config but could not find profile dir for '%s' "
+                "(tried %s) — profile will take effect on next manual gateway restart",
+                name, new_home,
+            )
+
         return {"activeProfile": name}
+
+    @staticmethod
+    def _set_systemd_hermes_home(new_home: str) -> None:
+        """Update the systemd user manager's HERMES_HOME environment variable.
+
+        On Linux, ``systemctl --user set-environment HERMES_HOME=...`` ensures
+        the next restart of hermes-agent picks up the new profile directory.
+        On non-Linux platforms this is a no-op.
+        """
+        import platform
+        import subprocess
+
+        if platform.system() != "Linux":
+            return
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "set-environment", f"HERMES_HOME={new_home}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning("Failed to update systemd env HERMES_HOME: %s", exc)
 
     @staticmethod
     def _read_available_models(hermes_home: Path) -> list[dict]:

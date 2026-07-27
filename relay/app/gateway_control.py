@@ -208,6 +208,26 @@ class GatewayController:
             logger.warning("Model switch RPC failed: %s", exc)
             return {"switched": False, "model": model, "error": str(exc)}
 
+    async def profile_switch(self, profile: str) -> dict:
+        """Switch the active Hermes profile via connector RPC.
+
+        This calls ``profile.set`` on the connector, which writes the new
+        profile name to ``config.yaml`` and restarts the Hermes gateway
+        so the new profile takes effect immediately.
+        """
+        if not self._connector_rpc:
+            return {"switched": False, "error": "No connector RPC available"}
+        try:
+            result = await self._connector_rpc(
+                "profile.set",
+                params={"name": profile},
+                timeout_seconds=15.0,
+            )
+            return {"switched": True, "profile": profile, "result": result}
+        except Exception as exc:
+            logger.warning("Profile switch RPC failed: %s", exc)
+            return {"switched": False, "profile": profile, "error": str(exc)}
+
     # ── Config reload ───────────────────────────────────────────────────
 
     async def config_reload(self) -> dict:

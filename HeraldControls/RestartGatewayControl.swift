@@ -44,25 +44,22 @@ struct RestartGatewayIntent: AppIntent {
         }
 
         struct RestartResponse: Decodable {
-            struct Data: Decodable {
-                let restarting: Bool
-                let target: String
-                let message: String?
-            }
-            let data: Data
+            let restarting: Bool
+            let target: String
+            let message: String?
         }
 
         let body = RestartRequest(target: target)
-        let response: RestartResponse = try await client.post(
+        let response: RestartResponse = try await client.postGateway(
             path: "/gw/restart",
             body: body,
             accessToken: HeraldAppState.shared.accessToken
         )
 
-        if response.data.restarting {
-            return .result(dialog: "\(response.data.target) restart initiated")
+        if response.restarting {
+            return .result(dialog: "\(response.target) restart initiated")
         } else {
-            return .result(dialog: "Restart failed: \(response.data.message ?? "unknown error")")
+            return .result(dialog: "Restart failed: \(response.message ?? "unknown error")")
         }
     }
 }

@@ -25,4 +25,6 @@ protocol AppPersistenceStoreProtocol {
     func clearHealthQueryAnchorData()
     func loadSessionCache() -> [SessionSummary]?
     func saveSessionCache(_ sessions: [SessionSummary])
+    func loadLogEntries() -> [LogEntry]?
+    func saveLogEntries(_ entries: [LogEntry])
 }

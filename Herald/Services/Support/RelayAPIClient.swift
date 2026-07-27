@@ -259,6 +259,34 @@ final class RelayAPIClient {
         return try await sendRequest(request)
     }
 
+    // MARK: - Gateway (non-/v1) requests
+
+    /// POST to a gateway-control endpoint mounted at the host root (`/gw/…`),
+    /// not under the `/v1` API prefix.
+    func postGateway<Body: Encodable, T: Decodable>(
+        path: String,
+        body: Body,
+        accessToken: String? = nil
+    ) async throws -> T {
+        let requestBody = try encoder.encode(body)
+        let request = try makeGatewayRequest(
+            path: path,
+            method: "POST",
+            accessToken: accessToken,
+            body: requestBody
+        )
+        return try await sendRequest(request)
+    }
+
+    /// POST to a gateway-control endpoint with no request body.
+    func postGateway<T: Decodable>(
+        path: String,
+        accessToken: String? = nil
+    ) async throws -> T {
+        let request = try makeGatewayRequest(path: path, method: "POST", accessToken: accessToken, body: nil)
+        return try await sendRequest(request)
+    }
+
     func makeRequest(
         path: String,
         method: String,
@@ -272,6 +300,46 @@ final class RelayAPIClient {
             throw ClientError.invalidURL(baseURLString)
         }
 
+        return try buildRequest(url: url, method: method, accessToken: accessToken, body: body)
+    }
+
+    /// Constructs a request targeting the gateway control plane.
+    ///
+    /// Gateway routes are mounted at `/gw/…` on the host root, NOT under `/v1`.
+    /// This method strips the API prefix (e.g. `/v1`) from the base URL before
+    /// appending the gateway path, so `path: "gw/restart"` resolves to
+    /// `https://host:8010/gw/restart` instead of `…/v1/gw/restart`.
+    func makeGatewayRequest(
+        path: String,
+        method: String,
+        accessToken: String?,
+        body: Data?
+    ) throws -> URLRequest {
+        let path = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var baseURLString = baseURLProvider().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // Strip the API version prefix (e.g. /v1, /v2) so gateway routes
+        // resolve against the host root.
+        if let lastSlash = baseURLString.lastIndex(of: "/") {
+            let lastComponent = baseURLString[baseURLString.index(after: lastSlash)...]
+            if lastComponent.hasPrefix("v") && lastComponent.allSatisfy({ $0.isNumber || $0 == "v" }) {
+                baseURLString = String(baseURLString[..<lastSlash])
+            }
+        }
+
+        guard let url = URL(string: "\(baseURLString)/\(path)") else {
+            throw ClientError.invalidURL(baseURLString)
+        }
+
+        return try buildRequest(url: url, method: method, accessToken: accessToken, body: body)
+    }
+
+    private func buildRequest(
+        url: URL,
+        method: String,
+        accessToken: String?,
+        body: Data?
+    ) throws -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -283,7 +351,7 @@ final class RelayAPIClient {
         }
 
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-ID")
-        request.timeoutInterval = 15  // Fail fast on dropped connections (was default 60s)
+        request.timeoutInterval = 60  // POST /messages can take 30-45s for connector to respond
 
         return request
     }

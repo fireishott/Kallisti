@@ -151,6 +151,10 @@ struct SettingsScreen: View {
     @State private var isRestartingGW = false
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
+    @State private var updateCheckResult: String?
+    @State private var updateAgentResult: String?
+    @State private var isCheckingForUpdate = false
+    @State private var isUpdatingAgent = false
 
     // MARK: - Environment
 
@@ -351,6 +355,8 @@ struct SettingsScreen: View {
                 gatewayActionButton(
                     label: "Check for Updates",
                     icon: "arrow.triangle.2.circlepath",
+                    isLoading: isCheckingForUpdate,
+                    result: updateCheckResult,
                     action: { await checkForUpdates() }
                 )
 
@@ -358,6 +364,8 @@ struct SettingsScreen: View {
                 gatewayActionButton(
                     label: "Update Agent",
                     icon: "arrow.down.to.line",
+                    isLoading: isUpdatingAgent,
+                    result: updateAgentResult,
                     action: { await updateAgent() }
                 )
             }
@@ -367,22 +375,38 @@ struct SettingsScreen: View {
     private func gatewayActionButton(
         label: String,
         icon: String,
+        isLoading: Bool = false,
+        result: String? = nil,
         action: @escaping () async -> Void
     ) -> some View {
         Button {
             Task { await action() }
         } label: {
             HStack(spacing: Design.Spacing.sm) {
-                Image(systemName: icon)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.blue)
-                    .frame(width: 20, alignment: .center)
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.blue)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.blue)
+                        .frame(width: 20, alignment: .center)
+                }
 
                 Text(label)
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
 
                 Spacer()
+
+                if let result {
+                    Text(result)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(result.hasPrefix("Check failed") || result.hasPrefix("Update failed")
+                            ? Design.Colors.danger : Design.Colors.success)
+                        .lineLimit(1)
+                }
             }
             .frame(minHeight: Design.Size.minTapTarget)
         }
@@ -396,20 +420,29 @@ struct SettingsScreen: View {
         let token = await sessionStore.currentAccessToken()
         let client = RelayAPIClient { relayBase }
 
+        isCheckingForUpdate = true
+        updateCheckResult = nil
+
         struct EmptyRequest: Encodable {}
         struct UpdateStatus: Decodable {
             let status: String?
             let message: String?
         }
         do {
-            let _: UpdateStatus = try await client.post(
+            let status: UpdateStatus = try await client.postGateway(
                 path: "gw/update/check",
                 body: EmptyRequest(),
                 accessToken: token ?? ""
             )
+            updateCheckResult = status.message ?? status.status ?? "Update check complete"
         } catch {
-            // Silently fail — the gateway section is informational
+            updateCheckResult = "Check failed: \(error.localizedDescription)"
         }
+
+        isCheckingForUpdate = false
+        // Auto-clear result after 8 seconds
+        try? await Task.sleep(for: .seconds(8))
+        updateCheckResult = nil
     }
 
     private func updateAgent() async {
@@ -419,20 +452,28 @@ struct SettingsScreen: View {
         let token = await sessionStore.currentAccessToken()
         let client = RelayAPIClient { relayBase }
 
+        isUpdatingAgent = true
+        updateAgentResult = nil
+
         struct EmptyRequest: Encodable {}
         struct UpdateStatus: Decodable {
             let status: String?
             let message: String?
         }
         do {
-            let _: UpdateStatus = try await client.post(
+            let status: UpdateStatus = try await client.postGateway(
                 path: "gw/update",
                 body: EmptyRequest(),
                 accessToken: token ?? ""
             )
+            updateAgentResult = status.message ?? status.status ?? "Update initiated"
         } catch {
-            // Silently fail
+            updateAgentResult = "Update failed: \(error.localizedDescription)"
         }
+
+        isUpdatingAgent = false
+        try? await Task.sleep(for: .seconds(8))
+        updateAgentResult = nil
     }
 
     private func gatewayRestartButton(label: String, target: String) -> some View {
@@ -492,23 +533,20 @@ struct SettingsScreen: View {
 
                 struct RestartRequest: Encodable { let target: String }
                 struct RestartResponse: Decodable {
-                    struct Data: Decodable {
-                        let restarting: Bool
-                        let target: String
-                        let message: String?
-                    }
-                    let data: Data
+                    let restarting: Bool
+                    let target: String
+                    let message: String?
                 }
 
                 let body = RestartRequest(target: target)
-                let response: RestartResponse = try await client.post(
+                let response: RestartResponse = try await client.postGateway(
                     path: "gw/restart",
                     body: body,
                     accessToken: token
                 )
-                gwRestartResult = response.data.restarting
+                gwRestartResult = response.restarting
                     ? "\(target) restarting…"
-                    : "Failed: \(response.data.message ?? "unknown")"
+                    : "Failed: \(response.message ?? "unknown")"
             } catch {
                 gwRestartResult = "Error: \(error.localizedDescription)"
             }
@@ -605,7 +643,7 @@ struct SettingsScreen: View {
                     icon: "bell.badge.fill",
                     iconColor: .red,
                     title: "Push",
-                    value: UIApplication.shared.isRegisteredForRemoteNotifications
+                    value: sessionStore.state.pushTokenRegistered
                         ? "Registered" : "Not Registered"
                 )
             }

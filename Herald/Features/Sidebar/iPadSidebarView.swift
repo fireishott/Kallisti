@@ -467,7 +467,11 @@ struct iPadSidebarView: View {
 
         Button {
             renameText = session.title
-            renamingSession = session
+            // Brief delay so context-menu dismissal doesn't race the alert
+            Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                renamingSession = session
+            }
         } label: {
             Label("Rename", systemImage: "pencil")
         }

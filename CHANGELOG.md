@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.3.7] - 2026-07-26 — Native Relay Migration
+
+### Changed
+- **Native relay architecture:** Connector now serves iOS app directly via HTTP
+  facade (`http_facade.py`, ~300 lines), replacing the 4145-line Docker relay.
+  The native Hermes gateway relay server (`relay_server.py`) already existed on
+  :8765. iOS API is unchanged — same endpoints, same port, zero app changes.
+- **HTTP facade:** New FastAPI server runs inside the connector on :8010.
+  Handles `/v1/messages` (SSE streaming), `/v1/models`, `/v1/profiles`,
+  `/v1/model`, `/v1/profile`, `/v1/health`, `/v1/session`, `/v1/commands`,
+  `/v1/capabilities`.
+- **Profile switching with gateway restart:** `profile.set` RPC now updates
+  systemd user env `HERMES_HOME` and restarts the Hermes gateway so the new
+  profile takes effect immediately. Added `POST /gw/profile/switch` endpoint.
+- **REST timeout:** POST timeout increased from 15s → 60s for model prefill.
+
+### Fixed
+- **Health entitlements (P0):** `Herald.entitlements` accidentally lost
+  `aps-environment`, `healthkit`, `healthkit.access`, and
+  `healthkit.background-delivery` in f419e9a — HealthKit was broken on ALL builds.
+- **Speech permissions iOS 26+ (P0):** `requestSpeechAuthorization()` was a
+  no-op on iOS 26+. Added `speechAuthorizationTrigger` that inits
+  `LiveSpeechService` to prompt the TCC dialog.
+- **Log persistence (P1):** `ChatStore` log buffer was in-memory only, cleared
+  on reset, always empty on launch. Now persists via UserDefaults, survives
+  resets, shows startup entry.
+- **Version sync:** `CURRENT_PROJECT_VERSION` corrected to 19 to match TestFlight.
+
 ## [2.3.6] - 2026-07-26 — Bug Sweep
 
 ### Fixed

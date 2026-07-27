@@ -16,6 +16,11 @@ final class InboxStore {
         didSet { persistence.saveInboxState(localState) }
     }
 
+    /// Called when the user taps "Open" on a notification-type inbox item
+    /// that references a conversation. The handler receives the conversation
+    /// UUID and should navigate the UI to that chat.
+    var onOpenConversation: (@MainActor (UUID) -> Void)?
+
     init(
         inboxService: any InboxServiceProtocol,
         persistence: any AppPersistenceStoreProtocol,
@@ -57,6 +62,21 @@ final class InboxStore {
     }
 
     func performPrimaryAction(for item: InboxItem) async {
+        // For notification/alert/reminder/suggestion items that reference a
+        // conversation, navigate to the chat instead of submitting an action.
+        if item.type != .approval, let convIdString = item.payload?["conversationId"],
+           let convId = UUID(uuidString: convIdString) {
+            // Mark as read but don't submit an action to the relay
+            if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                items[idx].isRead = true
+                items[idx].status = .opened
+                items[idx].isActionable = false
+                localState.readItemIDs.insert(item.stableIdentifier)
+            }
+            onOpenConversation?(convId)
+            return
+        }
+
         let actionID = item.primaryAction?.id ?? "approve"
         await submitAction(for: item, actionID: actionID)
     }

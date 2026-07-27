@@ -272,10 +272,18 @@ enum LogLevel: String, CaseIterable {
     }
 }
 
-struct LogEntry: Identifiable {
-    let id = UUID()
-    let timestamp = Date()
+struct LogEntry: Identifiable, Codable {
+    let id: UUID
+    let timestamp: Date
     let level: LogLevel
     let message: String
     var source: String? = nil
+
+    init(id: UUID = UUID(), timestamp: Date = Date(), level: LogLevel, message: String, source: String? = nil) {
+        self.id = id
+        self.timestamp = timestamp
+        self.level = level
+        self.message = message
+        self.source = source
+    }
 }

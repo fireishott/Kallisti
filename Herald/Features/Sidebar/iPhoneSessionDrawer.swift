@@ -7,6 +7,8 @@ struct iPhoneSessionDrawer: View {
     @Environment(TabRouter.self) private var router
     @Binding var isOpen: Bool
     @State private var dragOffset: CGFloat = 0
+    @State private var renamingSession: SessionSummary?
+    @State private var renameText = ""
 
     var body: some View {
         GeometryReader { geometry in
@@ -99,6 +101,19 @@ struct iPhoneSessionDrawer: View {
             Button("OK", role: .cancel) { sessionStore.errorMessage = nil }
         } message: {
             Text(sessionStore.errorMessage ?? "")
+        }
+        .alert("Rename Session", isPresented: .init(
+            get: { renamingSession != nil },
+            set: { if !$0 { renamingSession = nil } }
+        )) {
+            TextField("Title", text: $renameText)
+            Button("Rename") {
+                if let session = renamingSession {
+                    Task { await sessionStore.renameSession(session, newTitle: renameText) }
+                }
+                renamingSession = nil
+            }
+            Button("Cancel", role: .cancel) { renamingSession = nil }
         }
         .onDisappear {
             sessionStore.stopAutoRefresh()
@@ -321,6 +336,16 @@ struct iPhoneSessionDrawer: View {
             } label: {
                 Label(session.isPinned ? "Unpin" : "Pin",
                       systemImage: session.isPinned ? "pin.slash" : "pin")
+            }
+            Button {
+                renameText = session.title
+                // Brief delay so context-menu dismissal doesn't race the alert
+                Task {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    renamingSession = session
+                }
+            } label: {
+                Label("Rename", systemImage: "pencil")
             }
             Button {
                 Task { await sessionStore.archiveSession(session) }

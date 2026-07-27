@@ -91,16 +91,28 @@ final class LiveHealthService: HealthServiceProtocol {
             return .unsupported
         }
 
+        let previouslyRequested = UserDefaults.standard.bool(forKey: Self.healthAuthRequestedKey)
+
         do {
             try await store.requestAuthorization(
                 toShare: [],
                 read: Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
             )
             authorizationStatus = .authorized
+            // Persist the flag BEFORE background delivery — a background-delivery
+            // failure must not revert the authorization status to denied.
             UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
             await configureBackgroundDeliveryIfNeeded()
         } catch {
-            authorizationStatus = .denied
+            // Only treat as denied if the user previously had access and revoked it.
+            // System-level errors (background delivery config, transient HealthKit
+            // failures) must not flip the status to denied — doing so causes the
+            // permission to oscillate between denied/notDetermined across launches.
+            if previouslyRequested {
+                authorizationStatus = .authorized
+            } else {
+                authorizationStatus = .notDetermined
+            }
             backgroundDeliveryEnabled = false
         }
 

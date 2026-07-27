@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.1.0-FF6B00?style=flat-square" alt="version"/>
+  <img src="https://img.shields.io/badge/version-2.3.7-FF6B00?style=flat-square" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
@@ -32,22 +32,31 @@ HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
 ---
 
-## What's new in 2.1.0
+## What's new in 2.3.7
 
-HERALD 2.1.0 converts the MCP server from stdio to **Streamable HTTP transport**, enabling Hermes to connect over the network without SSH tunnels or the `herald-mcp` binary on the Hermes host.
+HERALD 2.3.7 completes the **native relay migration** — the Docker relay container is replaced by an HTTP facade running directly inside the connector. The custom 4145-line FastAPI relay is gone. The iOS app speaks the same API to the connector's HTTP facade on :8010, while the Hermes gateway speaks the native relay protocol on :8765.
 
-- **Remote MCP server** — Streamable HTTP on port 8767, proxied through Caddy at `your-relay.example.com/mcp`
-- **MCP lifecycle integration** — MCP HTTP server starts automatically alongside the WebSocket relay
-- **Remote MCP registration** — `herald configure-mcp` defaults to remote HTTP mode; `--no-remote` for legacy stdio
-- **MCP HTTP validation** — `herald validate-mcp` health-checks remote HTTP servers
+- **HTTP facade** — FastAPI server inside the connector serves the full iOS API (`/v1/messages` SSE streaming, `/v1/models`, `/v1/profiles`, `/v1/model`, `/v1/profile`, `/v1/health`, sessions, commands, capabilities)
+- **Health entitlements restored** — `aps-environment`, `healthkit`, `healthkit.access`, `healthkit.background-delivery` fixed after accidental revert
+- **Speech permissions fixed** — iOS 26+ authorization no longer a no-op; TCC dialog triggers via modern Speech APIs
+- **Profile switching** — Now updates systemd `HERMES_HOME` and restarts the gateway; new `/gw/profile/switch` endpoint
+- **Log persistence** — ChatStore logs survive app restarts; Logs tab never blank
+- **Streaming timeout** — POST timeout increased 15s → 60s for large model prefill
+- **Version sync** — Build number corrected to 19 to match TestFlight
 
-### Architecture (2.0+)
+### Architecture
 
-HERALD 2.0 replaced the FastAPI relay with a **native Hermes Relay Protocol channel** inside the connector. The gateway dials directly into the connector over WebSocket on port 8765.
+```
+iOS App ← HTTP/SSE → Caddy (:443) ← Connector HTTP Facade (:8010)
+                                        ├── Native Relay WS (:8765) ← Hermes Gateway
+                                        ├── MCP HTTP (:8767)
+                                        └── Hermes API Server (:8642)
+```
 
-- **`relay_server.py`** — NDJSON WebSocket handshake + MessageEvent exchange, built into the connector
-- **Dead modules deleted** — `hermes_runner`, `hermes_gateway_executor`, `stream_contract`
-- **Launch fix** — `isLaunchReady` now matches any `.networkFailure` case
+- **`http_facade.py`** — FastAPI HTTP/SSE server for the iOS app (~300 lines)
+- **`relay_server.py`** — Native Hermes relay protocol WebSocket server for the gateway (305 lines)
+- **`client.py`** — Connector core: job execution, model/profile RPCs, streaming bridge
+- The Docker relay container is **stopped** — all iOS traffic goes directly to the connector
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Architecture" width="100%"/>
@@ -305,20 +314,33 @@ See [`docs/pairing-props/`](docs/pairing-props/) for a detailed comparison, arch
 
 ## Quick Start
 
-### 1. Install the connector
+### 1. Deploy the connector
 
 ```bash
 pip install herald-connector
 herald configure-mcp   # registers MCP tools in ~/.hermes/config.yaml
-herald run             # starts WS relay (:8765) + MCP HTTP server (:8767)
+herald run             # starts all services
 ```
 
-The connector runs three services:
-- **WebSocket relay** on port 8765 (native Hermes gateway protocol)
-- **MCP HTTP server** on port 8767 (Streamable HTTP for remote Hermes access)
-- **FastAPI host WS** connection to the production relay
+The connector runs **four services** in one process:
+- **HTTP facade** on port 8010 — iOS app API (SSE streaming, models, profiles, sessions)
+- **Native relay WS** on port 8765 — Hermes gateway connects here
+- **MCP HTTP server** on port 8767 — Streamable HTTP for remote Hermes access
+- **FastAPI host WS** — optional, for legacy pairing flow
 
-### 2. Build and install HERALD
+### 2. Point Caddy at the connector
+
+```caddy
+herald.example.com {
+    reverse_proxy localhost:8010 {
+        header_up Connection {>Connection}
+        header_up Upgrade {>Upgrade}
+        transport http { response_header_timeout 0 }
+    }
+}
+```
+
+### 3. Build and install HERALD
 
 ```bash
 git clone https://github.com/fireishott/Herald.git
@@ -327,7 +349,7 @@ xcodegen generate
 open Herald.xcodeproj
 ```
 
-Build to your device from Xcode, enter your relay URL in the onboarding flow, and start chatting.
+Build to your device from Xcode, enter `https://herald.example.com` in the onboarding flow, and start chatting.
 
 See [docs/BUILDING.md](docs/BUILDING.md) for detailed signing and entitlements instructions.
 

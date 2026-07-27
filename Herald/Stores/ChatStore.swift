@@ -131,9 +131,18 @@ final class ChatStore {
     var onTitleChanged: (@MainActor (_ conversationID: UUID, _ newTitle: String) -> Void)?
     var useStreaming: Bool = true
 
+    /// Maximum number of log entries to keep in memory and on disk.
+    private static let maxLogEntries = 500
+
     init(heraldClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
         self.heraldClient = heraldClient
         self.persistence = persistence
+        // Restore persisted logs so the Logs tab isn't empty on launch.
+        if let persisted = persistence.loadLogEntries(), !persisted.isEmpty {
+            logEntries = persisted
+        } else {
+            logEntries = [LogEntry(level: .info, message: "Herald started — waiting for activity")]
+        }
     }
 
     func loadConversationIfNeeded() async {
@@ -1120,10 +1129,15 @@ final class ChatStore {
     }
 
     /// Append a log entry to the live log buffer shown in the iPad
-    /// inspector panel's Logs tab. Capped at 500 entries.
+    /// inspector panel's Logs tab. Capped at 500 entries, persisted to disk.
     func appendLog(level: LogLevel, _ message: String) {
         logEntries.append(LogEntry(level: level, message: message))
-        if logEntries.count > 500 { logEntries.removeFirst(100) }
+        if logEntries.count > Self.maxLogEntries { logEntries.removeFirst(100) }
+        // Persist asynchronously so logging doesn't block the main thread
+        let snapshot = logEntries
+        Task.detached(priority: .utility) { [persistence] in
+            persistence.saveLogEntries(snapshot)
+        }
     }
 
     func reset() {
@@ -1132,7 +1146,10 @@ final class ChatStore {
         streamingTask?.cancel()
         streamingTask = nil
         activeStreams.removeAll()
-        logEntries = []
+        // Preserve log entries across resets — they're diagnostic history,
+        // not session state. Append a marker so the user can see where
+        // one session ended and another began.
+        appendLog(level: .info, "——— session reset ———")
         isPollingEnabled = false
         resetCommandCatalog()
         conversation = nil
@@ -1147,21 +1164,10 @@ final class ChatStore {
         // Prefer relay-provided context window from SSE metadata
         if let ctx = contextWindow, ctx > 0 { return ctx }
 
-        // Common models with known context windows — avoids "unavailable"
-        // display before the relay delivers usage data.
-        if let name = fallbackModelName {
-            let lower = name.lowercased()
-            if lower.contains("128k") || lower.contains("qwen") || lower.contains("gemma")
-                || lower.contains("llama") || lower.contains("mistral") || lower.contains("claude")
-                || lower.contains("gpt") || lower.contains("deepseek") {
-                return 131_072
-            }
-            if lower.contains("32k") { return 32_768 }
-            if lower.contains("8k") || lower.contains("4k") { return 8_192 }
-        }
-
-        // Sensible floor — most modern models are 128K+
-        return 131_072
+        // If the ModelStore has context window info from the model catalog
+        // (config.yaml providers), use that. Otherwise return nil rather than
+        // fabricating a guess — never show made-up numbers.
+        return nil
     }
 
     private var hasPendingMessages: Bool {

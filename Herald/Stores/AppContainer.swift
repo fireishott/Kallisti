@@ -376,6 +376,26 @@ final class AppContainer {
         )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
 
+        let permissionsStore = PermissionsStore(
+            locationService: liveLocationService,
+            healthService: liveHealthService,
+            notificationService: notificationService,
+            mediaService: processEnvironment["UITEST_PAIRING_MODE"] != nil ? MockMediaService() : LiveMediaService(),
+            motionService: liveMotionService
+        )
+        // On iOS 26+, SFSpeechRecognizer.requestAuthorization crashes (FB radar).
+        // The modern SpeechAnalyzer/DictationTranscriber APIs auto-trigger the TCC
+        // dialog on first use. When the user taps Allow for speech in settings,
+        // briefly initializing a dictation service triggers that dialog.
+        permissionsStore.speechAuthorizationTrigger = { @MainActor in
+            // LiveSpeechService.init() creates a DictationController which
+            // prompts the system TCC dialog for speech recognition on iOS 26+.
+            // We don't need to keep the instance — just constructing it is enough.
+            if #available(iOS 26.0, *) {
+                _ = LiveSpeechService()
+            }
+        }
+
         let container = AppContainer(
             sessionStore: sessionStore,
             pairingStore: runtimePairingStore,
@@ -388,13 +408,7 @@ final class AppContainer {
                 allowDemoFallback: allowMockFallbacks,
                 isPairedProvider: { activePairingStore?.isPaired == true }
             ),
-            permissionsStore: PermissionsStore(
-                locationService: liveLocationService,
-                healthService: liveHealthService,
-                notificationService: notificationService,
-                mediaService: processEnvironment["UITEST_PAIRING_MODE"] != nil ? MockMediaService() : LiveMediaService(),
-                motionService: liveMotionService
-            ),
+            permissionsStore: permissionsStore,
             settingsStore: settingsStore,
             talkStore: {
                 let ts = TalkStore()
@@ -484,6 +498,16 @@ final class AppContainer {
         // Keep session list in sync when title is derived or renamed
         container.chatStore.onTitleChanged = { [weak container] conversationID, newTitle in
             container?.sessionListStore.updateSessionTitle(id: conversationID, newTitle: newTitle)
+        }
+        container.inboxStore.onOpenConversation = { [weak container] convId in
+            guard let container else { return }
+            Task { @MainActor in
+                if let conv = try? await container.chatStore.heraldClient.loadConversation(id: convId) {
+                    container.chatStore.conversation = conv
+                    container.chatStore.lastTokenUsage = conv.latestUsage
+                }
+                container.router.selectedTab = .chat
+            }
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
             container?.updateWidgetData()

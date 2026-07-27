@@ -3639,6 +3639,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = await app.state.gateway_controller.model_switch(model=model)
             return success(result)
 
+        @app.post("/gw/profile/switch")
+        async def gw_profile_switch(
+            body: dict = Body(...),
+            auth: AuthContext = Depends(get_auth_context),
+        ) -> dict:
+            """Switch the active Hermes profile."""
+            profile = (body or {}).get("profile", "")
+            if not profile:
+                raise HTTPException(status_code=400, detail="profile is required")
+            result = await app.state.gateway_controller.profile_switch(profile=profile)
+            return success(result)
+
         # ── Config ─────────────────────────────────────────────────────
 
         @app.post("/gw/config/reload")
@@ -3709,6 +3721,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if model:
                             result = await app.state.gateway_controller.model_switch(model=model)
                             await websocket.send_json({"type": "model_switch_result", "data": result})
+                    elif cmd == "profile_switch":
+                        profile = raw.get("profile", "")
+                        if profile:
+                            result = await app.state.gateway_controller.profile_switch(profile=profile)
+                            await websocket.send_json({"type": "profile_switch_result", "data": result})
                     elif cmd == "config_reload":
                         result = await app.state.gateway_controller.config_reload()
                         await websocket.send_json({"type": "config_reload_result", "data": result})

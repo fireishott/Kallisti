@@ -116,21 +116,36 @@ final class DashboardLogService {
         connectionState = .connected
         reconnectAttempt = 0
 
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        // Use delegate-based SSE parsing instead of `bytes.lines`.
+        // `URLSession.AsyncBytes` iterates one byte at a time and stalls when
+        // the server buffers output — the delegate receives chunks as they
+        // arrive, which is reliable on iOS.
+        var chunkContinuation: AsyncStream<Data>.Continuation!
+        let dataStream = AsyncStream<Data> { chunkContinuation = $0 }
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
+        var completionContinuation: AsyncStream<Result<Void, Error>>.Continuation!
+        let completionStream = AsyncStream<Result<Void, Error>> { completionContinuation = $0 }
+
+        let delegate = StreamingDataDelegate(
+            chunkContinuation: chunkContinuation,
+            completionContinuation: completionContinuation
+        )
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let dataTask = session.dataTask(with: request)
+        dataTask.resume()
+        defer { session.invalidateAndCancel() }
+
+        // Verify HTTP status via the first chunk or completion
+        let lineStream = sseLines(from: dataStream)
 
         var currentEvent = ""
         var currentData = ""
 
-        for try await line in bytes.lines {
+        for try await line in lineStream {
             guard !Task.isCancelled else { break }
 
             if line.isEmpty {
-                // Process the event
+                // Empty line = event delimiter — process accumulated event
                 if !currentEvent.isEmpty || !currentData.isEmpty {
                     processEvent(event: currentEvent, data: currentData)
                 }

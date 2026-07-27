@@ -92,6 +92,13 @@ final class ProfileStore {
 
     /// Optimistically marks a profile active and calls the relay endpoint
     /// to persist the selection on the host.
+    ///
+    /// Primary path: ``POST /v1/profile`` — the relay forwards to the
+    /// connector's ``profile.set`` RPC, which writes config.yaml and
+    /// restarts the Hermes gateway so the new profile takes effect.
+    ///
+    /// Fallback: ``POST /gw/profile/switch`` — gateway control plane,
+    /// used when the connector RPC path is unavailable.
     func switchProfile(to name: String) async throws {
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
@@ -101,15 +108,29 @@ final class ProfileStore {
         // Optimistic local update before the network call
         markActive(name)
 
-        let body = ["name": name]
-        let _: ProfileSetResponse = try await apiClient.post(
-            path: "profile",
-            body: body,
-            accessToken: token
-        )
+        do {
+            // Primary path: connector RPC via relay
+            let body = ["name": name]
+            let _: ProfileSetResponse = try await apiClient.post(
+                path: "profile",
+                body: body,
+                accessToken: token
+            )
+        } catch {
+            // Fallback: gateway control plane
+            let gwBody: [String: String] = ["profile": name]
+            let _: GatewayResponse = try await apiClient.postGateway(
+                path: "gw/profile/switch", body: gwBody, accessToken: token
+            )
+        }
 
         // Confirm by reloading the catalog from the server
         await loadProfiles(force: true)
+    }
+
+    private struct GatewayResponse: Decodable {
+        let switched: Bool?
+        let profile: String?
     }
 
     /// Optimistically marks a profile active — used when the chat path

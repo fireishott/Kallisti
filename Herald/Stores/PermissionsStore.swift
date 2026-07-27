@@ -13,6 +13,13 @@ final class PermissionsStore {
     private let mediaService: any MediaServiceProtocol
     private let motionService: LiveMotionService?
 
+    /// Called on iOS 26+ when the user taps Allow for speech recognition.
+    /// SFSpeechRecognizer.requestAuthorization crashes on early iOS 26 betas
+    /// (FB-prefixed radar), so we rely on the new SpeechAnalyzer/DictationTranscriber
+    /// APIs to trigger the TCC dialog. This closure should instantiate and immediately
+    /// discard a speech recognizer to prompt the system dialog.
+    var speechAuthorizationTrigger: (@MainActor () async -> Void)?
+
     init(
         locationService: any LocationServiceProtocol,
         healthService: any HealthServiceProtocol,
@@ -171,10 +178,12 @@ final class PermissionsStore {
             // iOS 26+: SFSpeechRecognizer.requestAuthorization crashes on beta
             // (FB-prefixed radar). The modern SpeechAnalyzer/DictationTranscriber
             // APIs handle authorization automatically when first used — the
-            // system presents the TCC dialog inline. Just wait for the status
-            // to change from notDetermined.
+            // system presents the TCC dialog inline. Trigger that initialization
+            // via the provided closure so the dialog actually appears.
             guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
-            // Rely on the new APIs to prompt — nothing to do here
+            if let trigger = speechAuthorizationTrigger {
+                await trigger()
+            }
         } else {
             // iOS 18-25: SFSpeechRecognizer.requestAuthorization() works correctly
             guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }

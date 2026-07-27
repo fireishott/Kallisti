@@ -45,8 +45,10 @@ actor JobStreamCoordinator {
 
     /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
     /// arrives within this window, the stream is considered dead.
-    /// Reduced from 120s to 30s so users get faster feedback on silent failures.
-    private static let watchdogTimeoutSeconds: TimeInterval = 30.0
+    /// Set to 60s — large models can take 30-45s to load/prefill before the
+    /// first token. The relay sends heartbeats during model loading; if those
+    /// stop for 60s, the stream is genuinely dead.
+    private static let watchdogTimeoutSeconds: TimeInterval = 60.0
     private var lastSSEDataTime: Date = .distantPast
 
     struct JobStatusSnapshot: Sendable {

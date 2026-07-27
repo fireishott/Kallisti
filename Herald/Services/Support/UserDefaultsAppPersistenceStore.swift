@@ -151,6 +151,16 @@ final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
         save(sessions, key: Keys.sessionCache)
     }
 
+    private static let logEntriesKey = "herald.logEntries"
+
+    func loadLogEntries() -> [LogEntry]? {
+        load([LogEntry].self, key: Self.logEntriesKey)
+    }
+
+    func saveLogEntries(_ entries: [LogEntry]) {
+        save(entries, key: Self.logEntriesKey)
+    }
+
     private func load<T: Decodable>(_ type: T.Type, key: String) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }
         return try? decoder.decode(type, from: data)
