@@ -772,16 +772,25 @@ async def connector_events(request: Request) -> StreamingResponse:
 
 
 async def get_sessions(request: Request) -> JSONResponse:
-    """Return session list.
+    """Return session list backed by state.db (B34 P1-1).
 
-    `total` is REQUIRED by the iOS decoder — LiveHeraldClient.swift declares
+    ``total`` is REQUIRED by the iOS decoder — LiveHeraldClient.swift declares
     SessionListAPIResponse.total as non-optional Int, so omitting it raises
     DecodingError.keyNotFound and the app shows "The data couldn't be read
     because it is missing." Never drop this key.
     """
     await require_auth(request)
-    sessions: list[dict] = []          # TODO(b32): back with real connector session state
-    return JSONResponse({"sessions": sessions, "total": len(sessions)})
+    from .session_store import session_list
+
+    limit = int(request.query_params.get("limit", "50"))
+    offset = int(request.query_params.get("offset", "0"))
+    try:
+        sessions, total = await asyncio.to_thread(session_list, limit=limit, offset=offset)
+    except Exception:
+        logger.exception("session_list query failed")
+        sessions, total = [], 0
+
+    return JSONResponse({"sessions": sessions, "total": total})
 
 
 async def get_inbox(request: Request) -> JSONResponse:
@@ -1138,6 +1147,258 @@ async def session_patch(request: Request) -> JSONResponse:
     }})
 
 
+# ── B34 P0-3: Session CRUD ─────────────────────────────────────────────────
+
+
+async def create_session(request: Request) -> JSONResponse:
+    """Create a new session (POST /v1/sessions).
+
+    Does NOT write to state.db (G1) — Hermes materialises the row itself
+    on the first message carrying X-Hermes-Session-Id.  We just mint an id
+    and record an optimistic title in the local sidecar.
+
+    SessionAPIResponse.session is a non-optional SessionAPIEntry
+    (LiveHeraldClient.swift:709-724).  Every key the decoder reads must
+    be present and of the declared type.
+    """
+    await require_auth(request)
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    session_id = str(uuid.uuid4())
+    title = (body.get("title") or "New Chat")[:200]
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, title=title)
+    return JSONResponse({"session": {
+        "id": session_id,
+        "title": title,
+        "previewText": "",
+        "updatedAt": _now_iso(),
+        "source": "api_server",
+        "isPinned": False,
+        "isArchived": False,
+    }})
+
+
+async def session_delete(request: Request) -> JSONResponse:
+    """Soft-delete a session (DELETE /v1/sessions/{id}).
+
+    Tombstones in the local sidecar only (G1).  The session row stays in
+    state.db — Hermes owns it.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, tombstone=True)
+    return JSONResponse({"deleted": True})
+
+
+async def session_pin(request: Request) -> JSONResponse:
+    """Toggle pin state (POST /v1/sessions/{id}/pin).
+
+    Writes to the local sidecar (G1).  The body carries {"pinned": bool}.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    pinned = bool(body.get("pinned", True))
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, pinned=pinned)
+    return JSONResponse({"id": _coerce_uuid(session_id) or session_id, "isPinned": pinned})
+
+
+async def session_archive(request: Request) -> JSONResponse:
+    """Toggle archive state (POST /v1/sessions/{id}/archive).
+
+    Writes to the local sidecar (G1).  The body carries {"archived": bool}.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    archived = bool(body.get("archived", True))
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, archived=archived)
+    return JSONResponse({"id": _coerce_uuid(session_id) or session_id, "isArchived": archived})
+
+
+async def session_search_handler(request: Request) -> JSONResponse:
+    """Search sessions by title (GET /v1/sessions/search?q=…).
+
+    SessionSearchAPIResponse.sessions is [SessionSearchResult] —
+    each result needs id, title, and updatedAt (LiveHeraldClient.swift).
+    """
+    await require_auth(request)
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"sessions": []})
+    from .session_store import session_search
+
+    results = await asyncio.to_thread(session_search, q)
+    return JSONResponse({"sessions": results})
+
+
+# ── B34 P2-1: Unimplemented-route stubs ────────────────────────────────────
+#
+# Every path below is called by the iOS app.  A 404 renders a user-visible
+# error alert; a decodable empty payload renders an empty screen cleanly.
+# Each handler returns the shape its decoder expects.  TODO(b35): implement.
+
+
+async def stub_skills(request: Request) -> JSONResponse:
+    """GET /v1/skills — return empty skill list."""
+    await require_auth(request)
+    return JSONResponse({"skills": []})
+
+
+async def stub_cron_list(request: Request) -> JSONResponse:
+    """GET /v1/cron — return empty job list."""
+    await require_auth(request)
+    return JSONResponse({"jobs": []})
+
+
+async def stub_cron_detail(request: Request) -> JSONResponse:
+    """GET/DELETE /v1/cron/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_notes_list(request: Request) -> JSONResponse:
+    """GET /v1/notes — return empty note list."""
+    await require_auth(request)
+    return JSONResponse({"notes": []})
+
+
+async def stub_notes_detail(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_notes_recognitions(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id}/recognitions — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"recognitions": []})
+
+
+async def stub_notes_runs(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id}/runs — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"runs": []})
+
+
+async def stub_note_runs_detail(request: Request) -> JSONResponse:
+    """GET /v1/note-runs/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_note_runs_cancel(request: Request) -> JSONResponse:
+    """POST /v1/note-runs/{id}/cancel — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"cancelled": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_note_runs_events(request: Request) -> JSONResponse:
+    """GET /v1/note-runs/{id}/events — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_readiness(request: Request) -> JSONResponse:
+    """GET /v1/talk/readiness — return not-ready state."""
+    await require_auth(request)
+    return JSONResponse({"ready": False, "reason": "not implemented"})
+
+
+async def stub_talk_session(request: Request) -> JSONResponse:
+    """POST /v1/talk/session — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_end(request: Request) -> JSONResponse:
+    """POST /v1/talk/session/{id}/end — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_inject(request: Request) -> JSONResponse:
+    """POST /v1/talk/session/{id}/inject — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_turns(request: Request) -> JSONResponse:
+    """GET /v1/talk/session/{id}/turns — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"turns": []})
+
+
+async def stub_gw_update(request: Request) -> JSONResponse:
+    """GET /v1/gw/update — return no-update."""
+    await require_auth(request)
+    return JSONResponse({"updateAvailable": False})
+
+
+async def stub_gw_update_check(request: Request) -> JSONResponse:
+    """POST /v1/gw/update/check — return no-update."""
+    await require_auth(request)
+    return JSONResponse({"updateAvailable": False})
+
+
+async def stub_push_deactivate(request: Request) -> JSONResponse:
+    """POST /v1/push/deactivate — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"deactivated": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_push_broker_challenge(request: Request) -> JSONResponse:
+    """POST /v1/push-broker/challenge — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_push_broker_register(request: Request) -> JSONResponse:
+    """POST /v1/push-broker/register — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_relay_identity(request: Request) -> JSONResponse:
+    """GET /v1/relay/identity — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_hosts_current_revoke(request: Request) -> JSONResponse:
+    """POST /v1/hosts/current/revoke — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"revoked": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_inbox_action(request: Request) -> JSONResponse:
+    """POST /v1/inbox/{id}/action — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
 # ── Envelope middleware ──────────────────────────────────────────────────
 
 
@@ -1275,24 +1536,54 @@ routes = [
     Route("/v1/auth/revoke", auth_revoke, methods=["POST"]),
     Route("/v1/device/register", register_device, methods=["POST"]),
     Route("/v1/connector/events", connector_events, methods=["GET"]),
+    # B34 P0-3: Sessions — POST + GET, and search MUST precede {id}
+    Route("/v1/sessions", create_session, methods=["POST"]),
     Route("/v1/sessions", get_sessions, methods=["GET"]),
+    Route("/v1/sessions/search", session_search_handler, methods=["GET"]),
+    Route("/v1/sessions/{id}/pin", session_pin, methods=["POST"]),
+    Route("/v1/sessions/{id}/archive", session_archive, methods=["POST"]),
+    Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
+    Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
+    Route("/v1/sessions/{id}", session_delete, methods=["DELETE"]),
+    Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/inbox", get_inbox, methods=["GET"]),
+    Route("/v1/inbox/{id}/action", stub_inbox_action, methods=["POST"]),
     Route("/v1/push/register", push_register, methods=["POST"]),
+    Route("/v1/push/deactivate", stub_push_deactivate, methods=["POST"]),
+    Route("/v1/push-broker/challenge", stub_push_broker_challenge, methods=["POST"]),
+    Route("/v1/push-broker/register", stub_push_broker_register, methods=["POST"]),
     Route("/v1/hosts/current", host_current, methods=["GET"]),
+    Route("/v1/hosts/current/revoke", stub_hosts_current_revoke, methods=["POST"]),
     Route("/v1/hosts/enrollment-codes", host_enrollment_codes, methods=["POST"]),
     # Device telemetry
     Route("/v1/device/app-state", device_app_state, methods=["POST"]),
     Route("/v1/device/sensor/location", device_sensor, methods=["POST"]),
     Route("/v1/device/sensor/health", device_sensor, methods=["POST"]),
     # P0-4: chat critical path
-    Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
-    Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
-    Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/conversations/current", current_conversation, methods=["GET"]),
     Route("/v1/conversations/current/clear", clear_current_conversation, methods=["POST"]),
     Route("/v1/jobs/{id}", job_status, methods=["GET"]),
     Route("/v1/jobs/{id}/events", job_events, methods=["GET"]),
     Route("/v1/jobs/{id}/cancel", cancel_job, methods=["POST"]),
+    # B34 P2-1: Unimplemented-route stubs — decodable payloads, no 404s
+    Route("/v1/skills", stub_skills, methods=["GET"]),
+    Route("/v1/cron", stub_cron_list, methods=["GET"]),
+    Route("/v1/cron/{id}", stub_cron_detail, methods=["GET", "DELETE"]),
+    Route("/v1/notes", stub_notes_list, methods=["GET"]),
+    Route("/v1/notes/{id}", stub_notes_detail, methods=["GET"]),
+    Route("/v1/notes/{id}/recognitions", stub_notes_recognitions, methods=["GET"]),
+    Route("/v1/notes/{id}/runs", stub_notes_runs, methods=["GET"]),
+    Route("/v1/note-runs/{id}", stub_note_runs_detail, methods=["GET"]),
+    Route("/v1/note-runs/{id}/cancel", stub_note_runs_cancel, methods=["POST"]),
+    Route("/v1/note-runs/{id}/events", stub_note_runs_events, methods=["GET"]),
+    Route("/v1/talk/readiness", stub_talk_readiness, methods=["GET"]),
+    Route("/v1/talk/session", stub_talk_session, methods=["POST"]),
+    Route("/v1/talk/session/{id}/end", stub_talk_session_end, methods=["POST"]),
+    Route("/v1/talk/session/{id}/inject", stub_talk_session_inject, methods=["POST"]),
+    Route("/v1/talk/session/{id}/turns", stub_talk_session_turns, methods=["GET"]),
+    Route("/v1/gw/update", stub_gw_update, methods=["GET"]),
+    Route("/v1/gw/update/check", stub_gw_update_check, methods=["POST"]),
+    Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
 ]
 
 app = Starlette(

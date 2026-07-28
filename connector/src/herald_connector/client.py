@@ -2710,20 +2710,25 @@ class HeraldConnector:
             await asyncio.sleep(0.5)
 
     async def _rpc_session_conversation(self, session_id: str) -> dict:
-        """Return conversation history for a session (P0-4)."""
-        state = self.state_store.load()
-        runtime = await self.runtime_adapter_for_state_async(state)
-        # Query Hermes for the session's messages
+        """Return conversation history for a session from state.db (B34 P0-1).
+
+        Reads messages directly from the Hermes state database instead of
+        dispatching a /status LLM turn.  state.db is opened read-only (G1).
+        """
+        from .session_store import session_messages, session_title
+
         try:
-            result = await asyncio.to_thread(
-                runtime.send_text_message,
-                latest_user_message="/status",
-                history=[],
-                session_id=session_id,
-            )
-            return {"sessionId": session_id, "messages": [], "title": None}
+            messages = await asyncio.to_thread(session_messages, session_id)
+            title = await asyncio.to_thread(session_title, session_id)
         except Exception:
+            logger.exception("session_store read failed for %s", session_id)
             return {"sessionId": session_id, "messages": [], "title": None}
+
+        return {
+            "sessionId": session_id,
+            "messages": messages,
+            "title": title,
+        }
 
     async def _rpc_current_conversation(self) -> dict:
         """Return the active conversation (P0-4)."""
