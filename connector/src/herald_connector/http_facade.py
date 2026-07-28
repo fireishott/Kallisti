@@ -80,6 +80,12 @@ MessageHandler = Callable[
     [str, list[dict], str | None, list[dict] | None, str | None],
     Coroutine[Any, Any, AsyncIterator[dict]],
 ]
+JobStatusProvider = Callable[[str], Coroutine[Any, Any, dict]]
+JobCancelProvider = Callable[[str], Coroutine[Any, Any, dict]]
+JobEventsProvider = Callable[[str], Coroutine[Any, Any, AsyncIterator[dict]]]
+SessionConversationProvider = Callable[[str], Coroutine[Any, Any, dict]]
+CurrentConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
+ClearConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
 
 
 class FacadeContext:
@@ -98,6 +104,13 @@ class FacadeContext:
         self.connector_credential: str | None = None
         self.public_base_url: str = ""
         self.gateway_restart: Callable[[str], Coroutine[Any, Any, dict]] | None = None
+        # P0-4: chat critical-path providers
+        self.job_status: JobStatusProvider | None = None
+        self.job_cancel: JobCancelProvider | None = None
+        self.job_events: JobEventsProvider | None = None
+        self.session_conversation: SessionConversationProvider | None = None
+        self.current_conversation: CurrentConversationProvider | None = None
+        self.clear_conversation: ClearConversationProvider | None = None
 
 
 _context = FacadeContext()
@@ -328,28 +341,50 @@ async def create_phone_pairing_code(request: Request) -> JSONResponse:
 
 
 async def redeem_phone_pairing(request: Request) -> JSONResponse:
-    """Redeem a phone pairing code. Returns access + refresh tokens."""
+    """Redeem a phone pairing code. Returns access + refresh tokens.
+
+    Idempotent: a repeat redeem with the same installationId inside the TTL
+    returns the same payload instead of 401.  A different installation
+    redeeming an already-used code still gets 401.
+    """
     import time as _time
     ctx = get_context()
     body = await request.json()
-    logger.info("Redeem body keys: %s, code raw: %s", list(body.keys()), body.get("code","?")[:20])
+    installation_id = body.get("installationId") or body.get("deviceId") or ""
+    logger.info("Redeem body keys: %s, code raw: %s, installation: %s",
+                list(body.keys()), body.get("code", "?")[:20], installation_id[:12])
     code = (body.get("code") or "").upper().replace("-", "").replace(" ", "")
     logger.info("Redeem normalized code: %s", code)
     hashed = _hash_code(code)
-    stored = _pending_pairing_codes.pop(hashed, None)
+
+    # Look up WITHOUT popping — idempotent replay needs the stored record.
+    stored = _pending_pairing_codes.get(hashed)
     if stored is None or stored["expires_at"] < _time.time():
         raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
-    # The connector credential IS the access token
+
+    # Already redeemed by this installation → replay the saved payload.
+    if stored.get("redeemed_at") is not None:
+        if stored.get("installation_id") == installation_id:
+            logger.info("Idempotent replay of pairing code %s for installation %s",
+                        code, installation_id[:12])
+            return JSONResponse(stored["_response_payload"])
+        raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
+
+    # First redeem — build the response, mark, and persist.
     token = ctx.connector_credential or ctx.paired_device_id or "herald-connector"
     _default_validator.add_token(token)
     import uuid as _uuid
-    return JSONResponse({
+    payload = {
         "user": {"id": ctx.paired_user_id or str(_uuid.uuid4()), "displayName": "Herald User"},
         "deviceId": str(_uuid.uuid4()),
         "deviceRegistered": True,
-        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.paired_device_id or ctx.public_base_url, "lastSyncAt": None},
+        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
         "auth": {"accessToken": token, "refreshToken": token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
-    })
+    }
+    stored["redeemed_at"] = _time.time()
+    stored["installation_id"] = installation_id
+    stored["_response_payload"] = payload
+    return JSONResponse(payload)
 
 
 async def redeem_pairing(request: Request) -> JSONResponse:
@@ -461,6 +496,207 @@ async def host_enrollment_codes(request: Request) -> JSONResponse:
     return JSONResponse({"code": code, "displayCode": display})
 
 
+# ── P0-4: Chat critical-path endpoints ────────────────────────────────────
+
+
+async def session_conversation(request: Request) -> JSONResponse:
+    """Get message history for a session."""
+    await require_auth(request)
+    ctx = get_context()
+    session_id = request.path_params.get("id", "")
+    if ctx.session_conversation is None:
+        raise HTTPException(status_code=503, detail="Session history not available")
+    result = ctx.session_conversation(session_id)
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result)
+
+
+async def current_conversation(request: Request) -> JSONResponse:
+    """Get the active conversation on launch."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.current_conversation is None:
+        raise HTTPException(status_code=503, detail="Conversation service not available")
+    result = ctx.current_conversation()
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result)
+
+
+async def clear_current_conversation(request: Request) -> JSONResponse:
+    """Clear the active conversation (/new)."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.clear_conversation is None:
+        raise HTTPException(status_code=503, detail="Conversation service not available")
+    result = ctx.clear_conversation()
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result)
+
+
+async def job_status(request: Request) -> JSONResponse:
+    """Poll job status. Build 29 uses polling, not streaming."""
+    await require_auth(request)
+    ctx = get_context()
+    job_id = request.path_params.get("id", "")
+    if ctx.job_status is None:
+        raise HTTPException(status_code=503, detail="Job service not available")
+    result = ctx.job_status(job_id)
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result)
+
+
+async def job_events(request: Request) -> StreamingResponse:
+    """SSE stream of job events."""
+    await require_auth(request)
+    ctx = get_context()
+    job_id = request.path_params.get("id", "")
+    if ctx.job_events is None:
+        raise HTTPException(status_code=503, detail="Job event streaming not available")
+
+    async def event_stream() -> AsyncIterator[str]:
+        seq = 0
+        try:
+            async for event in ctx.job_events(job_id):
+                if await request.is_disconnected():
+                    break
+                event_type = event.get("type", "progress")
+                sse_data = json.dumps(event.get("data", event))
+                yield f"id: {seq}\nevent: {event_type}\ndata: {sse_data}\n\n"
+                seq += 1
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.exception("Job event stream error for %s", job_id)
+            yield f"id: {seq}\nevent: failed\ndata: {json.dumps({'error': str(exc), 'jobId': job_id})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def cancel_job(request: Request) -> JSONResponse:
+    """Cancel a running job (/stop)."""
+    await require_auth(request)
+    ctx = get_context()
+    job_id = request.path_params.get("id", "")
+    if ctx.job_cancel is None:
+        raise HTTPException(status_code=503, detail="Job cancellation not available")
+    result = ctx.job_cancel(job_id)
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result)
+
+
+# ── Envelope middleware ──────────────────────────────────────────────────
+
+
+def envelope(data: Any) -> dict:
+    """Wrap a JSON payload in the relay envelope the iOS app decodes.
+
+    RelayAPIClient.swift:522 unconditionally unwraps {"data":…,"meta":…}.
+    Every JSON response MUST pass through here.  SSE, error dicts, and
+    non-JSON pass through the middleware unchanged.
+    """
+    return {
+        "data": data,
+        "meta": {
+            "requestId": str(uuid.uuid4()),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        },
+    }
+
+
+async def envelope_middleware(scope, receive, send):
+    """Wrap JSON bodies as {"data":…,"meta":…} to match the relay contract.
+
+    SSE (text/event-stream) and non-JSON responses pass through untouched.
+    Error responses (dicts that already contain an "error" key) are also
+    passed through so the exception handler's envelope isn't double-wrapped.
+    """
+    if scope["type"] != "http":
+        await app(scope, receive, send)
+        return
+
+    start_message: dict | None = None
+    chunks: list[bytes] = []
+    passthrough = False
+
+    async def send_wrapper(message):
+        nonlocal start_message, passthrough
+        if message["type"] == "http.response.start":
+            headers = {k.decode().lower(): v.decode() for k, v in message["headers"]}
+            ct = headers.get("content-type", "")
+            passthrough = not ct.startswith("application/json")
+            start_message = message
+            if passthrough:
+                await send(message)
+            return
+        if message["type"] == "http.response.body":
+            if passthrough:
+                await send(message)
+                return
+            chunks.append(message.get("body", b""))
+            if message.get("more_body"):
+                return
+            raw = b"".join(chunks)
+            try:
+                payload = json.loads(raw) if raw else None
+            except ValueError:
+                payload = None
+            body = (
+                raw
+                if payload is None or ("error" in payload if isinstance(payload, dict) else False)
+                else json.dumps(envelope(payload)).encode()
+            )
+            headers = [
+                (k, v)
+                for k, v in start_message["headers"]
+                if k.decode().lower() != "content-length"
+            ]
+            headers.append((b"content-length", str(len(body)).encode()))
+            await send({**start_message, "headers": headers})
+            await send({"type": "http.response.body", "body": body})
+
+    await app(scope, receive, send_wrapper)
+
+
+# ── Error handling ──────────────────────────────────────────────────────
+
+
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Emit the relay error envelope so the app can decode 4xx/5xx responses.
+
+    Matches the FastAPI relay's error shape (relay/app/main.py:270-306).
+    """
+    code = {
+        400: "BAD_REQUEST", 401: "UNAUTHORIZED", 403: "FORBIDDEN",
+        404: "NOT_FOUND", 409: "CONFLICT", 422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED", 500: "INTERNAL_ERROR",
+        503: "SERVICE_UNAVAILABLE",
+    }.get(exc.status_code, "ERROR")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": str(exc.detail),
+                "requestId": str(uuid.uuid4()),
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+        },
+    )
+
+
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -490,16 +726,27 @@ routes = [
     Route("/v1/push/register", push_register, methods=["POST"]),
     Route("/v1/hosts/current", host_current, methods=["GET"]),
     Route("/v1/hosts/enrollment-codes", host_enrollment_codes, methods=["POST"]),
+    # P0-4: chat critical path
+    Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
+    Route("/v1/conversations/current", current_conversation, methods=["GET"]),
+    Route("/v1/conversations/current/clear", clear_current_conversation, methods=["POST"]),
+    Route("/v1/jobs/{id}", job_status, methods=["GET"]),
+    Route("/v1/jobs/{id}/events", job_events, methods=["GET"]),
+    Route("/v1/jobs/{id}/cancel", cancel_job, methods=["POST"]),
 ]
 
-app = Starlette(debug=False, routes=routes)
+app = Starlette(
+    debug=False,
+    routes=routes,
+    exception_handlers={HTTPException: http_exception_handler},
+)
 
 
 # ── ASGI middleware ─────────────────────────────────────────────────────
 
 
 async def log_middleware(scope, receive, send):
-    """Log every HTTP request."""
+    """Log every HTTP request.  Delegates to envelope_middleware → app."""
     if scope["type"] == "http":
         start = time.monotonic()
         path = scope.get("path", "")
@@ -514,9 +761,9 @@ async def log_middleware(scope, receive, send):
                 )
             await send(message)
 
-        await app(scope, receive, send_wrapper)
+        await envelope_middleware(scope, receive, send_wrapper)
     else:
-        await app(scope, receive, send)
+        await envelope_middleware(scope, receive, send)
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────
@@ -531,6 +778,12 @@ def create_app(
     message_handler: MessageHandler | None = None,
     connector_version: str = "0.0.0",
     health_check: Callable[[], Coroutine[Any, Any, bool]] | None = None,
+    job_status: JobStatusProvider | None = None,
+    job_cancel: JobCancelProvider | None = None,
+    job_events: JobEventsProvider | None = None,
+    session_conversation: SessionConversationProvider | None = None,
+    current_conversation: CurrentConversationProvider | None = None,
+    clear_conversation: ClearConversationProvider | None = None,
 ) -> Starlette:
     """Wire the facade context with connector callbacks."""
     ctx = get_context()
@@ -541,6 +794,12 @@ def create_app(
     ctx.message_handler = message_handler
     ctx.connector_version = connector_version
     ctx.health_check = health_check
+    ctx.job_status = job_status
+    ctx.job_cancel = job_cancel
+    ctx.job_events = job_events
+    ctx.session_conversation = session_conversation
+    ctx.current_conversation = current_conversation
+    ctx.clear_conversation = clear_conversation
     return app
 
 
