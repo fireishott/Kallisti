@@ -179,11 +179,21 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let maxWait: Duration = .seconds(180)  // matches relay max_job_duration_seconds
 
         let deadline = ContinuousClock.now + maxWait
+        var consecutiveNils = 0
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: pollInterval)
             try? Task.checkCancellation()
 
-            guard let status = await getJobStatus(jobId) else { continue }
+            guard let status = await getJobStatus(jobId) else {
+                consecutiveNils += 1
+                if consecutiveNils >= 5 {
+                    return Message(sender: .system,
+                                   content: "Lost contact with the relay while waiting for a reply.",
+                                   status: .failed)
+                }
+                continue
+            }
+            consecutiveNils = 0
 
             switch status.status {
             case "completed":
@@ -848,6 +858,9 @@ extension LiveHeraldClient {
                 errorCategory: data.errorCategory,
                 errorAction: data.errorAction
             )
+        } catch let decodingError as DecodingError {
+            Self.logger.error("Job status decode failure: \(decodingError) — check envelope shape")
+            return nil
         } catch {
             Self.logger.warning("Failed to get job status: \(error.localizedDescription)")
             return nil

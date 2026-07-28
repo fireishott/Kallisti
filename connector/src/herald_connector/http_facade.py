@@ -99,7 +99,7 @@ MessageHandler = Callable[
     Coroutine[Any, Any, AsyncIterator[dict]],
 ]
 JobStatusProvider = Callable[[str], Coroutine[Any, Any, dict]]
-JobCancelProvider = Callable[[str], Coroutine[Any, Any, dict]]
+JobCancelProvider = Callable[[dict], Coroutine[Any, Any, dict]]
 JobEventsProvider = Callable[[str], Coroutine[Any, Any, AsyncIterator[dict]]]
 SessionConversationProvider = Callable[[str], Coroutine[Any, Any, dict]]
 CurrentConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
@@ -212,10 +212,19 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
 
 def _prune_http_jobs() -> None:
     now = time.time()
+    stuck_timeout = 2 * int(os.getenv("HERALD_JOB_TIMEOUT_SECONDS", "170"))
     for jid, job in list(_http_jobs.items()):
         if job["status"] in {"completed", "failed", "cancelled"} and \
                 now - job["updatedAt"] > _HTTP_JOB_TTL_SECONDS:
             _http_jobs.pop(jid, None)
+        elif job["status"] not in {"completed", "failed", "cancelled"} and \
+                now - job["updatedAt"] > stuck_timeout:
+            logger.warning("Pruning stuck non-terminal job %s (status=%s, age=%ds)",
+                           jid, job["status"], int(now - job["updatedAt"]))
+            job["status"] = "failed"
+            job["error"] = "Job timed out — no progress in over %ds." % stuck_timeout
+            job["errorCategory"] = "timeout"
+            job["errorAction"] = "retry"
 
 
 async def _run_http_job(job_id: str, handler, text, history, session_id,
@@ -230,23 +239,30 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         for queue in list(job["subscribers"]):
             queue.put_nowait(event)
 
+    timeout_seconds = int(os.getenv("HERALD_JOB_TIMEOUT_SECONDS", "170"))
     try:
-        async for event in handler(text, history, session_id, attachments, reasoning_effort):
-            etype = event.get("type", "progress")
-            data = event.get("data", {}) or {}
-            if etype == "text_delta":
-                accumulated += data.get("delta", "")
-            if etype == "done":
-                # The connector's own terminal event (client.py:1695-1717) carries
-                # the final text and, on failure, the error + category/action.
-                accumulated = data.get("text") or accumulated
-                job["status"] = data.get("status", "completed")
-                job["error"] = data.get("error")
-                job["errorCategory"] = data.get("errorCategory")
-                job["errorAction"] = data.get("errorAction")
-                job["usage"] = data.get("usage")
-                continue          # re-emitted with jobId in the finally block
-            _publish({"type": etype, "data": data})
+        async with asyncio.timeout(timeout_seconds):
+            async for event in handler(text, history, session_id, attachments, reasoning_effort):
+                etype = event.get("type", "progress")
+                data = event.get("data", {}) or {}
+                if etype == "text_delta":
+                    accumulated += data.get("delta", "")
+                if etype == "done":
+                    # The connector's own terminal event (client.py:1695-1717) carries
+                    # the final text and, on failure, the error + category/action.
+                    accumulated = data.get("text") or accumulated
+                    job["status"] = data.get("status", "completed")
+                    job["error"] = data.get("error")
+                    job["errorCategory"] = data.get("errorCategory")
+                    job["errorAction"] = data.get("errorAction")
+                    job["usage"] = data.get("usage")
+                    continue          # re-emitted with jobId in the finally block
+                _publish({"type": etype, "data": data})
+    except TimeoutError:
+        job["status"] = "failed"
+        job["error"] = "The model did not respond in time."
+        job["errorCategory"] = "timeout"
+        job["errorAction"] = "retry"
     except asyncio.CancelledError:
         job["status"] = "cancelled"
         raise
@@ -346,7 +362,12 @@ async def switch_model(request: Request) -> JSONResponse:
     ctx = get_context()
     if ctx.model_switch is None:
         raise HTTPException(status_code=503, detail="Model switching not available")
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     name = body.get("name") or body.get("model", "")
     provider = body.get("provider")
     if not name:
@@ -373,7 +394,12 @@ async def switch_profile(request: Request) -> JSONResponse:
     ctx = get_context()
     if ctx.profile_switch is None:
         raise HTTPException(status_code=503, detail="Profile switching not available")
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     name = body.get("name") or body.get("profile", "")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
@@ -528,7 +554,12 @@ async def send_message(request: Request) -> JSONResponse:
     if ctx.message_handler is None:
         raise HTTPException(status_code=503, detail="Message handler not available")
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     text = body.get("text", "")
     history = body.get("history") or []
     session_id = body.get("sessionId")
@@ -985,7 +1016,7 @@ async def cancel_job(request: Request) -> JSONResponse:
     # Fallback: jobs created by the legacy relay WS path. Do not remove.
     if ctx.job_cancel is None:
         raise HTTPException(status_code=503, detail="Job cancellation not available")
-    result = ctx.job_cancel(job_id)
+    result = ctx.job_cancel({"jobId": job_id})
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
@@ -1214,6 +1245,8 @@ routes = [
     Route("/v1/health", health_endpoint, methods=["GET"]),
     Route("/health", health_alias, methods=["GET"]),
     Route("/v1/version", version_endpoint, methods=["GET"]),
+    Route("/gw/version", version_endpoint, methods=["GET"]),
+    Route("/v1/gw/version", version_endpoint, methods=["GET"]),
     Route("/v1/models", list_models, methods=["GET"]),
     Route("/v1/model", switch_model, methods=["POST"]),
     Route("/gw/model/switch", switch_model, methods=["POST"]),

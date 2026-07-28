@@ -760,10 +760,10 @@ class HeraldConnector:
 
 
     async def run_forever(self) -> None:
-        """Hybrid mode: native Hermes relay server + HTTP facade + FastAPI host WS.
+        """Hybrid mode: native Hermes relay server + HTTP facade.
 
-        Phone online/jobs still depend on FastAPI hosts/ws. Gateway uses :8765.
-        HTTP facade on :8010 replaces the Docker relay for iOS app communication.
+        Jobs run through the HTTP facade's own job registry (P0-4 wiring).
+        Gateway uses :8765. HTTP facade on :8010 handles iOS app communication.
         """
         native_enabled = os.getenv("HERALD_NATIVE_RELAY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
         fastapi_enabled = os.getenv("HERALD_FASTAPI_HOST_WS_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -771,6 +771,7 @@ class HeraldConnector:
         _http_task: asyncio.Task | None = None
 
         state = self.state_store.load()
+        self._state = state  # cache for hot-path reuse in _handle_http_message
         state = self.refresh_runtime_config(force=False)
         state = self.refresh_voice_context(state=state)
         self.apply_runtime_environment(state)
@@ -852,8 +853,8 @@ class HeraldConnector:
             logger.info("MCP HTTP server listening on %s:%d", mcp_host, mcp_port)
 
         if not fastapi_enabled:
-            logger.warning(
-                "HERALD_FASTAPI_HOST_WS_ENABLED disabled — phone host online/jobs path off"
+            logger.info(
+                "HERALD_FASTAPI_HOST_WS_ENABLED disabled (expected: jobs run through HTTP facade)"
             )
             state.last_connected_at = utcnow_iso()
             state.last_error = None
@@ -1647,7 +1648,21 @@ class HeraldConnector:
         This replaces the FastAPI relay's job creation + SSE streaming path.
         The HTTP facade calls this directly, bypassing the relay entirely.
         """
-        state = self.state_store.load()
+        # Use cached state from startup; fall back to a reload only if the
+        # cache is unset (should not happen in normal operation).
+        try:
+            state = self._state if getattr(self, '_state', None) is not None else self.state_store.load()
+        except RuntimeError as exc:
+            yield {
+                "type": "done",
+                "data": {
+                    "status": "failed",
+                    "error": "Connector state is missing on the host. Re-pair the device or restore state.json.",
+                    "errorCategory": "connector_unconfigured",
+                    "errorAction": "contact_admin",
+                },
+            }
+            return
         runtime = await self.runtime_adapter_for_state_async(state)
 
         accumulated_text = ""
