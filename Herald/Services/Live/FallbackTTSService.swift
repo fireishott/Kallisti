@@ -3,16 +3,24 @@ import Foundation
 /// Composite TTS service that falls back to Apple's on-device AVSpeechSynthesizer
 /// when the Mimo TTS API is unavailable (no API key, network error, etc.).
 ///
-/// Streaming TTS (`speakStreaming` / `finishStream`) always delegates to Apple
-/// because MimoTTSService's streaming methods are no-ops.
+/// Streaming TTS prefers Mimo (pcm16) and falls back to Apple only when Mimo
+/// is unavailable — no key, network failure. Mimo restored low-latency
+/// streaming in the v2.5 series.
 @MainActor
 final class FallbackTTSService: TTSServiceProtocol {
     private let primary: TTSServiceProtocol   // Mimo
     private let fallback: TTSServiceProtocol  // Apple
+    private let mimoKeyProvider: @MainActor () -> String?
 
-    init(primary: TTSServiceProtocol, fallback: TTSServiceProtocol) {
+    private var hasUsableMimoKey: Bool {
+        guard let key = mimoKeyProvider() else { return false }
+        return !key.isEmpty
+    }
+
+    init(primary: TTSServiceProtocol, fallback: TTSServiceProtocol, mimoKeyProvider: @escaping @MainActor () -> String?) {
         self.primary = primary
         self.fallback = fallback
+        self.mimoKeyProvider = mimoKeyProvider
     }
 
     var isPlaying: Bool {
@@ -38,14 +46,22 @@ final class FallbackTTSService: TTSServiceProtocol {
         }
     }
 
-    /// Streaming TTS — Mimo doesn't support it, so delegate directly to Apple.
+    /// Streaming TTS — Mimo first, Apple only when Mimo has no usable key.
     func speakStreaming(_ chunk: String, voice: String?) {
-        fallback.speakStreaming(chunk, voice: voice)
+        guard hasUsableMimoKey else {
+            fallback.speakStreaming(chunk, voice: voice)
+            return
+        }
+        primary.speakStreaming(chunk, voice: voice)
     }
 
-    /// Flush any remaining buffered text — delegated to Apple.
+    /// Flush any remaining buffered text on whichever engine is streaming.
     func finishStream() {
-        fallback.finishStream()
+        if hasUsableMimoKey {
+            primary.finishStream()
+        } else {
+            fallback.finishStream()
+        }
     }
 
     func stop() {

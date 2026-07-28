@@ -421,7 +421,11 @@ final class AppContainer {
                 Task { await apiKeyHolder.refresh() }
                 let mimoTTSService = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
                 let appleTTSService = AppleTTSService()
-                let tts = FallbackTTSService(primary: mimoTTSService, fallback: appleTTSService)
+                let tts = FallbackTTSService(
+                    primary: mimoTTSService,
+                    fallback: appleTTSService,
+                    mimoKeyProvider: { apiKeyHolder.get() }
+                )
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
