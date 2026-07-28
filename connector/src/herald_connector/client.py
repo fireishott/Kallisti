@@ -820,7 +820,7 @@ class HeraldConnector:
             facade_ctx.paired_device_id = state.device_token
             facade_ctx.paired_user_id = state.user_id
             facade_ctx.connector_credential = state.connector_credential
-            facade_ctx.public_base_url = state.relay_url or ""
+            facade_ctx.public_base_url = os.getenv("HERMES_MOBILE_RELAY_URL", "").rstrip("/") or state.relay_url or ""
             # P0-4: chat critical-path providers
             facade_ctx.job_status = self._rpc_job_status
             facade_ctx.job_cancel = self._rpc_jobs_cancel
