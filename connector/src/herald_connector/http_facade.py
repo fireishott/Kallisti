@@ -945,14 +945,19 @@ async def job_events(request: Request) -> StreamingResponse:
     if job is not None:
         async def facade_stream() -> AsyncIterator[str]:
             queue: asyncio.Queue = asyncio.Queue()
-            # Replay what already happened, then follow live.  JobStreamCoordinator
-            # resumes from `id:` (JobStreamCoordinator.swift:290-294) and drops
-            # duplicates, so replaying from 0 is safe.
+            # Resume from Last-Event-ID so a reconnect does not renumber the
+            # backlog from 0.  JobStreamCoordinator drops events at or below
+            # its cursor, so restarting at 0 made the replayed terminal event
+            # look like a duplicate and the stream hung.
+            try:
+                cursor = int(request.headers.get("Last-Event-ID", "-1"))
+            except (TypeError, ValueError):
+                cursor = -1
             backlog = list(job["events"])
             job["subscribers"].append(queue)
             try:
-                seq = 0
-                for event in backlog:
+                seq = cursor + 1
+                for event in backlog[cursor + 1:]:
                     yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
                     seq += 1
                 if job["status"] != "running" and backlog and backlog[-1]["type"] == "done":
