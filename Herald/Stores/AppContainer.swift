@@ -419,7 +419,10 @@ final class AppContainer {
                 let apiKeyHolder = APIKeyHolder(secureStore: secureStore)
                 // Load the key from Keychain
                 Task { await apiKeyHolder.refresh() }
-                let mimoTTSService = MimoTTSService(apiKeyProvider: { apiKeyHolder.get() })
+                let mimoTTSService = MimoTTSService(
+                    apiKeyProvider: { apiKeyHolder.get() },
+                    modelProvider: { settingsStore.settings.mimoTTSModel }
+                )
                 let appleTTSService = AppleTTSService()
                 let tts = FallbackTTSService(
                     primary: mimoTTSService,

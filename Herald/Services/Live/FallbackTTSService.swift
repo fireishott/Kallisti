@@ -82,8 +82,9 @@ final class FallbackTTSService: TTSServiceProtocol {
         // MimoTTSService.TTSError cases that are recoverable
         if domain.contains("TTSError") || errorString.contains("TTSError") {
             // noAPIKey, httpError, invalidResponse, noAudioData → fallback
-            // invalidURL, decodeFailed → don't fallback (config issue)
-            if errorString.contains("invalidURL") || errorString.contains("decodeFailed") {
+            // invalidURL, decodeFailed, voiceDesignRequiresStyle → don't fallback
+            if errorString.contains("invalidURL") || errorString.contains("decodeFailed")
+                || errorString.contains("voiceDesignRequiresStyle") {
                 return false
             }
             return true

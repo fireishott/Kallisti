@@ -960,6 +960,37 @@ struct SettingsScreen: View {
 
                     sectionDivider
 
+                    // Mimo TTS model selector
+                    HStack {
+                        Text("Mimo model")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Picker("Mimo model", selection: mimoModelBinding) {
+                            Text("Built-in voices").tag("mimo-v2.5-tts")
+                            Text("Voice design").tag("mimo-v2.5-tts-voicedesign")
+                            Text("Voice clone").tag("mimo-v2.5-tts-voiceclone")
+                        }
+                        .pickerStyle(.menu)
+                        .tint(Design.Brand.accent)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
+                    TextField("Voice style (director notes)", text: mimoVoiceStyleBinding, axis: .vertical)
+                        .lineLimit(1...4)
+                        .textFieldStyle(.plain)
+
+                    if settingsStore.settings.mimoTTSModel == "mimo-v2.5-tts-voicedesign"
+                        && settingsStore.settings.mimoVoiceStyle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Voice design requires a style description.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    sectionDivider
+
                     settingsToggle(
                         icon: "waveform",
                         iconColor: .blue,
@@ -1217,6 +1248,12 @@ struct SettingsScreen: View {
     }
     private var ttsAppleVoiceIdentifierBinding: Binding<String> {
         Binding(get: { settingsStore.settings.ttsAppleVoiceIdentifier }, set: { settingsStore.settings.ttsAppleVoiceIdentifier = $0 })
+    }
+    private var mimoModelBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.mimoTTSModel }, set: { settingsStore.settings.mimoTTSModel = $0 })
+    }
+    private var mimoVoiceStyleBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.mimoVoiceStyle }, set: { settingsStore.settings.mimoVoiceStyle = $0 })
     }
     private var availableAppleVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()
