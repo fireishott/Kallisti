@@ -86,6 +86,19 @@ final class ChatStore {
     private static let deltaFlushInterval: Duration = .milliseconds(16)  // 60 fps cap
     private static let deltaFlushByteThreshold = 4_096
 
+    /// Merge a server-resolved message with whatever already streamed into the
+    /// placeholder. A resolved message with empty content must never erase
+    /// streamed text — that regression rendered every reply as a blank bubble.
+    static func mergeResolvedMessage(resolved: Message, streamedContent: String) -> Message {
+        guard resolved.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !streamedContent.isEmpty else {
+            return resolved
+        }
+        var merged = resolved
+        merged.content = streamedContent
+        return merged
+    }
+
     /// Whether `autoTitleIfNeeded` has already been attempted for the current
     /// conversation. Prevents re-attempting on every stream completion when
     /// the title RPC fails and the title remains a default placeholder.
@@ -495,7 +508,10 @@ final class ChatStore {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
                         let streamedReasoning = placeholder?.reasoning ?? ""
-                        var resolved = finalMessage
+                        let streamedContent = self.conversation?.messages[idx].content ?? ""
+                        var resolved = Self.mergeResolvedMessage(
+                            resolved: finalMessage, streamedContent: streamedContent
+                        )
                         resolved.toolActivities = activities
                         resolved.codeDiff = diff
                         // The reloaded server message has no reasoning — carry over
