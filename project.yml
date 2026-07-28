@@ -79,7 +79,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
         MARKETING_VERSION: "2.3.6"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_CFBundleDisplayName: Herald
@@ -159,7 +159,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
         MARKETING_VERSION: "2.3.6"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -184,7 +184,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
         PRODUCT_NAME: HeraldNotificationService
         MARKETING_VERSION: "2.3.6"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -220,7 +220,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
         PRODUCT_NAME: HeraldIntents
         MARKETING_VERSION: "2.3.6"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -238,7 +238,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Controls
         PRODUCT_NAME: HeraldControls
         MARKETING_VERSION: "2.3.6"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

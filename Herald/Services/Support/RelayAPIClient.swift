@@ -3,6 +3,21 @@ import os
 
 private let sseLogger = Logger(subsystem: "net.fihonline.herald", category: "SSE")
 
+// MARK: - Backend error fallback
+
+/// Backends that aren't the relay — the connector's HTTP facade, or Caddy itself — answer with a
+/// bare `text/plain` reason instead of the relay's error envelope. Surfacing that text beats showing
+/// a context-free "Unauthorized". Bounded and non-markup so an HTML error page can't reach the UI.
+private func plainTextReason(from data: Data) -> String? {
+    guard let text = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !text.isEmpty,
+        text.count <= 200,
+        !text.hasPrefix("<")
+    else { return nil }
+    return text
+}
+
 // MARK: - SSE Line Iterator (chunked, delegate-driven)
 
 /// `URLSession.AsyncBytes` iterates one byte at a time and is known to stall
@@ -489,7 +504,10 @@ final class RelayAPIClient {
                 if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
                     throw ClientError.unauthorized(envelope.error.message)
                 }
-                throw ClientError.unauthorized("Unauthorized")
+                if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
+                    throw ClientError.unauthorized(envelope.detail)
+                }
+                throw ClientError.unauthorized(plainTextReason(from: data) ?? "Unauthorized")
             }
 
             if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
@@ -516,7 +534,7 @@ final class RelayAPIClient {
             default:
                 hint = "Relay request failed with status \(status)."
             }
-            throw ClientError.requestFailed(hint)
+            throw ClientError.requestFailed(plainTextReason(from: data) ?? hint)
         }
 
         return try decoder.decode(Envelope<T>.self, from: data).data
@@ -581,9 +599,12 @@ extension RelayAPIClient {
         }
         guard (200 ..< 300).contains(httpResponse.statusCode) else {
             if httpResponse.statusCode == 401 {
+                if let text = plainTextReason(from: data) {
+                    throw ClientError.unauthorized(text)
+                }
                 throw ClientError.unauthorized("Unauthorized")
             }
-            throw ClientError.requestFailed("Attachment request failed with status \(httpResponse.statusCode).")
+            throw ClientError.requestFailed(plainTextReason(from: data) ?? "Attachment request failed with status \(httpResponse.statusCode).")
         }
         return (data, httpResponse.mimeType)
     }
