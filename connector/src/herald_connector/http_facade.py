@@ -1327,9 +1327,23 @@ async def stub_note_runs_events(request: Request) -> JSONResponse:
 
 
 async def stub_talk_readiness(request: Request) -> JSONResponse:
-    """GET /v1/talk/readiness — return not-ready state."""
+    """GET /v1/talk/readiness — not configured, but shape-complete.
+
+    TalkReadinessResponse (LiveVoiceSessionService.swift:20-29) declares
+    hostOnline and configured as non-optional, so omitting them makes the app
+    fail with a decode error instead of showing an unavailable state.
+    """
     await require_auth(request)
-    return JSONResponse({"ready": False, "reason": "not implemented"})
+    return JSONResponse({
+        "ready": False,
+        "hostOnline": True,
+        "configured": False,
+        "blockedReason": "Realtime Talk is not configured on this host.",
+        "preferredModels": None,
+        "selectedModel": None,
+        "voice": None,
+        "voiceContextUpdatedAt": None,
+    })
 
 
 async def stub_talk_session(request: Request) -> JSONResponse:
