@@ -11,6 +11,7 @@ WebSocket to HeraldRelayServer on :8765.  This module is the HTTP half.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import inspect
 import json
@@ -28,6 +29,18 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 logger = logging.getLogger("herald.http_facade")
+
+# ── Process lifetime ──────────────────────────────────────────────────────
+
+_PROCESS_STARTED_AT = time.monotonic()
+
+# ── Journal constants (F-3: Gateway Logs) ─────────────────────────────────
+
+_JOURNAL_PRIORITY = {"error": "3", "warning": "4", "info": "6", "debug": "7"}
+_JOURNAL_LEVEL_NAME = {0: "error", 1: "error", 2: "error", 3: "error",
+                       4: "warning", 5: "info", 6: "info", 7: "debug"}
+_APPLE_EPOCH_OFFSET = 978_307_200.0
+_JOURNAL_UNIT = os.getenv("HERALD_JOURNAL_UNIT", "hermes-mobile-connector.service")
 
 # ── Auth helpers ────────────────────────────────────────────────────────
 
@@ -71,11 +84,16 @@ async def require_auth(request: Request) -> str:
 
 # ── Model / Profile providers ─────────────────────────────────────────
 
+# The connector's RPC methods take a params dict (client.py:2114, :2196) — the
+# same shape the JSON-RPC bridge passes (client.py:1870, :1874).  Passing
+# positional args here raised
+#   TypeError: _rpc_model_set() takes 2 positional arguments but 3 were given
+# which surfaced in the app as a bogus [NOT_FOUND] from the gw fallback.
 
 ModelCatalogProvider = Callable[[], Coroutine[Any, Any, dict]]
-ModelSwitchProvider = Callable[[str, str | None], Coroutine[Any, Any, dict]]
+ModelSwitchProvider = Callable[[dict], Coroutine[Any, Any, dict]]
 ProfileCatalogProvider = Callable[[], Coroutine[Any, Any, dict]]
-ProfileSwitchProvider = Callable[[str], Coroutine[Any, Any, dict]]
+ProfileSwitchProvider = Callable[[dict], Coroutine[Any, Any, dict]]
 MessageHandler = Callable[
     [str, list[dict], str | None, list[dict] | None, str | None],
     Coroutine[Any, Any, AsyncIterator[dict]],
@@ -118,6 +136,171 @@ _context = FacadeContext()
 
 def get_context() -> FacadeContext:
     return _context
+
+
+# ── Facade-local HTTP message jobs ───────────────────────────────────────
+#
+# The iOS app POSTs /v1/messages and decodes JSON (LiveHeraldClient.swift:223-229
+# → MessageResponse).  It NEVER reads an SSE body from this route: returning a
+# StreamingResponse here is what produced "The data couldn't be read because it
+# isn't in the correct format" (DecodingError.dataCorrupted) on every single send.
+#
+# Contract: answer immediately with replyState="pending" + jobId, drain the
+# connector's async generator in a background task, and serve the result on
+# GET /v1/jobs/{id} (polling) and GET /v1/jobs/{id}/events (SSE).  Both are
+# already implemented on the app side and need no change.
+#
+# These jobs are facade-owned and live only in this process.  Jobs created by the
+# legacy relay WS path still resolve through ctx.job_* — see the fallback branch
+# in job_status()/job_events()/cancel_job().  Do not remove that fallback.
+
+_http_jobs: dict[str, dict] = {}
+_http_job_tasks: dict[str, asyncio.Task] = {}
+_HTTP_JOB_TTL_SECONDS = 900.0
+_conversation_id_singleton: str | None = None
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _stable_conversation_id() -> str:
+    """One conversation id per connector process.
+
+    RelayConversation.id is a non-optional UUID (LiveHeraldClient.swift:24) and the
+    app uses it to correlate the reply with the open conversation.  A fresh uuid4
+    per request would make every message look like a new conversation.
+    """
+    global _conversation_id_singleton
+    if _conversation_id_singleton is None:
+        _conversation_id_singleton = str(uuid.uuid4())
+    return _conversation_id_singleton
+
+
+def _coerce_uuid(value: Any) -> str | None:
+    """Return a lowercase UUID string, or None. Never raise.
+
+    RelayMessage.clientMessageId / .jobId are UUID? on the app side
+    (LiveHeraldClient.swift:41,45) — a non-UUID string is a hard decode failure,
+    whereas null decodes fine.
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _relay_message(role: str, text: str, *, client_message_id: Any = None,
+                   job_id: Any = None) -> dict:
+    """Build one RelayMessage (LiveHeraldClient.swift:39-48).
+
+    id / role / text / timestamp are non-optional on the app side.  `role` accepts
+    "user", "herald", "system" — and "assistant"/"hermes" are aliased to .herald
+    by MessageSender.init(from:) (Herald/Models/MessageSender.swift:13).
+    """
+    return {
+        "id": str(uuid.uuid4()),
+        "clientMessageId": _coerce_uuid(client_message_id),
+        "role": role,
+        "text": text,
+        "timestamp": _now_iso(),
+        "deliveryStatus": "delivered",
+        "jobId": _coerce_uuid(job_id),
+        "attachments": None,
+    }
+
+
+def _prune_http_jobs() -> None:
+    now = time.time()
+    for jid, job in list(_http_jobs.items()):
+        if job["status"] in {"completed", "failed", "cancelled"} and \
+                now - job["updatedAt"] > _HTTP_JOB_TTL_SECONDS:
+            _http_jobs.pop(jid, None)
+
+
+async def _run_http_job(job_id: str, handler, text, history, session_id,
+                        attachments, reasoning_effort) -> None:
+    """Drain the connector's message generator into the job record."""
+    job = _http_jobs[job_id]
+    accumulated = ""
+
+    def _publish(event: dict) -> None:
+        job["events"].append(event)
+        job["updatedAt"] = time.time()
+        for queue in list(job["subscribers"]):
+            queue.put_nowait(event)
+
+    try:
+        async for event in handler(text, history, session_id, attachments, reasoning_effort):
+            etype = event.get("type", "progress")
+            data = event.get("data", {}) or {}
+            if etype == "text_delta":
+                accumulated += data.get("delta", "")
+            if etype == "done":
+                # The connector's own terminal event (client.py:1695-1717) carries
+                # the final text and, on failure, the error + category/action.
+                accumulated = data.get("text") or accumulated
+                job["status"] = data.get("status", "completed")
+                job["error"] = data.get("error")
+                job["errorCategory"] = data.get("errorCategory")
+                job["errorAction"] = data.get("errorAction")
+                job["usage"] = data.get("usage")
+                continue          # re-emitted with jobId in the finally block
+            _publish({"type": etype, "data": data})
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
+        raise
+    except Exception as exc:                      # noqa: BLE001 — must not kill the task
+        logger.exception("HTTP message job %s failed", job_id)
+        job["status"] = "failed"
+        job["error"] = str(exc)
+    finally:
+        if job["status"] == "running":
+            job["status"] = "completed"
+        if job["status"] == "completed":
+            job["message"] = _relay_message("herald", accumulated, job_id=job_id)
+        terminal = {
+            "type": "done",
+            "data": {
+                "jobId": job_id,
+                "status": job["status"],
+                "text": accumulated,
+                "error": job.get("error"),
+                "errorCategory": job.get("errorCategory"),
+                "errorAction": job.get("errorAction"),
+                "usage": job.get("usage"),
+            },
+        }
+        _publish(terminal)
+        for queue in list(job["subscribers"]):
+            queue.put_nowait(None)                # sentinel: close the SSE stream
+        job["updatedAt"] = time.time()
+
+
+# ── Journal helpers (F-3: Gateway Logs) ──────────────────────────────────
+
+
+def _journal_line(entry: dict, *, timestamp_as_number: bool) -> dict:
+    """One LogLine (GatewayLogsScreen.swift:317-323).
+
+    timestamp_as_number is load-bearing: the batch route is decoded with
+    RelayCoders (ISO-8601 string) and the SSE route with a bare JSONDecoder
+    (.deferredToDate → Apple-reference seconds). See the table in F-3.
+    """
+    micros = float(entry.get("__REALTIME_TIMESTAMP", 0) or 0)
+    unix_seconds = micros / 1_000_000.0
+    priority = int(entry.get("PRIORITY", 6) or 6)
+    message = entry.get("MESSAGE", "")
+    if isinstance(message, list):                       # journald returns bytes as int lists
+        message = bytes(message).decode("utf-8", "replace")
+    return {
+        "timestamp": (unix_seconds - _APPLE_EPOCH_OFFSET) if timestamp_as_number
+                     else datetime.datetime.fromtimestamp(
+                         unix_seconds, datetime.timezone.utc).isoformat(),
+        "level": _JOURNAL_LEVEL_NAME.get(priority, "info"),
+        "message": message,
+        "source": entry.get("SYSLOG_IDENTIFIER") or entry.get("_COMM"),
+    }
 
 
 # ── Route handlers ──────────────────────────────────────────────────────
@@ -168,7 +351,7 @@ async def switch_model(request: Request) -> JSONResponse:
     provider = body.get("provider")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    result = ctx.model_switch(name, provider)
+    result = ctx.model_switch({"name": name, "provider": provider})
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
@@ -191,10 +374,10 @@ async def switch_profile(request: Request) -> JSONResponse:
     if ctx.profile_switch is None:
         raise HTTPException(status_code=503, detail="Profile switching not available")
     body = await request.json()
-    name = body.get("name", "")
+    name = body.get("name") or body.get("profile", "")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    result = ctx.profile_switch(name)
+    result = ctx.profile_switch({"name": name})
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
@@ -253,12 +436,11 @@ async def gateway_status(request: Request) -> JSONResponse:
     with no keyDecodingStrategy. Every field is optional — partial data renders
     gracefully; a 500 does not.
 
-    The /gw/* control plane existed only in the legacy FastAPI relay and was
-    missing from the connector facade. Build 31 adds this minimal bridge.
+    Returns {"data": {...}} — GatewayStatusScreen.swift:275-277 declares its own
+    inner `data` key on top of the envelope the middleware adds.  Do not flatten.
     """
     await require_auth(request)
     ctx = get_context()
-    import datetime as _dt
 
     payload: dict = {
         "connectorConnected": True,
@@ -275,17 +457,48 @@ async def gateway_status(request: Request) -> JSONResponse:
         # legacy relay is not running; avoids a confusing "—" in the UI.
         payload["version"] = ctx.connector_version or "0.0.0"
 
-    # Uptime — rough estimate from process start.
+    # Uptime — connector process lifetime, not host uptime.
     try:
-        payload["uptimeSeconds"] = int(time.monotonic())
+        payload["uptimeSeconds"] = int(time.monotonic() - _PROCESS_STARTED_AT)
     except Exception:
         pass
+
+    # modelName — Hermes pill + System→Model. Reuses the catalog the app already reads.
+    try:
+        if ctx.model_catalog is not None:
+            catalog = ctx.model_catalog()
+            if inspect.isawaitable(catalog):
+                catalog = await catalog
+            active = (catalog or {}).get("activeModel") or {}
+            if active.get("name"):
+                payload["modelName"] = active["name"]
+    except Exception:
+        logger.debug("gw/status: model name unavailable", exc_info=True)
+
+    # cpuPercent / memory — /proc, no psutil dependency.
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            meminfo = {}
+            for line in fh:
+                key, _, rest = line.partition(":")
+                meminfo[key] = int(rest.strip().split()[0])     # kB
+        total_gb = meminfo["MemTotal"] / 1024 / 1024
+        avail_gb = meminfo["MemAvailable"] / 1024 / 1024
+        payload["memoryTotalGb"] = round(total_gb, 2)
+        payload["memoryUsedGb"] = round(total_gb - avail_gb, 2)
+    except Exception:
+        logger.debug("gw/status: meminfo unavailable", exc_info=True)
+
+    payload["activeJobs"] = len([j for j in _http_jobs.values() if j["status"] == "running"])
 
     # Omit alerts — we have no alert source yet, and a malformed timestamp
     # in an alert would cause dataCorrupted for the entire response.
     # Omit activeJobsList — requires connector-backed job tracking (b32).
 
-    return JSONResponse(payload)
+    # Double-wrapped ON PURPOSE: GatewayStatusScreen.swift:275-277 declares its own
+    # inner `data` key on top of the envelope the middleware adds. Flattening this
+    # yields "The data couldn't be read because it is missing."
+    return JSONResponse({"data": payload})
 
 
 async def capabilities_endpoint(request: Request) -> JSONResponse:
@@ -301,8 +514,15 @@ async def capabilities_endpoint(request: Request) -> JSONResponse:
     })
 
 
-async def send_message(request: Request) -> StreamingResponse:
-    """Send a message and stream the response via SSE."""
+async def send_message(request: Request) -> JSONResponse:
+    """Accept a chat message and return a pending job.
+
+    RETURNS JSON, NOT SSE.  See the registry comment above — the app decodes this
+    body with JSONDecoder and an SSE body is an unconditional dataCorrupted error.
+    The streaming experience is preserved via GET /v1/jobs/{id}/events, which
+    JobStreamCoordinator (JobStreamCoordinator.swift:98) subscribes to as soon as
+    it sees replyState == "pending".
+    """
     await require_auth(request)
     ctx = get_context()
     if ctx.message_handler is None:
@@ -314,38 +534,54 @@ async def send_message(request: Request) -> StreamingResponse:
     session_id = body.get("sessionId")
     attachments = body.get("attachments")
     reasoning_effort = body.get("reasoningEffort")
+    client_message_id = body.get("clientMessageId")
+    conversation_id = _coerce_uuid(body.get("conversationId")) or _stable_conversation_id()
 
-    async def event_stream() -> AsyncIterator[str]:
-        job_id = str(uuid.uuid4())
-        seq = 0
-        yield f"id: {seq}\nevent: messageSent\ndata: {json.dumps({'jobId': job_id})}\n\n"
-        seq += 1
+    job_id = str(uuid.uuid4())
+    user_message = _relay_message("user", text, client_message_id=client_message_id)
 
-        try:
-            async for event in ctx.message_handler(
-                text, history, session_id, attachments, reasoning_effort
-            ):
-                if await request.is_disconnected():
-                    break
-                event_type = event.get("type", "progress")
-                sse_data = json.dumps(event.get("data", event))
-                yield f"id: {seq}\nevent: {event_type}\ndata: {sse_data}\n\n"
-                seq += 1
-        except asyncio.CancelledError:
-            yield f"id: {seq}\nevent: cancelled\ndata: {json.dumps({'jobId': job_id})}\n\n"
-        except Exception as exc:
-            logger.exception("Message streaming error")
-            yield f"id: {seq}\nevent: failed\ndata: {json.dumps({'error': str(exc), 'jobId': job_id})}\n\n"
+    _http_jobs[job_id] = {
+        "jobId": job_id,
+        "status": "running",
+        "conversationId": conversation_id,
+        "message": None,
+        "error": None,
+        "errorCategory": None,
+        "errorAction": None,
+        "usage": None,
+        "events": [],
+        "subscribers": [],
+        "updatedAt": time.time(),
+    }
+    _prune_http_jobs()
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+    task = asyncio.create_task(
+        _run_http_job(job_id, ctx.message_handler, text, history,
+                      session_id, attachments, reasoning_effort)
     )
+    _http_job_tasks[job_id] = task
+    task.add_done_callback(lambda _t, jid=job_id: _http_job_tasks.pop(jid, None))
+
+    # MessageResponse (LiveHeraldClient.swift:12-21): replyState and conversation
+    # are non-optional.  RelayConversation.title is a non-optional String and
+    # .updatedAt a non-optional Date — null in either is a decode failure.
+    return JSONResponse({
+        "replyState": "pending",
+        "jobId": job_id,
+        "conversation": {
+            "id": conversation_id,
+            "title": "Herald",
+            "updatedAt": _now_iso(),
+            "messages": [user_message],
+            "latestUsage": None,
+            "latestContext": None,
+        },
+        "userMessage": user_message,
+        "message": None,
+        "usage": None,
+        "context": None,
+        "diff": None,
+    })
 
 
 # ── Pairing / Auth ───────────────────────────────────────────────────────
@@ -583,7 +819,13 @@ async def session_conversation(request: Request) -> JSONResponse:
 
 
 async def current_conversation(request: Request) -> JSONResponse:
-    """Get the active conversation on launch."""
+    """Get the active conversation on launch.
+
+    Shape is dictated by ConversationResponse/RelayConversation
+    (LiveHeraldClient.swift:23-30) — `conversation` is required and its id/title/
+    updatedAt/messages are all non-optional. The connector stub returns a flat
+    {sessionId, messages, title}, so normalize here.
+    """
     await require_auth(request)
     ctx = get_context()
     if ctx.current_conversation is None:
@@ -591,7 +833,17 @@ async def current_conversation(request: Request) -> JSONResponse:
     result = ctx.current_conversation()
     if inspect.isawaitable(result):
         result = await result
-    return JSONResponse(result)
+    result = result or {}
+    if "conversation" in result:
+        return JSONResponse(result)
+    return JSONResponse({"conversation": {
+        "id": _coerce_uuid(result.get("sessionId")) or _stable_conversation_id(),
+        "title": result.get("title") or "Herald",
+        "updatedAt": _now_iso(),
+        "messages": result.get("messages") or [],
+        "latestUsage": None,
+        "latestContext": None,
+    }})
 
 
 async def clear_current_conversation(request: Request) -> JSONResponse:
@@ -607,16 +859,40 @@ async def clear_current_conversation(request: Request) -> JSONResponse:
 
 
 async def job_status(request: Request) -> JSONResponse:
-    """Poll job status. Build 29 uses polling, not streaming."""
+    """Poll job status.
+
+    Returns {"data": {...}} — the app declares its own inner `data` key
+    (LiveHeraldClient.swift:827-829) *in addition to* the envelope the middleware
+    adds, so this handler double-wraps on purpose.  Do not flatten it.
+    """
     await require_auth(request)
     ctx = get_context()
     job_id = request.path_params.get("id", "")
+
+    job = _http_jobs.get(job_id)
+    if job is not None:
+        return JSONResponse({"data": {
+            "jobId": job_id,
+            "status": job["status"],
+            "conversationId": job["conversationId"],
+            "error": job["error"],
+            "errorCategory": job["errorCategory"],
+            "errorAction": job["errorAction"],
+            "usage": job.get("usage"),
+            "context": None,
+            "diff": None,
+            "message": job["message"],
+            "attempt": 0,
+            "lastSeq": max(len(job["events"]) - 1, 0),
+        }})
+
+    # Fallback: jobs created by the legacy relay WS path. Do not remove.
     if ctx.job_status is None:
         raise HTTPException(status_code=503, detail="Job service not available")
     result = ctx.job_status(job_id)
     if inspect.isawaitable(result):
         result = await result
-    return JSONResponse(result)
+    return JSONResponse({"data": result})
 
 
 async def job_events(request: Request) -> StreamingResponse:
@@ -624,6 +900,43 @@ async def job_events(request: Request) -> StreamingResponse:
     await require_auth(request)
     ctx = get_context()
     job_id = request.path_params.get("id", "")
+
+    job = _http_jobs.get(job_id)
+    if job is not None:
+        async def facade_stream() -> AsyncIterator[str]:
+            queue: asyncio.Queue = asyncio.Queue()
+            # Replay what already happened, then follow live.  JobStreamCoordinator
+            # resumes from `id:` (JobStreamCoordinator.swift:290-294) and drops
+            # duplicates, so replaying from 0 is safe.
+            backlog = list(job["events"])
+            job["subscribers"].append(queue)
+            try:
+                seq = 0
+                for event in backlog:
+                    yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+                    seq += 1
+                if job["status"] != "running" and backlog and backlog[-1]["type"] == "done":
+                    return
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        return
+                    if await request.is_disconnected():
+                        return
+                    yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+                    seq += 1
+            finally:
+                if queue in job["subscribers"]:
+                    job["subscribers"].remove(queue)
+
+        return StreamingResponse(
+            facade_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                     "X-Accel-Buffering": "no"},
+        )
+
+    # Fallback: jobs created by the legacy relay WS path. Do not remove.
     if ctx.job_events is None:
         raise HTTPException(status_code=503, detail="Job event streaming not available")
 
@@ -659,12 +972,139 @@ async def cancel_job(request: Request) -> JSONResponse:
     await require_auth(request)
     ctx = get_context()
     job_id = request.path_params.get("id", "")
+
+    task = _http_job_tasks.get(job_id)
+    if task is not None:
+        task.cancel()
+        job = _http_jobs.get(job_id)
+        if job is not None:
+            job["status"] = "cancelled"
+            job["updatedAt"] = time.time()
+        return JSONResponse({"jobId": job_id, "status": "cancelled"})
+
+    # Fallback: jobs created by the legacy relay WS path. Do not remove.
     if ctx.job_cancel is None:
         raise HTTPException(status_code=503, detail="Job cancellation not available")
     result = ctx.job_cancel(job_id)
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
+
+
+# ── F-3: Gateway Logs ────────────────────────────────────────────────────
+
+
+async def gateway_logs(request: Request) -> JSONResponse:
+    """Recent connector logs from journald.
+
+    Returns {"data": {"lines": [...]}} — GatewayLogsScreen.swift:170-175 declares
+    its own inner `data` key on top of the envelope. Do not flatten.
+    """
+    await require_auth(request)
+    lines = min(int(request.query_params.get("lines", "200") or 200), 1000)
+    level = (request.query_params.get("level") or "info").lower()
+    priority = _JOURNAL_PRIORITY.get(level, "6")
+
+    proc = await asyncio.create_subprocess_exec(
+        "journalctl", "--user", "-u", _JOURNAL_UNIT,
+        "-n", str(lines), "-p", priority, "-o", "json", "--no-pager",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise HTTPException(status_code=504, detail="journalctl timed out")
+
+    out: list[dict] = []
+    for raw in stdout.decode("utf-8", "replace").splitlines():
+        try:
+            out.append(_journal_line(json.loads(raw), timestamp_as_number=False))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return JSONResponse({"data": {"lines": out}})
+
+
+async def gateway_logs_stream(request: Request) -> StreamingResponse:
+    """Live tail. SSE `data:` is decoded by a BARE JSONDecoder on the app side
+    (GatewayLogsScreen.swift:236), so timestamps go out as numbers, not strings."""
+    await require_auth(request)
+    level = (request.query_params.get("level") or "info").lower()
+    priority = _JOURNAL_PRIORITY.get(level, "6")
+
+    async def stream() -> AsyncIterator[str]:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl", "--user", "-u", _JOURNAL_UNIT,
+            "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            while True:
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), timeout=25.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"          # parsed as a comment, ignored by the app
+                    continue
+                if not raw:
+                    return
+                if await request.is_disconnected():
+                    return
+                try:
+                    line = _journal_line(json.loads(raw), timestamp_as_number=True)
+                except (ValueError, KeyError, TypeError):
+                    continue
+                yield f"event: log\ndata: {json.dumps(line)}\n\n"
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                 "X-Accel-Buffering": "no"})
+
+
+# ── F-6: Device telemetry & session stubs ────────────────────────────────
+
+
+async def device_app_state(request: Request) -> JSONResponse:
+    """AppContainer.swift:1139 decodes an empty struct — any JSON object works."""
+    await require_auth(request)
+    body = await request.json()
+    logger.debug("Device app state: %s", body.get("state"))
+    return JSONResponse({"acknowledged": True})
+
+
+async def device_sensor(request: Request) -> JSONResponse:
+    """SensorUploadService.swift:107-113 decodes DeliveryResult.deliveryState and
+    treats anything other than "delivered" as a failure that triggers backoff."""
+    await require_auth(request)
+    await request.json()
+    return JSONResponse({"deliveryState": "delivered"})
+
+
+async def session_generate_title(request: Request) -> JSONResponse:
+    """GenerateTitleResponse.title is String? (LiveHeraldClient.swift:782-784);
+    the caller then throws URLError(.badServerResponse) on nil/empty, which is the
+    same no-title outcome as today's 404 — minus the log noise."""
+    await require_auth(request)
+    return JSONResponse({"title": None})
+
+
+async def session_patch(request: Request) -> JSONResponse:
+    """Rename. SessionAPIResponse{session: SessionAPIEntry} — id is a UUID and
+    title a non-optional String (LiveHeraldClient.swift:641-653), so echo both."""
+    await require_auth(request)
+    body = await request.json()
+    session_id = request.path_params.get("id", "")
+    return JSONResponse({"session": {
+        "id": _coerce_uuid(session_id) or str(uuid.uuid4()),
+        "title": body.get("title") or "Untitled",
+        "previewText": None,
+        "updatedAt": _now_iso(),
+        "source": None,
+        "isPinned": None,
+        "isArchived": None,
+    }})
 
 
 # ── Envelope middleware ──────────────────────────────────────────────────
@@ -776,13 +1216,23 @@ routes = [
     Route("/v1/version", version_endpoint, methods=["GET"]),
     Route("/v1/models", list_models, methods=["GET"]),
     Route("/v1/model", switch_model, methods=["POST"]),
+    Route("/gw/model/switch", switch_model, methods=["POST"]),
+    Route("/v1/gw/model/switch", switch_model, methods=["POST"]),
     Route("/v1/profiles", list_profiles, methods=["GET"]),
     Route("/v1/profile", switch_profile, methods=["POST"]),
+    Route("/gw/profile/switch", switch_profile, methods=["POST"]),
+    Route("/v1/gw/profile/switch", switch_profile, methods=["POST"]),
     Route("/v1/messages", send_message, methods=["POST"]),
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
     Route("/gw/restart", gateway_restart, methods=["POST"]),
+    Route("/v1/gw/restart", gateway_restart, methods=["POST"]),
     Route("/gw/status", gateway_status, methods=["GET"]),
+    Route("/v1/gw/status", gateway_status, methods=["GET"]),
+    Route("/gw/logs", gateway_logs, methods=["GET"]),
+    Route("/v1/gw/logs", gateway_logs, methods=["GET"]),
+    Route("/gw/logs/stream", gateway_logs_stream, methods=["GET"]),
+    Route("/v1/gw/logs/stream", gateway_logs_stream, methods=["GET"]),
     Route("/v1/capabilities", capabilities_endpoint, methods=["GET"]),
     # Pairing & Auth
     Route("/v1/connector/phone-pairing-codes", create_phone_pairing_code, methods=["POST"]),
@@ -797,8 +1247,14 @@ routes = [
     Route("/v1/push/register", push_register, methods=["POST"]),
     Route("/v1/hosts/current", host_current, methods=["GET"]),
     Route("/v1/hosts/enrollment-codes", host_enrollment_codes, methods=["POST"]),
+    # Device telemetry
+    Route("/v1/device/app-state", device_app_state, methods=["POST"]),
+    Route("/v1/device/sensor/location", device_sensor, methods=["POST"]),
+    Route("/v1/device/sensor/health", device_sensor, methods=["POST"]),
     # P0-4: chat critical path
     Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
+    Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
+    Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/conversations/current", current_conversation, methods=["GET"]),
     Route("/v1/conversations/current/clear", clear_current_conversation, methods=["POST"]),
     Route("/v1/jobs/{id}", job_status, methods=["GET"]),
