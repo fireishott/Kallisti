@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.3.6 (Build 31) - 2026-07-28
+
+### Fixed
+- **Speech permission crash (P0):** `SFSpeechRecognizer.requestAuthorization` handler
+  inherited MainActor isolation from the enclosing `@MainActor` class, causing a
+  `swift_task_checkIsolated` trap (EXC_BREAKPOINT) when TCC delivered the callback on
+  an arbitrary XPC queue. Created `SpeechAuthorizationBridge` with a `nonisolated`
+  static method to break the isolation chain, and removed `@preconcurrency import
+  Speech` from `LiveSpeechService`.
+- **Four sibling isolation traps (P1):** Same pattern fixed in `AppContainer`
+  (iOS 18-25 branch), `LegacySpeechService`, `PermissionsStore` (mic), and
+  `LiveVoiceSessionService` (mic). Mic sites switched to the existing async
+  `AVAudioApplication.requestRecordPermission()` overload.
+- **Chat "data missing" alert (P0):** `get_sessions` stub returned `{"sessions":[]}`
+  without `total`, which `SessionListAPIResponse` decodes as non-optional Int →
+  `DecodingError.keyNotFound`. Added `"total"` key.
+- **"No Hermes host connected" banner (P0):** `host_current` returned a bare object
+  instead of `{"host": {…}}` with a UUID `id`. `CurrentHostResponse.host` decoded to
+  `nil` → permanent disconnected banner.
+- **Gateway Status 404 (P0):** `/gw/status` did not exist on the connector facade
+  (only in the legacy FastAPI relay). Implemented `gateway_status()` handler with
+  camelCase keys matching `GatewayTelemetry` decoder.
+
+### Changed
+- **Deployed facade synced into repo:** Live facade was 10,654 bytes ahead of the
+  repo copy (envelope middleware, error handler, chat critical-path endpoints).
+  Synced as baseline for build 31 edits.
+- **Build number bumped** to 31. Marketing version unchanged (2.3.6).
+
 ## 2.3.6 (Build 24) - 2026-07-27
 
 ### Changed
