@@ -809,6 +809,8 @@ class HeraldConnector:
             facade_ctx = get_facade_context()
             facade_ctx.model_catalog = self._rpc_models_list
             facade_ctx.model_switch = self._rpc_model_set
+            facade_ctx.auxiliary_list = self._rpc_auxiliary_list
+            facade_ctx.auxiliary_set = self._rpc_auxiliary_set
             facade_ctx.profile_catalog = self._rpc_profiles_list
             facade_ctx.profile_switch = self._rpc_profile_set
             facade_ctx.gateway_restart = self._rpc_gateway_restart
@@ -1883,6 +1885,10 @@ class HeraldConnector:
                 result = self._rpc_models_list()
             elif method == "model.set":
                 result = await self._rpc_model_set(params)
+            elif method == "auxiliary.list":
+                result = self._rpc_auxiliary_list()
+            elif method == "auxiliary.set":
+                result = self._rpc_auxiliary_set(params)
             elif method == "profiles.list":
                 result = await self._rpc_profiles_list()
             elif method == "profile.set":
@@ -2207,6 +2213,63 @@ class HeraldConnector:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
         return {"activeModel": self._read_active_model(hermes_home)}
+
+    AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
+                 "browser_vision", "moa_reference", "moa_aggregator"]
+
+    def _aux_config_path(self) -> Path:
+        home = os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")
+        return Path(home) / "config.yaml"
+
+    def _rpc_auxiliary_list(self) -> dict:
+        """Effective auxiliary routing per task (P1-4)."""
+        from ruamel.yaml import YAML
+        yaml = YAML()
+        path = self._aux_config_path()
+        try:
+            with path.open() as fh:
+                config = yaml.load(fh) or {}
+        except FileNotFoundError:
+            config = {}
+        aux = config.get("auxiliary") or {}
+        tasks = []
+        for task in self.AUX_TASKS:
+            entry = aux.get(task) or {}
+            provider = entry.get("provider") or "auto"
+            model = entry.get("model") or "auto"
+            tasks.append({
+                "task": task,
+                "provider": str(provider),
+                "model": str(model),
+                "isAuto": provider == "auto" and model == "auto",
+            })
+        return {"tasks": tasks}
+
+    def _rpc_auxiliary_set(self, params: dict) -> dict:
+        """Set auxiliary.<task>.provider/model, preserving comments (P1-4)."""
+        from ruamel.yaml import YAML
+        task = str(params.get("task") or "")
+        if task not in self.AUX_TASKS:
+            raise RuntimeError(f"Unknown auxiliary task: {task}")
+        provider = str(params.get("provider") or "auto")
+        model = str(params.get("model") or "auto")
+
+        yaml = YAML()               # round-trip mode: preserves comments
+        yaml.preserve_quotes = True
+        path = self._aux_config_path()
+        with path.open() as fh:
+            config = yaml.load(fh) or {}
+
+        aux = config.setdefault("auxiliary", {})
+        entry = aux.setdefault(task, {})
+        entry["provider"] = provider
+        entry["model"] = model
+
+        tmp = path.with_suffix(".yaml.tmp")
+        with tmp.open("w") as fh:
+            yaml.dump(config, fh)
+        tmp.replace(path)           # atomic — never leave a truncated config
+        return {"ok": True, "task": task, "provider": provider, "model": model}
 
     async def _rpc_profile_set(self, params: dict) -> dict:
         """Set the active Hermes profile in ~/.hermes/config.yaml.
