@@ -82,6 +82,7 @@ targets:
         CURRENT_PROJECT_VERSION: "35"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
+        ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Herald
     info:
       path: Herald/Resources/Info.plist
@@ -260,7 +261,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.tests
+        PRODUCT_NAME: HeraldTests
         TEST_TARGET_NAME: Herald
+        BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
 
   HeraldUITests:
@@ -273,5 +276,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.uitests
+        PRODUCT_NAME: HeraldUITests
         TEST_TARGET_NAME: Herald
         GENERATE_INFOPLIST_FILE: true

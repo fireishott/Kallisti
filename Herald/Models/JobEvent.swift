@@ -76,6 +76,13 @@ struct RunFailedPayload: Codable, Sendable, Hashable {
     let retryable: Bool
     let errorCategory: String?
     let errorAction: String?
+
+    init(error: String, retryable: Bool, errorCategory: String? = nil, errorAction: String? = nil) {
+        self.error = error
+        self.retryable = retryable
+        self.errorCategory = errorCategory
+        self.errorAction = errorAction
+    }
 }
 
 struct RunCancelledPayload: Codable, Sendable, Hashable {

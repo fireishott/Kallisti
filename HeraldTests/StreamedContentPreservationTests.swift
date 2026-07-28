@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import Herald
 
+@MainActor
 @Suite("Streamed content survives an empty resolved message")
 struct StreamedContentPreservationTests {
 

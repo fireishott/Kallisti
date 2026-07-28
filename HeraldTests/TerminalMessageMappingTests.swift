@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import Herald
 
+@MainActor
 @Suite("Terminal text maps to the final message")
 struct TerminalMessageMappingTests {
 

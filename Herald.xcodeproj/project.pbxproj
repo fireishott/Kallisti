@@ -1800,8 +1800,10 @@
 		30645C86D37C5ECF2F203583 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.tests;
+				PRODUCT_NAME = HeraldTests;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Herald.app/Herald";
 				TEST_TARGET_NAME = Herald;
 			};
@@ -1828,6 +1830,7 @@
 			buildSettings = {
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.uitests;
+				PRODUCT_NAME = HeraldUITests;
 				TEST_TARGET_NAME = Herald;
 			};
 			name = Release;
@@ -1935,6 +1938,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 35;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
+				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
 				MARKETING_VERSION = 2.3.6;
@@ -1948,6 +1952,7 @@
 			buildSettings = {
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.uitests;
+				PRODUCT_NAME = HeraldUITests;
 				TEST_TARGET_NAME = Herald;
 			};
 			name = Debug;
@@ -1959,6 +1964,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 35;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
+				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Herald;
 				MARKETING_VERSION = 2.3.6;
@@ -2018,8 +2024,10 @@
 		FD64B5D9D50F306522A2B0B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald.tests;
+				PRODUCT_NAME = HeraldTests;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Herald.app/Herald";
 				TEST_TARGET_NAME = Herald;
 			};
