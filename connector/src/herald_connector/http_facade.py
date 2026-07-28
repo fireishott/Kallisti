@@ -126,6 +126,8 @@ class FacadeContext:
         self.job_status: JobStatusProvider | None = None
         self.job_cancel: JobCancelProvider | None = None
         self.job_events: JobEventsProvider | None = None
+        self.auxiliary_list: Callable[[], dict | Coroutine[Any, Any, dict]] | None = None
+        self.auxiliary_set: Callable[[dict], dict | Coroutine[Any, Any, dict]] | None = None
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
@@ -376,6 +378,34 @@ async def switch_model(request: Request) -> JSONResponse:
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
+
+
+async def aux_list(request: Request) -> JSONResponse:
+    """GET /v1/aux — per-task auxiliary model routing."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.auxiliary_list is None:
+        raise HTTPException(status_code=503, detail="Auxiliary config not available")
+    result = ctx.auxiliary_list()
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result or {"tasks": []})
+
+
+async def aux_set(request: Request) -> JSONResponse:
+    """POST /v1/aux — set auxiliary.<task>.provider/model."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.auxiliary_set is None:
+        raise HTTPException(status_code=503, detail="Auxiliary config not available")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    result = ctx.auxiliary_set(body)
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result or {"ok": False})
 
 
 async def list_profiles(request: Request) -> JSONResponse:
@@ -1531,6 +1561,12 @@ routes = [
     Route("/v1/model", switch_model, methods=["POST"]),
     Route("/gw/model/switch", switch_model, methods=["POST"]),
     Route("/v1/gw/model/switch", switch_model, methods=["POST"]),
+    Route("/v1/aux", aux_list, methods=["GET"]),
+    Route("/v1/aux", aux_set, methods=["POST"]),
+    Route("/aux", aux_list, methods=["GET"]),
+    Route("/aux", aux_set, methods=["POST"]),
+    Route("/v1/gw/aux", aux_list, methods=["GET"]),
+    Route("/v1/gw/aux", aux_set, methods=["POST"]),
     Route("/v1/profiles", list_profiles, methods=["GET"]),
     Route("/v1/profile", switch_profile, methods=["POST"]),
     Route("/gw/profile/switch", switch_profile, methods=["POST"]),
