@@ -810,6 +810,7 @@ class HeraldConnector:
             facade_ctx.model_switch = self._rpc_model_set
             facade_ctx.profile_catalog = self._rpc_profiles_list
             facade_ctx.profile_switch = self._rpc_profile_set
+            facade_ctx.gateway_restart = self._rpc_gateway_restart
             facade_ctx.connector_version = self._detect_connector_version()
             facade_ctx.message_handler = self._handle_http_message
             facade_ctx.health_check = self._check_api_health
@@ -1314,8 +1315,11 @@ class HeraldConnector:
             job_timeout = job.get("timeoutSeconds", 180)
 
             # ----- Non-streaming request -----
+            # send_text_message() is synchronous and drives its own event loop
+            # internally, so it must never be invoked on the loop thread.
             async with asyncio.timeout(job_timeout):
-                result = runtime.send_text_message(
+                result = await asyncio.to_thread(
+                    runtime.send_text_message,
                     latest_user_message=user_message,
                     history=history,
                     session_id=job.get("sessionId"),
@@ -1916,34 +1920,55 @@ class HeraldConnector:
         threading.Thread(target=_delayed_exit, daemon=True).start()
         return {"restarting": True, "message": "Connector restart scheduled"}
 
+    async def _rpc_gateway_restart(self, target: str) -> dict:
+        """Dispatch a gateway restart to the right internal handler."""
+        if target == "connector":
+            return self._rpc_connector_restart()
+        elif target == "hermes":
+            return self._rpc_hermes_restart()
+        else:
+            return {"restarting": False, "error": f"Unknown target: {target}"}
+
     def _rpc_hermes_restart(self) -> dict:
-        """Restart the Hermes agent process via systemctl (Linux)."""
-        import subprocess
+        """Restart this profile's Hermes agent gateway via systemctl (Linux).
+
+        The unit is per-profile — hermes-gateway-{ignyte,flynt,ember} — and is
+        derived from HERMES_HOME unless HERMES_AGENT_UNIT overrides it.
+
+        There is deliberately no pkill fallback: every Hermes process on this
+        host runs out of ~/.hermes/hermes-agent/venv/, so `pkill -f hermes-agent`
+        matches all three gateways, the dashboard, the web UI, the device tunnel
+        and every MCP watchdog. Failing loudly is correct; a stack-wide kill
+        reported as success is not.
+        """
+        import os
         import platform
+        import subprocess
+
         if platform.system() != "Linux":
             return {"restarting": False, "error": "Hermes restart only supported on Linux"}
+
+        unit = os.getenv("HERMES_AGENT_UNIT")
+        if not unit:
+            profile = os.path.basename(os.getenv("HERMES_HOME", "").rstrip("/")) or "ignyte"
+            unit = f"hermes-gateway-{profile}"
+
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "restart", "hermes-agent"],
-                capture_output=True,
-                text=True,
-                timeout=10,
+                ["systemctl", "--user", "restart", unit],
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                logger.info("hermes.restart: systemctl restart succeeded")
-                return {"restarting": True, "message": "Hermes agent restarting"}
-            else:
-                logger.warning("hermes.restart: systemctl failed: %s", result.stderr)
-                # Fall back to the hermes-agent command if installed
-                try:
-                    subprocess.run(
-                        ["pkill", "-f", "hermes-agent"],
-                        capture_output=True,
-                        timeout=5,
-                    )
-                    return {"restarting": True, "message": "Hermes agent restarting (via pkill)"}
-                except Exception:
-                    return {"restarting": False, "error": result.stderr.strip() or "systemctl restart failed"}
+                logger.info("hermes.restart: restarted %s", unit)
+                return {"restarting": True, "message": f"Restarting {unit}"}
+
+            detail = (result.stderr or "").strip() or f"systemctl exited {result.returncode}"
+            logger.warning("hermes.restart: systemctl restart %s failed: %s", unit, detail)
+            return {
+                "restarting": False,
+                "error": f"systemctl restart {unit}: {detail}. "
+                         f"Set HERMES_AGENT_UNIT if the unit name is different.",
+            }
         except Exception as exc:
             logger.warning("hermes.restart: error: %s", exc)
             return {"restarting": False, "error": str(exc)}

@@ -14,9 +14,8 @@ final class PermissionsStore {
     private let motionService: LiveMotionService?
 
     /// Called when the user taps Allow for speech recognition. Returns the resolved
-    /// SFSpeechRecognizerAuthorizationStatus. On iOS 26+, this must use the modern
-    /// SpeechAnalyzer/DictationTranscriber APIs (not the crashing requestAuthorization).
-    /// On iOS 18-25, it may use the legacy SFSpeechRecognizer.requestAuthorization().
+    /// SFSpeechRecognizerAuthorizationStatus. Uses SFSpeechRecognizer.requestAuthorization()
+    /// to present the system TCC dialog.
     var speechAuthorizationTrigger: (@MainActor () async -> SFSpeechRecognizerAuthorizationStatus)?
 
     init(

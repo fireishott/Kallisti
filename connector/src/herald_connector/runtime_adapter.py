@@ -74,6 +74,27 @@ class HeraldRuntimeAdapter:
         return RuntimeTurnResult(text=result.text, session_id=result.session_id)
 
 
+def _run_blocking(coro):
+    """Drive a coroutine to completion from synchronous code.
+
+    These adapter methods are sync by contract and own their event loop, so
+    callers on the connector's loop thread must wrap them in
+    asyncio.to_thread(). Detect that mistake here and say so, instead of
+    surfacing the opaque "asyncio.run() cannot be called from a running
+    event loop" to the user's chat window.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    coro.close()
+    raise RuntimeError(
+        "HeraldAPIRuntimeAdapter sync methods cannot run on the event loop "
+        "thread. Wrap the call in `await asyncio.to_thread(...)`."
+    )
+
+
 class HeraldAPIRuntimeAdapter:
     """HTTP API adapter — talks to the Herald API server with streaming support."""
 
@@ -89,7 +110,7 @@ class HeraldAPIRuntimeAdapter:
         session_id: str | None = None,
     ) -> RuntimeTurnResult:
         """Synchronous non-streaming send (used by talk delegation and fallback)."""
-        result = asyncio.run(
+        result = _run_blocking(
             self.executor.send_message(
                 latest_user_message=latest_user_message,
                 history=[
@@ -132,7 +153,7 @@ class HeraldAPIRuntimeAdapter:
         prompt: str,
         session_id: str | None = None,
     ) -> RuntimeTurnResult:
-        result = asyncio.run(
+        result = _run_blocking(
             self.executor.send_message(
                 latest_user_message=prompt,
                 history=[],

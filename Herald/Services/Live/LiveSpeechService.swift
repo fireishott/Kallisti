@@ -38,11 +38,14 @@ final class LiveSpeechService {
         true
     }
 
-    /// Prepares the speech recognition pipeline enough to trigger the system TCC
-    /// dialog on iOS 26+ without starting a full dictation stream. On iOS 18–25,
-    /// delegates to the legacy `SFSpeechRecognizer.requestAuthorization()`.
+    /// Presents the system speech-recognition permission prompt and returns the
+    /// resolved status.
     ///
-    /// Returns the resolved authorization status.
+    /// `SFSpeechRecognizer.requestAuthorization(_:)` is the only API that presents
+    /// the TCC dialog for `NSSpeechRecognitionUsageDescription`. The Speech
+    /// asset-management APIs (`AssetInventory.reserve` / `.status`) do not, and
+    /// calling them in its place leaves the status permanently `.notDetermined`.
+    /// See: developer.apple.com/documentation/speech/asking-permission-to-use-speech-recognition
     func prepareAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
         let currentStatus = SFSpeechRecognizer.authorizationStatus()
         if currentStatus != .notDetermined {
@@ -51,47 +54,40 @@ final class LiveSpeechService {
             return currentStatus
         }
 
-        if #available(iOS 26.0, *) {
-            // iOS 26+: SFSpeechRecognizer.requestAuthorization() crashes on beta
-            // (FB-prefixed radar). Use the modern SpeechAnalyzer/DictationTranscriber
-            // APIs. Reserving the locale and checking asset status triggers the
-            // system TCC dialog without starting a full audio stream.
-            Self.logger.info("iOS 26+: triggering TCC via locale reservation")
-            guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: .current) else {
-                Self.logger.error("No supported speech locale for current locale")
-                authorizationStatus = .denied
-                return .denied
+        let status = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
             }
+        }
+        authorizationStatus = status
+        Self.logger.info("Speech authorization result: \(String(describing: status), privacy: .public)")
 
-            let transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
-            do {
-                if try await AssetInventory.reserve(locale: locale) {
-                    Self.logger.info("Speech locale reserved: \(locale.identifier, privacy: .public)")
-                }
-                let assetStatus = await AssetInventory.status(forModules: [transcriber])
-                Self.logger.info("Speech asset status: \(String(describing: assetStatus), privacy: .public)")
+        // Warm the on-device model only after the user has actually granted
+        // access. Reservation failures are non-fatal — dictation falls back to
+        // downloading on first use.
+        if status == .authorized {
+            await warmOnDeviceAssets()
+        }
 
-                // After the TCC dialog completes (or if already granted),
-                // re-read the authorization status.
-                authorizationStatus = SFSpeechRecognizer.authorizationStatus()
-                Self.logger.info("Post-preparation speech authorization: \(String(describing: self.authorizationStatus), privacy: .public)")
-                return authorizationStatus
-            } catch {
-                Self.logger.error("Speech preparation failed: \(error.localizedDescription, privacy: .public)")
-                authorizationStatus = SFSpeechRecognizer.authorizationStatus()
-                return authorizationStatus
+        return status
+    }
+
+    /// Pre-reserves the dictation locale so the first real dictation does not
+    /// stall on an asset download. Best-effort; never throws to the caller.
+    private func warmOnDeviceAssets() async {
+        guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: .current) else {
+            Self.logger.error("No supported speech locale for current locale")
+            return
+        }
+        let transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
+        do {
+            if try await AssetInventory.reserve(locale: locale) {
+                Self.logger.info("Speech locale reserved: \(locale.identifier, privacy: .public)")
             }
-        } else {
-            // iOS 18–25: SFSpeechRecognizer.requestAuthorization() works correctly.
-            Self.logger.info("iOS <26: using legacy requestAuthorization API")
-            let status = await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { status in
-                    continuation.resume(returning: status)
-                }
-            }
-            authorizationStatus = status
-            Self.logger.info("Speech authorization result: \(String(describing: status), privacy: .public)")
-            return status
+            let assetStatus = await AssetInventory.status(forModules: [transcriber])
+            Self.logger.info("Speech asset status: \(String(describing: assetStatus), privacy: .public)")
+        } catch {
+            Self.logger.error("Speech asset warm-up failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -105,13 +101,11 @@ final class LiveSpeechService {
         Self.logger.info("Dictation start requested")
 
         // Authorization must already be resolved by this point. The permissions
-        // screen calls prepareAuthorization() which handles the iOS-version-
-        // appropriate TCC flow. We do NOT call SFSpeechRecognizer.requestAuthorization()
-        // here — it crashes on iOS 26 betas (FB-prefixed radar).
+        // screen calls prepareAuthorization() which presents the system TCC dialog
+        // via SFSpeechRecognizer.requestAuthorization().
         //
         // If authorization is still notDetermined, the caller forgot to go through
-        // the permissions screen first. Fail explicitly rather than calling the
-        // dangerous API.
+        // the permissions screen first. Resolve it now rather than failing.
         if authorizationStatus == .notDetermined {
             Self.logger.error("Speech authorization not determined — caller must resolve via PermissionsStore first")
             let resolved = await prepareAuthorization()

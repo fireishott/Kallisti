@@ -94,8 +94,6 @@ final class LiveHealthService: HealthServiceProtocol {
             return .unsupported
         }
 
-        let previouslyRequested = UserDefaults.standard.bool(forKey: Self.healthAuthRequestedKey)
-
         let readTypes = Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
         // Defensive: never call requestAuthorization with empty type sets.
         // Apple's validation layer crashes (SIGABRT) on iOS 26.6+ when both

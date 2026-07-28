@@ -97,6 +97,7 @@ class FacadeContext:
         self.paired_user_id: str | None = None
         self.connector_credential: str | None = None
         self.public_base_url: str = ""
+        self.gateway_restart: Callable[[str], Coroutine[Any, Any, dict]] | None = None
 
 
 _context = FacadeContext()
@@ -216,6 +217,20 @@ async def list_commands(request: Request) -> JSONResponse:
             {"name": "stop", "description": "Stop current response"},
         ]
     })
+
+
+async def gateway_restart(request: Request) -> JSONResponse:
+    """Restart a gateway component (hermes or connector)."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.gateway_restart is None:
+        raise HTTPException(status_code=503, detail="Gateway control not available")
+    body = await request.json()
+    target = body.get("target", "hermes")
+    if target not in ("hermes", "connector"):
+        raise HTTPException(status_code=400, detail=f"Unknown target: {target}")
+    result = await ctx.gateway_restart(target)
+    return JSONResponse(result)
 
 
 async def capabilities_endpoint(request: Request) -> JSONResponse:
@@ -460,6 +475,7 @@ routes = [
     Route("/v1/messages", send_message, methods=["POST"]),
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
+    Route("/gw/restart", gateway_restart, methods=["POST"]),
     Route("/v1/capabilities", capabilities_endpoint, methods=["GET"]),
     # Pairing & Auth
     Route("/v1/connector/phone-pairing-codes", create_phone_pairing_code, methods=["POST"]),

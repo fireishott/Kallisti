@@ -41,7 +41,27 @@ final class TalkStore {
     private let liveActivity = LiveActivityService()
     private var lastSpokenItemID: UUID?
 
+    @ObservationIgnored private var durationTask: Task<Void, Never>?
+
     init() {}
+
+    private func startDurationTimer() {
+        durationTask?.cancel()
+        sessionDuration = 0
+        let started = Date()
+        durationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isSessionActive else { return }
+                self.sessionDuration = Date().timeIntervalSince(started)
+            }
+        }
+    }
+
+    private func stopDurationTimer() {
+        durationTask?.cancel()
+        durationTask = nil
+    }
 
     /// Attach a Hermes-native coordinator for push-to-talk mode.
     func attachHermesCoordinator(_ coordinator: HermesTalkCoordinator) {
@@ -104,6 +124,8 @@ final class TalkStore {
         case .idle:
             voiceState = .idle
             statusMessage = nil
+            isSessionActive = false
+            stopDurationTimer()
         case .preparing:
             voiceState = .thinking
             statusMessage = "Preparing..."
@@ -134,9 +156,12 @@ final class TalkStore {
             isSessionActive = false
             statusMessage = msg
             blockedReason = msg
+            stopDurationTimer()
         case .ending:
             voiceState = .idle
             statusMessage = nil
+            isSessionActive = false
+            stopDurationTimer()
         }
 
         // Update Live Activity on voice state changes
@@ -209,20 +234,16 @@ final class TalkStore {
         // during the voice session. updateVoiceState() alone is a no-op until
         // an activity has been created via startVoiceSession().
         liveActivity.startVoiceSession()
-        await coordinator.startListeningWithVAD()
-        // Only mark active if the coordinator actually started listening.
-        // If it hit a guard (e.g. state already .preparing) or failed, stay inactive.
-        if case .listening = coordinator.state {
-            isSessionActive = true
-            connectionState = .connected
-            voiceSessionID = coordinator.conversationId
-        } else if case .failed(let msg) = coordinator.state {
-            voiceState = .disconnected
-            connectionState = .failed
-            isSessionActive = false
-            statusMessage = msg
-            blockedReason = msg
-        }
+
+        // Do NOT await this — startListeningWithVAD() does not return until the
+        // full VAD → ASR → Hermes → TTS turn completes. Awaiting it here left
+        // the activation block below unreachable for the whole turn.
+        Task { await coordinator.startListeningWithVAD() }
+
+        isSessionActive = true
+        connectionState = .connected
+        voiceSessionID = coordinator.conversationId
+        startDurationTimer()
     }
 
     func endSession() async {
@@ -230,6 +251,7 @@ final class TalkStore {
         let turnCount = transcriptItems.filter { !$0.isPartial }.count
         liveActivity.endActivity()
         coordinator.endSession()
+        stopDurationTimer()
         if turnCount > 0 {
             lastCompletedSession = CompletedVoiceSession(
                 voiceSessionId: voiceSessionID ?? UUID(),
@@ -307,6 +329,7 @@ final class TalkStore {
         latencyMetrics = TalkLatencyMetrics()
         voiceSessionID = nil
         lastCompletedSession = nil
+        stopDurationTimer()
     }
 
     private func autoSpeakLatestHermesResponse() {

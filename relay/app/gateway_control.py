@@ -129,6 +129,12 @@ class GatewayController:
             }
         try:
             result = await self._connector_rpc("hermes.restart", timeout_seconds=10.0)
+            if isinstance(result, dict) and result.get("restarting") is False:
+                return {
+                    "restarting": False,
+                    "target": "hermes",
+                    "error": result.get("error", "connector reported failure"),
+                }
             return {"restarting": True, "target": "hermes", "result": result}
         except Exception as exc:
             logger.warning("Hermes restart RPC failed: %s", exc)

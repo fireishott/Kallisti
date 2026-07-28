@@ -501,7 +501,8 @@ struct SettingsScreen: View {
                 if let result = gwRestartResult, gwRestartTarget == target {
                     Text(result)
                         .font(Design.Typography.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(result.hasPrefix("Failed") || result.hasPrefix("Error")
+                                         ? Design.Colors.danger : .green)
                         .lineLimit(1)
                 }
             }
@@ -536,6 +537,7 @@ struct SettingsScreen: View {
                     let restarting: Bool
                     let target: String
                     let message: String?
+                    let error: String?
                 }
 
                 let body = RestartRequest(target: target)
@@ -546,7 +548,7 @@ struct SettingsScreen: View {
                 )
                 gwRestartResult = response.restarting
                     ? "\(target) restarting…"
-                    : "Failed: \(response.message ?? "unknown")"
+                    : "Failed: \(response.error ?? response.message ?? "no reason returned")"
             } catch {
                 gwRestartResult = "Error: \(error.localizedDescription)"
             }

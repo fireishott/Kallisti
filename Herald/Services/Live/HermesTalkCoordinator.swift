@@ -170,7 +170,8 @@ final class HermesTalkCoordinator {
         }
 
         guard !finalText.isEmpty else {
-            state = .idle
+            logger.info("No speech detected in utterance")
+            state = .failed("No speech detected — check the microphone and try again.")
             notifyState()
             return
         }

@@ -58,6 +58,7 @@ final class TalkAudioCapture {
     private var lastSpeechTime: Date?
     private let silenceThreshold: Float = -40.0  // dBFS
     private let silenceDuration: TimeInterval = 1.5
+    private let maxUtteranceDuration: TimeInterval = 30.0
     private var vadTimer: Task<Void, Never>?
 
     // MARK: - Barge-in
@@ -205,7 +206,9 @@ final class TalkAudioCapture {
 
     // MARK: - VAD Endpointing
 
-    /// Returns an AsyncStream that yields once when sustained silence is detected after speech.
+    /// Returns an AsyncStream that yields once when sustained silence is detected after speech,
+    /// or when the hard utterance ceiling is reached (so a mic that never crosses the threshold
+    /// cannot hang the turn indefinitely).
     func startListeningWithVAD() -> AsyncStream<Void> {
         stopVADMonitoring()
         lastSpeechTime = nil
@@ -213,6 +216,7 @@ final class TalkAudioCapture {
         return AsyncStream { continuation in
             self.vadEndpointContinuation = continuation
             self.vadTimer = Task { [weak self] in
+                let startedAt = Date()
                 while !Task.isCancelled {
                     guard let self else { break }
                     try? await Task.sleep(for: .milliseconds(100))
@@ -222,13 +226,21 @@ final class TalkAudioCapture {
                         self.lastSpeechTime = Date()
                     }
 
-                    if let lastSpeech = self.lastSpeechTime,
-                       Date().timeIntervalSince(lastSpeech) > self.silenceDuration {
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    let silenceElapsed = self.lastSpeechTime.map {
+                        Date().timeIntervalSince($0) > self.silenceDuration
+                    } ?? false
+
+                    // Endpoint on trailing silence, or on the hard ceiling so a
+                    // mic that never crosses the threshold cannot hang the turn.
+                    if silenceElapsed || elapsed > self.maxUtteranceDuration {
                         continuation.yield()
                         self.lastSpeechTime = nil
+                        continuation.finish()
                         break
                     }
                 }
+                continuation.finish()
             }
 
             continuation.onTermination = { [weak self] _ in
