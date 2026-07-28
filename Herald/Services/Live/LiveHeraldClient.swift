@@ -353,13 +353,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             donePayload = nil
                         }
 
-                        // Skip the extra server round-trip when the SSE done
-                        // payload already carries the canonical message. This
-                        // removes ~200-500ms of latency on every stream completion.
+                        // Prefer the text the done event already delivered. The
+                        // server round-trip below can only ever return an empty
+                        // conversation (client.py:2733 is a stub), so without
+                        // this the streamed answer is replaced by "".
                         let finalMessage: Message
                         let usage: TokenUsage?
-                        if let doneMessage = donePayload?.message {
-                            finalMessage = self.mapMessage(doneMessage)
+                        if let streamed = Self.finalMessage(
+                            fromTerminalText: terminalResult?.text, jobId: jobId
+                        ) {
+                            finalMessage = streamed
                             usage = donePayload?.usage
                         } else {
                             let refreshedConversation = await self.reloadConversationForStreaming()
@@ -562,6 +565,20 @@ final class LiveHeraldClient: HeraldClientProtocol {
             Self.logger.warning("Failed to refresh conversation after streaming: \(error.localizedDescription)")
             return currentConversation
         }
+    }
+
+    /// Map terminal SSE text to the final chat message.
+    ///
+    /// The `done` event already carries the canonical answer
+    /// (JobStreamCoordinator.swift:351-368). Before B35 this text was parsed
+    /// and then dropped, forcing a fallback to `/v1/conversations/current`,
+    /// which is a stub that always returns an empty message list — so every
+    /// reply rendered as an empty bubble.
+    static func finalMessage(fromTerminalText text: String?, jobId: UUID) -> Message? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return Message(sender: .herald, content: text, jobID: jobId, status: .delivered)
     }
 
     private func resolveFinalMessage(
