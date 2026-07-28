@@ -13,6 +13,7 @@ struct SettingsScreen: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
     @State private var mimoAPIKey: String = ""
+    @State private var auxService: AuxModelService?
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
@@ -627,6 +628,39 @@ struct SettingsScreen: View {
                         ?? "—"
                 )
 
+                // AUX Model Configuration
+                if let aux = auxService, !aux.tasks.isEmpty {
+                    sectionDivider
+
+                    ForEach(aux.tasks) { task in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(task.task)
+                                    .font(Design.Typography.callout)
+                                Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                            Spacer()
+                            Menu("Change") {
+                                Button("Auto") {
+                                    Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
+                                }
+                                ForEach(modelStore.models, id: \.name) { m in
+                                    Button(m.name) {
+                                        Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
+                                    }
+                                }
+                            }
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+
+                        if task.task != aux.tasks.last?.task {
+                            sectionDivider
+                        }
+                    }
+                }
+
                 sectionDivider
 
                 // Relay URL
@@ -1117,6 +1151,16 @@ struct SettingsScreen: View {
                 UserDefaults.standard.removeObject(forKey: "mimo.apiKey")
             }
             mimoAPIKey = await mimoKeychain.retrieve(key: "mimo.apiKey") ?? ""
+
+            // Load AUX model configuration
+            if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
+                let client = RelayAPIClient { relayBase }
+                let svc = AuxModelService(apiClient: client) {
+                    await sessionStore.currentAccessToken()
+                }
+                auxService = svc
+                await svc.load()
+            }
         }
     }
 
