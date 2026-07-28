@@ -1443,6 +1443,19 @@ final class ChatStore {
         // title is still a default placeholder. This prevents a late server-derived
         // title from overwriting a user rename.
         let defaultTitles: Set<String> = ["New Chat", "Herald"]
+
+        // B34 P0-2: A refresh that returns no messages is a server-side stub or
+        // a partial failure, never a real "the conversation is empty" signal for
+        // a conversation we already have content for. Keep what we have so the
+        // transcript isn't silently wiped on every foreground/refresh.
+        if refreshedConversation.messages.isEmpty, !localConversation.messages.isEmpty {
+            Self.logger.warning("Conversation refresh returned 0 messages — keeping local transcript")
+            var preserved = localConversation
+            preserved.title = defaultTitles.contains(localConversation.title)
+                ? refreshedConversation.title : localConversation.title
+            return preserved
+        }
+
         if !defaultTitles.contains(localConversation.title) {
             refreshedConversation.title = localConversation.title
         }
