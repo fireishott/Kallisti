@@ -820,6 +820,13 @@ class HeraldConnector:
             facade_ctx.paired_user_id = state.user_id
             facade_ctx.connector_credential = state.connector_credential
             facade_ctx.public_base_url = state.relay_url or ""
+            # P0-4: chat critical-path providers
+            facade_ctx.job_status = self._rpc_job_status
+            facade_ctx.job_cancel = self._rpc_jobs_cancel
+            facade_ctx.job_events = self._rpc_job_events_stream
+            facade_ctx.session_conversation = self._rpc_session_conversation
+            facade_ctx.current_conversation = self._rpc_current_conversation
+            facade_ctx.clear_conversation = self._rpc_clear_conversation
             from .http_facade import set_token_validator, AccessTokenValidator
             if state.connector_credential:
                 validator = AccessTokenValidator({state.connector_credential})
@@ -2641,6 +2648,86 @@ class HeraldConnector:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
         return {"jobId": job_id, "status": "cancelled"}
+
+    async def _rpc_job_status(self, job_id: str) -> dict:
+        """Return the status of a job by ID (P0-4 polling path)."""
+        task = self._active_jobs.get(job_id)
+        phase = self._job_phases.get(job_id, "unknown")
+        results = self._pending_results.get(job_id, [])
+        if task is None:
+            return {"jobId": job_id, "status": "not_found", "phase": phase}
+        if task.done():
+            try:
+                exc = task.exception()
+            except (asyncio.CancelledError, asyncio.InvalidStateError):
+                exc = None
+            return {
+                "jobId": job_id,
+                "status": "failed" if exc else "completed",
+                "phase": phase,
+                "results": results,
+                "error": str(exc) if exc else None,
+            }
+        return {"jobId": job_id, "status": "running", "phase": phase}
+
+    async def _rpc_job_events_stream(self, job_id: str) -> AsyncIterator[dict]:
+        """SSE stream of job events (P0-4).  Polls _pending_results."""
+        seen = 0
+        while True:
+            results = self._pending_results.get(job_id, [])
+            while seen < len(results):
+                yield results[seen]
+                seen += 1
+            task = self._active_jobs.get(job_id)
+            if task is None:
+                yield {"type": "job.completed", "data": {"jobId": job_id, "status": "not_found"}}
+                return
+            if task.done():
+                try:
+                    exc = task.exception()
+                except (asyncio.CancelledError, asyncio.InvalidStateError):
+                    exc = None
+                yield {
+                    "type": "job.completed",
+                    "data": {"jobId": job_id, "status": "failed" if exc else "completed", "error": str(exc) if exc else None},
+                }
+                return
+            await asyncio.sleep(0.5)
+
+    async def _rpc_session_conversation(self, session_id: str) -> dict:
+        """Return conversation history for a session (P0-4)."""
+        state = self.state_store.load()
+        runtime = await self.runtime_adapter_for_state_async(state)
+        # Query Hermes for the session's messages
+        try:
+            result = await asyncio.to_thread(
+                runtime.send_text_message,
+                latest_user_message="/status",
+                history=[],
+                session_id=session_id,
+            )
+            return {"sessionId": session_id, "messages": [], "title": None}
+        except Exception:
+            return {"sessionId": session_id, "messages": [], "title": None}
+
+    async def _rpc_current_conversation(self) -> dict:
+        """Return the active conversation (P0-4)."""
+        return {"sessionId": None, "messages": [], "title": None}
+
+    async def _rpc_clear_conversation(self) -> dict:
+        """Clear the active conversation — starts a new session (P0-4)."""
+        state = self.state_store.load()
+        runtime = await self.runtime_adapter_for_state_async(state)
+        try:
+            result = await asyncio.to_thread(
+                runtime.send_text_message,
+                latest_user_message="/new",
+                history=[],
+                session_id=None,
+            )
+            return {"cleared": True}
+        except Exception:
+            return {"cleared": True}
 
     async def _rpc_note_enrich(self, params: dict) -> dict:
         """Handle a note enrichment request.
