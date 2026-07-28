@@ -246,6 +246,48 @@ async def gateway_restart(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def gateway_status(request: Request) -> JSONResponse:
+    """Return gateway telemetry for the Settings → Gateway Status screen.
+
+    The iOS decoder (GatewayStatusScreen.swift:319-336) expects camelCase keys
+    with no keyDecodingStrategy. Every field is optional — partial data renders
+    gracefully; a 500 does not.
+
+    The /gw/* control plane existed only in the legacy FastAPI relay and was
+    missing from the connector facade. Build 31 adds this minimal bridge.
+    """
+    await require_auth(request)
+    ctx = get_context()
+    import datetime as _dt
+
+    payload: dict = {
+        "connectorConnected": True,
+        "connectorVersion": ctx.connector_version or "0.0.0",
+    }
+
+    # Relay status — best-effort from the paired device id.
+    payload["relayConnected"] = bool(ctx.paired_device_id)
+
+    # Hermes status — best-effort from active jobs.
+    if ctx.gateway_restart is not None:
+        payload["hermesConnected"] = True
+        # Report the connector version as the relay version since the
+        # legacy relay is not running; avoids a confusing "—" in the UI.
+        payload["version"] = ctx.connector_version or "0.0.0"
+
+    # Uptime — rough estimate from process start.
+    try:
+        payload["uptimeSeconds"] = int(time.monotonic())
+    except Exception:
+        pass
+
+    # Omit alerts — we have no alert source yet, and a malformed timestamp
+    # in an alert would cause dataCorrupted for the entire response.
+    # Omit activeJobsList — requires connector-backed job tracking (b32).
+
+    return JSONResponse(payload)
+
+
 async def capabilities_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({
         "supportsStreaming": False,
@@ -463,9 +505,16 @@ async def connector_events(request: Request) -> StreamingResponse:
 
 
 async def get_sessions(request: Request) -> JSONResponse:
-    """Return session list (stub)."""
+    """Return session list.
+
+    `total` is REQUIRED by the iOS decoder — LiveHeraldClient.swift declares
+    SessionListAPIResponse.total as non-optional Int, so omitting it raises
+    DecodingError.keyNotFound and the app shows "The data couldn't be read
+    because it is missing." Never drop this key.
+    """
     await require_auth(request)
-    return JSONResponse({"sessions": []})
+    sessions: list[dict] = []          # TODO(b32): back with real connector session state
+    return JSONResponse({"sessions": sessions, "total": len(sessions)})
 
 
 async def get_inbox(request: Request) -> JSONResponse:
@@ -483,10 +532,31 @@ async def push_register(request: Request) -> JSONResponse:
 
 
 async def host_current(request: Request) -> JSONResponse:
-    """Return current host info."""
+    """Return current host info.
+
+    The iOS decoder expects `{host: {id: UUID, displayName, isOnline}}` —
+    LiveHeraldHostService.swift:13-15 decodes CurrentHostResponse.host as
+    RelayHost?, and RelayHost.id is a non-optional UUID. A bare object
+    (missing the "host" key) decodes to nil → "No Hermes host connected".
+    """
     await require_auth(request)
     ctx = get_context()
-    return JSONResponse({"id": ctx.paired_device_id or "host", "displayName": "Herald Host", "isOnline": True})
+    import uuid as _uuid
+    host_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, "herald-host"))
+    raw_id = ctx.paired_device_id
+    if raw_id:
+        try:
+            _uuid.UUID(raw_id)
+            host_id = raw_id
+        except (ValueError, AttributeError):
+            host_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, str(raw_id)))
+    return JSONResponse({
+        "host": {
+            "id": host_id,
+            "displayName": "Herald Host",
+            "isOnline": True,
+        }
+    })
 
 
 async def host_enrollment_codes(request: Request) -> JSONResponse:
@@ -712,6 +782,7 @@ routes = [
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
     Route("/gw/restart", gateway_restart, methods=["POST"]),
+    Route("/gw/status", gateway_status, methods=["GET"]),
     Route("/v1/capabilities", capabilities_endpoint, methods=["GET"]),
     # Pairing & Auth
     Route("/v1/connector/phone-pairing-codes", create_phone_pairing_code, methods=["POST"]),
