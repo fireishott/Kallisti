@@ -458,3 +458,30 @@ struct StructuredErrorTests {
         #expect(payload.errorAction == "retry")
     }
 }
+
+@Suite("Terminal events are exempt from duplicate suppression")
+struct TerminalDedupeExemptionTests {
+
+    @Test("Terminal types are recognized as terminal")
+    func terminalTypesAreTerminal() {
+        #expect(JobEventType.runCompleted.isTerminal)
+        #expect(JobEventType.runFailed.isTerminal)
+        #expect(JobEventType.runCancelled.isTerminal)
+    }
+
+    @Test("Non-terminal types are not terminal")
+    func nonTerminalTypesAreNot() {
+        #expect(!JobEventType.textDelta.isTerminal)
+        #expect(!JobEventType.reasoningDelta.isTerminal)
+        #expect(!JobEventType.commentary.isTerminal)
+    }
+
+    @Test("A replayed terminal event at a stale seq is still applied")
+    func replayedTerminalIsApplied() {
+        // Reconnect replays from 0, so `done` arrives at seq <= lastAppliedSeq.
+        // shouldApply must let terminal events through regardless of seq.
+        #expect(JobStreamCoordinator.shouldApply(seq: 3, lastAppliedSeq: 8, isTerminal: true))
+        #expect(!JobStreamCoordinator.shouldApply(seq: 3, lastAppliedSeq: 8, isTerminal: false))
+        #expect(JobStreamCoordinator.shouldApply(seq: 9, lastAppliedSeq: 8, isTerminal: false))
+    }
+}

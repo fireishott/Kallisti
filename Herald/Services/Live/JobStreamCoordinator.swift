@@ -23,6 +23,19 @@ actor JobStreamCoordinator {
         case cancelled
         case error(String)
     }
+    /// Whether an inbound event should be applied.
+    ///
+    /// The facade replays a job's backlog renumbered from 0 on every
+    /// reconnect and ignores `Last-Event-ID`, so after a reconnect the
+    /// terminal `done` arrives at a seq we have already applied. Dropping it
+    /// as a duplicate leaves the stream hanging forever, so terminal events
+    /// are always applied.
+    nonisolated static func shouldApply(seq: Int, lastAppliedSeq: Int, isTerminal: Bool) -> Bool {
+        if isTerminal { return true }
+        if lastAppliedSeq == 0 { return true }
+        return seq > lastAppliedSeq
+    }
+
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "JobStreamCoordinator")
 
     let jobId: UUID
@@ -138,9 +151,11 @@ actor JobStreamCoordinator {
                     // Allow seq == 0 when lastAppliedSeq is 0 (initial state) so
                     // relays that number events from 0 don't have their first
                     // event silently dropped.
-                    if seqBefore > 0 && envelope.seq <= seqBefore {
-                        continue
-                    }
+                    guard Self.shouldApply(
+                        seq: envelope.seq,
+                        lastAppliedSeq: seqBefore,
+                        isTerminal: envelope.type.isTerminal
+                    ) else { continue }
 
                     self.lastAppliedSeq = envelope.seq
                     self.lastAttempt = envelope.attempt
