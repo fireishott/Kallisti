@@ -134,11 +134,7 @@ final class PermissionsStore {
 
     private func requestMicrophoneAuthorization() async {
         guard AVAudioApplication.shared.recordPermission == .undetermined else { return }
-        await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { _ in
-                continuation.resume()
-            }
-        }
+        _ = await AVAudioApplication.requestRecordPermission()
     }
 
     // MARK: - Speech Recognition

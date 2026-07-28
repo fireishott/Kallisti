@@ -396,11 +396,7 @@ final class AppContainer {
                 return await speechService.prepareAuthorization()
             } else {
                 // iOS 18–25: use the legacy SFSpeechRecognizer API
-                return await withCheckedContinuation { continuation in
-                    SFSpeechRecognizer.requestAuthorization { status in
-                        continuation.resume(returning: status)
-                    }
-                }
+                return await SpeechAuthorizationBridge.requestAuthorization()
             }
         }
 

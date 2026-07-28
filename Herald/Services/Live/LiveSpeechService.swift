@@ -1,7 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import OSLog
-@preconcurrency import Speech
+import Speech
 
 /// On-device speech-to-text using Apple's Speech framework.
 /// Used for dictation in the chat composer — not for voice mode (which uses OpenAI Realtime).
@@ -54,11 +54,7 @@ final class LiveSpeechService {
             return currentStatus
         }
 
-        let status = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
+        let status = await SpeechAuthorizationBridge.requestAuthorization()
         authorizationStatus = status
         Self.logger.info("Speech authorization result: \(String(describing: status), privacy: .public)")
 

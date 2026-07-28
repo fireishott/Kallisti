@@ -436,11 +436,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         case .denied:
             return false
         case .undetermined:
-            return await withCheckedContinuation { continuation in
-                AVAudioApplication.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            }
+            return await AVAudioApplication.requestRecordPermission()
         @unknown default:
             return false
         }

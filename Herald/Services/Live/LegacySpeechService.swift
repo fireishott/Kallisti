@@ -28,11 +28,7 @@ final class LegacySpeechService: SpeechDictationService {
     }
 
     func requestAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
-        await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
+        await SpeechAuthorizationBridge.requestAuthorization()
     }
 
     func startListening() async throws {

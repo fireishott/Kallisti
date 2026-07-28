@@ -2,6 +2,24 @@ import Testing
 import Foundation
 @testable import Herald
 
+@Suite("Speech Authorization Bridge")
+struct SpeechAuthorizationBridgeTests {
+    @Test("Bridge compiles and is callable from non-MainActor context")
+    func bridgeCallableFromOffActor() async {
+        // Compile-time verification: the bridge is `nonisolated` and can be
+        // called from a non-@MainActor async context without isolation inference.
+        // We cannot assert the TCC dialog response (pure unit tests cannot
+        // present system dialogs), but if this compiles and runs, the MainActor
+        // inheritance that caused the build 30 crash is gone.
+        let status = await SpeechAuthorizationBridge.requestAuthorization()
+        // status is .notDetermined, .authorized, .denied, or .restricted —
+        // all valid. We just need to prove we got here.
+        let valid = (status == .notDetermined || status == .authorized
+                     || status == .denied || status == .restricted)
+        #expect(valid, "Speech authorization returned a valid enum case")
+    }
+}
+
 @Suite("Speech Service Availability")
 @MainActor
 struct SpeechServiceTests {
