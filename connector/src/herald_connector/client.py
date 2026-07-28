@@ -815,6 +815,7 @@ class HeraldConnector:
             facade_ctx.profile_switch = self._rpc_profile_set
             facade_ctx.gateway_restart = self._rpc_gateway_restart
             facade_ctx.connector_version = self._detect_connector_version()
+            facade_ctx.agent_version = self._hermes_agent_version
             facade_ctx.message_handler = self._handle_http_message
             facade_ctx.health_check = self._check_api_health
             # Auth tokens: register the connector credential so the iOS app
@@ -2551,6 +2552,34 @@ class HeraldConnector:
                     break
 
         return {"activeProfile": active_profile, "profiles": profiles}
+
+    # ------------------------------------------------------------------
+    # Agent version (cached — /v1/hosts/current is polled on every Settings
+    # appearance, and the CLI version never changes while the connector runs).
+    # ------------------------------------------------------------------
+
+    _hermes_agent_version_cache: str | None = None
+
+    def _hermes_agent_version(self) -> str | None:
+        """Parse `Hermes Agent v0.19.0 (...)` from the CLI's --version output.
+
+        Cached for the process lifetime: this shells out, and /v1/hosts/current
+        is polled on every Settings appearance.
+        """
+        if self._hermes_agent_version_cache is not None:
+            return self._hermes_agent_version_cache or None
+        try:
+            import re
+            command = self._resolve_hermes_command()
+            result = subprocess.run(
+                [command, "--version"], capture_output=True, text=True, timeout=10
+            )
+            match = re.search(r"v?(\d+\.\d+\.\d+)", (result.stdout or "").splitlines()[0])
+            self._hermes_agent_version_cache = match.group(1) if match else ""
+        except Exception:  # noqa: BLE001 — never break the route
+            logger.warning("Could not resolve Hermes agent version", exc_info=True)
+            self._hermes_agent_version_cache = ""
+        return self._hermes_agent_version_cache or None
 
     # ------------------------------------------------------------------
     # Cron RPC handlers — thin wrappers around `hermes cron` CLI subcommands.

@@ -131,6 +131,7 @@ class FacadeContext:
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
+        self.agent_version: Callable[[], str | None] | None = None
 
 
 _context = FacadeContext()
@@ -856,11 +857,22 @@ async def host_current(request: Request) -> JSONResponse:
             host_id = raw_id
         except (ValueError, AttributeError):
             host_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, str(raw_id)))
+    agent_version = None
+    if getattr(ctx, "agent_version", None) is not None:
+        try:
+            agent_version = ctx.agent_version()
+        except Exception:  # noqa: BLE001
+            agent_version = None
     return JSONResponse({
         "host": {
             "id": host_id,
             "displayName": "Herald Host",
             "isOnline": True,
+            # RelayHost decodes these as optional String? — LiveHeraldHostService
+            # RelayHost / HeraldHostStatus.swift:8,10. Omitting them rendered
+            # "—" in the Settings → Infrastructure rows.
+            "connectorVersion": ctx.connector_version,
+            "heraldVersion": agent_version,
         }
     })
 
