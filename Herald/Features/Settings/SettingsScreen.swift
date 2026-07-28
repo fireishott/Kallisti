@@ -944,15 +944,15 @@ struct SettingsScreen: View {
                             Spacer()
 
                             Picker("Voice", selection: ttsVoiceBinding) {
-                                ForEach(["Mia", "Chloe", "Milo", "Dean", "\u{51B0}\u{7CD6}", "\u{8309}\u{8389}", "\u{82CF}\u{6253}", "\u{767D}\u{6866}"], id: \.self) { v in
-                                    Text(v).tag(v)
+                                ForEach(SpeechVoice.allCases, id: \.rawValue) { v in
+                                    Text(v.rawValue).tag(v.rawValue)
                                 }
                             }
                             .pickerStyle(.menu)
                             .tint(Design.Brand.accent)
                         }
 
-                        Text("English: Mia, Chloe, Milo, Dean")
+                        Text("English: Mia, Chloe, Milo, Dean — Chinese: 冰糖, 茉莉, 苏打, 白桦")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
