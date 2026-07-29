@@ -1066,6 +1066,10 @@ final class ChatStore {
     }
 
     private func autoTitleIfNeeded() async {
+        // B39 T4: the server generates titles on first-turn completion (B38 P1-1
+        // + B39 T2 isolated session).  The client must never fire its own title
+        // RPC — that was the second racing generator.  Only run the local
+        // truncation fallback when the server path is unreachable (offline).
         let defaultTitles: Set<String> = ["New Chat", "Herald"]
         guard let conv = conversation,
               defaultTitles.contains(conv.title),
@@ -1077,20 +1081,10 @@ final class ChatStore {
 
         autoTitleAttempted = true
 
-        // Try LLM-generated title with timeout and retry
-        let assistantContent = conv.messages.first(where: { $0.sender == .herald })?.content ?? ""
-        let generated = await generateTitleWithRetry(
-            sessionId: conv.id,
-            userMessage: String(raw.prefix(500)),
-            assistantMessage: String(assistantContent.prefix(500))
-        )
-        if let generated {
-            // Re-verify title is still a default (user may have renamed during RPC)
-            if let current = conversation, defaultTitles.contains(current.title) {
-                conversation?.title = generated
-                onTitleChanged?(current.id, generated)
-            }
-            return
+        // Offline-only: server title generation is unreachable, so fall back
+        // to a deterministic local truncation of the first user message.
+        guard heraldClient.connectionStatus != .connected else {
+            return  // server handles it
         }
 
         // Deterministic local fallback: smart truncation of first message.
@@ -1115,42 +1109,6 @@ final class ChatStore {
         }
     }
 
-    /// Attempt to generate a title via RPC with a 5-second timeout and up to 2 attempts.
-    /// Returns nil on failure (all attempts exhausted or timeout).
-    private func generateTitleWithRetry(sessionId: UUID, userMessage: String, assistantMessage: String) async -> String? {
-        let maxAttempts = 2
-        let timeoutSeconds: TimeInterval = 12  // Relay has a 15s timeout; stay under it
-
-        for attempt in 1...maxAttempts {
-            let title: String? = await withCheckedContinuation { continuation in
-                let task = Task { @MainActor in
-                    do {
-                        let result = try await self.heraldClient.generateSessionTitle(
-                            sessionId: sessionId,
-                            userMessage: userMessage,
-                            assistantMessage: assistantMessage
-                        )
-                        guard !Task.isCancelled else {
-                            continuation.resume(returning: nil)
-                            return
-                        }
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(returning: nil)
-                    }
-                }
-                // Timeout: cancel the RPC task if it hasn't completed
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(timeoutSeconds))
-                    task.cancel()
-                }
-            }
-            if let title { return title }
-            Self.logger.warning("Title RPC attempt \(attempt)/\(maxAttempts) failed for session \(sessionId)")
-        }
-        Self.logger.error("Title RPC failed after \(maxAttempts) attempts for session \(sessionId)")
-        return nil
-    }
 
     func deleteMessage(_ message: Message) {
         conversation?.messages.removeAll { $0.id == message.id }
@@ -1512,6 +1470,29 @@ final class ChatStore {
             }
 
             guard let local else { continue }
+
+            // B39 T5: defence in depth — if the local (streamed) message has
+            // non-empty content and the server's version is empty or a strict
+            // prefix, keep the locally-rendered text.  This protects against
+            // a server refetch clobbering a good streamed answer with a
+            // truncated or empty version (e.g. from a concurrent title-gen
+            // polluting the session before T2/T3 fixed it).
+            let localContent = local.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let remoteContent = refreshedConversation.messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !localContent.isEmpty {
+                if remoteContent.isEmpty {
+                    Self.logger.error(
+                        "B39 T5: server returned empty content for message \(remote.id) (jobId=\(String(describing: remote.jobID))), keeping local text (len=\(localContent.count))"
+                    )
+                    refreshedConversation.messages[index].content = local.content
+                } else if localContent.count > remoteContent.count,
+                          localContent.hasPrefix(remoteContent) {
+                    Self.logger.error(
+                        "B39 T5: server content (len=\(remoteContent.count)) is a strict prefix of local (len=\(localContent.count)) for message \(remote.id) — keeping streamed text"
+                    )
+                    refreshedConversation.messages[index].content = local.content
+                }
+            }
 
             if !local.toolActivities.isEmpty {
                 refreshedConversation.messages[index].toolActivities = local.toolActivities
