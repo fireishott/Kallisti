@@ -162,6 +162,11 @@ _http_job_tasks: dict[str, asyncio.Task] = {}
 _HTTP_JOB_TTL_SECONDS = 900.0
 _conversation_id_singleton: str | None = None
 
+# B39 T3: per-session lock to prevent concurrent turns in the same Hermes
+# session from interleaving.  Without this, a fast double-send or retry can
+# collide with title generation or another message in the same session.
+_session_locks: dict[str, asyncio.Lock] = {}
+
 
 async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str | None:
     """Generate a title for a session from its first user message.
@@ -304,59 +309,76 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     timeout_seconds = int(os.getenv("HERALD_JOB_TIMEOUT_SECONDS", "170"))
     try:
         async with asyncio.timeout(timeout_seconds):
-            async for event in handler(text, history, session_id, attachments, reasoning_effort):
-                etype = event.get("type", "progress")
-                data = event.get("data", {}) or {}
-                if etype == "text_delta":
-                    accumulated += data.get("delta", "")
-                if etype == "done":
-                    # The connector's own terminal event (client.py:1695-1717) carries
-                    # the final text and, on failure, the error + category/action.
-                    accumulated = data.get("text") or accumulated
-                    job["status"] = data.get("status", "completed")
-                    job["error"] = data.get("error")
-                    job["errorCategory"] = data.get("errorCategory")
-                    job["errorAction"] = data.get("errorAction")
-                    job["usage"] = data.get("usage")
-                    # Record the Hermes session id so the app UUID → session-id
-                    # mapping survives connector restarts.  The handler returns
-                    # the real Hermes session id (e.g. "api-9af38ce…") even when
-                    # the facade was called with an app-facing UUID.
-                    hermes_sid = data.get("sessionId")
-                    if not hermes_sid:
-                        # Cold start: session_id was None and the runtime didn't
-                        # return one.  Fall back to querying state.db for the
-                        # session that received the user message.
-                        from .session_store import _find_session_by_recent_message
-                        hermes_sid = _find_session_by_recent_message(text)
-                    if hermes_sid:
-                        from .session_store import _app_uuid, _persist_hermes_mapping
-                        # Record the canonical mapping: app_uuid → hermes_id
-                        canonical_app_id = _app_uuid(hermes_sid)
-                        _persist_hermes_mapping(canonical_app_id, hermes_sid)
-                        # B38 P0-2: record the mapping under BOTH the app's id
-                        # and the canonical id so future lookups resolve either
-                        # way.  Do NOT mutate job["conversationId"] — the app
-                        # already received it in the POST response, and changing
-                        # it later causes replies to land in the wrong thread.
-                        response_conv_id = job.get("conversationId")
-                        _persist_hermes_mapping(canonical_app_id, hermes_sid)
-                        if response_conv_id and response_conv_id != canonical_app_id:
-                            _persist_hermes_mapping(response_conv_id, hermes_sid)
+            # B39 T3: serialize turns for the same Hermes session.  Without
+            # this, a fast double-send or a retry can collide with title
+            # generation or another message, causing interleaved/corrupted
+            # replies in the same conversation.
+            lock = None
+            if session_id:
+                lock = _session_locks.setdefault(session_id, asyncio.Lock())
+                if lock.locked():
+                    logger.warning(
+                        "Session %s is busy; job %s is waiting for the lock",
+                        session_id, job_id,
+                    )
+                await lock.acquire()
+            try:
+                async for event in handler(text, history, session_id, attachments, reasoning_effort):
+                    etype = event.get("type", "progress")
+                    data = event.get("data", {}) or {}
+                    if etype == "text_delta":
+                        accumulated += data.get("delta", "")
+                    if etype == "done":
+                        # The connector's own terminal event (client.py:1695-1717) carries
+                        # the final text and, on failure, the error + category/action.
+                        accumulated = data.get("text") or accumulated
+                        job["status"] = data.get("status", "completed")
+                        job["error"] = data.get("error")
+                        job["errorCategory"] = data.get("errorCategory")
+                        job["errorAction"] = data.get("errorAction")
+                        job["usage"] = data.get("usage")
+                        # Record the Hermes session id so the app UUID → session-id
+                        # mapping survives connector restarts.  The handler returns
+                        # the real Hermes session id (e.g. "api-9af38ce…") even when
+                        # the facade was called with an app-facing UUID.
+                        hermes_sid = data.get("sessionId")
+                        if not hermes_sid:
+                            # Cold start: session_id was None and the runtime didn't
+                            # return one.  Fall back to querying state.db for the
+                            # session that received the user message.
+                            from .session_store import _find_session_by_recent_message
+                            hermes_sid = _find_session_by_recent_message(text)
+                        if hermes_sid:
+                            from .session_store import _app_uuid, _persist_hermes_mapping
+                            # Record the canonical mapping: app_uuid → hermes_id
+                            canonical_app_id = _app_uuid(hermes_sid)
+                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                            # B38 P0-2: record the mapping under BOTH the app's id
+                            # and the canonical id so future lookups resolve either
+                            # way.  Do NOT mutate job["conversationId"] — the app
+                            # already received it in the POST response, and changing
+                            # it later causes replies to land in the wrong thread.
+                            response_conv_id = job.get("conversationId")
+                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                            if response_conv_id and response_conv_id != canonical_app_id:
+                                _persist_hermes_mapping(response_conv_id, hermes_sid)
 
-                        # B38 P1-1: auto-generate a title if the session
-                        # has none.  Fire-and-forget — don't delay the
-                        # job completion for title generation.
-                        from .session_store import get_session_meta, set_session_meta
-                        meta = get_session_meta(canonical_app_id)
-                        if not meta.get("title"):
-                            asyncio.create_task(
-                                _auto_title_and_persist(
-                                    handler, text, hermes_sid, canonical_app_id
+                            # B38 P1-1: auto-generate a title if the session
+                            # has none.  Fire-and-forget — don't delay the
+                            # job completion for title generation.
+                            from .session_store import get_session_meta, set_session_meta
+                            meta = get_session_meta(canonical_app_id)
+                            if not meta.get("title"):
+                                asyncio.create_task(
+                                    _auto_title_and_persist(
+                                        handler, text, hermes_sid, canonical_app_id
+                                    )
                                 )
-                            )
-                    continue          # re-emitted with jobId in the finally block
-                _publish({"type": etype, "data": data})
+                        continue          # re-emitted with jobId in the finally block
+                    _publish({"type": etype, "data": data})
+            finally:
+                if lock:
+                    lock.release()
     except TimeoutError:
         job["status"] = "failed"
         job["error"] = "The model did not respond in time."

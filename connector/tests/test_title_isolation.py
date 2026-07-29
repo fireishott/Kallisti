@@ -162,3 +162,156 @@ async def test_two_calls_use_different_throwaway_sessions():
 
     # They should be different from each other (each title gen isolated)
     assert sid1 != sid2, "Each title generation must use its own isolated session"
+
+
+# ── T3: per-session lock serialization ──────────────────────────────────────
+
+import time as _time
+
+
+class SlowRecordingHandler:
+    """A handler that records enter/exit timestamps and takes a controlled delay."""
+
+    def __init__(self, delay: float = 0.05):
+        self.enter_times: list[float] = []
+        self.exit_times: list[float] = []
+        self.session_ids: list[str | None] = []
+        self.results: list[str] = []
+        self.delay = delay
+
+    async def __call__(
+        self, prompt: str, history: list, session_id: str | None,
+        attachments: list | None, reasoning_effort: str | None,
+    ):
+        t0 = _time.monotonic()
+        self.enter_times.append(t0)
+        self.session_ids.append(session_id)
+        await asyncio.sleep(self.delay)
+        text = f"Reply to: {prompt[:20]}"
+        self.results.append(text)
+        yield {"type": "text_delta", "data": {"delta": text}}
+        t1 = _time.monotonic()
+        self.exit_times.append(t1)
+        yield {"type": "done", "data": {"text": text, "sessionId": session_id, "status": "completed"}}
+
+
+def _make_mock_job(job_id: str, text: str, session_id: str) -> dict:
+    """Minimal job record for _run_http_job."""
+    return {
+        "status": "running",
+        "events": [],
+        "subscribers": [],
+        "updatedAt": _time.time(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_same_session_jobs_serialize():
+    """Two concurrent jobs on the same session must not overlap in the handler."""
+    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+
+    session = "serialize-test-session"
+    handler = SlowRecordingHandler(delay=0.05)
+
+    # Create two jobs targeting the same session
+    _http_jobs["job-A"] = _make_mock_job("job-A", "Hello A", session)
+    _http_jobs["job-B"] = _make_mock_job("job-B", "Hello B", session)
+
+    # Clean up locks from any previous test
+    _session_locks.pop(session, None)
+
+    # Dispatch concurrently
+    await asyncio.gather(
+        _run_http_job("job-A", handler, "Hello A", [], session, None, None),
+        _run_http_job("job-B", handler, "Hello B", [], session, None, None),
+    )
+
+    # Filter out title-generation handler calls (T2 fires auto_title and uses
+    # throwaway sessions — those are not subject to the user-session lock).
+    user_calls = [
+        (enter, exit_, sid)
+        for enter, exit_, sid in zip(handler.enter_times, handler.exit_times, handler.session_ids)
+        if sid == session
+    ]
+    # We should have exactly 2 user-message calls (one for each job)
+    assert len(user_calls) == 2, (
+        f"Expected 2 user-session handler calls, got {len(user_calls)}: "
+        f"session_ids={handler.session_ids}"
+    )
+
+    # The second user-message job should have started AFTER the first finished
+    enter_a, exit_a = user_calls[0][0], user_calls[0][1]
+    enter_b, exit_b = user_calls[1][0], user_calls[1][1]
+
+    assert exit_a <= enter_b + 0.01, (  # small epsilon for scheduling jitter
+        f"Job overlap detected! Job-A exit={exit_a:.4f}, Job-B enter={enter_b:.4f}. "
+        f"Jobs on the same session must serialize."
+    )
+
+    # Cleanup
+    _http_jobs.pop("job-A", None)
+    _http_jobs.pop("job-B", None)
+    _session_locks.pop(session, None)
+
+
+@pytest.mark.asyncio
+async def test_different_sessions_run_concurrently():
+    """Jobs on different sessions should be able to run in parallel."""
+    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+
+    session_a = "parallel-session-A"
+    session_b = "parallel-session-B"
+    handler = SlowRecordingHandler(delay=0.05)
+
+    _http_jobs["job-A"] = _make_mock_job("job-A", "Hello A", session_a)
+    _http_jobs["job-B"] = _make_mock_job("job-B", "Hello B", session_b)
+
+    _session_locks.pop(session_a, None)
+    _session_locks.pop(session_b, None)
+
+    t0 = _time.monotonic()
+    await asyncio.gather(
+        _run_http_job("job-A", handler, "Hello A", [], session_a, None, None),
+        _run_http_job("job-B", handler, "Hello B", [], session_b, None, None),
+    )
+    elapsed = _time.monotonic() - t0
+
+    # Count only user-session handler calls (title gen may fire too — T2)
+    user_calls = [s for s in handler.session_ids if s in (session_a, session_b)]
+    assert len(user_calls) == 2, (
+        f"Expected 2 user-session calls, got {len(user_calls)}: {handler.session_ids}"
+    )
+
+    # Different sessions SHOULD run concurrently, so total time should be
+    # closer to one delay than two delays (allow generous margin).
+    assert elapsed < handler.delay * 2.5, (
+        f"Different sessions ran sequentially: {elapsed:.3f}s vs expected <{handler.delay*2.5:.3f}s"
+    )
+
+    # Cleanup
+    _http_jobs.pop("job-A", None)
+    _http_jobs.pop("job-B", None)
+    _session_locks.pop(session_a, None)
+    _session_locks.pop(session_b, None)
+
+
+@pytest.mark.asyncio
+async def test_job_with_null_session_skips_lock():
+    """Jobs with session_id=None should not acquire a lock (cold-start path)."""
+    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+
+    handler = SlowRecordingHandler(delay=0.02)
+    _http_jobs["job-null"] = _make_mock_job("job-null", "Hello", "none")
+
+    # Track locks before and after — only care about new locks for None session
+    locks_before = set(k for k, v in _session_locks.items())
+
+    await _run_http_job("job-null", handler, "Hello", [], None, None, None)
+
+    locks_after = set(k for k, v in _session_locks.items())
+    new_locks = locks_after - locks_before
+    assert len(new_locks) == 0, (
+        f"No lock should be created for session_id=None, but got new locks: {new_locks}"
+    )
+
+    _http_jobs.pop("job-null", None)
