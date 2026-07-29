@@ -419,6 +419,10 @@ final class ChatStore {
             progressContinuation = continuation
         }
 
+        // P0-2: reference type so the closure can write back to the flag
+        // the watchdog loop reads.  A plain Bool would be captured by copy.
+        final class FlagBox { var value = false }
+        let consumerDidFinish = FlagBox()
         let consumerTask = Task { [weak self] in
             guard let self else { return }
             self.appendLog(level: .info, "Streaming started")
@@ -737,6 +741,7 @@ final class ChatStore {
                 }
             }
             progressContinuation?.finish()
+            consumerDidFinish.value = true
         }
         streamingTask = consumerTask
 
@@ -752,8 +757,9 @@ final class ChatStore {
         self.streamingProgressAt = .now
         let jobAcceptedAt = Date.now
         var stallDetected = false
-        while !consumerTask.isCancelled {
+        while !consumerTask.isCancelled && !consumerDidFinish.value {
             // Check if the consumer finished while we were sleeping
+            // (belt-and-suspenders with consumerDidFinish.value above)
             if streamingTask == nil { break }
 
             try? await Task.sleep(for: .seconds(5))

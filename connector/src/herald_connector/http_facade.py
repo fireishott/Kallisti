@@ -163,16 +163,70 @@ _HTTP_JOB_TTL_SECONDS = 900.0
 _conversation_id_singleton: str | None = None
 
 
+async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str | None:
+    """Generate a title for a session from its first user message.
+
+    B38 P1-1: called server-side on the first completed turn so the session
+    list never shows "New Chat" for a session that has messages.
+
+    Tries the message_handler with a short title prompt first; falls back
+    to a truncation of the first user message.
+    """
+    title_prompt = (
+        "Generate a short title (3-8 words) for a conversation that "
+        "begins with this message. Return ONLY the title, no quotes, "
+        "no punctuation at the end:\n\n" + text[:500]
+    )
+    try:
+        async with asyncio.timeout(15):
+            accumulated = ""
+            async for event in handler(title_prompt, [], hermes_sid, None, None):
+                etype = event.get("type", "")
+                data = event.get("data", {}) or {}
+                if etype == "text_delta":
+                    accumulated += data.get("delta", "")
+                if etype == "done":
+                    accumulated = data.get("text") or accumulated
+                    break
+            if accumulated:
+                title = accumulated.strip()[:120]
+                # Strip common wrapping characters
+                title = title.strip('"\'.!?;:,*`~ \t\n\r')
+                if len(title) >= 3:
+                    return title
+    except Exception:
+        logger.debug("_auto_title: LLM path failed, falling back to truncation")
+
+    # Fallback: first line, first 80 chars
+    first_line = text.strip().split("\n")[0].strip()
+    if first_line:
+        return first_line[:80]
+    return None
+
+
+async def _auto_title_and_persist(handler, text: str, hermes_sid: str, app_uuid: str) -> None:
+    """Fire-and-forget wrapper: generate a title and persist it."""
+    try:
+        title = await _auto_title(handler, text, hermes_sid, app_uuid)
+        if title:
+            from .session_store import set_session_meta
+            set_session_meta(app_uuid, title=title)
+            logger.info("_auto_title: set title %r for %s", title, app_uuid)
+    except Exception:
+        logger.exception("_auto_title_and_persist failed for %s", app_uuid)
+
+
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _stable_conversation_id() -> str:
-    """One conversation id per connector process.
+    """Cold-start fallback conversation id — used ONLY when the device has never
+    sent a message and carries no conversationId.
 
-    RelayConversation.id is a non-optional UUID (LiveHeraldClient.swift:24) and the
-    app uses it to correlate the reply with the open conversation.  A fresh uuid4
-    per request would make every message look like a new conversation.
+    P0-1: the primary path is now the deterministic _app_uuid(hermes_id).  This
+    function is a last-resort fallback for the first-ever message from a fresh
+    device, and must not be the normal code path.
     """
     global _conversation_id_singleton
     if _conversation_id_singleton is None:
@@ -259,6 +313,43 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     job["errorCategory"] = data.get("errorCategory")
                     job["errorAction"] = data.get("errorAction")
                     job["usage"] = data.get("usage")
+                    # Record the Hermes session id so the app UUID → session-id
+                    # mapping survives connector restarts.  The handler returns
+                    # the real Hermes session id (e.g. "api-9af38ce…") even when
+                    # the facade was called with an app-facing UUID.
+                    hermes_sid = data.get("sessionId")
+                    if not hermes_sid:
+                        # Cold start: session_id was None and the runtime didn't
+                        # return one.  Fall back to querying state.db for the
+                        # session that received the user message.
+                        from .session_store import _find_session_by_recent_message
+                        hermes_sid = _find_session_by_recent_message(text)
+                    if hermes_sid:
+                        from .session_store import _app_uuid, _persist_hermes_mapping
+                        # Record the canonical mapping: app_uuid → hermes_id
+                        canonical_app_id = _app_uuid(hermes_sid)
+                        _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                        # B38 P0-2: record the mapping under BOTH the app's id
+                        # and the canonical id so future lookups resolve either
+                        # way.  Do NOT mutate job["conversationId"] — the app
+                        # already received it in the POST response, and changing
+                        # it later causes replies to land in the wrong thread.
+                        response_conv_id = job.get("conversationId")
+                        _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                        if response_conv_id and response_conv_id != canonical_app_id:
+                            _persist_hermes_mapping(response_conv_id, hermes_sid)
+
+                        # B38 P1-1: auto-generate a title if the session
+                        # has none.  Fire-and-forget — don't delay the
+                        # job completion for title generation.
+                        from .session_store import get_session_meta, set_session_meta
+                        meta = get_session_meta(canonical_app_id)
+                        if not meta.get("title"):
+                            asyncio.create_task(
+                                _auto_title_and_persist(
+                                    handler, text, hermes_sid, canonical_app_id
+                                )
+                            )
                     continue          # re-emitted with jobId in the finally block
                 _publish({"type": etype, "data": data})
     except TimeoutError:
@@ -597,7 +688,47 @@ async def send_message(request: Request) -> JSONResponse:
     attachments = body.get("attachments")
     reasoning_effort = body.get("reasoningEffort")
     client_message_id = body.get("clientMessageId")
-    conversation_id = _coerce_uuid(body.get("conversationId")) or _stable_conversation_id()
+    raw_conversation_id = body.get("conversationId")
+
+    # Resolve the app's conversation UUID to a Hermes session id.
+    # P0-1: instead of a random uuid4() that maps to nothing, use the
+    # deterministic app_uuid ↔ hermes_id reverse index.  This makes
+    # GET /v1/sessions/{id}/conversation return the messages that were
+    # actually written to the database.
+    from .session_store import _app_uuid, _resolve_hermes_id, _coerce_uuid as _store_coerce
+    hermes_session_id: str | None = None
+    app_conversation_id: str | None = None
+
+    if raw_conversation_id is not None:
+        cid = _coerce_uuid(raw_conversation_id)
+        if cid:
+            # Does this UUID already map to a Hermes session?
+            resolved = _resolve_hermes_id(cid)
+            if resolved:
+                hermes_session_id = resolved
+                app_conversation_id = cid
+            else:
+                # B38 P0-2: echo the app-supplied UUID verbatim even when
+                # the sidecar mapping doesn't exist yet.  B37 silently
+                # discarded it and fell through to the process singleton —
+                # that collapsed every conversation onto one id.
+                app_conversation_id = cid
+
+    # If the caller sent a sessionId (Hermes-side), use it directly and
+    # derive the app UUID from it.
+    if hermes_session_id is None and session_id:
+        hermes_session_id = str(session_id)
+        app_conversation_id = _app_uuid(hermes_session_id)
+
+    if app_conversation_id is None:
+        # B38 P0-2: _stable_conversation_id() is now the fourth-choice
+        # fallback only.  Log a warning so this can never regress silently.
+        logger.warning(
+            "_stable_conversation_id fallback used — no conversationId, "
+            "no sessionId, no sidecar mapping. body=%s",
+            {k: v for k, v in body.items() if k != "history"}
+        )
+        app_conversation_id = _stable_conversation_id()
 
     job_id = str(uuid.uuid4())
     user_message = _relay_message("user", text, client_message_id=client_message_id)
@@ -605,7 +736,7 @@ async def send_message(request: Request) -> JSONResponse:
     _http_jobs[job_id] = {
         "jobId": job_id,
         "status": "running",
-        "conversationId": conversation_id,
+        "conversationId": app_conversation_id,
         "message": None,
         "error": None,
         "errorCategory": None,
@@ -619,7 +750,7 @@ async def send_message(request: Request) -> JSONResponse:
 
     task = asyncio.create_task(
         _run_http_job(job_id, ctx.message_handler, text, history,
-                      session_id, attachments, reasoning_effort)
+                      hermes_session_id, attachments, reasoning_effort)
     )
     _http_job_tasks[job_id] = task
     task.add_done_callback(lambda _t, jid=job_id: _http_job_tasks.pop(jid, None))
@@ -631,7 +762,7 @@ async def send_message(request: Request) -> JSONResponse:
         "replyState": "pending",
         "jobId": job_id,
         "conversation": {
-            "id": conversation_id,
+            "id": app_conversation_id,
             "title": "Herald",
             "updatedAt": _now_iso(),
             "messages": [user_message],
@@ -1170,22 +1301,80 @@ async def device_sensor(request: Request) -> JSONResponse:
 
 
 async def session_generate_title(request: Request) -> JSONResponse:
-    """GenerateTitleResponse.title is String? (LiveHeraldClient.swift:782-784);
-    the caller then throws URLError(.badServerResponse) on nil/empty, which is the
-    same no-title outcome as today's 404 — minus the log noise."""
+    """Generate a title for a session from its first user message.
+
+    B38 P1-1: tries the LLM via the message_handler first (3-8 word title);
+    falls back to truncation when the handler is unavailable.
+    """
     await require_auth(request)
-    return JSONResponse({"title": None})
+    session_id = request.path_params.get("id", "")
+    from .session_store import session_messages, set_session_meta
+
+    title = None
+    try:
+        msgs = session_messages(session_id, limit=5)
+        for m in msgs:
+            if m.get("role") == "user" and m.get("text"):
+                user_text = m["text"].strip()
+                ctx = get_context()
+                if ctx.message_handler:
+                    from .session_store import _app_uuid
+                    app_id = _app_uuid(session_id)
+                    title = await _auto_title(
+                        ctx.message_handler, user_text, session_id, app_id
+                    )
+                if not title:
+                    # Fallback: first line, first 80 chars
+                    first_line = user_text.split("\n")[0].strip()
+                    title = first_line[:80] if first_line else None
+                break
+    except Exception:
+        logger.exception("session_generate_title: failed for %s", session_id)
+
+    if title:
+        try:
+            set_session_meta(session_id, title=title)
+        except Exception:
+            logger.exception("session_generate_title: set_session_meta failed for %s", session_id)
+    else:
+        title = "New Chat"
+
+    return JSONResponse({"title": title})
+
+
+# B38 P1-1: placeholder titles that must never be persisted.
+# Once written to the sidecar, they permanently shadow any generated title
+# because meta.get("title") is checked FIRST in session_list.
+_PLACEHOLDER_TITLES = frozenset({
+    "", "new chat", "untitled", "herald",
+    "new chat", "New Chat", "Untitled", "Herald",
+})
 
 
 async def session_patch(request: Request) -> JSONResponse:
-    """Rename. SessionAPIResponse{session: SessionAPIEntry} — id is a UUID and
-    title a non-optional String (LiveHeraldClient.swift:641-653), so echo both."""
+    """Rename a session (PATCH /v1/sessions/{id}).
+
+    B38 P1-1: rejects placeholder titles so a generated title can win.
+    Only a genuine user rename or a server-generated title gets persisted.
+    """
     await require_auth(request)
     body = await request.json()
     session_id = request.path_params.get("id", "")
+    raw_title = (body.get("title") or "").strip()
+    from .session_store import set_session_meta
+
+    if raw_title.lower() in _PLACEHOLDER_TITLES:
+        # The app sent a placeholder — do NOT persist it.  Return the
+        # requested title so the client doesn't error, but keep the
+        # sidecar clean for server-side generation.
+        logger.info("session_patch: refusing placeholder title %r for %s", raw_title, session_id)
+        title = raw_title
+    else:
+        title = raw_title[:200]
+        set_session_meta(session_id, title=title)
     return JSONResponse({"session": {
         "id": _coerce_uuid(session_id) or str(uuid.uuid4()),
-        "title": body.get("title") or "Untitled",
+        "title": title,
         "previewText": None,
         "updatedAt": _now_iso(),
         "source": None,
@@ -1216,10 +1405,14 @@ async def create_session(request: Request) -> JSONResponse:
     if not isinstance(body, dict):
         body = {}
     session_id = str(uuid.uuid4())
-    title = (body.get("title") or "New Chat")[:200]
+    raw_title = (body.get("title") or "").strip()
+    # B38 P1-1: don't persist placeholder titles — they permanently shadow
+    # server-generated titles.
+    title = raw_title[:200] if raw_title.lower() not in _PLACEHOLDER_TITLES else ""
     from .session_store import set_session_meta
 
-    set_session_meta(session_id, title=title)
+    if title:
+        set_session_meta(session_id, title=title)
     return JSONResponse({"session": {
         "id": session_id,
         "title": title,

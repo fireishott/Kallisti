@@ -432,6 +432,11 @@ final class AppContainer {
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
+                // P1-3: gate Talk on server-side readiness.  The realtime
+                // Talk backend is a B38 project; until then the readiness
+                // provider is left nil so only local preconditions
+                // (coordinator + API key) gate the session.
+                // When B38 lands, wire this to call GET /v1/talk/readiness.
 
                 // Wire the full Talk pipeline when not in UI-test mock mode
                 if !usesMockPairingService {
@@ -507,10 +512,10 @@ final class AppContainer {
             container?.updateWidgetData()
         }
         // Keep session list in sync when title is derived or renamed
-        container.chatStore.onTitleChanged = { [weak container] conversationID, newTitle in
+        container.chatStore.onTitleChanged = { [weak container] (conversationID: UUID, newTitle: String) in
             container?.sessionListStore.updateSessionTitle(id: conversationID, newTitle: newTitle)
         }
-        container.inboxStore.onOpenConversation = { [weak container] convId in
+        container.inboxStore.onOpenConversation = { [weak container] (convId: UUID) in
             guard let container else { return }
             Task { @MainActor in
                 if let conv = try? await container.chatStore.heraldClient.loadConversation(id: convId) {
@@ -535,7 +540,7 @@ final class AppContainer {
         }
 
         // Wire up WS-based connection status to update ChatStore
-        container.hostStatusStream.onConnectionStatusChanged = { [weak container] status in
+        container.hostStatusStream.onConnectionStatusChanged = { [weak container] (status: ConnectionStatus) in
             Task { @MainActor [weak container] in
                 guard let container else { return }
                 container.chatStore.updateConnectionStatus(status)

@@ -38,6 +38,11 @@ final class TalkStore {
     /// Cached API key holder for Keychain access. Set by AppContainer.
     @ObservationIgnored var apiKeyHolder: APIKeyHolder?
 
+    /// Server-side talk readiness check. Set by AppContainer.
+    /// Returns (ready: Bool, blockedReason: String?) — ready=true means the
+    /// server has a realtime gateway configured and accepting sessions.
+    @ObservationIgnored var talkReadinessProvider: (@MainActor () async -> (ready: Bool, blockedReason: String?))?
+
     private let liveActivity = LiveActivityService()
     private var lastSpokenItemID: UUID?
 
@@ -130,6 +135,12 @@ final class TalkStore {
             voiceState = .thinking
             statusMessage = "Preparing..."
         case .listening:
+            // P1-3: isSessionActive is set only once the coordinator
+            // confirms it has started listening, not optimistically.
+            if !isSessionActive {
+                isSessionActive = true
+                startDurationTimer()
+            }
             voiceState = .listening
             statusMessage = "Listening"
         case .endpointing:
@@ -196,6 +207,16 @@ final class TalkStore {
             blockedReason = "Mimo API key required — add it in Settings → Voice"
             return
         }
+        // P1-3: gate on server-side readiness.  The realtime Talk backend is
+        // a B38 project; until then the server returns configured=false.
+        if let provider = talkReadinessProvider {
+            let (ready, reason) = await provider()
+            if !ready {
+                canStartSession = false
+                blockedReason = reason ?? "Realtime Talk is not configured on this host."
+                return
+            }
+        }
         canStartSession = true
         blockedReason = nil
     }
@@ -230,20 +251,29 @@ final class TalkStore {
             onSessionStateChanged?()
             return
         }
+        // P1-3: gate on server-side readiness so a failed start surfaces
+        // instead of a silent hang in "LISTENING".
+        guard canStartSession else {
+            statusMessage = blockedReason ?? "Talk is unavailable"
+            onSessionStateChanged?()
+            return
+        }
         // Start Live Activity so it appears on Lock Screen / Dynamic Island
         // during the voice session. updateVoiceState() alone is a no-op until
         // an activity has been created via startVoiceSession().
         liveActivity.startVoiceSession()
+
+        // P1-3: isSessionActive is now set by applyHermesState when the
+        // coordinator reaches .listening, not here.  This prevents the
+        // "LISTENING" lie when the coordinator never starts.
 
         // Do NOT await this — startListeningWithVAD() does not return until the
         // full VAD → ASR → Hermes → TTS turn completes. Awaiting it here left
         // the activation block below unreachable for the whole turn.
         Task { await coordinator.startListeningWithVAD() }
 
-        isSessionActive = true
         connectionState = .connected
         voiceSessionID = coordinator.conversationId
-        startDurationTimer()
     }
 
     func endSession() async {

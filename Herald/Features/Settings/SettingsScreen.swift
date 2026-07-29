@@ -630,33 +630,41 @@ struct SettingsScreen: View {
 
                 // AUX Model Configuration
                 if let aux = auxService, !aux.tasks.isEmpty {
-                    sectionDivider
-
-                    ForEach(aux.tasks) { task in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(task.task)
-                                    .font(Design.Typography.callout)
-                                Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
-                                    .font(Design.Typography.caption)
-                                    .foregroundStyle(Design.Colors.secondaryForeground)
-                            }
-                            Spacer()
-                            Menu("Change") {
-                                Button("Auto") {
-                                    Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
+                    SettingsSectionView(title: "Auxiliary Models") {
+                        ForEach(aux.tasks) { task in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(task.task)
+                                        .font(Design.Typography.callout)
+                                    Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
+                                        .font(Design.Typography.caption)
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
                                 }
-                                ForEach(modelStore.models, id: \.name) { m in
-                                    Button(m.name) {
-                                        Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
+                                Spacer()
+                                Menu {
+                                    Button("Auto") {
+                                        Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
                                     }
+                                    ForEach(modelStore.models, id: \.name) { m in
+                                        Button(m.name) {
+                                            Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text("Change")
+                                            .font(Design.Typography.caption)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 10))
+                                    }
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
                                 }
                             }
-                        }
-                        .frame(minHeight: Design.Size.minTapTarget)
+                            .frame(minHeight: Design.Size.minTapTarget)
 
-                        if task.task != aux.tasks.last?.task {
-                            sectionDivider
+                            if task.task != aux.tasks.last?.task {
+                                sectionDivider
+                            }
                         }
                     }
                 }

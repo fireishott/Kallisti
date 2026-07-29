@@ -70,22 +70,65 @@ final class MimoASRService: SpeechRecognizing {
                         throw ASRError.httpError(statusCode)
                     }
 
+                    // B38 P1-2: handle three Mimo response shapes:
+                    // 1. Newline-delimited JSON: {"type":"delta","text":"..."}
+                    // 2. SSE: data: {"type":"delta","text":"..."}
+                    // 3. Non-streaming JSON: {"text":"..."}
+                    var sawAnyLine = false
                     for try await line in bytes.lines {
                         guard !Task.isCancelled else { break }
-                        guard let data = line.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let type = json["type"] as? String else { continue }
+                        sawAnyLine = true
 
-                        if type == "delta" {
-                            let text = json["text"] as? String ?? ""
-                            continuation.yield(TranscriptUpdate(text: text, isFinal: false, confidence: nil))
-                        } else if type == "final" {
-                            let text = json["text"] as? String ?? ""
-                            self.logger.info("ASR final: \(text.count, privacy: .public) chars")
+                        // Strip SSE "data: " prefix if present
+                        var payload = line
+                        if payload.hasPrefix("data: ") {
+                            payload = String(payload.dropFirst(6))
+                        }
+                        // Strip SSE "data:" (no space) if present
+                        if payload.hasPrefix("data:") {
+                            payload = String(payload.dropFirst(5))
+                        }
+                        payload = payload.trimmingCharacters(in: .whitespaces)
+
+                        guard !payload.isEmpty,
+                              let data = payload.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                            // Non-streaming fallback: the whole body might be a
+                            // single JSON object with a "text" key.
+                            if let data = line.data(using: .utf8),
+                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                               let text = json["text"] as? String, !text.isEmpty {
+                                self.logger.info("ASR non-streaming result: \(text.count, privacy: .public) chars")
+                                continuation.yield(TranscriptUpdate(text: text, isFinal: true, confidence: nil))
+                                continuation.finish()
+                                return
+                            }
+                            continue
+                        }
+
+                        // Streaming path: type + text
+                        if let type = json["type"] as? String {
+                            if type == "delta" {
+                                let text = json["text"] as? String ?? ""
+                                continuation.yield(TranscriptUpdate(text: text, isFinal: false, confidence: nil))
+                            } else if type == "final" {
+                                let text = json["text"] as? String ?? ""
+                                self.logger.info("ASR final: \(text.count, privacy: .public) chars")
+                                continuation.yield(TranscriptUpdate(text: text, isFinal: true, confidence: nil))
+                                continuation.finish()
+                                return
+                            }
+                        } else if let text = json["text"] as? String {
+                            // Non-streaming shape inside a line-delimited stream
+                            self.logger.info("ASR non-streaming in stream: \(text.count, privacy: .public) chars")
                             continuation.yield(TranscriptUpdate(text: text, isFinal: true, confidence: nil))
                             continuation.finish()
                             return
                         }
+                    }
+                    // B38 P1-2: stream ended without a final — distinct error.
+                    if sawAnyLine {
+                        throw ASRError.noFinalTranscript
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -109,6 +152,7 @@ final class MimoASRService: SpeechRecognizing {
 enum ASRError: Error, LocalizedError {
     case noAPIKey
     case httpError(Int)
+    case noFinalTranscript
 
     var errorDescription: String? {
         switch self {
@@ -116,6 +160,8 @@ enum ASRError: Error, LocalizedError {
             "No MiMo API key configured."
         case .httpError(let code):
             "ASR request failed with HTTP \(code)."
+        case .noFinalTranscript:
+            "ASR stream ended without a final transcript — the audio may be too short or silent."
         }
     }
 }

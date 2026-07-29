@@ -150,7 +150,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     accessToken: token
                 )
             }
-            currentConversation = mapConversation(response.conversation)
+            // B38 P0-2: only adopt the server's conversation id when no
+            // thread is open.  When a conversation is already active and
+            // the server responds with a different id, keep the local id
+            // — the server's id may be a process singleton or a canonical
+            // UUID that doesn't match the open thread.
+            if let existing = self.currentConversation, existing.id != response.conversation.id {
+                Self.logger.error("Server returned conversation \(response.conversation.id) but \(existing.id) is open — keeping local id")
+            } else {
+                currentConversation = mapConversation(response.conversation)
+            }
             connectionStatus = .connected
 
             // Complete response returned synchronously
@@ -238,7 +247,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         )
                     }
 
-                    self.currentConversation = self.mapConversation(response.conversation)
+                    // B38 P0-2: only adopt the server's conversation id when no
+                    // thread is open.
+                    if let existing = self.currentConversation, existing.id != response.conversation.id {
+                        Self.logger.error("Server returned conversation \(response.conversation.id) but \(existing.id) is open — keeping local id")
+                    } else {
+                        self.currentConversation = self.mapConversation(response.conversation)
+                    }
                     self.connectionStatus = .connected
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
@@ -365,13 +380,26 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             finalMessage = streamed
                             usage = donePayload?.usage
                         } else {
-                            let refreshedConversation = await self.reloadConversationForStreaming()
-                            finalMessage = self.resolveFinalMessage(
+                            let refreshed = await self.reloadConversationForStreaming()
+                            if let resolved = self.resolveFinalMessage(
                                 jobId: jobId,
                                 donePayload: donePayload,
-                                conversation: refreshedConversation ?? self.currentConversation
-                            )
-                            usage = donePayload?.usage ?? refreshedConversation?.latestUsage
+                                conversation: refreshed ?? self.currentConversation
+                            ) {
+                                finalMessage = resolved
+                                usage = donePayload?.usage ?? refreshed?.latestUsage
+                            } else {
+                                // P0-1: neither the terminal text nor the server
+                                // conversation history held an answer.  Surface the
+                                // failure instead of a silent blank.
+                                continuation.yield(.failed(
+                                    "Herald didn't receive a reply. The server may be down or the connection was interrupted.",
+                                    category: "empty_response",
+                                    action: "retry"
+                                ))
+                                continuation.finish()
+                                return
+                            }
                         }
                         let context: ContextInfo? = donePayload?.context
                         continuation.yield(.finished(finalMessage, usage, nil, context))
@@ -585,7 +613,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         jobId: UUID,
         donePayload: StreamDonePayload?,
         conversation: Conversation?
-    ) -> Message {
+    ) -> Message? {
         if let relayMessage = donePayload?.message {
             return mapMessage(relayMessage)
         }
@@ -613,7 +641,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
 
-        return Message(sender: .herald, content: "", jobID: jobId, status: .delivered)
+        // P0-1: returning an empty .delivered message is never correct.
+        // It produces a silent blank bubble with a green tick — no text,
+        // no error, no retry affordance.  Return nil so the caller can
+        // surface the failure visibly.
+        return nil
     }
 
     private func validateRequestBodySize(for body: MessageCreateBody) throws {
@@ -958,12 +990,20 @@ extension LiveHeraldClient {
                         continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff, statusResponse.context))
                     } else {
                         let refreshed = await self.reloadConversationForStreaming()
-                        let finalMsg = self.resolveFinalMessage(
+                        if let finalMsg = self.resolveFinalMessage(
                             jobId: jobId,
                             donePayload: nil,
                             conversation: refreshed ?? self.currentConversation
-                        )
-                        continuation.yield(.finished(finalMsg, nil, nil, nil))
+                        ) {
+                            continuation.yield(.finished(finalMsg, nil, nil, nil))
+                        } else {
+                            // P0-1: no answer in the conversation history either.
+                            continuation.yield(.failed(
+                                "Herald didn't receive a reply. The server may be down or the connection was interrupted.",
+                                category: "empty_response",
+                                action: "retry"
+                            ))
+                        }
                     }
                     return
 
