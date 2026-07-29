@@ -498,21 +498,30 @@ final class ChatStore {
                         var resolved = finalMessage
                         resolved.toolActivities = activities
                         resolved.codeDiff = diff
-                        // The reloaded server message has no reasoning — carry over
-                        // what streamed and freeze its duration so the collapsed
-                        // "Thought for Xs" summary survives.
-                        if !streamedReasoning.isEmpty {
+                        // Priority for reasoning:
+                        // 1) finalMessage.reasoning — set by LiveHeraldClient (SSE terminal
+                        //    reasoning from the done payload, or splitThinkingBlocks extraction).
+                        // 2) placeholder's streamed reasoning — from reasoningDelta SSE events,
+                        //    only used when finalMessage has no reasoning of its own.
+                        // 3) regex extraction from content — last resort for models that embed
+                        //    <think> tags inline without a separate reasoning field.
+                        if resolved.reasoning.isEmpty && !streamedReasoning.isEmpty {
                             resolved.reasoning = streamedReasoning
                             if let startedAt = reasoningStartedAt {
                                 resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
                             }
+                        } else if !streamedReasoning.isEmpty {
+                            // finalMessage already has reasoning — keep it but carry over
+                            // the duration from the streamed placeholder
+                            if resolved.reasoningDuration == nil, let startedAt = reasoningStartedAt {
+                                resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                            }
                         }
-                        // If no reasoning arrived via the dedicated reasoningDelta channel
-                        // (common with DeepSeek/Qwen models that embed chain-of-thought
-                        // as <think> tags inline), extract those tags into the reasoning
-                        // field BEFORE stripping them from the displayed content.
+                        // Last resort: regex extraction for models that embed reasoning
+                        // as XML tags inline in the content (DeepSeek <think>, Qwen <thinking>).
+                        // splitThinkingBlocks in LiveHeraldClient handles this on the sync
+                        // path; this is the SSE-path safety net.
                         if resolved.reasoning.isEmpty {
-                            // Match <think> or <thinking> tags (some model variants).
                             if let thinkRegex = try? NSRegularExpression(
                                 pattern: "<think(?:ing)?>(.*?)</think(?:ing)?>",
                                 options: [.dotMatchesLineSeparators, .caseInsensitive]
@@ -530,6 +539,25 @@ final class ChatStore {
                                     resolved.reasoning = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
                                     if let startedAt = reasoningStartedAt {
                                         resolved.reasoningDuration = Date().timeIntervalSince(startedAt)
+                                    }
+                                }
+                            }
+                            // Also try unclosed <think> tags (model interrupted mid-reasoning)
+                            if resolved.reasoning.isEmpty {
+                                if let unclosedRegex = try? NSRegularExpression(
+                                    pattern: "<think(?:ing)?>([\\s\\S]*?)$",
+                                    options: [.caseInsensitive]
+                                ) {
+                                    let nsContent = resolved.content as NSString
+                                    if let match = unclosedRegex.firstMatch(
+                                        in: resolved.content,
+                                        range: NSRange(location: 0, length: nsContent.length)
+                                    ), match.numberOfRanges > 1 {
+                                        let extracted = nsContent.substring(with: match.range(at: 1))
+                                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                                        if !extracted.isEmpty {
+                                            resolved.reasoning = extracted
+                                        }
                                     }
                                 }
                             }

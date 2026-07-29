@@ -28,6 +28,8 @@ struct ChatScreen: View {
     // fire scroll requests in the same run loop.
     @State private var autoScrollTask: Task<Void, Never>?
     @State private var isUserScrolling = false
+    @State private var userScrollTimer: Timer?
+    @State private var lastKnownContentLength: Int = 0
     private static let scrollDebounceInterval: Duration = .milliseconds(100)
 
     @State private var showAttachmentPicker = false
@@ -121,7 +123,20 @@ struct ChatScreen: View {
             // Uses the same throttled scrollToBottom path (not a raw scrollTo)
             // so the 500ms throttle and user-scroll deferral apply.
             guard chatStore.streamingMessageID != nil else { return }
+            lastKnownContentLength = streamingContentLength
             scrollToBottom()
+        }
+        // Timer-based fallback: when @Observable property changes don't reliably
+        // trigger onChange (e.g. the view's body doesn't directly read the
+        // observed property), poll at 300ms intervals during active streaming.
+        .onReceive(Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()) { _ in
+            guard chatStore.streamingMessageID != nil else { return }
+            guard !isUserScrolling else { return }
+            let currentLength = streamingContentLength
+            if currentLength != lastKnownContentLength {
+                lastKnownContentLength = currentLength
+                scrollToBottom()
+            }
         }
         .onChange(of: chatStore.pendingMessageSentAt) {
             // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
@@ -140,6 +155,7 @@ struct ChatScreen: View {
                 // before we scroll. Haptic fires immediately in ChatStore when
                 // the .finished event arrives — no delay needed here.
                 isUserScrolling = false  // Reset scroll state for next stream
+                userScrollTimer?.invalidate()
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(100))
                     if let lastID = chatStore.conversation?.messages.last?.id {
@@ -707,7 +723,7 @@ struct ChatScreen: View {
                                 }
                             )
                             .equatable()
-                            .id(message.id)
+                            .id(message.streamingCompositeID)
                         }
                     }
 
@@ -731,7 +747,15 @@ struct ChatScreen: View {
             }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 16)
-                    .onChanged { _ in isUserScrolling = true }
+                    .onChanged { _ in
+                        isUserScrolling = true
+                        userScrollTimer?.invalidate()
+                        userScrollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+                            Task { @MainActor in
+                                isUserScrolling = false
+                            }
+                        }
+                    }
             )
             .onAppear { scrollProxy = proxy }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -1206,7 +1230,20 @@ struct ChatScreen: View {
     }
 
     private func scrollToBottom() {
-        guard let lastID = chatStore.conversation?.messages.last?.id else { return }
+        // During streaming, target the streaming placeholder specifically
+        // so the ScrollView tracks the growing message rather than the
+        // last message in the array (which may be a completed message).
+        let targetID: String
+        if let streamingID = chatStore.streamingMessageID {
+            targetID = streamingID.uuidString
+        } else if let lastID = chatStore.conversation?.messages.last?.id {
+            targetID = lastID.uuidString
+        } else {
+            return
+        }
+        let targetUUID = UUID(uuidString: targetID) ?? chatStore.conversation?.messages.last?.id
+        guard let targetUUID else { return }
+
         // During streaming, debounce scroll requests — multiple onChange
         // handlers (message count, streamingContentLength, streamingMessageID)
         // can fire in the same run loop. A single debounce Task coalesces them
@@ -1218,13 +1255,13 @@ struct ChatScreen: View {
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
                 guard !Task.isCancelled, !isUserScrolling else { return }
                 withAnimation(Design.Motion.standard) {
-                    scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                    scrollProxy?.scrollTo(targetUUID, anchor: .bottom)
                 }
             }
             return
         }
         withAnimation(Design.Motion.standard) {
-            scrollProxy?.scrollTo(lastID, anchor: .bottom)
+            scrollProxy?.scrollTo(targetUUID, anchor: .bottom)
         }
     }
 

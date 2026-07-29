@@ -18,6 +18,26 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let usage: TokenUsage?
         let context: ContextInfo?
         let diff: CodeDiff?
+
+        enum CodingKeys: String, CodingKey {
+            case replyState, conversation, userMessage, message
+            case jobId, usage, context, diff
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // replyState defaults to "complete" if missing (non-pending = sync path)
+            replyState = (try? container.decode(String.self, forKey: .replyState)) ?? "complete"
+            // conversation is required — without it we can't maintain state
+            conversation = try container.decode(RelayConversation.self, forKey: .conversation)
+            // All other fields are optional and resilient to decode failures
+            userMessage = try? container.decodeIfPresent(RelayMessage.self, forKey: .userMessage) ?? nil
+            message = try? container.decodeIfPresent(RelayMessage.self, forKey: .message) ?? nil
+            jobId = try? container.decodeIfPresent(UUID.self, forKey: .jobId) ?? nil
+            usage = try? container.decodeIfPresent(TokenUsage.self, forKey: .usage) ?? nil
+            context = try? container.decodeIfPresent(ContextInfo.self, forKey: .context) ?? nil
+            diff = try? container.decodeIfPresent(CodeDiff.self, forKey: .diff) ?? nil
+        }
     }
 
     private struct RelayConversation: Decodable {
@@ -27,6 +47,21 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let messages: [RelayMessage]
         let latestUsage: TokenUsage?
         let latestContext: ContextInfo?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, updatedAt, messages
+            case latestUsage, latestContext
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            title = (try? container.decode(String.self, forKey: .title)) ?? "New Chat"
+            updatedAt = (try? container.decode(Date.self, forKey: .updatedAt)) ?? Date()
+            messages = (try? container.decode([RelayMessage].self, forKey: .messages)) ?? []
+            latestUsage = try container.decodeIfPresent(TokenUsage.self, forKey: .latestUsage)
+            latestContext = try container.decodeIfPresent(ContextInfo.self, forKey: .latestContext)
+        }
     }
 
     private struct RelayAttachment: Decodable {
@@ -45,6 +80,27 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let deliveryStatus: String?
         let jobId: UUID?
         let attachments: [RelayAttachment]?
+
+        enum CodingKeys: String, CodingKey {
+            case id, role, text, timestamp
+            case clientMessageId, deliveryStatus, jobId, attachments
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // id is required — a message without an id is meaningless
+            id = try container.decode(UUID.self, forKey: .id)
+            // role defaults to .herald if missing or unrecognized
+            role = (try? container.decode(MessageSender.self, forKey: .role)) ?? .herald
+            // text defaults to empty string if missing
+            text = (try? container.decode(String.self, forKey: .text)) ?? ""
+            // timestamp defaults to now if missing (shouldn't happen but prevents a crash)
+            timestamp = (try? container.decode(Date.self, forKey: .timestamp)) ?? Date()
+            clientMessageId = try container.decodeIfPresent(UUID.self, forKey: .clientMessageId)
+            deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
+            jobId = try container.decodeIfPresent(UUID.self, forKey: .jobId)
+            attachments = try container.decodeIfPresent([RelayAttachment].self, forKey: .attachments)
+        }
     }
 
     private struct StreamProgressPayload: Decodable {
@@ -370,8 +426,22 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             )
                             usage = donePayload?.usage ?? refreshedConversation?.latestUsage
                         }
+                        // Carry terminal reasoning from the SSE done payload through
+                        // to the finished message so ChatStore can display it.
+                        var resolvedFinal = finalMessage
+                        if let terminalReasoning = terminalResult?.reasoning, !terminalReasoning.isEmpty {
+                            resolvedFinal.reasoning = terminalReasoning
+                        }
+                        // Apply splitThinkingBlocks as a safety net for any residual
+                        // <think> tags in the content that weren't stripped server-side.
+                        let fullText = resolvedFinal.content
+                        let (extractedReasoning, visibleText) = Self.splitThinkingBlocks(fullText)
+                        if !extractedReasoning.isEmpty && resolvedFinal.reasoning.isEmpty {
+                            resolvedFinal.reasoning = extractedReasoning
+                        }
+                        resolvedFinal.content = visibleText
                         let context: ContextInfo? = donePayload?.context
-                        continuation.yield(.finished(finalMessage, usage, nil, context))
+                        continuation.yield(.finished(resolvedFinal, usage, nil, context))
                     case .failed:
                         // Coordinator already yielded .failed StreamingUpdate
                         // with error category/action. Reload conversation so
@@ -859,7 +929,12 @@ extension LiveHeraldClient {
                 errorAction: data.errorAction
             )
         } catch let decodingError as DecodingError {
-            Self.logger.error("Job status decode failure: \(decodingError) — check envelope shape")
+            Self.logger.error("Job status decode failure: \(String(describing: decodingError))")
+            if case .keyNotFound(let key, let context) = decodingError {
+                Self.logger.error("  → missing key '\(key.stringValue)' at \(context.codingPath.map(\.stringValue))")
+            } else if case .typeMismatch(let type, let context) = decodingError {
+                Self.logger.error("  → type mismatch: expected \(type) at \(context.codingPath.map(\.stringValue))")
+            }
             return nil
         } catch {
             Self.logger.warning("Failed to get job status: \(error.localizedDescription)")
@@ -1027,19 +1102,60 @@ extension LiveHeraldClient {
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
 
-        guard !matches.isEmpty else { return ("", text) }
+        let reasoning: String
+        if !matches.isEmpty {
+            reasoning = matches.compactMap { match -> String? in
+                guard match.numberOfRanges > 2 else { return nil }
+                return nsText.substring(with: match.range(at: 2))
+            }.joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            // No closed tags found — check for unclosed opening tag
+            // (model was interrupted mid-reasoning, e.g. context full).
+            let unclosedPattern = "<(" + tags.joined(separator: "|") + ")>([\\s\\S]*?)$"
+            if let unclosedRegex = try? NSRegularExpression(
+                pattern: unclosedPattern,
+                options: [.caseInsensitive]
+            ),
+               let match = unclosedRegex.firstMatch(
+                in: text,
+                range: NSRange(location: 0, length: nsText.length)
+               ),
+               match.numberOfRanges > 2 {
+                reasoning = nsText.substring(with: match.range(at: 2))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                reasoning = ""
+            }
+        }
 
-        let reasoning = matches.compactMap { match -> String? in
-            guard match.numberOfRanges > 2 else { return nil }
-            return nsText.substring(with: match.range(at: 2))
-        }.joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reasoning.isEmpty else { return ("", text) }
 
-        let visible = regex.stringByReplacingMatches(
-            in: text,
-            range: NSRange(location: 0, length: nsText.length),
-            withTemplate: ""
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip ALL tag variants (closed and unclosed) from visible content
+        let closedStripPattern = "<(" + tags.joined(separator: "|") + ")>.*?</\\1>"
+        let unclosedStripPattern = "<(" + tags.joined(separator: "|") + ")>[\\s\\S]*$"
+        var visible = text
+        if let closedRegex = try? NSRegularExpression(
+            pattern: closedStripPattern,
+            options: [.dotMatchesLineSeparators, .caseInsensitive]
+        ) {
+            visible = closedRegex.stringByReplacingMatches(
+                in: visible,
+                range: NSRange(location: 0, length: (visible as NSString).length),
+                withTemplate: ""
+            )
+        }
+        if let unclosedRegex = try? NSRegularExpression(
+            pattern: unclosedStripPattern,
+            options: [.caseInsensitive]
+        ) {
+            visible = unclosedRegex.stringByReplacingMatches(
+                in: visible,
+                range: NSRange(location: 0, length: (visible as NSString).length),
+                withTemplate: ""
+            )
+        }
+        visible = visible.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return (reasoning, visible)
     }

@@ -79,6 +79,16 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         sender == .voiceUser || sender == .voiceHerald
     }
 
+    /// Composite ID that changes when content length changes during streaming.
+    /// Used by LazyVStack to force layout recalculation as streaming text grows,
+    /// preventing the "content expands but scroll doesn't track" issue.
+    var streamingCompositeID: String {
+        if isStreaming {
+            return "\(id.uuidString)-c\(content.count)-r\(reasoning.count)"
+        }
+        return id.uuidString
+    }
+
     init(
         id: UUID = UUID(),
         clientMessageID: UUID? = nil,
