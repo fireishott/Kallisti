@@ -26,6 +26,32 @@ final class LiveHeraldHostService: HeraldHostServiceProtocol {
         let lastSeenAt: Date?
         let lastConnectedAt: Date?
         let isOnline: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case id, displayName, hostname, platform
+            case connectorVersion, heraldCommand, heraldVersion, heraldModel
+            case lastSeenAt, lastConnectedAt, isOnline
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // id is required — a host without an id is meaningless
+            id = try container.decode(UUID.self, forKey: .id)
+            // All other fields are resilient to being absent or malformed
+            displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+            hostname = try container.decodeIfPresent(String.self, forKey: .hostname)
+            platform = try container.decodeIfPresent(String.self, forKey: .platform)
+            connectorVersion = try container.decodeIfPresent(String.self, forKey: .connectorVersion)
+            heraldCommand = try container.decodeIfPresent(String.self, forKey: .heraldCommand)
+            heraldVersion = try container.decodeIfPresent(String.self, forKey: .heraldVersion)
+            heraldModel = try container.decodeIfPresent(String.self, forKey: .heraldModel)
+            lastSeenAt = try container.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+            lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+            // Default isOnline to false if missing — a missing key shouldn't
+            // break the entire host decode (the field may have been added in a
+            // newer relay version that the client predates).
+            isOnline = try container.decodeIfPresent(Bool.self, forKey: .isOnline) ?? false
+        }
     }
 
     private let apiClient: RelayAPIClient

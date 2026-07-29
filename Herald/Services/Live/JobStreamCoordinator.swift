@@ -7,6 +7,7 @@ actor JobStreamCoordinator {
     /// Terminal payload extracted from the done event.
     struct TerminalResult: Sendable {
         let text: String?
+        let reasoning: String?
         let promptTokens: Int?
         let completionTokens: Int?
         let totalTokens: Int?
@@ -23,19 +24,6 @@ actor JobStreamCoordinator {
         case cancelled
         case error(String)
     }
-    /// Whether an inbound event should be applied.
-    ///
-    /// The facade replays a job's backlog renumbered from 0 on every
-    /// reconnect and ignores `Last-Event-ID`, so after a reconnect the
-    /// terminal `done` arrives at a seq we have already applied. Dropping it
-    /// as a duplicate leaves the stream hanging forever, so terminal events
-    /// are always applied.
-    nonisolated static func shouldApply(seq: Int, lastAppliedSeq: Int, isTerminal: Bool) -> Bool {
-        if isTerminal { return true }
-        if lastAppliedSeq == 0 { return true }
-        return seq > lastAppliedSeq
-    }
-
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "JobStreamCoordinator")
 
     let jobId: UUID
@@ -55,6 +43,7 @@ actor JobStreamCoordinator {
     private static let maxBackoff: TimeInterval = 15.0
     private var pendingContextWindow: Int?
     private var pendingContextUsed: Int?
+    private var pendingReasoning: String?
 
     /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
     /// arrives within this window, the stream is considered dead.
@@ -151,11 +140,9 @@ actor JobStreamCoordinator {
                     // Allow seq == 0 when lastAppliedSeq is 0 (initial state) so
                     // relays that number events from 0 don't have their first
                     // event silently dropped.
-                    guard Self.shouldApply(
-                        seq: envelope.seq,
-                        lastAppliedSeq: seqBefore,
-                        isTerminal: envelope.type.isTerminal
-                    ) else { continue }
+                    if seqBefore > 0 && envelope.seq <= seqBefore {
+                        continue
+                    }
 
                     self.lastAppliedSeq = envelope.seq
                     self.lastAttempt = envelope.attempt
@@ -369,16 +356,25 @@ actor JobStreamCoordinator {
             case "completed":
                 eventType = .runCompleted
                 let text = Self.parseTerminalText(from: json) ?? ""
+                // Extract terminal reasoning from the done payload so it survives
+                // the SSE→client bridge. DeepSeek/Qwen models embed chain-of-thought
+                // as <think> tags inline in the text; the relay may also return a
+                // separate "reasoning" field or a reasoning object with a "content"
+                // key. parseTerminalReasoning handles all three shapes.
+                let terminalReasoning = Self.parseTerminalReasoning(from: json)
                 let usageDict = json["usage"] as? [String: Any]
                 let usage = usageDict.map { Usage(
                     promptTokens: $0["prompt_tokens"] as? Int,
                     completionTokens: $0["completion_tokens"] as? Int,
                     totalTokens: $0["total_tokens"] as? Int
                 )}
-                // Store context data for later extraction
+                // Store context data and reasoning for later extraction
                 if let contextDict = json["context"] as? [String: Any] {
                     self.pendingContextWindow = contextDict["window"] as? Int
                     self.pendingContextUsed = contextDict["used"] as? Int
+                }
+                if let reasoning = terminalReasoning {
+                    self.pendingReasoning = reasoning
                 }
                 payload = .runCompleted(RunCompletedPayload(messageId: "", text: text, usage: usage, diff: nil))
             case "failed":
@@ -473,6 +469,7 @@ actor JobStreamCoordinator {
         case .runCompleted(let p):
             return TerminalResult(
                 text: p.text,
+                reasoning: pendingReasoning,
                 promptTokens: p.usage?.promptTokens,
                 completionTokens: p.usage?.completionTokens,
                 totalTokens: p.usage?.totalTokens,
@@ -484,19 +481,22 @@ actor JobStreamCoordinator {
             )
         case .runFailed(let p):
             return TerminalResult(
-                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                text: nil, reasoning: nil,
+                promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
                 error: p.error, errorCategory: p.errorCategory, errorAction: p.errorAction
             )
         case .runCancelled(let p):
             return TerminalResult(
-                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                text: nil, reasoning: nil,
+                promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
                 error: p.reason, errorCategory: nil, errorAction: nil
             )
         default:
             return TerminalResult(
-                text: nil, promptTokens: nil, completionTokens: nil, totalTokens: nil,
+                text: nil, reasoning: nil,
+                promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
                 error: nil, errorCategory: nil, errorAction: nil
             )
