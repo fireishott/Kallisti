@@ -315,3 +315,49 @@ async def test_job_with_null_session_skips_lock():
     )
 
     _http_jobs.pop("job-null", None)
+
+
+@pytest.mark.asyncio
+async def test_auto_title_persists_under_every_app_id():
+    """B40: one conversation is addressable under two ids — title both.
+
+    The session list keys off the canonical `_app_uuid(hermes_sid)` while the
+    open thread is keyed by the UUID the app minted and sent as
+    `conversationId`. Writing the title to only one of them left the other view
+    showing a placeholder forever.
+    """
+    handler = FakeHandler()
+    canonical = "9aed5edd-5d03-58bb-bd2c-781737ec34ff"
+    app_sent = "62ccd628-9d71-491e-96c5-fed98658b0a4"
+
+    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+        await _auto_title_and_persist(
+            handler,
+            text="Sup homie.",
+            hermes_sid="api-live",
+            app_uuid=[canonical, app_sent],
+        )
+
+    targeted = {call[0][0] for call in mock_set_meta.call_args_list}
+    assert targeted == {canonical, app_sent}, (
+        f"title must land on both conversation ids, got {targeted}"
+    )
+    for call in mock_set_meta.call_args_list:
+        assert call[1]["title"] == "Test Title"
+
+
+@pytest.mark.asyncio
+async def test_auto_title_still_accepts_a_single_id():
+    """The string form stays supported — callers outside _run_http_job use it."""
+    handler = FakeHandler()
+
+    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+        await _auto_title_and_persist(
+            handler,
+            text="Sup homie.",
+            hermes_sid="api-live",
+            app_uuid="canonical-app-uuid",
+        )
+
+    mock_set_meta.assert_called_once()
+    assert mock_set_meta.call_args[0][0] == "canonical-app-uuid"

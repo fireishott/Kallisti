@@ -214,16 +214,26 @@ async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str
     return None
 
 
-async def _auto_title_and_persist(handler, text: str, hermes_sid: str, app_uuid: str) -> None:
-    """Fire-and-forget wrapper: generate a title and persist it."""
+async def _auto_title_and_persist(
+    handler, text: str, hermes_sid: str, app_uuid: str | list[str]
+) -> None:
+    """Fire-and-forget wrapper: generate a title and persist it.
+
+    B40: *app_uuid* may be a list.  One conversation is addressable under both
+    the id the app minted and the canonical ``_app_uuid(hermes_sid)``; the
+    title has to land on both or the view that used the other id keeps showing
+    a placeholder.
+    """
+    app_uuids = [app_uuid] if isinstance(app_uuid, str) else list(app_uuid)
     try:
-        title = await _auto_title(handler, text, hermes_sid, app_uuid)
+        title = await _auto_title(handler, text, hermes_sid, app_uuids[0])
         if title:
             from .session_store import set_session_meta
-            set_session_meta(app_uuid, title=title)
-            logger.info("_auto_title: set title %r for %s", title, app_uuid)
+            for target in app_uuids:
+                set_session_meta(target, title=title)
+            logger.info("_auto_title: set title %r for %s", title, app_uuids)
     except Exception:
-        logger.exception("_auto_title_and_persist failed for %s", app_uuid)
+        logger.exception("_auto_title_and_persist failed for %s", app_uuids)
 
 
 def _now_iso() -> str:
@@ -299,6 +309,10 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     """Drain the connector's message generator into the job record."""
     job = _http_jobs[job_id]
     accumulated = ""
+    # Bounds the state.db lookup that resolves which session this turn landed
+    # in, so an identical message sent days ago can never be matched instead.
+    # A small skew allowance covers clock jitter between writer and reader.
+    job_started_at = time.time() - 5.0
 
     def _publish(event: dict) -> None:
         job["events"].append(event)
@@ -342,12 +356,25 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         # the real Hermes session id (e.g. "api-9af38ce…") even when
                         # the facade was called with an app-facing UUID.
                         hermes_sid = data.get("sessionId")
-                        if not hermes_sid:
-                            # Cold start: session_id was None and the runtime didn't
-                            # return one.  Fall back to querying state.db for the
-                            # session that received the user message.
-                            from .session_store import _find_session_by_recent_message
-                            hermes_sid = _find_session_by_recent_message(text)
+                        # B40: the reported id is a claim, not a fact.  Hermes'
+                        # api_server echoes back the X-Hermes-Session-Id it was
+                        # handed even when it could not resume that session and
+                        # wrote the turn into its default session instead
+                        # (herald_api_executor.py:347).  state.db is the only
+                        # authority on where the message actually landed; a
+                        # wrong mapping here files the reply under a session the
+                        # app can never read back.
+                        from .session_store import _find_session_by_recent_message
+                        actual_sid = _find_session_by_recent_message(
+                            text, since=job_started_at
+                        )
+                        if actual_sid and actual_sid != hermes_sid:
+                            logger.warning(
+                                "Runtime reported session %s for job %s but the "
+                                "message was written to %s — trusting state.db",
+                                hermes_sid, job_id, actual_sid,
+                            )
+                        hermes_sid = actual_sid or hermes_sid
                         if hermes_sid:
                             from .session_store import _app_uuid, _persist_hermes_mapping
                             # Record the canonical mapping: app_uuid → hermes_id
@@ -366,12 +393,33 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # B38 P1-1: auto-generate a title if the session
                             # has none.  Fire-and-forget — don't delay the
                             # job completion for title generation.
+                            #
+                            # B40: persist under the app's own conversation id
+                            # too.  The session list keys off the canonical id
+                            # but the open thread is keyed by the id the app
+                            # sent, so writing only the canonical one left the
+                            # app's conversation titleless.
                             from .session_store import get_session_meta, set_session_meta
-                            meta = get_session_meta(canonical_app_id)
-                            if not meta.get("title"):
+                            title_ids = [canonical_app_id]
+                            if response_conv_id and response_conv_id != canonical_app_id:
+                                title_ids.append(response_conv_id)
+                            existing_title = next(
+                                (t for t in (
+                                    get_session_meta(i).get("title") for i in title_ids
+                                ) if t),
+                                None,
+                            )
+                            if existing_title:
+                                # Backfill: an id that came into use later must
+                                # not stay untitled just because its sibling
+                                # already carries the title.
+                                for i in title_ids:
+                                    if not get_session_meta(i).get("title"):
+                                        set_session_meta(i, title=existing_title)
+                            else:
                                 asyncio.create_task(
                                     _auto_title_and_persist(
-                                        handler, text, hermes_sid, canonical_app_id
+                                        handler, text, hermes_sid, title_ids
                                     )
                                 )
                         continue          # re-emitted with jobId in the finally block
@@ -785,12 +833,24 @@ async def send_message(request: Request) -> JSONResponse:
     # MessageResponse (LiveHeraldClient.swift:12-21): replyState and conversation
     # are non-optional.  RelayConversation.title is a non-optional String and
     # .updatedAt a non-optional Date — null in either is a decode failure.
+    #
+    # B40: return the conversation's real title.  The app merges this payload
+    # over its open thread on every send (ChatStore.mergeConversationMetadata),
+    # so the hardcoded "Herald" placeholder reset the title of an already-titled
+    # conversation on each turn — one half of "chat titles not being named".
+    from .session_store import session_title as _session_title
+    try:
+        conversation_title = _session_title(app_conversation_id) or "Herald"
+    except Exception:                             # noqa: BLE001 — never fail a send
+        logger.exception("session_title lookup failed for %s", app_conversation_id)
+        conversation_title = "Herald"
+
     return JSONResponse({
         "replyState": "pending",
         "jobId": job_id,
         "conversation": {
             "id": app_conversation_id,
-            "title": "Herald",
+            "title": conversation_title,
             "updatedAt": _now_iso(),
             "messages": [user_message],
             "latestUsage": None,

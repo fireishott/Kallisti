@@ -60,6 +60,14 @@ def _connect() -> sqlite3.Connection:
 # independently if desired.
 _APP_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # NAMESPACE_URL
 
+# B40: title generation runs in a throwaway ``title-<uuid4>`` session (B39 T2).
+# Those turns go through the same message handler, so Hermes records them with
+# ``source='api_server'`` exactly like a user conversation — B39's assumption
+# that the prefix alone kept them out of the session list was wrong, and every
+# titled chat gained a phantom "New Chat" sibling in the app's list.  Filter
+# them out explicitly wherever sessions are surfaced to the app.
+_NOT_INTERNAL_SESSION = "id NOT LIKE 'title-%'"
+
 
 def _app_uuid(hermes_id: str) -> str:
     """Derive a deterministic, stable app-facing UUID from a Hermes session id.
@@ -244,12 +252,14 @@ def session_list(
         if profile:
             db_total_row = conn.execute(
                 "SELECT COUNT(*) FROM sessions "
-                "WHERE source = 'api_server' AND profile_name = ?",
+                "WHERE source = 'api_server' AND profile_name = ? "
+                f"AND {_NOT_INTERNAL_SESSION}",
                 (profile,),
             ).fetchone()
         else:
             db_total_row = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = 'api_server'"
+                "SELECT COUNT(*) FROM sessions WHERE source = 'api_server' "
+                f"AND {_NOT_INTERNAL_SESSION}"
             ).fetchone()
         db_total = db_total_row[0] if db_total_row else 0
 
@@ -257,11 +267,12 @@ def session_list(
         fetch_limit = min(limit * 3, 1000)
         if profile:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, title, display_name, started_at, ended_at,
                        message_count, source, archived, pinned
                 FROM sessions
                 WHERE source = 'api_server' AND profile_name = ?
+                  AND {_NOT_INTERNAL_SESSION}
                 ORDER BY started_at DESC
                 LIMIT ? OFFSET ?
                 """,
@@ -269,11 +280,12 @@ def session_list(
             ).fetchall()
         else:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, title, display_name, started_at, ended_at,
                        message_count, source, archived, pinned
                 FROM sessions
                 WHERE source = 'api_server'
+                  AND {_NOT_INTERNAL_SESSION}
                 ORDER BY started_at DESC
                 LIMIT ? OFFSET ?
                 """,
@@ -285,41 +297,53 @@ def session_list(
     sessions: list[dict] = []
     tombstoned_count = 0
 
-    for r in rows:
-        hermes_id = r["id"]
-        app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+    # One connection reused for the derived-title lookups below, opened only
+    # for the page we actually emit.
+    title_conn = _connect()
+    try:
+        for r in rows:
+            hermes_id = r["id"]
+            app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
 
-        # Persist the reverse mapping in the sidecar for session_messages /
-        # session_title lookups later.
-        _persist_hermes_mapping(app_id, hermes_id)
+            # Persist the reverse mapping in the sidecar for session_messages /
+            # session_title lookups later.
+            _persist_hermes_mapping(app_id, hermes_id)
 
-        meta = sidecar.get(app_id, {})
-        if meta.get("tombstone"):
-            tombstoned_count += 1
-            continue
+            meta = sidecar.get(app_id, {})
+            if meta.get("tombstone"):
+                tombstoned_count += 1
+                continue
 
-        title = (
-            meta.get("title")
-            or r["title"]
-            or r["display_name"]
-            or "New Chat"
-        )
-        updated_at = _epoch_to_iso(
-            r["ended_at"] if r["ended_at"] else r["started_at"]
-        )
+            # B40: fall back to the opening user message before the "New Chat"
+            # placeholder.  sessions.title and display_name are NULL for every
+            # api_server row, so a session whose generated title hadn't landed
+            # in the sidecar yet (or was written under a different id) showed
+            # the placeholder permanently.
+            title = (
+                meta.get("title")
+                or r["title"]
+                or r["display_name"]
+                or _derived_title(hermes_id, conn=title_conn)
+                or "New Chat"
+            )
+            updated_at = _epoch_to_iso(
+                r["ended_at"] if r["ended_at"] else r["started_at"]
+            )
 
-        sessions.append({
-            "id": app_id,
-            "title": title,
-            "previewText": None,
-            "updatedAt": updated_at,
-            "source": r["source"] or "api_server",
-            "isPinned": bool(meta.get("pinned", r["pinned"])),
-            "isArchived": bool(meta.get("archived", r["archived"])),
-        })
+            sessions.append({
+                "id": app_id,
+                "title": title,
+                "previewText": None,
+                "updatedAt": updated_at,
+                "source": r["source"] or "api_server",
+                "isPinned": bool(meta.get("pinned", r["pinned"])),
+                "isArchived": bool(meta.get("archived", r["archived"])),
+            })
 
-        if len(sessions) >= limit:
-            break
+            if len(sessions) >= limit:
+                break
+    finally:
+        title_conn.close()
 
     # Total = db rows - tombstones that would be dropped.
     # After P0-1, db_total already equals the emittable count because we
@@ -338,7 +362,18 @@ def session_title(session_id: str) -> str | None:
 
     *session_id* may be an app-facing UUID; it is resolved to the Hermes
     session id before querying state.db.
+
+    B40: the sidecar is consulted first.  ``sessions.title`` and
+    ``display_name`` are NULL for every ``source='api_server'`` row, so
+    reading state.db alone made this return None even for sessions whose
+    generated title was sitting in the sidecar — which is what put
+    ``"title": null`` on GET /v1/sessions/{id}/conversation and left the
+    thread showing a placeholder forever.
     """
+    meta = get_session_meta(session_id)
+    if meta.get("title"):
+        return meta["title"]
+
     hermes_id = _resolve_hermes_id(session_id) or session_id
     conn = _connect()
     try:
@@ -349,31 +384,91 @@ def session_title(session_id: str) -> str | None:
     finally:
         conn.close()
 
+    if row is not None and (row["title"] or row["display_name"]):
+        return row["title"] or row["display_name"]
+
+    # Last resort: derive from the opening user message rather than reporting
+    # "no title".  A session that has messages always has something better to
+    # show than a placeholder.
+    return _derived_title(hermes_id)
+
+
+def _derived_title(hermes_id: str, conn: sqlite3.Connection | None = None) -> str | None:
+    """Build a title from a session's first user message. None if it has none.
+
+    Deterministic and free — used whenever no stored title exists so the app
+    never has to render a placeholder for a session that has real content.
+    """
+    owned = conn is None
+    conn = conn or _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT content FROM messages
+            WHERE session_id = ?
+              AND role = 'user'
+              AND content != ''
+              AND active = 1
+            ORDER BY timestamp ASC
+            LIMIT 1
+            """,
+            (hermes_id,),
+        ).fetchone()
+    finally:
+        if owned:
+            conn.close()
+
     if row is None:
         return None
-    return row["title"] or row["display_name"] or None
+    first_line = str(row["content"]).strip().split("\n")[0].strip()
+    if len(first_line) < 3:
+        return None
+    return first_line[:60].rstrip() + ("…" if len(first_line) > 60 else "")
 
 
-def _find_session_by_recent_message(text: str) -> str | None:
-    """Find the Hermes session id for a recently-written user message.
+def _find_session_by_recent_message(
+    text: str, since: float | None = None
+) -> str | None:
+    """Find the Hermes session id that a user message was actually written to.
 
-    Used as a fallback when the runtime's finish event doesn't carry a
-    session_id (cold start).  Matches on message content and returns
-    the session_id of the most recently inserted match.
+    B40: this is no longer only a cold-start fallback — it is the authority on
+    where a turn landed.  Hermes' api_server echoes back the
+    ``X-Hermes-Session-Id`` it was handed even when it could not resume that
+    session and silently routed the turn into its default session instead
+    (verified live 2026-07-29: posting with ``api-32bede44b7d6813f`` returned
+    that same id while the message was written to ``20260722_144605_795809``).
+    Trusting the echoed id filed replies under a session the app could never
+    read back.
+
+    *since* bounds the match to messages written at or after that epoch, so a
+    turn is never attributed to an older session that happens to contain the
+    same text.
 
     Returns *None* if no matching message is found.
     """
     conn = _connect()
     try:
-        row = conn.execute(
-            """
-            SELECT session_id FROM messages
-            WHERE role = 'user' AND content = ? AND active = 1
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """,
-            (text,),
-        ).fetchone()
+        if since is None:
+            row = conn.execute(
+                """
+                SELECT session_id FROM messages
+                WHERE role = 'user' AND content = ? AND active = 1
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (text,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT session_id FROM messages
+                WHERE role = 'user' AND content = ? AND active = 1
+                  AND timestamp >= ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (text, since),
+            ).fetchone()
     finally:
         conn.close()
     return row["session_id"] if row else None
@@ -394,12 +489,13 @@ def session_search(query: str, limit: int = 20) -> list[dict]:
     try:
         if profile:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, title, display_name, started_at, ended_at,
                        message_count, source, archived, pinned
                 FROM sessions
                 WHERE source = 'api_server'
                   AND profile_name = ?
+                  AND {_NOT_INTERNAL_SESSION}
                   AND (title LIKE ? OR display_name LIKE ?)
                 ORDER BY started_at DESC
                 LIMIT ?
@@ -408,11 +504,12 @@ def session_search(query: str, limit: int = 20) -> list[dict]:
             ).fetchall()
         else:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, title, display_name, started_at, ended_at,
                        message_count, source, archived, pinned
                 FROM sessions
                 WHERE source = 'api_server'
+                  AND {_NOT_INTERNAL_SESSION}
                   AND (title LIKE ? OR display_name LIKE ?)
                 ORDER BY started_at DESC
                 LIMIT ?
