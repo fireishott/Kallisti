@@ -177,10 +177,15 @@ async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str
         "begins with this message. Return ONLY the title, no quotes, "
         "no punctuation at the end:\n\n" + text[:500]
     )
+    # B39 T2: use a throwaway session so the title prompt is never
+    # submitted as a real turn in the user's conversation.  The
+    # title- prefix ensures these sessions are never surfaced in
+    # session_list (which filters to source='api_server').
+    title_session_id = f"title-{uuid.uuid4()}"
     try:
         async with asyncio.timeout(15):
             accumulated = ""
-            async for event in handler(title_prompt, [], hermes_sid, None, None):
+            async for event in handler(title_prompt, [], title_session_id, None, None):
                 etype = event.get("type", "")
                 data = event.get("data", {}) or {}
                 if etype == "text_delta":
