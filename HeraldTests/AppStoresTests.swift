@@ -196,7 +196,7 @@ struct AppStoresTests {
     }
 
     @MainActor
-    private final class RecordingHeraldClient: HeraldClientProtocol {
+    fileprivate final class RecordingHeraldClient: HeraldClientProtocol {
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         var sendCallCount = 0
@@ -3220,5 +3220,161 @@ struct NotificationReplyTests {
 
         chatStore.updateConnectionStatus(.connected)
         #expect(heraldClient.connectionStatus == .connected)
+    }
+}
+
+// MARK: - B40: conversation merge must never drop a delivered reply
+
+@Suite("B40 conversation merge")
+struct B40ConversationMergeTests {
+
+    @MainActor
+    private func makeStore() -> ChatStore {
+        let suiteName = "chat-merge-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return ChatStore(
+            heraldClient: AppStoresTests.RecordingHeraldClient(),
+            persistence: UserDefaultsAppPersistenceStore(defaults: defaults)
+        )
+    }
+
+    /// The B39 P0. After `.finished`, ChatStore merges its thread into
+    /// `heraldClient.currentConversation`, which is the POST /v1/messages
+    /// payload — a conversation holding only the user message just sent. A
+    /// plain-text reply carries no reasoning, no tool activities and no diff
+    /// (the normal shape for deepseek-v4-flash), so the old preservation
+    /// predicate matched nothing and the answer was dropped straight after the
+    /// delivered check and the completion haptic.
+    @Test @MainActor
+    func plainTextReplySurvivesMergeAgainstPostResponse() {
+        let store = makeStore()
+        let conversationID = UUID()
+        let jobID = UUID()
+        let sentAt = Date()
+
+        let userMessage = Message(
+            sender: .user,
+            content: "Sup homie.",
+            timestamp: sentAt,
+            status: .delivered
+        )
+        let reply = Message(
+            sender: .herald,
+            content: "Yo, Curtis. What's the word?",
+            timestamp: sentAt.addingTimeInterval(6),
+            jobID: jobID,
+            status: .delivered
+        )
+
+        let local = Conversation(
+            id: conversationID,
+            title: "New Chat",
+            messages: [userMessage, reply]
+        )
+        // What POST /v1/messages actually returns: the user message, alone.
+        let postResponse = Conversation(
+            id: conversationID,
+            title: "Herald",
+            messages: [userMessage]
+        )
+
+        let merged = store.mergeConversationMetadata(from: local, into: postResponse)
+
+        #expect(merged?.messages.count == 2)
+        #expect(merged?.messages.last?.content == "Yo, Curtis. What's the word?")
+        #expect(merged?.messages.last?.sender == .herald)
+    }
+
+    @Test @MainActor
+    func preservedReplyKeepsChronologicalOrder() {
+        let store = makeStore()
+        let base = Date()
+        let reply = Message(
+            sender: .herald, content: "First answer",
+            timestamp: base.addingTimeInterval(1), status: .delivered
+        )
+        let laterUser = Message(
+            sender: .user, content: "Follow-up",
+            timestamp: base.addingTimeInterval(2), status: .delivered
+        )
+        let opener = Message(
+            sender: .user, content: "Opener", timestamp: base, status: .delivered
+        )
+
+        let local = Conversation(title: "New Chat", messages: [opener, reply, laterUser])
+        let refreshed = Conversation(title: "New Chat", messages: [opener, laterUser])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.map(\.content) == ["Opener", "First answer", "Follow-up"])
+    }
+
+    /// The server assigns its own message ids, so the same answer must not be
+    /// re-added alongside the server's copy of it.
+    @Test @MainActor
+    func serverCopyOfTheSameReplyIsNotDuplicated() {
+        let store = makeStore()
+        let jobID = UUID()
+        let sentAt = Date()
+        let localReply = Message(
+            sender: .herald, content: "Yo, Curtis.",
+            timestamp: sentAt, jobID: jobID, status: .delivered
+        )
+        // Same answer, different id — as returned by a real conversation fetch.
+        let serverReply = Message(
+            sender: .herald, content: "Yo, Curtis.",
+            timestamp: sentAt, jobID: jobID, status: .delivered
+        )
+
+        let local = Conversation(title: "New Chat", messages: [localReply])
+        let refreshed = Conversation(title: "New Chat", messages: [serverReply])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.count == 1)
+    }
+
+    /// B39 T5 protected only messages the overlay loop could match; a plain
+    /// reply never matched, so an empty server copy still won.
+    @Test @MainActor
+    func emptyServerCopyDoesNotBlankAPlainReply() {
+        let store = makeStore()
+        let jobID = UUID()
+        let sentAt = Date()
+
+        let localReply = Message(
+            id: UUID(), sender: .herald, content: "Yo, Curtis. What's the word?",
+            timestamp: sentAt, jobID: jobID, status: .delivered
+        )
+        let emptyServerReply = Message(
+            id: UUID(), sender: .herald, content: "",
+            timestamp: sentAt, jobID: jobID, status: .delivered
+        )
+
+        let local = Conversation(title: "New Chat", messages: [localReply])
+        let refreshed = Conversation(title: "New Chat", messages: [emptyServerReply])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.count == 1)
+        #expect(merged?.messages.first?.content == "Yo, Curtis. What's the word?")
+    }
+
+    @Test @MainActor
+    func userSetTitleStillBeatsAServerPlaceholder() {
+        let store = makeStore()
+        let local = Conversation(
+            title: "Cabo trip planning",
+            messages: [Message(sender: .user, content: "Hi", status: .delivered)]
+        )
+        let refreshed = Conversation(
+            title: "Herald",
+            messages: [Message(sender: .user, content: "Hi", status: .delivered)]
+        )
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.title == "Cabo trip planning")
     }
 }

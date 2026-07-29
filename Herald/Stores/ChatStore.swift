@@ -1412,7 +1412,9 @@ final class ChatStore {
         return await heraldClient.loadConversation()
     }
 
-    private func mergeConversationMetadata(
+    /// Internal rather than private so the merge invariants can be tested
+    /// directly — this is the function that dropped completed replies in B39.
+    func mergeConversationMetadata(
         from localConversation: Conversation?,
         into refreshedConversation: Conversation?
     ) -> Conversation? {
@@ -1457,13 +1459,17 @@ final class ChatStore {
                 })
             } else if let remoteJobID = remote.jobID {
                 // Fallback: the streaming placeholder had a client-generated UUID that
-                // differs from the server-assigned message ID.  Match on jobID + sender
-                // instead, but only for Herald messages that actually carry artifacts.
+                // differs from the server-assigned message ID.  Match on jobID + sender.
+                //
+                // B40: this used to additionally require the local message to
+                // carry toolActivities/codeDiff/reasoning, so a plain-text reply
+                // never matched — which also meant B39 T5's empty-content and
+                // truncation guards below never ran for the most common shape of
+                // answer. The artifact copies are each guarded on their own.
                 local = localConversation.messages.first(where: {
                     $0.jobID == remoteJobID
                         && $0.sender == remote.sender
                         && $0.sender == .herald
-                        && (!$0.toolActivities.isEmpty || $0.codeDiff != nil || !$0.reasoning.isEmpty)
                 })
             } else {
                 local = nil
@@ -1518,32 +1524,75 @@ final class ChatStore {
             }
         }
 
-        // Preserve local-only messages while the server is still catching up,
-        // so polling doesn't make the active reply — including its reasoning
-        // and tool activities — disappear. The .finished handler replaces the
-        // streaming placeholder with a resolved (non-streaming) message that
-        // carries artifacts; that message must survive the merge even though
-        // the stale server-side conversation doesn't know about it yet.
+        // B40 P0-1: preserve EVERY local message the refreshed payload is
+        // missing — not just streaming placeholders and artifact-carrying
+        // replies.
+        //
+        // This merge is fed `heraldClient.currentConversation`, which after a
+        // send is the POST /v1/messages payload: a conversation containing
+        // *only the user message just sent* (http_facade.py:795). The old
+        // predicate below kept a resolved reply only when it carried
+        // reasoning, toolActivities or a codeDiff — so a plain-text answer
+        // (the normal shape for deepseek-v4-flash, which emits no
+        // reasoning_content) matched nothing and was dropped by `.finished`
+        // immediately after the delivered check and the completion haptic.
+        // That is the "every indicator says done, no reply on screen" P0.
+        //
+        // Dropping a message the server merely hasn't caught up on is never
+        // correct here; keep it and let a real conversation fetch reconcile.
         let refreshedIDs = Set(refreshedConversation.messages.map(\.id))
-        let localStreamingPlaceholders = localConversation.messages.filter {
-            $0.isStreaming && !refreshedIDs.contains($0.id)
+        // Keyed by sender as well as jobID: a user message and the reply it
+        // produced share a jobID, and dropping the prompt because the server
+        // returned the answer would be its own bug.
+        let refreshedJobKeys = Set(
+            refreshedConversation.messages.compactMap { message in
+                message.jobID.map { "\($0.uuidString)|\(message.sender)" }
+            }
+        )
+        let refreshedFingerprints = Set(
+            refreshedConversation.messages.map { Self.messageFingerprint($0) }
+        )
+
+        let localOnly = localConversation.messages.filter { message in
+            if refreshedIDs.contains(message.id) { return false }
+            // The server assigns its own message ids; jobID and content are the
+            // only cross-identity handles we have, and matching on them keeps
+            // the same answer from appearing twice.
+            if let jobID = message.jobID,
+               refreshedJobKeys.contains("\(jobID.uuidString)|\(message.sender)") {
+                return false
+            }
+            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               refreshedFingerprints.contains(Self.messageFingerprint(message)) {
+                return false
+            }
+            return true
         }
-        // Also preserve recently-resolved messages (isStreaming=false but
-        // carry reasoning/toolActivities/codeDiff) that the server hasn't
-        // returned yet. Without this, simple-turn reasoning vanishes after
-        // mergeConversationMetadata because the resolved message isn't a
-        // streaming placeholder and the stale currentConversation has no
-        // matching entry.
-        let localResolvedNotOnServer = localConversation.messages.filter {
-            !$0.isStreaming
-                && !refreshedIDs.contains($0.id)
-                && $0.sender == .herald
-                && (!$0.reasoning.isEmpty || !$0.toolActivities.isEmpty || $0.codeDiff != nil)
+
+        if !localOnly.isEmpty {
+            Self.logger.info(
+                "Merge preserved \(localOnly.count) local message(s) absent from the refreshed conversation"
+            )
+            refreshedConversation.messages.append(contentsOf: localOnly)
+            // Stable sort by timestamp: appending puts a preserved reply after
+            // messages that are chronologically later than it.
+            refreshedConversation.messages = refreshedConversation.messages
+                .enumerated()
+                .sorted { lhs, rhs in
+                    lhs.element.timestamp == rhs.element.timestamp
+                        ? lhs.offset < rhs.offset
+                        : lhs.element.timestamp < rhs.element.timestamp
+                }
+                .map(\.element)
         }
-        refreshedConversation.messages.append(contentsOf: localResolvedNotOnServer)
-        refreshedConversation.messages.append(contentsOf: localStreamingPlaceholders)
 
         return refreshedConversation
+    }
+
+    /// Sender + normalized content, used to recognize the same message across
+    /// the local/server id boundary.
+    private static func messageFingerprint(_ message: Message) -> String {
+        "\(message.sender)|\(message.content.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
 
     private func mergeAttachments(_ localAttachments: [MessageAttachment], onto remoteAttachments: [MessageAttachment]) -> [MessageAttachment] {
