@@ -110,16 +110,41 @@ def _resolve_hermes_id(app_uuid: str) -> str | None:
     return meta.get("_hermes_id") if meta else None
 
 
+def _canonical_app_id(app_uuid: str) -> str:
+    """Return the listable UUID for an app id, following draft aliases.
+
+    ``POST /v1/sessions`` creates a UUID before Hermes has created its own
+    session.  Once the turn lands, that UUID is only an alias for the stable
+    UUIDv5 derived from Hermes' id; it must never become a second row.
+    """
+    meta = get_session_meta(app_uuid) or {}
+    alias = meta.get("_alias_of")
+    if alias and alias != app_uuid:
+        return str(alias)
+    hermes_id = meta.get("_hermes_id")
+    if hermes_id:
+        return _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+    return app_uuid
+
+
 def _persist_hermes_mapping(app_uuid: str, hermes_id: str) -> None:
     """Record the app-uuid ↔ hermes-id mapping in the sidecar.
 
     Idempotent — if the mapping already exists it is re-written to the same
     value.  The app_uuid is deterministic so the sidecar entry is stable.
     """
-    existing = _resolve_hermes_id(app_uuid)
-    if existing == hermes_id:
-        return  # Already recorded, avoid unnecessary writes.
-    set_session_meta(app_uuid, _hermes_id=hermes_id)
+    canonical = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+    if app_uuid != canonical:
+        # Draft ids remain resolvable for an in-flight client, but aliases are
+        # deliberately tombstoned so session_list cannot emit duplicate rows.
+        set_session_meta(
+            app_uuid,
+            _hermes_id=hermes_id,
+            _alias_of=canonical,
+            tombstone=True,
+        )
+    if _resolve_hermes_id(canonical) != hermes_id:
+        set_session_meta(canonical, _hermes_id=hermes_id)
 
 
 def _deterministic_uuid(prefix: str, value: Any) -> str:
@@ -223,6 +248,7 @@ def session_messages(
     ``_apply_reasoning_budget``).  Callers that only read role/text — the title
     derivation path — pass False and skip the transfer entirely.
     """
+    session_id = _canonical_app_id(session_id)
     hermes_id = _resolve_hermes_id(session_id) or session_id
     conn = _connect()
     try:
@@ -411,7 +437,7 @@ def session_list(
     # Count all tombstones in the sidecar (across all keys, not just this page).
     total_tombstones = sum(
         1 for v in sidecar.values()
-        if isinstance(v, dict) and v.get("tombstone")
+        if isinstance(v, dict) and v.get("tombstone") and not v.get("_alias_of")
     )
     total = max(0, db_total - total_tombstones)
     return sessions, total
@@ -430,6 +456,7 @@ def session_title(session_id: str) -> str | None:
     ``"title": null`` on GET /v1/sessions/{id}/conversation and left the
     thread showing a placeholder forever.
     """
+    session_id = _canonical_app_id(session_id)
     meta = get_session_meta(session_id)
     if meta.get("title"):
         return meta["title"]

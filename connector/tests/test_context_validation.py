@@ -1,11 +1,24 @@
-"""Tests for pre-flight context validation and structured SSE errors.
+"""Tests for pre-flight context validation and structured job errors.
+
+The WebSocket job path is NON-STREAMING by design.  Build 28 (f619866,
+"disable streaming") made ``_handle_job_streaming`` delegate straight to
+``_handle_job_complete``, which issues one ``stream: false`` request via the
+adapter's synchronous ``send_text_message`` and emits exactly one terminal
+message.  Two consequences this file encodes:
+
+  - There are no ``job.progress``/``kind: text_delta`` events on this path.
+    Deltas live on the HTTP facade (``_handle_http_message``), not here.
+  - A fake adapter must implement ``send_text_message``.  Implementing only
+    ``send_text_message_streaming`` means the adapter is never called and
+    every assertion below measures an AttributeError instead of the
+    behaviour under test.
 
 Covers:
   - _estimate_payload_tokens returns plausible estimates
   - Pre-flight check blocks over-limit jobs with job.failed + errorCategory
-  - Pre-flight check warns at 90%+ with job.progress + context_warning
-  - Normal jobs under limit stream normally (no regression)
-  - StructuredJobError carries category/detail through to WebSocket
+  - Near-limit jobs are NOT blocked and emit no context warning (B4/D4)
+  - job.result carries no fabricated context block (D4, 8ccd9c6)
+  - StructuredJobError carries category/detail through to the WebSocket
   - Empty response raises StructuredJobError with empty_response category
 """
 
@@ -13,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from herald_connector.client import (
@@ -21,9 +33,7 @@ from herald_connector.client import (
     StructuredJobError,
     _estimate_payload_tokens,
 )
-from herald_connector.herald_api_executor import StreamEvent
-from herald_connector.herald_runner import HeraldCLIExecutor
-from herald_connector.runtime_adapter import RuntimeConversationMessage
+from herald_connector.runtime_adapter import RuntimeTurnResult
 from herald_connector.state import ConnectorState, ConnectorStateStore
 
 
@@ -45,6 +55,33 @@ class FakeWebSocket:
 
     async def send(self, data: str) -> None:
         self.sent.append(json.loads(data))
+
+
+class FakeAdapter:
+    """Adapter matching the HostRuntimeAdapter contract used by the WS job path.
+
+    ``send_text_message`` is synchronous by contract — ``_handle_job_complete``
+    invokes it through ``asyncio.to_thread``.  Pass ``raises`` to exercise the
+    error-classification branches.
+    """
+
+    supports_streaming = True
+
+    def __init__(self, text: str = "Hello world!", *, session_id: str | None = None,
+                 usage: dict | None = None, raises: Exception | None = None):
+        self._text = text
+        self._session_id = session_id
+        self._usage = usage
+        self._raises = raises
+        self.calls: list[dict] = []
+
+    def send_text_message(self, **kwargs) -> RuntimeTurnResult:
+        self.calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return RuntimeTurnResult(
+            text=self._text, session_id=self._session_id, usage=self._usage,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -136,18 +173,12 @@ def test_structured_job_error_default_detail():
 
 def test_preflight_blocks_over_limit_job(tmp_path):
     """When estimated tokens exceed context window, job.failed should be sent
-    with errorCategory=context_exceeded before streaming begins."""
+    with errorCategory=context_exceeded before the upstream request."""
     store = ConnectorStateStore(state_dir=tmp_path / "preflight-over")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="Should not reach here")
-            yield StreamEvent(type="finish")
-
+    adapter = FakeAdapter("Should not reach here")
     ws = FakeWebSocket()
     job = {
         "id": "job-over-limit",
@@ -158,9 +189,10 @@ def test_preflight_blocks_over_limit_job(tmp_path):
 
     # Mock _estimate_payload_tokens to return a large number
     with patch("herald_connector.client._estimate_payload_tokens", return_value=200):
-        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    # Should have: job.started + job.failed (no streaming events)
+    # Should have: job.started + job.failed, and the model is never called
+    assert adapter.calls == []
     assert len(ws.sent) == 2
     assert ws.sent[0]["type"] == "job.started"
     assert ws.sent[1]["type"] == "job.failed"
@@ -171,20 +203,20 @@ def test_preflight_blocks_over_limit_job(tmp_path):
     assert ws.sent[1]["retryable"] is False
 
 
-def test_preflight_warns_at_90_percent(tmp_path):
-    """When estimated tokens are >90% of context window, a context_warning
-    progress event should be sent before streaming begins."""
+def test_preflight_does_not_warn_near_limit(tmp_path):
+    """A near-limit job runs normally and emits no context warning.
+
+    The old ``context_warning`` job.progress event was removed with the WS
+    streaming path in Build 28 (f619866); D4 (8ccd9c6) then deleted the iOS
+    contextWarningBanner that consumed it, because the percentage driving it
+    was fabricated.  The context ring is the only surface now.  A job at 95%
+    of the window must still run — only a genuinely over-limit job is blocked.
+    """
     store = ConnectorStateStore(state_dir=tmp_path / "preflight-warn")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="OK")
-            yield StreamEvent(type="finish", session_id="sess-warn")
-
+    adapter = FakeAdapter("OK", session_id="sess-warn")
     ws = FakeWebSocket()
     job = {
         "id": "job-warn",
@@ -193,36 +225,27 @@ def test_preflight_warns_at_90_percent(tmp_path):
         "contextWindow": 1000,
     }
 
-    # Mock to return 950 tokens (95% of 1000)
+    # 950 tokens = 95% of 1000: near the limit but not over it.
     with patch("herald_connector.client._estimate_payload_tokens", return_value=950):
-        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    # Should have: job.started, context_warning, text_delta, job.result
-    assert len(ws.sent) == 4
-    assert ws.sent[0]["type"] == "job.started"
-    assert ws.sent[1]["type"] == "job.progress"
-    assert ws.sent[1]["kind"] == "context_warning"
-    assert ws.sent[1]["estimatedTokens"] == 950
-    assert ws.sent[1]["contextLimit"] == 1000
-    assert ws.sent[2]["type"] == "job.progress"
-    assert ws.sent[2]["kind"] == "text_delta"
-    assert ws.sent[3]["type"] == "job.result"
+    assert len(adapter.calls) == 1
+    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
+    assert ws.sent[1]["text"] == "OK"
+    assert not [m for m in ws.sent if m.get("kind") == "context_warning"]
 
 
-def test_preflight_normal_job_streams_normally(tmp_path):
-    """Normal jobs under the limit should stream without any context warnings."""
+def test_complete_path_emits_no_deltas(tmp_path):
+    """The WS job path emits one job.started and one job.result — no deltas.
+
+    Build 28 disabled streaming on this path; ``job.progress`` events with
+    ``kind: text_delta`` belong to the HTTP facade, not here.
+    """
     store = ConnectorStateStore(state_dir=tmp_path / "preflight-normal")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="Hello ")
-            yield StreamEvent(type="text_delta", data="world!")
-            yield StreamEvent(type="finish", session_id="sess-normal")
-
+    adapter = FakeAdapter("Hello world!", session_id="sess-normal")
     ws = FakeWebSocket()
     job = {
         "id": "job-normal",
@@ -231,33 +254,49 @@ def test_preflight_normal_job_streams_normally(tmp_path):
         "contextWindow": 100000,
     }
 
-    # Mock to return 100 tokens (well under limit)
     with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
-        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    # Should have: job.started, two text_deltas, job.result
-    assert len(ws.sent) == 4
-    assert ws.sent[0]["type"] == "job.started"
-    assert ws.sent[1]["type"] == "job.progress"
-    assert ws.sent[1]["kind"] == "text_delta"
-    assert ws.sent[2]["type"] == "job.progress"
-    assert ws.sent[2]["kind"] == "text_delta"
-    assert ws.sent[3]["type"] == "job.result"
+    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
+    assert not [m for m in ws.sent if m["type"] == "job.progress"]
+    assert ws.sent[1]["text"] == "Hello world!"
+    assert ws.sent[1]["sessionId"] == "sess-normal"
+
+
+def test_handle_job_streaming_delegates_to_complete(tmp_path):
+    """responseMode=streaming still resolves to the non-streaming path.
+
+    Guards the Build 28 decision: an adapter advertising streaming support
+    must not have ``send_text_message_streaming`` driven from the WS job
+    path.  If this ever changes, it should be a deliberate edit here.
+    """
+    store = ConnectorStateStore(state_dir=tmp_path / "delegates")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
+
+    class StreamingWouldFail(FakeAdapter):
+        async def send_text_message_streaming(self, **kwargs):
+            raise AssertionError("WS job path must not stream (Build 28)")
+            yield  # pragma: no cover
+
+    adapter = StreamingWouldFail("done")
+    ws = FakeWebSocket()
+    job = {"id": "job-delegate", "latestUserMessage": "Hello", "history": []}
+
+    with patch("herald_connector.client._estimate_payload_tokens", return_value=10):
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
+
+    assert len(adapter.calls) == 1
+    assert ws.sent[-1]["type"] == "job.result"
 
 
 def test_preflight_uses_context_window_from_job(tmp_path):
-    """When job has contextWindow, it should be used instead of _context_window_for."""
+    """A job-supplied contextWindow is used instead of _context_window_for."""
     store = ConnectorStateStore(state_dir=tmp_path / "preflight-override")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="OK")
-            yield StreamEvent(type="finish")
-
+    adapter = FakeAdapter("OK")
     ws = FakeWebSocket()
     job = {
         "id": "job-override",
@@ -266,29 +305,46 @@ def test_preflight_uses_context_window_from_job(tmp_path):
         "contextWindow": 500,
     }
 
-    # Mock _estimate_payload_tokens to return 400 (80% of 500, no warning)
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=400):
-        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+    # 400 is under the job's 500 limit, but over the resolver's 300 — the
+    # job value must win, so the request goes through.
+    with patch("herald_connector.client._estimate_payload_tokens", return_value=400), \
+            patch("herald_connector.client._context_window_for", return_value=300) as resolver:
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    # Should not have context_warning (400 < 500 * 0.9 = 450)
-    warning_events = [m for m in ws.sent if m.get("kind") == "context_warning"]
-    assert len(warning_events) == 0
+    resolver.assert_not_called()
+    assert ws.sent[-1]["type"] == "job.result"
 
 
-def test_preflight_logs_estimate(caplog):
-    """Pre-flight should log the token estimate and context window."""
-    import logging
+def test_preflight_proceeds_when_window_unresolvable(tmp_path):
+    """A None context window must not block the job (D4).
 
-    store = ConnectorStateStore(state_dir=Path("/tmp/preflight-log"))
+    _context_window_for returns None instead of a fabricated 256K when the
+    agent subprocess cannot be reached; the pre-flight check has to treat
+    that as "unknown", not "zero".
+    """
+    store = ConnectorStateStore(state_dir=tmp_path / "preflight-none")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
+    adapter = FakeAdapter("OK")
+    ws = FakeWebSocket()
+    job = {"id": "job-nowindow", "latestUserMessage": "Hello", "history": []}
 
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="OK")
-            yield StreamEvent(type="finish")
+    with patch("herald_connector.client._estimate_payload_tokens", return_value=999_999), \
+            patch("herald_connector.client._context_window_for", return_value=None):
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
+
+    assert len(adapter.calls) == 1
+    assert ws.sent[-1]["type"] == "job.result"
+
+
+def test_preflight_logs_estimate(tmp_path, caplog):
+    """Pre-flight should log the token estimate and context window."""
+    import logging
+
+    store = ConnectorStateStore(state_dir=tmp_path / "preflight-log")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store)
 
     ws = FakeWebSocket()
     job = {
@@ -300,7 +356,7 @@ def test_preflight_logs_estimate(caplog):
 
     with caplog.at_level(logging.INFO, logger="herald.connector"):
         with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
-            asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+            asyncio.run(connector._handle_job_streaming(ws, job, FakeAdapter("OK")))
 
     assert any("Pre-flight estimate" in record.message for record in caplog.records)
 
@@ -317,21 +373,16 @@ def test_structured_job_error_propagates_category(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeErrorAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            raise StructuredJobError(
-                "Session too long",
-                category="context_exceeded",
-                detail={"estimatedTokens": 200000, "contextLimit": 192000},
-            )
-            yield  # pragma: no cover
+    adapter = FakeAdapter(raises=StructuredJobError(
+        "Session too long",
+        category="context_exceeded",
+        detail={"estimatedTokens": 200000, "contextLimit": 192000},
+    ))
 
     ws = FakeWebSocket()
     job = {"id": "job-structured-error", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(ws.sent) == 2
     assert ws.sent[0]["type"] == "job.started"
@@ -347,16 +398,12 @@ def test_structured_job_error_empty_response(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeEmptyAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="finish", session_id="sess-empty")
+    adapter = FakeAdapter("", session_id="sess-empty")
 
     ws = FakeWebSocket()
     job = {"id": "job-empty", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeEmptyAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(ws.sent) == 2
     assert ws.sent[0]["type"] == "job.started"
@@ -372,17 +419,12 @@ def test_regular_exception_classified_as_internal_error(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeErrorAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            raise RuntimeError("Something went wrong")
-            yield  # pragma: no cover
+    adapter = FakeAdapter(raises=RuntimeError("Something went wrong"))
 
     ws = FakeWebSocket()
     job = {"id": "job-regular", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(ws.sent) == 2
     assert ws.sent[1]["type"] == "job.failed"
@@ -397,20 +439,17 @@ def test_timeout_exception_classified(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeTimeoutAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            raise TimeoutError("Connection timed out")
-            yield  # pragma: no cover
+    adapter = FakeAdapter(raises=TimeoutError("Connection timed out"))
 
     ws = FakeWebSocket()
     job = {"id": "job-timeout", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeTimeoutAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
+    assert len(adapter.calls) == 1
     assert ws.sent[1]["errorCategory"] == "timeout"
     assert ws.sent[1]["errorAction"] == "retry"
+    assert ws.sent[1]["retryable"] is True
 
 
 def test_rate_limit_exception_classified(tmp_path):
@@ -419,18 +458,14 @@ def test_rate_limit_exception_classified(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeRateLimitAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            raise RuntimeError("Rate limit exceeded (429)")
-            yield  # pragma: no cover
+    adapter = FakeAdapter(raises=RuntimeError("Rate limit exceeded (429)"))
 
     ws = FakeWebSocket()
     job = {"id": "job-ratelimit", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeRateLimitAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
+    assert len(adapter.calls) == 1
     assert ws.sent[1]["errorCategory"] == "rate_limited"
     assert ws.sent[1]["errorAction"] == "wait"
 
@@ -441,39 +476,39 @@ def test_structured_error_action_preserved(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStructuredAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            raise StructuredJobError(
-                "Context overflow",
-                category="context_exceeded",
-                detail={"action": "new_session", "estimatedTokens": 200000},
-            )
-            yield  # pragma: no cover
+    adapter = FakeAdapter(raises=StructuredJobError(
+        "Context overflow",
+        category="context_exceeded",
+        detail={"action": "new_session", "estimatedTokens": 200000},
+    ))
 
     ws = FakeWebSocket()
     job = {"id": "job-action", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeStructuredAdapter()))
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert ws.sent[1]["errorCategory"] == "context_exceeded"
     assert ws.sent[1]["errorAction"] == "new_session"
 
 
-def test_job_result_includes_context_info(tmp_path):
-    """job.result payload should include context window and used tokens."""
+def test_job_result_omits_fabricated_context_block(tmp_path):
+    """job.result must NOT carry a context block (D4, 8ccd9c6).
+
+    The old block reported ``used`` as cumulative billing tokens and
+    ``window`` as a 256K fallback — neither was a context measurement, and a
+    2%-full session rendered as 90%.  D4 removed it from this payload and
+    deleted the iOS banner that displayed it.  Real context data is to come
+    from the agent's ContextCompressor once exposed upstream; until then the
+    field must stay absent rather than wrong, because
+    LiveHeraldClient only computes a ring when both window and used decode.
+    """
     store = ConnectorStateStore(state_dir=tmp_path / "context-info")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="Hello world!")
-            yield StreamEvent(type="finish", session_id="sess-ctx")
-
+    adapter = FakeAdapter(
+        "Hello world!", session_id="sess-ctx", usage={"total_tokens": 4321},
+    )
     ws = FakeWebSocket()
     job = {
         "id": "job-ctx",
@@ -483,14 +518,12 @@ def test_job_result_includes_context_info(tmp_path):
     }
 
     with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
-        asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))
+        asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    # Find the job.result message
     result_messages = [m for m in ws.sent if m.get("type") == "job.result"]
     assert len(result_messages) == 1
     result = result_messages[0]
 
-    # Verify context info is present
-    assert "context" in result
-    assert result["context"]["window"] == 200000
-    assert result["context"]["used"] >= 0  # usage may be None from fake adapter
+    assert "context" not in result
+    # Raw usage is still forwarded — it is billing data, not a context gauge.
+    assert result["usage"] == {"total_tokens": 4321}

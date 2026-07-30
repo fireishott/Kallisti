@@ -1,14 +1,29 @@
-"""Tests for the connector's streaming job handler and API executor.
+"""Tests for the connector's job handler and API executor.
+
+Note on naming: this file predates Build 28 (f619866), which disabled
+streaming on the WebSocket job path — ``_handle_job_streaming`` now
+delegates to ``_handle_job_complete``, which makes one ``stream: false``
+request through the adapter's synchronous ``send_text_message``.  The job
+tests below therefore assert the *complete* contract (one job.started, one
+terminal message, no deltas).  Streaming itself is still live and still
+tested here, but at its real location: the HeraldAPIRuntimeAdapter
+pass-through consumed by the HTTP facade.
+
+A fake adapter for the job path must implement ``send_text_message``.
+Implementing only ``send_text_message_streaming`` means the adapter is
+never called and the assertions measure an AttributeError instead of the
+behaviour under test — which is how ``sends_failed_on_empty_response``
+used to pass on the substring "empty" in its own fake's class name.
 
 Covers:
-  - _handle_job_streaming translates StreamEvents into WebSocket messages
-  - text_delta events accumulate and are sent as job.progress
-  - tool_activity events are sent as job.progress with kind=tool_activity
-  - finish event triggers job.result with accumulated text, sessionId, and usage
+  - _handle_job_complete emits job.started + exactly one terminal message
   - empty response triggers job.failed
-  - exceptions during streaming trigger job.failed
-  - HermesAPIExecutor SSE line parsing (tool progress regex, content deltas)
-  - HermesAPIRuntimeAdapter streaming pass-through
+  - exceptions during the turn trigger job.failed, transport errors retryable
+  - history/sessionId pass through to the adapter
+  - git diff capture around the turn
+  - heartbeats continue during a long model call
+  - HeraldAPIExecutor SSE line parsing (tool progress regex, content deltas)
+  - HeraldAPIRuntimeAdapter streaming pass-through
 """
 
 from __future__ import annotations
@@ -16,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import httpx
 import json
+import time
 from dataclasses import dataclass
 from typing import AsyncIterator
 
@@ -23,10 +39,11 @@ from herald_connector.client import HermesMobileConnector
 from herald_connector.hermes_api_executor import (
     StreamEvent,
 )
-from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
 from herald_connector.runtime_adapter import (
     HermesAPIRuntimeAdapter,
     RuntimeConversationMessage,
+    RuntimeTurnResult,
 )
 from herald_connector.state import (
     ConnectorState,
@@ -44,16 +61,16 @@ def make_enrolled_state() -> ConnectorState:
     )
 
 
-def make_executor() -> HermesCLIExecutor:
-    return HermesCLIExecutor(
-        ConnectorHermesSettings(
-            hermes_command="hermes",
-            hermes_workdir=None,
-            hermes_provider=None,
-            hermes_model=None,
-            hermes_toolsets=None,
-            hermes_source="tool",
-            hermes_history_limit=20,
+def make_executor() -> HeraldCLIExecutor:
+    return HeraldCLIExecutor(
+        ConnectorHeraldSettings(
+            herald_command="hermes",
+            herald_workdir=None,
+            herald_provider=None,
+            herald_model=None,
+            herald_toolsets=None,
+            herald_source="tool",
+            herald_history_limit=20,
         )
     )
 
@@ -73,8 +90,40 @@ class FakeWebSocket:
         self.sent.append(json.loads(data))
 
 
+class FakeAdapter:
+    """Adapter matching the HostRuntimeAdapter contract used by the job path.
+
+    ``send_text_message`` is synchronous by contract — ``_handle_job_complete``
+    calls it through ``asyncio.to_thread``.  ``before_return`` runs inside that
+    call, which is where a test can simulate the model touching the filesystem
+    or stalling.
+    """
+
+    supports_streaming = True
+
+    def __init__(self, text: str = "Hello world!", *, session_id: str | None = None,
+                 usage: dict | None = None, raises: Exception | None = None,
+                 before_return=None):
+        self._text = text
+        self._session_id = session_id
+        self._usage = usage
+        self._raises = raises
+        self._before_return = before_return
+        self.calls: list[dict] = []
+
+    def send_text_message(self, **kwargs) -> RuntimeTurnResult:
+        self.calls.append(kwargs)
+        if self._before_return is not None:
+            self._before_return()
+        if self._raises is not None:
+            raise self._raises
+        return RuntimeTurnResult(
+            text=self._text, session_id=self._session_id, usage=self._usage,
+        )
+
+
 # --------------------------------------------------------------------------
-# _handle_job_streaming
+# _handle_job_complete (reached via _handle_job_streaming — see module docstring)
 # --------------------------------------------------------------------------
 
 
@@ -104,33 +153,53 @@ def test_job_heartbeat_awaits_async_sender(tmp_path):
         "type": "job.heartbeat",
         "jobId": "job-heartbeat",
         "phase": "thinking",
+        "sourceSeq": 1,
     }
 
 
-def test_handle_job_streaming_sends_progress_and_result(tmp_path):
-    """Verifies the full streaming pipeline: job.started + text_delta + tool_activity + finish
-    → WebSocket gets job.started, job.progress messages, and a final job.result."""
+def test_job_heartbeat_sequence_increments(tmp_path):
+    """Each heartbeat carries a monotonically increasing sourceSeq.
+
+    The relay orders events by sourceSeq; a heartbeat that reused a sequence
+    number would let a later event sort ahead of an earlier one.
+    """
+    store = ConnectorStateStore(state_dir=tmp_path / "heartbeat-seq")
+    connector = HermesMobileConnector(
+        state_store=store,
+        executor=make_executor(),
+        heartbeat_interval_seconds=0.01,
+    )
+    sent = []
+
+    async def exercise():
+        async def send(payload):
+            sent.append(payload)
+
+        connector._job_phases["job-seq"] = "thinking"  # noqa: SLF001
+        connector._start_job_heartbeat("job-seq", send)  # noqa: SLF001
+        await asyncio.sleep(0.055)
+        connector._stop_job_heartbeat("job-seq")  # noqa: SLF001
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    seqs = [m["sourceSeq"] for m in sent]
+    assert len(seqs) >= 2
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)
+
+
+def test_handle_job_sends_started_then_result(tmp_path):
+    """job.started then exactly one job.result — no deltas on this path."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-happy")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    events = [
-        StreamEvent(type="tool_activity", label="🔍 Reading file"),
-        StreamEvent(type="text_delta", data="Hello "),
-        StreamEvent(type="text_delta", data="world!"),
-        StreamEvent(
-            type="finish",
-            session_id="session-abc",
-            usage={"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125},
-        ),
-    ]
-
-    class FakeStreamingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            for event in events:
-                yield event
+    adapter = FakeAdapter(
+        "Hello world!",
+        session_id="session-abc",
+        usage={"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125},
+    )
 
     ws = FakeWebSocket()
     job = {
@@ -140,136 +209,79 @@ def test_handle_job_streaming_sends_progress_and_result(tmp_path):
         "sessionId": "session-prev",
     }
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeStreamingAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
-    # Should have: job.started, tool_activity progress, two text_delta progress, and one job.result
-    assert len(ws.sent) == 5
-
-    # First: job.started
-    assert ws.sent[0]["type"] == "job.started"
+    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
     assert ws.sent[0]["jobId"] == "job-123"
-
-    # Second: tool_activity
-    assert ws.sent[1]["type"] == "job.progress"
-    assert ws.sent[1]["kind"] == "tool_activity"
-    assert ws.sent[1]["label"] == "🔍 Reading file"
     assert ws.sent[1]["jobId"] == "job-123"
-
-    # Third + fourth: text_deltas
-    assert ws.sent[2]["type"] == "job.progress"
-    assert ws.sent[2]["kind"] == "text_delta"
-    assert ws.sent[2]["delta"] == "Hello "
-
-    assert ws.sent[3]["type"] == "job.progress"
-    assert ws.sent[3]["kind"] == "text_delta"
-    assert ws.sent[3]["delta"] == "world!"
-
-    # Fifth: job.result
-    assert ws.sent[4]["type"] == "job.result"
-    assert ws.sent[4]["jobId"] == "job-123"
-    assert ws.sent[4]["text"] == "Hello world!"
-    assert ws.sent[4]["sessionId"] == "session-abc"
-    assert ws.sent[4]["usage"]["total_tokens"] == 125
+    assert ws.sent[1]["text"] == "Hello world!"
+    assert ws.sent[1]["sessionId"] == "session-abc"
+    assert ws.sent[1]["usage"]["total_tokens"] == 125
 
 
-def test_handle_job_streaming_sends_failed_on_empty_response(tmp_path):
-    """If the streaming yields a finish event but no text was accumulated,
-    the handler should send job.failed (preceded by job.started)."""
+def test_handle_job_sends_failed_on_empty_response(tmp_path):
+    """A turn that returns no text should send job.failed after job.started."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-empty")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeEmptyAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="finish", session_id="sess-empty", usage=None)
-
+    adapter = FakeAdapter("", session_id="sess-empty")
     ws = FakeWebSocket()
     job = {"id": "job-empty", "latestUserMessage": "Empty", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeEmptyAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
-    # job.started + job.failed
+    assert len(adapter.calls) == 1
     assert len(ws.sent) == 2
     assert ws.sent[0]["type"] == "job.started"
     assert ws.sent[1]["type"] == "job.failed"
     assert ws.sent[1]["jobId"] == "job-empty"
-    assert "empty" in ws.sent[1]["error"].lower()
+    assert ws.sent[1]["errorCategory"] == "empty_response"
 
 
-def test_handle_job_streaming_sends_failed_on_exception(tmp_path):
-    """If the streaming adapter raises, the handler should catch and send job.failed."""
+def test_handle_job_sends_failed_on_exception(tmp_path):
+    """If the adapter raises, the handler should catch and send job.failed."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-error")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeErrorAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="partial ")
-            raise RuntimeError("API server gone")
-
+    adapter = FakeAdapter(raises=RuntimeError("API server gone"))
     ws = FakeWebSocket()
     job = {"id": "job-error", "latestUserMessage": "Crash", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
-    # Should have: job.started, one text_delta progress, and then job.failed
-    assert len(ws.sent) == 3
-    assert ws.sent[0]["type"] == "job.started"
-    assert ws.sent[1]["type"] == "job.progress"
-    assert ws.sent[1]["delta"] == "partial "
-    assert ws.sent[2]["type"] == "job.failed"
-    assert "API server gone" in ws.sent[2]["error"]
-    assert ws.sent[2]["retryable"] is False
+    assert [m["type"] for m in ws.sent] == ["job.started", "job.failed"]
+    assert "API server gone" in ws.sent[1]["error"]
+    assert ws.sent[1]["retryable"] is False
 
 
-def test_handle_job_streaming_marks_transport_failures_retryable(tmp_path):
+def test_handle_job_marks_transport_failures_retryable(tmp_path):
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-transport-error")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeErrorAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            request = httpx.Request("POST", "http://localhost:8642/v1/chat/completions")
-            raise httpx.ConnectError("connection refused", request=request)
-            yield  # pragma: no cover
+    request = httpx.Request("POST", "http://localhost:8642/v1/chat/completions")
+    adapter = FakeAdapter(raises=httpx.ConnectError("connection refused", request=request))
 
     ws = FakeWebSocket()
     job = {"id": "job-transport", "latestUserMessage": "Retry me", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeErrorAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
-    # job.started + job.failed
     assert len(ws.sent) == 2
     assert ws.sent[0]["type"] == "job.started"
     assert ws.sent[1]["type"] == "job.failed"
     assert ws.sent[1]["retryable"] is True
 
 
-def test_handle_job_streaming_passes_history_and_session(tmp_path):
-    """Verifies that history and sessionId from the job are passed through to the adapter."""
+def test_handle_job_passes_history_and_session(tmp_path):
+    """History and sessionId from the job are passed through to the adapter."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-history")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    captured = {}
-
-    class FakeCapturingAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, *, latest_user_message, history, session_id, attachments=None):
-            captured["latest_user_message"] = latest_user_message
-            captured["history"] = history
-            captured["session_id"] = session_id
-            captured["attachments"] = attachments
-            yield StreamEvent(type="text_delta", data="OK")
-            yield StreamEvent(type="finish", session_id="sess-new")
-
+    adapter = FakeAdapter("OK", session_id="sess-new")
     ws = FakeWebSocket()
     job = {
         "id": "job-hist",
@@ -281,8 +293,10 @@ def test_handle_job_streaming_passes_history_and_session(tmp_path):
         "sessionId": "session-prev-123",
     }
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeCapturingAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
+    assert len(adapter.calls) == 1
+    captured = adapter.calls[0]
     assert captured["latest_user_message"] == "Follow up question"
     assert captured["session_id"] == "session-prev-123"
     assert len(captured["history"]) == 2
@@ -336,9 +350,13 @@ def test_handle_job_cli_materializes_attachments_for_tool_access(tmp_path):
     assert "notes.txt" in captured["latest_user_message"]
 
 
-def test_handle_job_stages_attachments_then_streams(tmp_path, monkeypatch):
+def test_handle_job_stages_attachments_then_uses_api_runtime(tmp_path, monkeypatch):
     """Attachment jobs should stage files to disk, clear raw attachments, then go
-    through the streaming runtime — not the CLI path."""
+    through the API runtime — not the CLI path.
+
+    Staging happens in ``_handle_job`` before runtime selection, so it applies
+    on the complete path that Build 28 made the default.
+    """
     store = ConnectorStateStore(state_dir=tmp_path / "attachment-routing")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
@@ -351,8 +369,8 @@ def test_handle_job_stages_attachments_then_streams(tmp_path, monkeypatch):
 
     captured: dict = {}
 
-    async def fake_handle_job_streaming(websocket, job, runtime, workdir=None):  # noqa: ANN001
-        captured["streaming"] = True
+    async def fake_handle_job_complete(websocket, job, runtime, workdir=None):  # noqa: ANN001
+        captured["api"] = True
         captured["attachments"] = job.get("attachments")
         captured["user_message"] = job.get("latestUserMessage", "")
 
@@ -360,7 +378,7 @@ def test_handle_job_stages_attachments_then_streams(tmp_path, monkeypatch):
         captured["cli"] = True
 
     monkeypatch.setattr(connector, "runtime_adapter_for_state_async", fake_runtime_adapter_async)
-    monkeypatch.setattr(connector, "_handle_job_streaming", fake_handle_job_streaming)
+    monkeypatch.setattr(connector, "_handle_job_complete", fake_handle_job_complete)
     monkeypatch.setattr(connector, "_handle_job_cli", fake_handle_job_cli)
 
     job = {
@@ -379,7 +397,7 @@ def test_handle_job_stages_attachments_then_streams(tmp_path, monkeypatch):
 
     asyncio.run(connector._handle_job(FakeWebSocket(), job))  # noqa: SLF001
 
-    assert captured.get("streaming") is True
+    assert captured.get("api") is True
     assert captured.get("cli") is None
     assert captured["attachments"] is None  # raw data cleared after staging
     assert "vision_analyze" in captured["user_message"]
@@ -402,7 +420,7 @@ def test_api_runtime_adapter_streaming_yields_all_events():
     ]
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             for event in emitted_events:
                 yield event
 
@@ -438,7 +456,7 @@ def test_api_runtime_adapter_streaming_preserves_session_with_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             captured["session_id"] = session_id
             captured["history"] = history
             yield StreamEvent(type="text_delta", data="ok")
@@ -465,7 +483,7 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             captured["session_id"] = session_id
             yield StreamEvent(type="text_delta", data="ok")
             yield StreamEvent(type="finish")
@@ -493,13 +511,13 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
 def test_messages_payload_builds_openai_format():
     """The executor should build messages with 'assistant' role for 'hermes' entries."""
     from herald_connector.hermes_api_executor import HermesAPIExecutor
-    from herald_connector.hermes_runner import HermesConversationMessage
+    from herald_connector.herald_runner import HeraldConversationMessage
 
     executor = HermesAPIExecutor()
     history = [
-        HermesConversationMessage(role="user", text="Hello"),
-        HermesConversationMessage(role="hermes", text="Hi there"),
-        HermesConversationMessage(role="user", text="How are you?"),
+        HeraldConversationMessage(role="user", text="Hello"),
+        HeraldConversationMessage(role="hermes", text="Hi there"),
+        HeraldConversationMessage(role="user", text="How are you?"),
     ]
 
     messages = executor._messages_payload(  # noqa: SLF001
@@ -517,13 +535,13 @@ def test_messages_payload_builds_openai_format():
 def test_messages_payload_skips_empty_history_entries():
     """Empty/whitespace-only history entries should be filtered out."""
     from herald_connector.hermes_api_executor import HermesAPIExecutor
-    from herald_connector.hermes_runner import HermesConversationMessage
+    from herald_connector.herald_runner import HeraldConversationMessage
 
     executor = HermesAPIExecutor()
     history = [
-        HermesConversationMessage(role="user", text="Real message"),
-        HermesConversationMessage(role="hermes", text="   "),
-        HermesConversationMessage(role="user", text=""),
+        HeraldConversationMessage(role="user", text="Real message"),
+        HeraldConversationMessage(role="hermes", text="   "),
+        HeraldConversationMessage(role="user", text=""),
     ]
 
     messages = executor._messages_payload(  # noqa: SLF001
@@ -552,8 +570,8 @@ def _init_git_repo(path):
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True)
 
 
-def test_handle_job_streaming_includes_diff_when_files_change(tmp_path):
-    """If Hermes modifies files during streaming, the job.result should include diff data."""
+def test_handle_job_includes_diff_when_files_change(tmp_path):
+    """If Hermes modifies files during the turn, job.result should include diff data."""
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     _init_git_repo(repo_dir)
@@ -562,26 +580,22 @@ def test_handle_job_streaming_includes_diff_when_files_change(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeStreamingAdapterWithFileChanges:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            # Simulate Hermes modifying a file during streaming
-            (repo_dir / "main.py").write_text("print('hello world')\n")
-            yield StreamEvent(type="tool_activity", label="📝 Writing code")
-            yield StreamEvent(type="text_delta", data="Done!")
-            yield StreamEvent(type="finish", session_id="sess-diff")
+    adapter = FakeAdapter(
+        "Done!",
+        session_id="sess-diff",
+        # Simulate Hermes modifying a file while the turn is in flight.
+        before_return=lambda: (repo_dir / "main.py").write_text("print('hello world')\n"),
+    )
 
     ws = FakeWebSocket()
     job = {"id": "job-diff", "latestUserMessage": "Fix the code", "history": []}
 
     asyncio.run(
         connector._handle_job_streaming(  # noqa: SLF001
-            ws, job, FakeStreamingAdapterWithFileChanges(), workdir=str(repo_dir),
+            ws, job, adapter, workdir=str(repo_dir),
         )
     )
 
-    # Find the job.result message
     result = next(m for m in ws.sent if m["type"] == "job.result")
     assert "diff" in result
     assert len(result["diff"]["files"]) == 1
@@ -590,23 +604,16 @@ def test_handle_job_streaming_includes_diff_when_files_change(tmp_path):
     assert "1 file changed" in result["diff"]["summary"]
 
 
-def test_handle_job_streaming_no_diff_when_no_workdir(tmp_path):
+def test_handle_job_no_diff_when_no_workdir(tmp_path):
     """When workdir is None (non-git context), no diff should be included."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-no-workdir")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="Result")
-            yield StreamEvent(type="finish")
-
     ws = FakeWebSocket()
     job = {"id": "job-nodiff", "latestUserMessage": "Hello", "history": []}
 
-    asyncio.run(connector._handle_job_streaming(ws, job, FakeAdapter()))  # noqa: SLF001
+    asyncio.run(connector._handle_job_streaming(ws, job, FakeAdapter("Result")))  # noqa: SLF001
 
     result = next(m for m in ws.sent if m["type"] == "job.result")
     assert "diff" not in result
@@ -614,7 +621,7 @@ def test_handle_job_streaming_no_diff_when_no_workdir(tmp_path):
     assert ws.sent[0]["type"] == "job.started"
 
 
-def test_handle_job_streaming_no_diff_when_no_changes(tmp_path):
+def test_handle_job_no_diff_when_no_changes(tmp_path):
     """When Hermes doesn't modify any files, no diff should be included."""
     repo_dir = tmp_path / "clean-repo"
     repo_dir.mkdir()
@@ -624,19 +631,12 @@ def test_handle_job_streaming_no_diff_when_no_changes(tmp_path):
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
-    class FakeAdapter:
-        supports_streaming = True
-
-        async def send_text_message_streaming(self, **kwargs):
-            yield StreamEvent(type="text_delta", data="No changes needed")
-            yield StreamEvent(type="finish")
-
     ws = FakeWebSocket()
     job = {"id": "job-clean", "latestUserMessage": "Check the code", "history": []}
 
     asyncio.run(
         connector._handle_job_streaming(  # noqa: SLF001
-            ws, job, FakeAdapter(), workdir=str(repo_dir),
+            ws, job, FakeAdapter("No changes needed"), workdir=str(repo_dir),
         )
     )
 
@@ -755,15 +755,16 @@ def test_inline_think_parser_empty_think_block():
 # ---------------------------------------------------------------------------
 
 
-def test_heartbeat_during_long_tool(tmp_path):
-    """Heartbeats continue during 30+ second tool execution.
+def test_heartbeat_during_long_turn(tmp_path):
+    """Heartbeats continue during a long-running model turn.
 
-    The connector's _start_job_heartbeat sends job.heartbeat messages via
-    WebSocket at regular intervals. This test verifies heartbeats keep
-    flowing even when the streaming adapter yields no events for a long
-    period (simulating a 35-second tool execution).
+    _handle_job_complete starts the heartbeat before the upstream request and
+    the request itself is a blocking call on a worker thread, so the relay's
+    lease has to be renewed by the heartbeat alone. This simulates a slow turn
+    and checks the heartbeats keep flowing while it is in flight.
     """
     store = ConnectorStateStore(state_dir=tmp_path / "heartbeat-long")
+    store.save(make_enrolled_state())
     connector = HermesMobileConnector(
         state_store=store,
         executor=make_executor(),
@@ -774,17 +775,13 @@ def test_heartbeat_during_long_tool(tmp_path):
     async def exercise():
         ws = FakeWebSocket()
 
-        # Simulate a streaming adapter that has a 35-second gap
-        # between tool_activity and text_delta
-        class SlowToolAdapter:
-            supports_streaming = True
-
-            async def send_text_message_streaming(self, **kwargs):
-                yield StreamEvent(type="tool_activity", label="Running build")
-                # Simulate long tool execution — no events for a while
-                await asyncio.sleep(0.2)
-                yield StreamEvent(type="text_delta", data="Build complete")
-                yield StreamEvent(type="finish", session_id="sess-slow")
+        # Blocking sleep: send_text_message is sync and runs on a worker
+        # thread, so this holds the turn open without blocking the loop.
+        adapter = FakeAdapter(
+            "Build complete",
+            session_id="sess-slow",
+            before_return=lambda: time.sleep(0.2),
+        )
 
         job = {
             "id": "job-slow-tool",
@@ -792,19 +789,17 @@ def test_heartbeat_during_long_tool(tmp_path):
             "history": [],
         }
 
-        # Run the streaming handler
-        await connector._handle_job_streaming(ws, job, SlowToolAdapter())
+        await connector._handle_job_streaming(ws, job, adapter)
 
-        # Collect heartbeat messages sent during the gap
         for msg in ws.sent:
             if msg.get("type") == "job.heartbeat":
                 heartbeat_messages.append(msg)
 
     asyncio.run(exercise())
 
-    # At least one heartbeat should have been sent during the 200ms gap
+    # At least one heartbeat should have been sent during the 200ms turn
     assert len(heartbeat_messages) >= 1, (
-        f"Expected at least 1 heartbeat during tool gap, got {len(heartbeat_messages)}"
+        f"Expected at least 1 heartbeat during the turn, got {len(heartbeat_messages)}"
     )
     assert heartbeat_messages[0]["jobId"] == "job-slow-tool"
 
@@ -813,6 +808,7 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
     """During heartbeat-only periods, no text_delta or tool_activity events
     should be fabricated. Only job.heartbeat messages should be sent."""
     store = ConnectorStateStore(state_dir=tmp_path / "heartbeat-no-fabricate")
+    store.save(make_enrolled_state())
     connector = HermesMobileConnector(
         state_store=store,
         executor=make_executor(),
@@ -822,14 +818,11 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
     async def exercise():
         ws = FakeWebSocket()
 
-        class SilentAdapter:
-            supports_streaming = True
-
-            async def send_text_message_streaming(self, **kwargs):
-                # Long silence — only heartbeats should fill the gap
-                await asyncio.sleep(0.2)
-                yield StreamEvent(type="text_delta", data="Finally!")
-                yield StreamEvent(type="finish", session_id="sess-silent")
+        adapter = FakeAdapter(
+            "Finally!",
+            session_id="sess-silent",
+            before_return=lambda: time.sleep(0.2),
+        )
 
         job = {
             "id": "job-silent",
@@ -837,17 +830,18 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
             "history": [],
         }
 
-        await connector._handle_job_streaming(ws, job, SilentAdapter())
+        await connector._handle_job_streaming(ws, job, adapter)
 
-        # Verify: heartbeats should be the only messages before the text_delta
-        pre_text_messages = []
+        # Everything before the terminal message must be a heartbeat: the
+        # connector must never invent progress it did not receive.
+        pre_terminal = []
         for msg in ws.sent:
-            if msg.get("type") == "job.progress" and msg.get("kind") == "text_delta":
+            if msg["type"] in ("job.result", "job.failed"):
                 break
-            pre_text_messages.append(msg)
+            pre_terminal.append(msg)
 
-        # Only job.started and job.heartbeat should appear before text_delta
-        for msg in pre_text_messages:
+        assert any(m["type"] == "job.heartbeat" for m in pre_terminal)
+        for msg in pre_terminal:
             assert msg["type"] in ("job.started", "job.heartbeat"), (
                 f"Unexpected message type during silence: {msg['type']}"
             )

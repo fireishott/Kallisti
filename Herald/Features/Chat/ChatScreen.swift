@@ -142,26 +142,29 @@ struct ChatScreen: View {
             }
         }
         .onChange(of: chatStore.pendingMessageSentAt) {
-            // Debounce scroll-to-bottom to avoid fighting keyboard dismiss
-            isUserScrolling = false  // User sent a message — resume auto-scroll
+            // User sent a message — resume auto-scroll.
+            // Removed the guard !isComposerFocused: this suppressed the
+            // scroll when the keyboard was up during send, causing the new
+            // user bubble to render below the thinking placeholder.
+            isUserScrolling = false
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(300))
-                // Only scroll if keyboard is not actively dismissing
-                guard !isComposerFocused else { return }
+                try? await Task.sleep(for: .milliseconds(100))
                 scrollToBottom()
             }
         }
         .onChange(of: chatStore.streamingMessageID) { old, new in
             if old != nil && new == nil {
-                // Streaming just ended. Delay scroll by one frame (~100ms) so
-                // the placeholder→resolved message replacement has rendered
-                // before we scroll. Haptic fires immediately in ChatStore when
-                // the .finished event arrives — no delay needed here.
-                isUserScrolling = false  // Reset scroll state for next stream
+                // Streaming just ended. Scroll to the last stable (non-streaming)
+                // message to avoid the mutable streamingCompositeID race that
+                // caused thinking dots to render above the next sent reply.
+                isUserScrolling = false
                 userScrollTimer?.invalidate()
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(100))
-                    if let lastID = chatStore.conversation?.messages.last?.id {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    let stableTarget = chatStore.conversation?.messages
+                        .last(where: { !$0.isStreaming })?.id
+                        ?? chatStore.conversation?.messages.last?.id
+                    if let lastID = stableTarget {
                         withAnimation(Design.Motion.standard) {
                             scrollProxy?.scrollTo(lastID, anchor: .bottom)
                         }

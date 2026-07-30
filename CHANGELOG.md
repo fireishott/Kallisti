@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.4.1 (Build 5) - 2026-07-30
+
+### Fixed
+- **Duplicate chats with near-identical titles (P0):** A draft conversation ID
+  and the deterministic ID for the same Hermes session could both be retained,
+  listing one conversation twice. Draft IDs now become aliases of the canonical
+  session and stale cached rows are reconciled on refresh.
+- **Interrupted turns rendered as successful replies (P0):** An upstream model
+  interruption marker was displayed as a completed answer. It now resolves as
+  a retryable failure instead of receiving a delivered check or completion haptic.
+- **Historical reasoning lost on refresh (P1):** Stored reasoning is returned
+  with conversation history and rendered collapsed after a refresh. Reasoning
+  payloads are capped per message and conversation.
+- **Conversation loading on older agent databases:** History queries now probe
+  for the reasoning column before selecting it.
+
+### Added
+- **Live model reasoning (opt-in):** The connector can use the existing Hermes
+  dashboard JSON-RPC WebSocket to stream answer deltas, tool activity, and
+  reasoning as they are produced. It remains opt-in until enabled through a
+  protected connector environment file; each connection uses a short-lived
+  WebSocket ticket rather than exposing credentials to the app.
+
+### Changed
+- Session titles are derived from the opening user message rather than by a
+  separate model call.
+
 ## 2.4.0 (Build 4) - 2026-07-29
 
 ### Fixed

@@ -318,6 +318,11 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     # A small skew allowance covers clock jitter between writer and reader.
     job_started_at = time.time() - 5.0
 
+    # A turn is only successful when the connector said so.  Tracked
+    # explicitly because "the generator ended" and "the turn completed" are
+    # different facts, and conflating them reported dead turns as delivered.
+    ended_reconnecting = False
+
     def _publish(event: dict) -> None:
         job["events"].append(event)
         job["updatedAt"] = time.time()
@@ -348,6 +353,9 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         accumulated += data.get("delta", "")
                     if etype == "reasoning_delta":
                         accumulated_reasoning += data.get("delta", "")
+                    # `reconnecting` means the transport dropped mid-turn, not
+                    # that the turn finished.  Any later event supersedes it.
+                    ended_reconnecting = (etype == "reconnecting")
                     if etype == "done":
                         # The connector's own terminal event (client.py:1695-1717) carries
                         # the final text and, on failure, the error + category/action.
@@ -450,7 +458,27 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         job["error"] = str(exc)
     finally:
         if job["status"] == "running":
-            job["status"] = "completed"
+            # The generator ended without the connector's own `done` event.
+            # That is never a success: promoting it to "completed" is what put
+            # a delivered check, a green dot and a completion haptic on turns
+            # that had been cut off — sometimes with no text at all.
+            job["status"] = "failed"
+            job["errorAction"] = "retry"
+            if ended_reconnecting:
+                job["error"] = "The connection dropped before Herald finished."
+                job["errorCategory"] = "upstream_interrupted"
+            elif accumulated.strip():
+                job["error"] = "Herald stopped before finishing this turn."
+                job["errorCategory"] = "upstream_interrupted"
+            else:
+                job["error"] = "Herald ended the turn without a reply."
+                job["errorCategory"] = "empty_response"
+            logger.warning(
+                "Job %s ended without a terminal event (%s); reporting %s",
+                job_id,
+                "after reconnecting" if ended_reconnecting else "generator exhausted",
+                job["errorCategory"],
+            )
         if job["status"] == "completed":
             # Strip inline <think>...</think> blocks that may have accumulated
             # from text_delta events on models without separate reasoning_delta.

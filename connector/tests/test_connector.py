@@ -6,7 +6,7 @@ import json
 import sys
 
 from herald_connector.client import HermesMobileConnector
-from herald_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
+from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
 from herald_connector.mcp_registration import (
     MCPRegistrationStatus,
     native_mcp_readiness_message,
@@ -37,16 +37,16 @@ def make_enrolled_state() -> ConnectorState:
     )
 
 
-def make_executor() -> HermesCLIExecutor:
-    return HermesCLIExecutor(
-        ConnectorHermesSettings(
-            hermes_command="hermes",
-            hermes_workdir=None,
-            hermes_provider=None,
-            hermes_model=None,
-            hermes_toolsets=None,
-            hermes_source="tool",
-            hermes_history_limit=20,
+def make_executor() -> HeraldCLIExecutor:
+    return HeraldCLIExecutor(
+        ConnectorHeraldSettings(
+            herald_command="hermes",
+            herald_workdir=None,
+            herald_provider=None,
+            herald_model=None,
+            herald_toolsets=None,
+            herald_source="tool",
+            herald_history_limit=20,
         )
     )
 
@@ -88,8 +88,8 @@ def test_state_store_persists_with_restricted_permissions(tmp_path):
 def test_setup_creates_connector_state(monkeypatch, tmp_path):
     store = ConnectorStateStore(state_dir=tmp_path / "connector-setup")
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
-    monkeypatch.setattr(HermesCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
-    monkeypatch.setattr(HermesCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
+    monkeypatch.setattr(HeraldCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
+    monkeypatch.setattr(HeraldCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
     monkeypatch.setattr(
         "herald_connector.client.register_native_mcp_server",
         lambda state_dir: MCPRegistrationStatus(
@@ -137,8 +137,8 @@ def test_setup_creates_connector_state(monkeypatch, tmp_path):
 def test_setup_includes_installation_secret_from_env(monkeypatch, tmp_path):
     store = ConnectorStateStore(state_dir=tmp_path / "connector-setup-secret")
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
-    monkeypatch.setattr(HermesCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
-    monkeypatch.setattr(HermesCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
+    monkeypatch.setattr(HeraldCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
+    monkeypatch.setattr(HeraldCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
     monkeypatch.setenv("CONNECTOR_SETUP_SECRET", "setup-secret")
 
     class FakeResponse:
@@ -180,7 +180,7 @@ def test_setup_includes_installation_secret_from_env(monkeypatch, tmp_path):
 def test_setup_requires_explicit_relay_url_when_env_missing(monkeypatch, tmp_path):
     store = ConnectorStateStore(state_dir=tmp_path / "connector-setup-missing-relay")
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
-    monkeypatch.setattr(HermesCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
+    monkeypatch.setattr(HeraldCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
     monkeypatch.delenv("HERMES_MOBILE_RELAY_URL", raising=False)
 
     try:
@@ -371,7 +371,15 @@ model:
     }
 
 
-def test_rpc_commands_catalog_uses_updated_hermes_fallback_context_length(monkeypatch, tmp_path):
+def test_rpc_commands_catalog_reports_no_window_when_unresolvable(monkeypatch, tmp_path):
+    """contextWindow is None when the agent can't be asked — never a fallback (D4).
+
+    _context_window_for used to return 256K whenever the hermes-agent
+    subprocess was missing or failed, which is what made the client render a
+    2%-full session as 90%.  8ccd9c6 replaced that fallback with None so the
+    field is reported as unknown rather than confidently wrong.  This
+    tmp_path HERMES_HOME has no agent venv, so the resolver must give up.
+    """
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True)
     (hermes_home / "config.yaml").write_text(
@@ -394,7 +402,7 @@ model:
     assert catalog["activeModel"] == {
         "name": "gpt-5.4-mini",
         "provider": "openai-codex",
-        "contextWindow": 256000,
+        "contextWindow": None,
     }
 
 
@@ -418,8 +426,8 @@ def test_runtime_adapter_falls_back_to_cli_without_explicit_api_config(monkeypat
 def test_setup_can_skip_native_mcp_configuration(monkeypatch, tmp_path):
     store = ConnectorStateStore(state_dir=tmp_path / "connector-setup-skip")
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
-    monkeypatch.setattr(HermesCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
-    monkeypatch.setattr(HermesCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
+    monkeypatch.setattr(HeraldCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
+    monkeypatch.setattr(HeraldCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -740,7 +748,11 @@ def test_status_lines_include_core_runtime_details(tmp_path):
     )
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
     lines = connector.status_lines()
-    assert any("Relay URL: https://relay.example.com/v1" == line for line in lines)
+    # Herald 2.0 (4873920) embedded the relay in the connector: there is no
+    # outbound relay URL to report any more, only the port it listens on.
+    assert any(line.startswith("Relay server: listening on port ") for line in lines)
+    assert any(line.startswith("Gateway connected: ") for line in lines)
+    assert not any(line.startswith("Relay URL:") for line in lines)
     assert any("User ID: user-123" == line for line in lines)
     assert any("Host ID: host-123" == line for line in lines)
     assert any("Native MCP config: missing" in line or "Native MCP config: present" in line for line in lines)

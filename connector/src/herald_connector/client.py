@@ -234,6 +234,7 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
     return None
 from .git_diff import capture_diff, capture_snapshot
 from .herald_api_executor import HeraldAPIExecutor
+from .tui_gateway_executor import TuiGatewayExecutor
 
 # Compatibility symbol retained for tests and extensions written before the
 # product rename. Internal code continues to use HeraldAPIExecutor.
@@ -832,6 +833,7 @@ class HeraldConnector:
             facade_ctx.session_conversation = self._rpc_session_conversation
             facade_ctx.current_conversation = self._rpc_current_conversation
             facade_ctx.clear_conversation = self._rpc_clear_conversation
+            facade_ctx.push_register = self._rpc_push_register
             from .http_facade import set_token_validator, AccessTokenValidator
             if state.connector_credential:
                 validator = AccessTokenValidator({state.connector_credential})
@@ -1254,7 +1256,7 @@ class HeraldConnector:
                 return
 
             # Job timeout
-            job_timeout = job.get("timeoutSeconds", 180)
+            job_timeout = job.get("timeoutSeconds", 420)
 
             # ----- Non-streaming request -----
             # send_text_message() is synchronous and drives its own event loop
@@ -1679,6 +1681,21 @@ class HeraldConnector:
                         },
                     }
                     return
+                elif event.type == "error":
+                    # A sentinel-only Hermes reply represents an upstream
+                    # interruption, never a delivered assistant message.
+                    yield {
+                        "type": "done",
+                        "data": {
+                            "status": "failed",
+                            "error": event.data or "The model was interrupted upstream.",
+                            "errorCategory": event.error_category or "upstream_interrupted",
+                            "errorAction": "retry",
+                            "sessionId": event.session_id or session_id,
+                            "usage": event.usage,
+                        },
+                    }
+                    return
                 elif event.type == "stream_interrupted":
                     # D1/D2: The events stream ended without run.completed —
                     # the run may still be executing. Signal reconnect
@@ -1714,6 +1731,23 @@ class HeraldConnector:
                 conversation_id=action.get("conversationId"),
             )
         return {"success": True}
+
+    async def _rpc_push_register(self, params: dict) -> dict:
+        """Persist the mobile APNs token without ever logging its value."""
+        token = str(params.get("token") or "").strip()
+        environment = str(params.get("environment") or "production").strip().lower()
+        if not token:
+            return {"registered": False}
+        if environment not in {"production", "development"}:
+            return {"registered": False}
+
+        state = self.state_store.load()
+        state.device_token = token
+        state.device_token_environment = environment
+        self.state_store.save(state)
+        self._state = state
+        logger.info("APNs device token registered (environment=%s)", environment)
+        return {"registered": True, "environment": environment}
 
     async def _send_push_for_job(
         self,
@@ -3622,6 +3656,16 @@ You MUST return a JSON object with exactly these fields:
         config = state.runtime_config
         api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
         api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
+
+        if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
+            gateway = TuiGatewayExecutor(gateway_url=os.getenv("HERALD_GW_URL", "http://127.0.0.1:9119"))
+            if await gateway.health_check():
+                logger.info("Runtime adapter: TuiGateway (streaming+reasoning) — url=%s", gateway.gateway_url)
+                adapter = HeraldAPIRuntimeAdapter(gateway)
+                self._health_cache = (now, adapter)
+                self._active_adapter_mode = "tui_ws"
+                return adapter
+            logger.error("Runtime adapter: TuiGateway unavailable — falling back to chat_completions")
 
         if api_url or api_key:
             executor = HeraldAPIExecutor(

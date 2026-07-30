@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 from herald_connector import session_store
+from herald_connector.herald_api_executor import _is_interrupt_sentinel
 
 
 def _make_db(db_path: Path) -> sqlite3.Connection:
@@ -188,6 +189,40 @@ def test_session_title_falls_back_to_first_user_message(env):
     db, side, prof = _patched(db_path, sidecar_path)
     with db, side, prof:
         assert session_store.session_title(app_uuid) == "Sup homie."
+
+
+def test_draft_mapping_becomes_an_alias_without_changing_list_total(env):
+    """A compose UUID resolves, but cannot become a second list row."""
+    db_path, sidecar_path = env
+    draft_id = "00000000-0000-4000-8000-000000000001"
+    canonical_id = session_store._app_uuid("api-live")
+    db, side, prof = _patched(db_path, sidecar_path)
+    with db, side, prof:
+        session_store._persist_hermes_mapping(draft_id, "api-live")
+        assert session_store._canonical_app_id(draft_id) == canonical_id
+        assert session_store._resolve_hermes_id(draft_id) == "api-live"
+        messages = session_store.session_messages(draft_id)
+        sessions, total = session_store.session_list(limit=50)
+
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar[draft_id]["_alias_of"] == canonical_id
+    assert sidecar[draft_id]["tombstone"] is True
+    assert [message["text"] for message in messages] == ["Sup homie."]
+    assert [session["id"] for session in sessions].count(canonical_id) == 1
+    assert total == 2
+
+
+@pytest.mark.parametrize("text", [
+    "Operation interrupted.",
+    " Operation interrupted: handling API error (500) ",
+    "Operation interrupted during retry",
+])
+def test_interrupt_sentinels_are_not_treated_as_answers(text):
+    assert _is_interrupt_sentinel(text)
+
+
+def test_normal_reply_mentioning_interruption_is_not_a_sentinel():
+    assert not _is_interrupt_sentinel("The operation interrupted earlier, but it is fixed now.")
 
 
 def test_derived_title_is_none_for_an_empty_session(env):

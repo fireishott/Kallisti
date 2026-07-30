@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.0-306FD6?style=flat-square&labelColor=071C3D" alt="version"/>
+  <img src="https://img.shields.io/badge/version-2.4.1-306FD6?style=flat-square&labelColor=071C3D" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-306FD6?style=flat-square&labelColor=071C3D" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-F1F5F3?style=flat-square&labelColor=071C3D" alt="license"/>
@@ -34,17 +34,19 @@ HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
 ---
 
-## What's new in 2.3.7
+## What's new in 2.4.1
 
-HERALD 2.3.7 completes the **native relay migration** — the Docker relay container is replaced by an HTTP facade running directly inside the connector. The custom 4145-line FastAPI relay is gone. The iOS app speaks the same API to the connector's HTTP facade on :8010, while the Hermes gateway speaks the native relay protocol on :8765.
+HERALD 2.4.1 makes conversations more reliable when the model or network has
+an unlucky moment.
 
-- **HTTP facade** — FastAPI server inside the connector serves the full iOS API (`/v1/messages` SSE streaming, `/v1/models`, `/v1/profiles`, `/v1/model`, `/v1/profile`, `/v1/health`, sessions, commands, capabilities)
-- **Health entitlements restored** — `aps-environment`, `healthkit`, `healthkit.access`, `healthkit.background-delivery` fixed after accidental revert
-- **Speech permissions fixed** — iOS 26+ authorization no longer a no-op; TCC dialog triggers via modern Speech APIs
-- **Profile switching** — Now updates systemd `HERMES_HOME` and restarts the gateway; new `/gw/profile/switch` endpoint
-- **Log persistence** — ChatStore logs survive app restarts; Logs tab never blank
-- **Streaming timeout** — POST timeout increased 15s → 60s for large model prefill
-- **Version sync** — Build number corrected to 19 to match TestFlight
+- **One chat per conversation** — compose IDs reconcile to the actual Hermes
+  session, avoiding duplicate rows with competing titles.
+- **Clear interrupted-turn recovery** — upstream interruptions are shown as
+  retryable failures, never as successful replies.
+- **Reasoning survives refresh** — available reasoning is retained on past
+  messages and shown as a collapsed “Thought process” summary.
+- **Optional live reasoning** — when enabled, the connector uses the existing
+  Hermes dashboard gateway to stream the model’s reasoning as it is produced.
 
 ### Architecture
 
@@ -239,7 +241,8 @@ All sensitive data lives in the Keychain, not UserDefaults.
 ### Rich Chat
 - Real-time streaming with markdown rendering
 - Syntax-highlighted code blocks (Swift, Python, JS, TS, SQL, Bash)
-- Thinking blocks — collapsible reasoning accordions
+- Thinking blocks — stream live when the gateway transport is enabled, then
+  collapse into a “Thought process” summary
 - Tool call bubbles — expandable args/result
 - Markdown tables with grid-based rendering
 - Canvas — edit AI-generated code in a dedicated panel
@@ -318,6 +321,31 @@ The connector runs **four services** in one process:
 - **Native relay WS** on port 8765 — Hermes gateway connects here
 - **MCP HTTP server** on port 8767 — Streamable HTTP for remote Hermes access
 - **FastAPI host WS** — optional, for legacy pairing flow
+
+For live reasoning, HERALD can also connect to your existing Hermes dashboard
+gateway over its JSON-RPC WebSocket. That transport streams answer deltas, tool
+activity, and model reasoning; it does not require a second gateway process.
+Enable it per installation with `HERALD_TRANSPORT=tui_ws`. If the dashboard is
+auth-gated, provide the connector with its configured gateway credentials via a
+protected environment file so it can mint short-lived WebSocket tickets.
+
+```bash
+# Keep this file out of source control and readable only by the connector user.
+umask 077
+cat > ~/.config/herald-gateway-auth.env <<'EOF'
+HERALD_TRANSPORT=tui_ws
+HERALD_GW_URL=http://127.0.0.1:9119
+HERALD_GW_AUTH_PROVIDER=basic
+HERALD_GW_USERNAME=your-dashboard-user
+HERALD_GW_PASSWORD=your-dashboard-password
+EOF
+chmod 600 ~/.config/herald-gateway-auth.env
+```
+
+Reference that file from the connector service with an `EnvironmentFile`.
+Never put the password in `config.yaml`, a service unit, shell history, or the
+repository. The connector caches the dashboard session and mints a new
+short-lived, single-use ticket for each WebSocket connection.
 
 ### 2. Point Caddy at the connector
 
