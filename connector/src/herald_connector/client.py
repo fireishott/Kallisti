@@ -141,15 +141,15 @@ def _context_window_for(
     hermes_home: Path | None = None,
     base_url: str | None = None,
     provider: str | None = None,
-) -> int:
+) -> int | None:
     """Resolve context window size using Hermes's own model_metadata.
 
     Calls the Hermes agent's Python environment directly to use
     get_model_context_length() — the same resolver the TUI status bar
     uses. base_url/provider are threaded through so local/custom model
     probing works the same way it does inside hermes-agent itself.
-    Falls back to 256K (hermes-agent's documented final fallback) if the
-    subprocess fails.
+    Returns None if the subprocess fails — callers must omit context
+    data rather than fabricate a window (B4/D4).
     """
     if hermes_home is None:
         hermes_home = Path.home() / ".hermes"
@@ -157,9 +157,10 @@ def _context_window_for(
     agent_dir = hermes_home / "hermes-agent"
 
     if not agent_venv_python.exists():
-        return 256_000
+        return None
 
     try:
+        env = {**os.environ, "HERMES_HOME": str(hermes_home)}
         script = (
             "from agent.model_metadata import get_model_context_length; "
             f"print(get_model_context_length({model_name!r}, base_url={base_url!r}, provider={provider!r}))"
@@ -168,10 +169,11 @@ def _context_window_for(
             [str(agent_venv_python), "-c", script],
             cwd=str(agent_dir),
             capture_output=True, text=True, check=True, timeout=10,
+            env=env,
         )
         return int(result.stdout.strip())
     except Exception:
-        return 256_000
+        return None
 
 
 def _estimate_payload_tokens(
@@ -1253,7 +1255,7 @@ class HeraldConnector:
                 estimated_tokens, context_window, job.get("model", "unknown"), job_id,
             )
 
-            if estimated_tokens > context_window:
+            if context_window is not None and estimated_tokens > context_window:
                 await websocket.send(json.dumps({
                     "type": "job.failed",
                     "jobId": job_id,
@@ -1276,7 +1278,7 @@ class HeraldConnector:
             # This runs hermes compress to summarise older history before
             # the upstream request, preventing context_exceeded failures.
             _COMPACT_THRESHOLD = 0.8
-            if estimated_tokens > context_window * _COMPACT_THRESHOLD and context_window > 0:
+            if context_window is not None and estimated_tokens > context_window * _COMPACT_THRESHOLD and context_window > 0:
                 session_for_compact = job.get("sessionId")
                 if session_for_compact:
                     try:
@@ -1373,10 +1375,11 @@ class HeraldConnector:
                 "text": cleaned_text,
                 "sessionId": session_id,
                 "usage": usage,
-                "context": {
-                    "window": context_window,
-                    "used": usage.get("total_tokens", 0) if usage else 0,
-                },
+                # D4: context block removed — the previous implementation
+                # fabricated a percentage from cumulative billing tokens
+                # divided by a 256K fallback window.  Neither number was
+                # a context measurement.  Real context data will come from
+                # the agent's ContextCompressor once exposed upstream.
                 "reasoningStripped": was_stripped,
             }
             if media_attachments:

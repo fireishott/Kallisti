@@ -26,6 +26,16 @@
   (which it isn't once the job resolves). Added `reconcileStreamingPhase()`
   called unconditionally on every foreground path, plus a belt-and-braces
   view guard requiring `isStreaming` before showing the banner.
+- **Fabricated context percentage (P1):** The displayed context percentage was
+  computed from cumulative billing tokens divided by a 256K fallback window —
+  neither number was a context measurement. A 2% session displayed as 90%.
+  Removed the fabricated context block; the context ring in the model pill
+  already shows real data. Window resolution now returns None on failure
+  instead of a misleading 256K fallback, and HERMES_HOME is passed to the
+  agent subprocess so it resolves against the correct profile.
+- **Context banner removed:** The "Session nearly full" banner was driven by
+  the fabricated percentage. Deleted — the existing context ring is the
+  correct notification surface.
 
 ## 2.3.6 (Build 31) - 2026-07-28
 
