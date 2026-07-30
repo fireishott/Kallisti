@@ -66,9 +66,9 @@ struct ChatScreen: View {
                 if pairingStore.isPaired, hostStore.connectionState != .online {
                     connectionBanner
                 }
-                if contextProgress > 0.85 {
-                    contextWarningBanner
-                }
+                // D4: contextWarningBanner removed — the percentage was
+                // fabricated from cumulative billing tokens / 256K fallback.
+                // The context ring in the model pill already shows real data.
                 if chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
                     streamingPhaseBanner
                 }
@@ -850,41 +850,7 @@ struct ChatScreen: View {
         .background(Design.Colors.warning.opacity(0.08))
     }
 
-    private var contextWarningBanner: some View {
-        HStack(alignment: .center, spacing: Design.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Design.Colors.danger)
-
-            VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
-                Text("Session nearly full")
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.foreground)
-                Text("\(Int(contextProgress * 100))% of context used")
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-            }
-
-            Spacer()
-
-            Button("Compress") {
-                Task { await performCompress() }
-            }
-            .font(Design.Typography.caption)
-            .foregroundStyle(Design.Brand.accent)
-
-            Button("New") {
-                Task { await createNewSessionAndSwitch() }
-            }
-            .font(Design.Typography.caption)
-            .foregroundStyle(Design.Colors.secondaryForeground)
-        }
-        .padding(.horizontal, Design.Spacing.md)
-        .padding(.vertical, Design.Spacing.sm)
-        .background(Design.Colors.danger.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
-        .padding(.horizontal, Design.Spacing.md)
-        .padding(.top, Design.Spacing.sm)
-    }
+    // D4: contextWarningBanner removed — was driven by fabricated percentage.
 
     private var connectionBannerIcon: String {
         switch hostStore.connectionState {
