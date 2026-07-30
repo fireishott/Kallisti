@@ -169,6 +169,13 @@ enum Design {
         static let callout: Font = .system(size: 14, weight: .regular)
         static let footnote: Font = .system(size: 13, weight: .regular)
 
+        /// Small explanatory copy under fields and controls.
+        ///
+        /// Distinct from `caption`: helper text is prose, sometimes several
+        /// sentences, so it must not be monospaced. `caption` stays mono for
+        /// genuine metadata (timestamps, token counts, model ids).
+        static let helper: Font = .system(size: 12, weight: .regular)
+
         // MARK: Mono (status / code / metadata)
 
         /// Metadata and small technical labels.

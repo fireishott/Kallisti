@@ -429,7 +429,7 @@ private struct RelayStepView: View {
             // Title block
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 Text("Endpoint.")
-                    .font(.system(size: 42, weight: .regular, design: .monospaced))
+                    .font(.system(size: 42, weight: .regular, design: .serif))
                     .tracking(-1.9)
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
@@ -470,7 +470,7 @@ private struct RelayStepView: View {
 
                             if let hint = relayConfiguration.connectionMode.relayURLHint {
                                 Text(hint)
-                                    .font(Design.Typography.caption)
+                                    .font(Design.Typography.helper)
                                     .foregroundStyle(Design.Colors.secondaryForeground)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -629,7 +629,7 @@ private struct PairingStepView: View {
             // Title block
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 Text("Pairing\ncode.")
-                    .font(.system(size: 40, weight: .regular, design: .monospaced))
+                    .font(.system(size: 40, weight: .regular, design: .serif))
                     .tracking(-1.8)
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
@@ -739,7 +739,7 @@ private struct PairingStepView: View {
         let filled = char != nil
         return VStack(spacing: 4) {
             Text(char.map(String.init) ?? "·")
-                .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                .font(.system(size: 24, weight: .semibold, design: .serif))
                 .foregroundStyle(filled ? Design.Colors.foreground : Design.Colors.tertiaryForeground)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, Design.Spacing.xs)
@@ -768,7 +768,7 @@ private struct PermissionsStepView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 Text("System\naccess.")
-                    .font(.system(size: 38, weight: .regular, design: .monospaced))
+                    .font(.system(size: 38, weight: .regular, design: .serif))
                     .tracking(-1.6)
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
@@ -915,7 +915,7 @@ private struct ReadyStepView: View {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Design.Spacing.md) {
                     Text("Paired.")
-                        .font(.system(size: 72, weight: .regular, design: .monospaced))
+                        .font(.system(size: 72, weight: .regular, design: .serif))
                         .tracking(-4.2)
                         .textCase(.uppercase)
                         .foregroundStyle(Design.Colors.foreground)

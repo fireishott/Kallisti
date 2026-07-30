@@ -212,7 +212,7 @@ struct SettingsScreen: View {
 
                             if let hint = relayConfiguration.connectionMode.relayURLHint {
                                 Text(hint)
-                                    .font(Design.Typography.caption)
+                                    .font(Design.Typography.helper)
                                     .foregroundStyle(Design.Colors.secondaryForeground)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
