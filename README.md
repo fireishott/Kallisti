@@ -1,21 +1,23 @@
 <!-- HERALD — Self-hosted AI companion for iPhone and iPad -->
 
 <p align="center">
-  <img src="docs/assets/brand-mark.png" alt="HERALD" width="400"/>
+  <img src="docs/assets/rebrand/github/readme-banner-1600x480.png" alt="HERALD" width="100%"/>
 </p>
 
 <p align="center">
   <strong>Self-hosted AI companion for iPhone and iPad</strong>
   <br/>
+  <sub>Ancient signal. Modern interface.</sub>
+  <br/>
   <sub>Voice mode · Mimo TTS · Sensors · Rich Chat · Notes · Session management · Remote MCP</sub>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.3.7-FF6B00?style=flat-square" alt="version"/>
-  <img src="https://img.shields.io/badge/iOS-18+-0A0A0A?style=flat-square&labelColor=1A1D23&color=FF6B00" alt="iOS 18+"/>
+  <img src="https://img.shields.io/badge/version-2.4.0-306FD6?style=flat-square&labelColor=071C3D" alt="version"/>
+  <img src="https://img.shields.io/badge/iOS-18+-306FD6?style=flat-square&labelColor=071C3D" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
-  <img src="https://img.shields.io/badge/license-MIT-F5F0E8?style=flat-square&labelColor=1A1D23" alt="license"/>
-  <img src="https://img.shields.io/badge/self--hosted-true-FF3D00?style=flat-square&labelColor=1A1D23" alt="self-hosted"/>
+  <img src="https://img.shields.io/badge/license-MIT-F1F5F3?style=flat-square&labelColor=071C3D" alt="license"/>
+  <img src="https://img.shields.io/badge/self--hosted-true-1A4F97?style=flat-square&labelColor=071C3D" alt="self-hosted"/>
 </p>
 
 ---
@@ -27,7 +29,7 @@ HERALD is a **native iOS client** for the [Hermes Agent](https://github.com/Nous
 HERALD is not the AI. It is the phone interface for **your** Hermes agent.
 
 <p align="center">
-  <img src="docs/assets/onboarding-strip.svg" alt="Onboarding — Welcome, Endpoint, Paired" width="100%"/>
+  <img src="docs/assets/rebrand/website/device-showcase-1920x1200.png" alt="HERALD on iPhone and iPad" width="100%"/>
 </p>
 
 ---
@@ -226,6 +228,10 @@ All sensitive data lives in the Keychain, not UserDefaults.
 
 ## Features
 
+<p align="center">
+  <img src="docs/assets/rebrand/github/feature-strip-1600x900.png" alt="HERALD features" width="100%"/>
+</p>
+
 <table>
 <tr>
 <td width="50%">
@@ -402,7 +408,7 @@ Built on the foundation of [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS
 ---
 
 <p align="center">
-  <img src="docs/assets/brand-mark.png" alt="HERALD" width="120"/>
+  <img src="docs/assets/rebrand/logos/herald-seal-transparent.png" alt="HERALD" width="120"/>
   <br/>
   <sub>Your AI. Your server. Your rules.</sub>
 </p>

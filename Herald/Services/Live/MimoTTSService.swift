@@ -16,7 +16,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
     )
 
     private let baseURL: String
-    private let model: String
+    private let modelProvider: @MainActor () -> String
     private static let sessionTimeout: TimeInterval = 30
 
     private(set) var isPlaying = false
@@ -31,10 +31,10 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
     init(
         apiKeyProvider: @escaping @MainActor () -> String?,
         baseURL: String = "https://api.xiaomimimo.com/v1",
-        model: String = "mimo-v2.5-tts"
+        modelProvider: @escaping @MainActor () -> String = { "mimo-v2.5-tts" }
     ) {
         self.baseURL = baseURL
-        self.model = model
+        self.modelProvider = modelProvider
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = Self.sessionTimeout
         config.timeoutIntervalForResource = Self.sessionTimeout
@@ -58,6 +58,12 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
             throw TTSError.invalidURL
         }
 
+        let activeModel = modelProvider()
+        if activeModel == "mimo-v2.5-tts-voicedesign",
+           (context ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw TTSError.voiceDesignRequiresStyle
+        }
+
         // Build messages array:
         // - Optional user message for style/context control
         // - Assistant message contains the text to synthesize
@@ -68,7 +74,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
         messages.append(["role": "assistant", "content": text])
 
         let body: [String: Any] = [
-            "model": model,
+            "model": modelProvider(),
             "messages": messages,
             "audio": [
                 "format": "wav",
@@ -171,7 +177,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
                     messages.append(["role": "assistant", "content": text])
 
                     let body: [String: Any] = [
-                        "model": model,
+                        "model": modelProvider(),
                         "messages": messages,
                         "stream": true,
                         "audio": [
@@ -301,6 +307,7 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
         case httpError(statusCode: Int, message: String)
         case noAudioData
         case decodeFailed
+        case voiceDesignRequiresStyle
 
         var errorDescription: String? {
             switch self {
@@ -316,6 +323,8 @@ final class MimoTTSService: NSObject, TTSServiceProtocol, SpeechSynthesizing {
                 "Mimo returned no audio data."
             case .decodeFailed:
                 "Failed to decode Mimo audio response."
+            case .voiceDesignRequiresStyle:
+                "Voice design requires a voice style description."
             }
         }
     }

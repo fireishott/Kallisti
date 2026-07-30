@@ -809,10 +809,13 @@ class HeraldConnector:
             facade_ctx = get_facade_context()
             facade_ctx.model_catalog = self._rpc_models_list
             facade_ctx.model_switch = self._rpc_model_set
+            facade_ctx.auxiliary_list = self._rpc_auxiliary_list
+            facade_ctx.auxiliary_set = self._rpc_auxiliary_set
             facade_ctx.profile_catalog = self._rpc_profiles_list
             facade_ctx.profile_switch = self._rpc_profile_set
             facade_ctx.gateway_restart = self._rpc_gateway_restart
             facade_ctx.connector_version = self._detect_connector_version()
+            facade_ctx.agent_version = self._hermes_agent_version
             facade_ctx.message_handler = self._handle_http_message
             facade_ctx.health_check = self._check_api_health
             # Auth tokens: register the connector credential so the iOS app
@@ -1883,6 +1886,10 @@ class HeraldConnector:
                 result = self._rpc_models_list()
             elif method == "model.set":
                 result = await self._rpc_model_set(params)
+            elif method == "auxiliary.list":
+                result = self._rpc_auxiliary_list()
+            elif method == "auxiliary.set":
+                result = self._rpc_auxiliary_set(params)
             elif method == "profiles.list":
                 result = await self._rpc_profiles_list()
             elif method == "profile.set":
@@ -2208,6 +2215,63 @@ class HeraldConnector:
 
         return {"activeModel": self._read_active_model(hermes_home)}
 
+    AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
+                 "browser_vision", "moa_reference", "moa_aggregator"]
+
+    def _aux_config_path(self) -> Path:
+        home = os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")
+        return Path(home) / "config.yaml"
+
+    def _rpc_auxiliary_list(self) -> dict:
+        """Effective auxiliary routing per task (P1-4)."""
+        from ruamel.yaml import YAML
+        yaml = YAML()
+        path = self._aux_config_path()
+        try:
+            with path.open() as fh:
+                config = yaml.load(fh) or {}
+        except FileNotFoundError:
+            config = {}
+        aux = config.get("auxiliary") or {}
+        tasks = []
+        for task in self.AUX_TASKS:
+            entry = aux.get(task) or {}
+            provider = entry.get("provider") or "auto"
+            model = entry.get("model") or "auto"
+            tasks.append({
+                "task": task,
+                "provider": str(provider),
+                "model": str(model),
+                "isAuto": provider == "auto" and model == "auto",
+            })
+        return {"tasks": tasks}
+
+    def _rpc_auxiliary_set(self, params: dict) -> dict:
+        """Set auxiliary.<task>.provider/model, preserving comments (P1-4)."""
+        from ruamel.yaml import YAML
+        task = str(params.get("task") or "")
+        if task not in self.AUX_TASKS:
+            raise RuntimeError(f"Unknown auxiliary task: {task}")
+        provider = str(params.get("provider") or "auto")
+        model = str(params.get("model") or "auto")
+
+        yaml = YAML()               # round-trip mode: preserves comments
+        yaml.preserve_quotes = True
+        path = self._aux_config_path()
+        with path.open() as fh:
+            config = yaml.load(fh) or {}
+
+        aux = config.setdefault("auxiliary", {})
+        entry = aux.setdefault(task, {})
+        entry["provider"] = provider
+        entry["model"] = model
+
+        tmp = path.with_suffix(".yaml.tmp")
+        with tmp.open("w") as fh:
+            yaml.dump(config, fh)
+        tmp.replace(path)           # atomic — never leave a truncated config
+        return {"ok": True, "task": task, "provider": provider, "model": model}
+
     async def _rpc_profile_set(self, params: dict) -> dict:
         """Set the active Hermes profile in ~/.hermes/config.yaml.
 
@@ -2490,6 +2554,34 @@ class HeraldConnector:
         return {"activeProfile": active_profile, "profiles": profiles}
 
     # ------------------------------------------------------------------
+    # Agent version (cached — /v1/hosts/current is polled on every Settings
+    # appearance, and the CLI version never changes while the connector runs).
+    # ------------------------------------------------------------------
+
+    _hermes_agent_version_cache: str | None = None
+
+    def _hermes_agent_version(self) -> str | None:
+        """Parse `Hermes Agent v0.19.0 (...)` from the CLI's --version output.
+
+        Cached for the process lifetime: this shells out, and /v1/hosts/current
+        is polled on every Settings appearance.
+        """
+        if self._hermes_agent_version_cache is not None:
+            return self._hermes_agent_version_cache or None
+        try:
+            import re
+            command = self._resolve_hermes_command()
+            result = subprocess.run(
+                [command, "--version"], capture_output=True, text=True, timeout=10
+            )
+            match = re.search(r"v?(\d+\.\d+\.\d+)", (result.stdout or "").splitlines()[0])
+            self._hermes_agent_version_cache = match.group(1) if match else ""
+        except Exception:  # noqa: BLE001 — never break the route
+            logger.warning("Could not resolve Hermes agent version", exc_info=True)
+            self._hermes_agent_version_cache = ""
+        return self._hermes_agent_version_cache or None
+
+    # ------------------------------------------------------------------
     # Cron RPC handlers — thin wrappers around `hermes cron` CLI subcommands.
     # ------------------------------------------------------------------
 
@@ -2710,20 +2802,25 @@ class HeraldConnector:
             await asyncio.sleep(0.5)
 
     async def _rpc_session_conversation(self, session_id: str) -> dict:
-        """Return conversation history for a session (P0-4)."""
-        state = self.state_store.load()
-        runtime = await self.runtime_adapter_for_state_async(state)
-        # Query Hermes for the session's messages
+        """Return conversation history for a session from state.db (B34 P0-1).
+
+        Reads messages directly from the Hermes state database instead of
+        dispatching a /status LLM turn.  state.db is opened read-only (G1).
+        """
+        from .session_store import session_messages, session_title
+
         try:
-            result = await asyncio.to_thread(
-                runtime.send_text_message,
-                latest_user_message="/status",
-                history=[],
-                session_id=session_id,
-            )
-            return {"sessionId": session_id, "messages": [], "title": None}
+            messages = await asyncio.to_thread(session_messages, session_id)
+            title = await asyncio.to_thread(session_title, session_id)
         except Exception:
+            logger.exception("session_store read failed for %s", session_id)
             return {"sessionId": session_id, "messages": [], "title": None}
+
+        return {
+            "sessionId": session_id,
+            "messages": messages,
+            "title": title,
+        }
 
     async def _rpc_current_conversation(self) -> dict:
         """Return the active conversation (P0-4)."""

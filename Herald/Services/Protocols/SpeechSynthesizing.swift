@@ -14,11 +14,18 @@ enum AudioFormat: Sendable {
     case wav
 }
 
-enum SpeechVoice: String, Sendable {
+/// Mimo v2.5 built-in voices. Raw values are the wire `audio.voice` values.
+/// `mimo_default` resolves per cluster — 冰糖 on the China cluster, Mia elsewhere.
+enum SpeechVoice: String, Sendable, CaseIterable {
+    case mimoDefault = "mimo_default"
     case mia = "Mia"
     case chloe = "Chloe"
     case milo = "Milo"
     case dean = "Dean"
+    case bingtang = "冰糖"
+    case moli = "茉莉"
+    case suda = "苏打"
+    case baihua = "白桦"
 }
 
 @MainActor

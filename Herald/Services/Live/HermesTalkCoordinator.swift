@@ -163,15 +163,22 @@ final class HermesTalkCoordinator {
                 }
             }
         } catch {
-            logger.error("ASR failed: \(error.localizedDescription, privacy: .public)")
-            state = .failed("Transcription failed")
+            // B38 P1-2: surface the real error so the user can act on it.
+            // B37 dropped the actual error and showed the bare string
+            // "Transcription failed" — useless for debugging.
+            let message = error.localizedDescription
+            logger.error("ASR failed: \(message, privacy: .public)")
+            state = .failed(message)
             notifyState()
             return
         }
 
         guard !finalText.isEmpty else {
-            logger.info("No speech detected in utterance")
-            state = .failed("No speech detected — check the microphone and try again.")
+            // B38 P1-2: include the captured byte count so the user can
+            // distinguish "mic didn't pick up anything" from "ASR didn't
+            // return a transcript."
+            logger.info("No speech detected in utterance (\(utterance.audioData.count) bytes)")
+            state = .failed("No speech detected — check the microphone and try again. (\(utterance.audioData.count) bytes captured)")
             notifyState()
             return
         }

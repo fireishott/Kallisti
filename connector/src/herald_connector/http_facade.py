@@ -126,9 +126,12 @@ class FacadeContext:
         self.job_status: JobStatusProvider | None = None
         self.job_cancel: JobCancelProvider | None = None
         self.job_events: JobEventsProvider | None = None
+        self.auxiliary_list: Callable[[], dict | Coroutine[Any, Any, dict]] | None = None
+        self.auxiliary_set: Callable[[dict], dict | Coroutine[Any, Any, dict]] | None = None
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
+        self.agent_version: Callable[[], str | None] | None = None
 
 
 _context = FacadeContext()
@@ -159,17 +162,91 @@ _http_job_tasks: dict[str, asyncio.Task] = {}
 _HTTP_JOB_TTL_SECONDS = 900.0
 _conversation_id_singleton: str | None = None
 
+# B39 T3: per-session lock to prevent concurrent turns in the same Hermes
+# session from interleaving.  Without this, a fast double-send or retry can
+# collide with title generation or another message in the same session.
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str | None:
+    """Generate a title for a session from its first user message.
+
+    B38 P1-1: called server-side on the first completed turn so the session
+    list never shows "New Chat" for a session that has messages.
+
+    Tries the message_handler with a short title prompt first; falls back
+    to a truncation of the first user message.
+    """
+    title_prompt = (
+        "Generate a short title (3-8 words) for a conversation that "
+        "begins with this message. Return ONLY the title, no quotes, "
+        "no punctuation at the end:\n\n" + text[:500]
+    )
+    # B39 T2: use a throwaway session so the title prompt is never
+    # submitted as a real turn in the user's conversation.  The
+    # title- prefix ensures these sessions are never surfaced in
+    # session_list (which filters to source='api_server').
+    title_session_id = f"title-{uuid.uuid4()}"
+    try:
+        async with asyncio.timeout(15):
+            accumulated = ""
+            async for event in handler(title_prompt, [], title_session_id, None, None):
+                etype = event.get("type", "")
+                data = event.get("data", {}) or {}
+                if etype == "text_delta":
+                    accumulated += data.get("delta", "")
+                if etype == "done":
+                    accumulated = data.get("text") or accumulated
+                    break
+            if accumulated:
+                title = accumulated.strip()[:120]
+                # Strip common wrapping characters
+                title = title.strip('"\'.!?;:,*`~ \t\n\r')
+                if len(title) >= 3:
+                    return title
+    except Exception:
+        logger.debug("_auto_title: LLM path failed, falling back to truncation")
+
+    # Fallback: first line, first 80 chars
+    first_line = text.strip().split("\n")[0].strip()
+    if first_line:
+        return first_line[:80]
+    return None
+
+
+async def _auto_title_and_persist(
+    handler, text: str, hermes_sid: str, app_uuid: str | list[str]
+) -> None:
+    """Fire-and-forget wrapper: generate a title and persist it.
+
+    B40: *app_uuid* may be a list.  One conversation is addressable under both
+    the id the app minted and the canonical ``_app_uuid(hermes_sid)``; the
+    title has to land on both or the view that used the other id keeps showing
+    a placeholder.
+    """
+    app_uuids = [app_uuid] if isinstance(app_uuid, str) else list(app_uuid)
+    try:
+        title = await _auto_title(handler, text, hermes_sid, app_uuids[0])
+        if title:
+            from .session_store import set_session_meta
+            for target in app_uuids:
+                set_session_meta(target, title=title)
+            logger.info("_auto_title: set title %r for %s", title, app_uuids)
+    except Exception:
+        logger.exception("_auto_title_and_persist failed for %s", app_uuids)
+
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _stable_conversation_id() -> str:
-    """One conversation id per connector process.
+    """Cold-start fallback conversation id — used ONLY when the device has never
+    sent a message and carries no conversationId.
 
-    RelayConversation.id is a non-optional UUID (LiveHeraldClient.swift:24) and the
-    app uses it to correlate the reply with the open conversation.  A fresh uuid4
-    per request would make every message look like a new conversation.
+    P0-1: the primary path is now the deterministic _app_uuid(hermes_id).  This
+    function is a last-resort fallback for the first-ever message from a fresh
+    device, and must not be the normal code path.
     """
     global _conversation_id_singleton
     if _conversation_id_singleton is None:
@@ -232,6 +309,10 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     """Drain the connector's message generator into the job record."""
     job = _http_jobs[job_id]
     accumulated = ""
+    # Bounds the state.db lookup that resolves which session this turn landed
+    # in, so an identical message sent days ago can never be matched instead.
+    # A small skew allowance covers clock jitter between writer and reader.
+    job_started_at = time.time() - 5.0
 
     def _publish(event: dict) -> None:
         job["events"].append(event)
@@ -242,22 +323,110 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     timeout_seconds = int(os.getenv("HERALD_JOB_TIMEOUT_SECONDS", "170"))
     try:
         async with asyncio.timeout(timeout_seconds):
-            async for event in handler(text, history, session_id, attachments, reasoning_effort):
-                etype = event.get("type", "progress")
-                data = event.get("data", {}) or {}
-                if etype == "text_delta":
-                    accumulated += data.get("delta", "")
-                if etype == "done":
-                    # The connector's own terminal event (client.py:1695-1717) carries
-                    # the final text and, on failure, the error + category/action.
-                    accumulated = data.get("text") or accumulated
-                    job["status"] = data.get("status", "completed")
-                    job["error"] = data.get("error")
-                    job["errorCategory"] = data.get("errorCategory")
-                    job["errorAction"] = data.get("errorAction")
-                    job["usage"] = data.get("usage")
-                    continue          # re-emitted with jobId in the finally block
-                _publish({"type": etype, "data": data})
+            # B39 T3: serialize turns for the same Hermes session.  Without
+            # this, a fast double-send or a retry can collide with title
+            # generation or another message, causing interleaved/corrupted
+            # replies in the same conversation.
+            lock = None
+            if session_id:
+                lock = _session_locks.setdefault(session_id, asyncio.Lock())
+                if lock.locked():
+                    logger.warning(
+                        "Session %s is busy; job %s is waiting for the lock",
+                        session_id, job_id,
+                    )
+                await lock.acquire()
+            try:
+                async for event in handler(text, history, session_id, attachments, reasoning_effort):
+                    etype = event.get("type", "progress")
+                    data = event.get("data", {}) or {}
+                    if etype == "text_delta":
+                        accumulated += data.get("delta", "")
+                    if etype == "done":
+                        # The connector's own terminal event (client.py:1695-1717) carries
+                        # the final text and, on failure, the error + category/action.
+                        accumulated = data.get("text") or accumulated
+                        job["status"] = data.get("status", "completed")
+                        job["error"] = data.get("error")
+                        job["errorCategory"] = data.get("errorCategory")
+                        job["errorAction"] = data.get("errorAction")
+                        job["usage"] = data.get("usage")
+                        # Record the Hermes session id so the app UUID → session-id
+                        # mapping survives connector restarts.  The handler returns
+                        # the real Hermes session id (e.g. "api-9af38ce…") even when
+                        # the facade was called with an app-facing UUID.
+                        hermes_sid = data.get("sessionId")
+                        # B40: the reported id is a claim, not a fact.  Hermes'
+                        # api_server echoes back the X-Hermes-Session-Id it was
+                        # handed even when it could not resume that session and
+                        # wrote the turn into its default session instead
+                        # (herald_api_executor.py:347).  state.db is the only
+                        # authority on where the message actually landed; a
+                        # wrong mapping here files the reply under a session the
+                        # app can never read back.
+                        from .session_store import _find_session_by_recent_message
+                        actual_sid = _find_session_by_recent_message(
+                            text, since=job_started_at
+                        )
+                        if actual_sid and actual_sid != hermes_sid:
+                            logger.warning(
+                                "Runtime reported session %s for job %s but the "
+                                "message was written to %s — trusting state.db",
+                                hermes_sid, job_id, actual_sid,
+                            )
+                        hermes_sid = actual_sid or hermes_sid
+                        if hermes_sid:
+                            from .session_store import _app_uuid, _persist_hermes_mapping
+                            # Record the canonical mapping: app_uuid → hermes_id
+                            canonical_app_id = _app_uuid(hermes_sid)
+                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                            # B38 P0-2: record the mapping under BOTH the app's id
+                            # and the canonical id so future lookups resolve either
+                            # way.  Do NOT mutate job["conversationId"] — the app
+                            # already received it in the POST response, and changing
+                            # it later causes replies to land in the wrong thread.
+                            response_conv_id = job.get("conversationId")
+                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
+                            if response_conv_id and response_conv_id != canonical_app_id:
+                                _persist_hermes_mapping(response_conv_id, hermes_sid)
+
+                            # B38 P1-1: auto-generate a title if the session
+                            # has none.  Fire-and-forget — don't delay the
+                            # job completion for title generation.
+                            #
+                            # B40: persist under the app's own conversation id
+                            # too.  The session list keys off the canonical id
+                            # but the open thread is keyed by the id the app
+                            # sent, so writing only the canonical one left the
+                            # app's conversation titleless.
+                            from .session_store import get_session_meta, set_session_meta
+                            title_ids = [canonical_app_id]
+                            if response_conv_id and response_conv_id != canonical_app_id:
+                                title_ids.append(response_conv_id)
+                            existing_title = next(
+                                (t for t in (
+                                    get_session_meta(i).get("title") for i in title_ids
+                                ) if t),
+                                None,
+                            )
+                            if existing_title:
+                                # Backfill: an id that came into use later must
+                                # not stay untitled just because its sibling
+                                # already carries the title.
+                                for i in title_ids:
+                                    if not get_session_meta(i).get("title"):
+                                        set_session_meta(i, title=existing_title)
+                            else:
+                                asyncio.create_task(
+                                    _auto_title_and_persist(
+                                        handler, text, hermes_sid, title_ids
+                                    )
+                                )
+                        continue          # re-emitted with jobId in the finally block
+                    _publish({"type": etype, "data": data})
+            finally:
+                if lock:
+                    lock.release()
     except TimeoutError:
         job["status"] = "failed"
         job["error"] = "The model did not respond in time."
@@ -376,6 +545,34 @@ async def switch_model(request: Request) -> JSONResponse:
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
+
+
+async def aux_list(request: Request) -> JSONResponse:
+    """GET /v1/aux — per-task auxiliary model routing."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.auxiliary_list is None:
+        raise HTTPException(status_code=503, detail="Auxiliary config not available")
+    result = ctx.auxiliary_list()
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result or {"tasks": []})
+
+
+async def aux_set(request: Request) -> JSONResponse:
+    """POST /v1/aux — set auxiliary.<task>.provider/model."""
+    await require_auth(request)
+    ctx = get_context()
+    if ctx.auxiliary_set is None:
+        raise HTTPException(status_code=503, detail="Auxiliary config not available")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    result = ctx.auxiliary_set(body)
+    if inspect.isawaitable(result):
+        result = await result
+    return JSONResponse(result or {"ok": False})
 
 
 async def list_profiles(request: Request) -> JSONResponse:
@@ -566,7 +763,47 @@ async def send_message(request: Request) -> JSONResponse:
     attachments = body.get("attachments")
     reasoning_effort = body.get("reasoningEffort")
     client_message_id = body.get("clientMessageId")
-    conversation_id = _coerce_uuid(body.get("conversationId")) or _stable_conversation_id()
+    raw_conversation_id = body.get("conversationId")
+
+    # Resolve the app's conversation UUID to a Hermes session id.
+    # P0-1: instead of a random uuid4() that maps to nothing, use the
+    # deterministic app_uuid ↔ hermes_id reverse index.  This makes
+    # GET /v1/sessions/{id}/conversation return the messages that were
+    # actually written to the database.
+    from .session_store import _app_uuid, _resolve_hermes_id, _coerce_uuid as _store_coerce
+    hermes_session_id: str | None = None
+    app_conversation_id: str | None = None
+
+    if raw_conversation_id is not None:
+        cid = _coerce_uuid(raw_conversation_id)
+        if cid:
+            # Does this UUID already map to a Hermes session?
+            resolved = _resolve_hermes_id(cid)
+            if resolved:
+                hermes_session_id = resolved
+                app_conversation_id = cid
+            else:
+                # B38 P0-2: echo the app-supplied UUID verbatim even when
+                # the sidecar mapping doesn't exist yet.  B37 silently
+                # discarded it and fell through to the process singleton —
+                # that collapsed every conversation onto one id.
+                app_conversation_id = cid
+
+    # If the caller sent a sessionId (Hermes-side), use it directly and
+    # derive the app UUID from it.
+    if hermes_session_id is None and session_id:
+        hermes_session_id = str(session_id)
+        app_conversation_id = _app_uuid(hermes_session_id)
+
+    if app_conversation_id is None:
+        # B38 P0-2: _stable_conversation_id() is now the fourth-choice
+        # fallback only.  Log a warning so this can never regress silently.
+        logger.warning(
+            "_stable_conversation_id fallback used — no conversationId, "
+            "no sessionId, no sidecar mapping. body=%s",
+            {k: v for k, v in body.items() if k != "history"}
+        )
+        app_conversation_id = _stable_conversation_id()
 
     job_id = str(uuid.uuid4())
     user_message = _relay_message("user", text, client_message_id=client_message_id)
@@ -574,7 +811,7 @@ async def send_message(request: Request) -> JSONResponse:
     _http_jobs[job_id] = {
         "jobId": job_id,
         "status": "running",
-        "conversationId": conversation_id,
+        "conversationId": app_conversation_id,
         "message": None,
         "error": None,
         "errorCategory": None,
@@ -588,7 +825,7 @@ async def send_message(request: Request) -> JSONResponse:
 
     task = asyncio.create_task(
         _run_http_job(job_id, ctx.message_handler, text, history,
-                      session_id, attachments, reasoning_effort)
+                      hermes_session_id, attachments, reasoning_effort)
     )
     _http_job_tasks[job_id] = task
     task.add_done_callback(lambda _t, jid=job_id: _http_job_tasks.pop(jid, None))
@@ -596,12 +833,24 @@ async def send_message(request: Request) -> JSONResponse:
     # MessageResponse (LiveHeraldClient.swift:12-21): replyState and conversation
     # are non-optional.  RelayConversation.title is a non-optional String and
     # .updatedAt a non-optional Date — null in either is a decode failure.
+    #
+    # B40: return the conversation's real title.  The app merges this payload
+    # over its open thread on every send (ChatStore.mergeConversationMetadata),
+    # so the hardcoded "Herald" placeholder reset the title of an already-titled
+    # conversation on each turn — one half of "chat titles not being named".
+    from .session_store import session_title as _session_title
+    try:
+        conversation_title = _session_title(app_conversation_id) or "Herald"
+    except Exception:                             # noqa: BLE001 — never fail a send
+        logger.exception("session_title lookup failed for %s", app_conversation_id)
+        conversation_title = "Herald"
+
     return JSONResponse({
         "replyState": "pending",
         "jobId": job_id,
         "conversation": {
-            "id": conversation_id,
-            "title": "Herald",
+            "id": app_conversation_id,
+            "title": conversation_title,
             "updatedAt": _now_iso(),
             "messages": [user_message],
             "latestUsage": None,
@@ -772,16 +1021,25 @@ async def connector_events(request: Request) -> StreamingResponse:
 
 
 async def get_sessions(request: Request) -> JSONResponse:
-    """Return session list.
+    """Return session list backed by state.db (B34 P1-1).
 
-    `total` is REQUIRED by the iOS decoder — LiveHeraldClient.swift declares
+    ``total`` is REQUIRED by the iOS decoder — LiveHeraldClient.swift declares
     SessionListAPIResponse.total as non-optional Int, so omitting it raises
     DecodingError.keyNotFound and the app shows "The data couldn't be read
     because it is missing." Never drop this key.
     """
     await require_auth(request)
-    sessions: list[dict] = []          # TODO(b32): back with real connector session state
-    return JSONResponse({"sessions": sessions, "total": len(sessions)})
+    from .session_store import session_list
+
+    limit = int(request.query_params.get("limit", "50"))
+    offset = int(request.query_params.get("offset", "0"))
+    try:
+        sessions, total = await asyncio.to_thread(session_list, limit=limit, offset=offset)
+    except Exception:
+        logger.exception("session_list query failed")
+        sessions, total = [], 0
+
+    return JSONResponse({"sessions": sessions, "total": total})
 
 
 async def get_inbox(request: Request) -> JSONResponse:
@@ -817,11 +1075,22 @@ async def host_current(request: Request) -> JSONResponse:
             host_id = raw_id
         except (ValueError, AttributeError):
             host_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, str(raw_id)))
+    agent_version = None
+    if getattr(ctx, "agent_version", None) is not None:
+        try:
+            agent_version = ctx.agent_version()
+        except Exception:  # noqa: BLE001
+            agent_version = None
     return JSONResponse({
         "host": {
             "id": host_id,
             "displayName": "Herald Host",
             "isOnline": True,
+            # RelayHost decodes these as optional String? — LiveHeraldHostService
+            # RelayHost / HeraldHostStatus.swift:8,10. Omitting them rendered
+            # "—" in the Settings → Infrastructure rows.
+            "connectorVersion": ctx.connector_version,
+            "heraldVersion": agent_version,
         }
     })
 
@@ -936,14 +1205,19 @@ async def job_events(request: Request) -> StreamingResponse:
     if job is not None:
         async def facade_stream() -> AsyncIterator[str]:
             queue: asyncio.Queue = asyncio.Queue()
-            # Replay what already happened, then follow live.  JobStreamCoordinator
-            # resumes from `id:` (JobStreamCoordinator.swift:290-294) and drops
-            # duplicates, so replaying from 0 is safe.
+            # Resume from Last-Event-ID so a reconnect does not renumber the
+            # backlog from 0.  JobStreamCoordinator drops events at or below
+            # its cursor, so restarting at 0 made the replayed terminal event
+            # look like a duplicate and the stream hung.
+            try:
+                cursor = int(request.headers.get("Last-Event-ID", "-1"))
+            except (TypeError, ValueError):
+                cursor = -1
             backlog = list(job["events"])
             job["subscribers"].append(queue)
             try:
-                seq = 0
-                for event in backlog:
+                seq = cursor + 1
+                for event in backlog[cursor + 1:]:
                     yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
                     seq += 1
                 if job["status"] != "running" and backlog and backlog[-1]["type"] == "done":
@@ -1114,28 +1388,356 @@ async def device_sensor(request: Request) -> JSONResponse:
 
 
 async def session_generate_title(request: Request) -> JSONResponse:
-    """GenerateTitleResponse.title is String? (LiveHeraldClient.swift:782-784);
-    the caller then throws URLError(.badServerResponse) on nil/empty, which is the
-    same no-title outcome as today's 404 — minus the log noise."""
+    """Generate a title for a session from its first user message.
+
+    B38 P1-1: tries the LLM via the message_handler first (3-8 word title);
+    falls back to truncation when the handler is unavailable.
+    """
     await require_auth(request)
-    return JSONResponse({"title": None})
+    session_id = request.path_params.get("id", "")
+    from .session_store import session_messages, set_session_meta
+
+    title = None
+    try:
+        msgs = session_messages(session_id, limit=5)
+        for m in msgs:
+            if m.get("role") == "user" and m.get("text"):
+                user_text = m["text"].strip()
+                ctx = get_context()
+                if ctx.message_handler:
+                    from .session_store import _app_uuid
+                    app_id = _app_uuid(session_id)
+                    title = await _auto_title(
+                        ctx.message_handler, user_text, session_id, app_id
+                    )
+                if not title:
+                    # Fallback: first line, first 80 chars
+                    first_line = user_text.split("\n")[0].strip()
+                    title = first_line[:80] if first_line else None
+                break
+    except Exception:
+        logger.exception("session_generate_title: failed for %s", session_id)
+
+    if title:
+        try:
+            set_session_meta(session_id, title=title)
+        except Exception:
+            logger.exception("session_generate_title: set_session_meta failed for %s", session_id)
+    else:
+        title = "New Chat"
+
+    return JSONResponse({"title": title})
+
+
+# B38 P1-1: placeholder titles that must never be persisted.
+# Once written to the sidecar, they permanently shadow any generated title
+# because meta.get("title") is checked FIRST in session_list.
+_PLACEHOLDER_TITLES = frozenset({
+    "", "new chat", "untitled", "herald",
+    "new chat", "New Chat", "Untitled", "Herald",
+})
 
 
 async def session_patch(request: Request) -> JSONResponse:
-    """Rename. SessionAPIResponse{session: SessionAPIEntry} — id is a UUID and
-    title a non-optional String (LiveHeraldClient.swift:641-653), so echo both."""
+    """Rename a session (PATCH /v1/sessions/{id}).
+
+    B38 P1-1: rejects placeholder titles so a generated title can win.
+    Only a genuine user rename or a server-generated title gets persisted.
+    """
     await require_auth(request)
     body = await request.json()
     session_id = request.path_params.get("id", "")
+    raw_title = (body.get("title") or "").strip()
+    from .session_store import set_session_meta
+
+    if raw_title.lower() in _PLACEHOLDER_TITLES:
+        # The app sent a placeholder — do NOT persist it.  Return the
+        # requested title so the client doesn't error, but keep the
+        # sidecar clean for server-side generation.
+        logger.info("session_patch: refusing placeholder title %r for %s", raw_title, session_id)
+        title = raw_title
+    else:
+        title = raw_title[:200]
+        set_session_meta(session_id, title=title)
     return JSONResponse({"session": {
         "id": _coerce_uuid(session_id) or str(uuid.uuid4()),
-        "title": body.get("title") or "Untitled",
+        "title": title,
         "previewText": None,
         "updatedAt": _now_iso(),
         "source": None,
         "isPinned": None,
         "isArchived": None,
     }})
+
+
+# ── B34 P0-3: Session CRUD ─────────────────────────────────────────────────
+
+
+async def create_session(request: Request) -> JSONResponse:
+    """Create a new session (POST /v1/sessions).
+
+    Does NOT write to state.db (G1) — Hermes materialises the row itself
+    on the first message carrying X-Hermes-Session-Id.  We just mint an id
+    and record an optimistic title in the local sidecar.
+
+    SessionAPIResponse.session is a non-optional SessionAPIEntry
+    (LiveHeraldClient.swift:709-724).  Every key the decoder reads must
+    be present and of the declared type.
+    """
+    await require_auth(request)
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    session_id = str(uuid.uuid4())
+    raw_title = (body.get("title") or "").strip()
+    # B38 P1-1: don't persist placeholder titles — they permanently shadow
+    # server-generated titles.
+    title = raw_title[:200] if raw_title.lower() not in _PLACEHOLDER_TITLES else ""
+    from .session_store import set_session_meta
+
+    if title:
+        set_session_meta(session_id, title=title)
+    return JSONResponse({"session": {
+        "id": session_id,
+        "title": title,
+        "previewText": "",
+        "updatedAt": _now_iso(),
+        "source": "api_server",
+        "isPinned": False,
+        "isArchived": False,
+    }})
+
+
+async def session_delete(request: Request) -> JSONResponse:
+    """Soft-delete a session (DELETE /v1/sessions/{id}).
+
+    Tombstones in the local sidecar only (G1).  The session row stays in
+    state.db — Hermes owns it.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, tombstone=True)
+    return JSONResponse({"deleted": True})
+
+
+async def session_pin(request: Request) -> JSONResponse:
+    """Toggle pin state (POST /v1/sessions/{id}/pin).
+
+    Writes to the local sidecar (G1).  The body carries {"pinned": bool}.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    pinned = bool(body.get("pinned", True))
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, pinned=pinned)
+    return JSONResponse({"id": _coerce_uuid(session_id) or session_id, "isPinned": pinned})
+
+
+async def session_archive(request: Request) -> JSONResponse:
+    """Toggle archive state (POST /v1/sessions/{id}/archive).
+
+    Writes to the local sidecar (G1).  The body carries {"archived": bool}.
+    """
+    await require_auth(request)
+    session_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    archived = bool(body.get("archived", True))
+    from .session_store import set_session_meta
+
+    set_session_meta(session_id, archived=archived)
+    return JSONResponse({"id": _coerce_uuid(session_id) or session_id, "isArchived": archived})
+
+
+async def session_search_handler(request: Request) -> JSONResponse:
+    """Search sessions by title (GET /v1/sessions/search?q=…).
+
+    SessionSearchAPIResponse.sessions is [SessionSearchResult] —
+    each result needs id, title, and updatedAt (LiveHeraldClient.swift).
+    """
+    await require_auth(request)
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"sessions": []})
+    from .session_store import session_search
+
+    results = await asyncio.to_thread(session_search, q)
+    return JSONResponse({"sessions": results})
+
+
+# ── B34 P2-1: Unimplemented-route stubs ────────────────────────────────────
+#
+# Every path below is called by the iOS app.  A 404 renders a user-visible
+# error alert; a decodable empty payload renders an empty screen cleanly.
+# Each handler returns the shape its decoder expects.  TODO(b35): implement.
+
+
+async def stub_skills(request: Request) -> JSONResponse:
+    """GET /v1/skills — return empty skill list."""
+    await require_auth(request)
+    return JSONResponse({"skills": []})
+
+
+async def stub_cron_list(request: Request) -> JSONResponse:
+    """GET /v1/cron — return empty job list."""
+    await require_auth(request)
+    return JSONResponse({"jobs": []})
+
+
+async def stub_cron_detail(request: Request) -> JSONResponse:
+    """GET/DELETE /v1/cron/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_notes_list(request: Request) -> JSONResponse:
+    """GET /v1/notes — return empty note list."""
+    await require_auth(request)
+    return JSONResponse({"notes": []})
+
+
+async def stub_notes_detail(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_notes_recognitions(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id}/recognitions — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"recognitions": []})
+
+
+async def stub_notes_runs(request: Request) -> JSONResponse:
+    """GET /v1/notes/{id}/runs — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"runs": []})
+
+
+async def stub_note_runs_detail(request: Request) -> JSONResponse:
+    """GET /v1/note-runs/{id} — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_note_runs_cancel(request: Request) -> JSONResponse:
+    """POST /v1/note-runs/{id}/cancel — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"cancelled": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_note_runs_events(request: Request) -> JSONResponse:
+    """GET /v1/note-runs/{id}/events — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_readiness(request: Request) -> JSONResponse:
+    """GET /v1/talk/readiness — not configured, but shape-complete.
+
+    TalkReadinessResponse (LiveVoiceSessionService.swift:20-29) declares
+    hostOnline and configured as non-optional, so omitting them makes the app
+    fail with a decode error instead of showing an unavailable state.
+    """
+    await require_auth(request)
+    return JSONResponse({
+        "ready": False,
+        "hostOnline": True,
+        "configured": False,
+        "blockedReason": "Realtime Talk is not configured on this host.",
+        "preferredModels": None,
+        "selectedModel": None,
+        "voice": None,
+        "voiceContextUpdatedAt": None,
+    })
+
+
+async def stub_talk_session(request: Request) -> JSONResponse:
+    """POST /v1/talk/session — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_end(request: Request) -> JSONResponse:
+    """POST /v1/talk/session/{id}/end — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_inject(request: Request) -> JSONResponse:
+    """POST /v1/talk/session/{id}/inject — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_talk_session_turns(request: Request) -> JSONResponse:
+    """GET /v1/talk/session/{id}/turns — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"turns": []})
+
+
+async def stub_gw_update(request: Request) -> JSONResponse:
+    """GET /v1/gw/update — return no-update."""
+    await require_auth(request)
+    return JSONResponse({"updateAvailable": False})
+
+
+async def stub_gw_update_check(request: Request) -> JSONResponse:
+    """POST /v1/gw/update/check — return no-update."""
+    await require_auth(request)
+    return JSONResponse({"updateAvailable": False})
+
+
+async def stub_push_deactivate(request: Request) -> JSONResponse:
+    """POST /v1/push/deactivate — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"deactivated": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_push_broker_challenge(request: Request) -> JSONResponse:
+    """POST /v1/push-broker/challenge — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_push_broker_register(request: Request) -> JSONResponse:
+    """POST /v1/push-broker/register — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_relay_identity(request: Request) -> JSONResponse:
+    """GET /v1/relay/identity — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
+
+
+async def stub_hosts_current_revoke(request: Request) -> JSONResponse:
+    """POST /v1/hosts/current/revoke — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"revoked": False, "status": "not_implemented"}, status_code=501)
+
+
+async def stub_inbox_action(request: Request) -> JSONResponse:
+    """POST /v1/inbox/{id}/action — not implemented."""
+    await require_auth(request)
+    return JSONResponse({"status": "not_implemented"}, status_code=501)
 
 
 # ── Envelope middleware ──────────────────────────────────────────────────
@@ -1251,6 +1853,12 @@ routes = [
     Route("/v1/model", switch_model, methods=["POST"]),
     Route("/gw/model/switch", switch_model, methods=["POST"]),
     Route("/v1/gw/model/switch", switch_model, methods=["POST"]),
+    Route("/v1/aux", aux_list, methods=["GET"]),
+    Route("/v1/aux", aux_set, methods=["POST"]),
+    Route("/aux", aux_list, methods=["GET"]),
+    Route("/aux", aux_set, methods=["POST"]),
+    Route("/v1/gw/aux", aux_list, methods=["GET"]),
+    Route("/v1/gw/aux", aux_set, methods=["POST"]),
     Route("/v1/profiles", list_profiles, methods=["GET"]),
     Route("/v1/profile", switch_profile, methods=["POST"]),
     Route("/gw/profile/switch", switch_profile, methods=["POST"]),
@@ -1275,24 +1883,54 @@ routes = [
     Route("/v1/auth/revoke", auth_revoke, methods=["POST"]),
     Route("/v1/device/register", register_device, methods=["POST"]),
     Route("/v1/connector/events", connector_events, methods=["GET"]),
+    # B34 P0-3: Sessions — POST + GET, and search MUST precede {id}
+    Route("/v1/sessions", create_session, methods=["POST"]),
     Route("/v1/sessions", get_sessions, methods=["GET"]),
+    Route("/v1/sessions/search", session_search_handler, methods=["GET"]),
+    Route("/v1/sessions/{id}/pin", session_pin, methods=["POST"]),
+    Route("/v1/sessions/{id}/archive", session_archive, methods=["POST"]),
+    Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
+    Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
+    Route("/v1/sessions/{id}", session_delete, methods=["DELETE"]),
+    Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/inbox", get_inbox, methods=["GET"]),
+    Route("/v1/inbox/{id}/action", stub_inbox_action, methods=["POST"]),
     Route("/v1/push/register", push_register, methods=["POST"]),
+    Route("/v1/push/deactivate", stub_push_deactivate, methods=["POST"]),
+    Route("/v1/push-broker/challenge", stub_push_broker_challenge, methods=["POST"]),
+    Route("/v1/push-broker/register", stub_push_broker_register, methods=["POST"]),
     Route("/v1/hosts/current", host_current, methods=["GET"]),
+    Route("/v1/hosts/current/revoke", stub_hosts_current_revoke, methods=["POST"]),
     Route("/v1/hosts/enrollment-codes", host_enrollment_codes, methods=["POST"]),
     # Device telemetry
     Route("/v1/device/app-state", device_app_state, methods=["POST"]),
     Route("/v1/device/sensor/location", device_sensor, methods=["POST"]),
     Route("/v1/device/sensor/health", device_sensor, methods=["POST"]),
     # P0-4: chat critical path
-    Route("/v1/sessions/{id}/conversation", session_conversation, methods=["GET"]),
-    Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
-    Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/conversations/current", current_conversation, methods=["GET"]),
     Route("/v1/conversations/current/clear", clear_current_conversation, methods=["POST"]),
     Route("/v1/jobs/{id}", job_status, methods=["GET"]),
     Route("/v1/jobs/{id}/events", job_events, methods=["GET"]),
     Route("/v1/jobs/{id}/cancel", cancel_job, methods=["POST"]),
+    # B34 P2-1: Unimplemented-route stubs — decodable payloads, no 404s
+    Route("/v1/skills", stub_skills, methods=["GET"]),
+    Route("/v1/cron", stub_cron_list, methods=["GET"]),
+    Route("/v1/cron/{id}", stub_cron_detail, methods=["GET", "DELETE"]),
+    Route("/v1/notes", stub_notes_list, methods=["GET"]),
+    Route("/v1/notes/{id}", stub_notes_detail, methods=["GET"]),
+    Route("/v1/notes/{id}/recognitions", stub_notes_recognitions, methods=["GET"]),
+    Route("/v1/notes/{id}/runs", stub_notes_runs, methods=["GET"]),
+    Route("/v1/note-runs/{id}", stub_note_runs_detail, methods=["GET"]),
+    Route("/v1/note-runs/{id}/cancel", stub_note_runs_cancel, methods=["POST"]),
+    Route("/v1/note-runs/{id}/events", stub_note_runs_events, methods=["GET"]),
+    Route("/v1/talk/readiness", stub_talk_readiness, methods=["GET"]),
+    Route("/v1/talk/session", stub_talk_session, methods=["POST"]),
+    Route("/v1/talk/session/{id}/end", stub_talk_session_end, methods=["POST"]),
+    Route("/v1/talk/session/{id}/inject", stub_talk_session_inject, methods=["POST"]),
+    Route("/v1/talk/session/{id}/turns", stub_talk_session_turns, methods=["GET"]),
+    Route("/v1/gw/update", stub_gw_update, methods=["GET"]),
+    Route("/v1/gw/update/check", stub_gw_update_check, methods=["POST"]),
+    Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
 ]
 
 app = Starlette(

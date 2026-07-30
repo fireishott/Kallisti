@@ -13,6 +13,7 @@ struct SettingsScreen: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
     @State private var mimoAPIKey: String = ""
+    @State private var auxService: AuxModelService?
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
@@ -211,7 +212,7 @@ struct SettingsScreen: View {
 
                             if let hint = relayConfiguration.connectionMode.relayURLHint {
                                 Text(hint)
-                                    .font(Design.Typography.caption)
+                                    .font(Design.Typography.helper)
                                     .foregroundStyle(Design.Colors.secondaryForeground)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -627,6 +628,47 @@ struct SettingsScreen: View {
                         ?? "—"
                 )
 
+                // AUX Model Configuration
+                if let aux = auxService, !aux.tasks.isEmpty {
+                    SettingsSectionView(title: "Auxiliary Models") {
+                        ForEach(aux.tasks) { task in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(task.task)
+                                        .font(Design.Typography.callout)
+                                    Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
+                                        .font(Design.Typography.caption)
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
+                                }
+                                Spacer()
+                                Menu {
+                                    Button("Auto") {
+                                        Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
+                                    }
+                                    ForEach(modelStore.models, id: \.name) { m in
+                                        Button(m.name) {
+                                            Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text("Change")
+                                            .font(Design.Typography.caption)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 10))
+                                    }
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                }
+                            }
+                            .frame(minHeight: Design.Size.minTapTarget)
+
+                            if task.task != aux.tasks.last?.task {
+                                sectionDivider
+                            }
+                        }
+                    }
+                }
+
                 sectionDivider
 
                 // Relay URL
@@ -690,34 +732,49 @@ struct SettingsScreen: View {
     private var appearanceSection: some View {
         SettingsSectionView(title: "Appearance") {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-                // Theme preset picker
+                // Herald 2.1 appearances. Each writes both stored axes
+                // (preset + color scheme) via HeraldAppearance.
+                VStack(spacing: 0) {
+                    ForEach(HeraldAppearance.allCases) { appearance in
+                        appearanceRow(appearance)
+                        if appearance != HeraldAppearance.allCases.last {
+                            Divider()
+                                .overlay(Design.Colors.divider)
+                                .padding(.leading, 34)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("settings.appearance.heraldPicker")
+
+                Divider()
+                    .overlay(Design.Colors.divider)
+
+                // Pre-2.1 themes, kept as secondary options.
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Theme")
-                        .font(Design.Typography.footnote)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    Text("Other Themes")
+                        .brandEyebrow()
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            ForEach(ThemePreset.allCases) { theme in
+                            ForEach(ThemePreset.legacyPresets) { theme in
                                 themeSwatch(theme)
                             }
                         }
                     }
                 }
 
-                Divider()
-                    .overlay(Design.Colors.divider)
-
-                // Light/Dark/System toggle
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Appearance")
-                        .font(Design.Typography.footnote)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                    Picker("Appearance", selection: colorSchemePreferenceBinding) {
-                        ForEach(ColorSchemePreference.allCases) { pref in
-                            Text(pref.label).tag(pref)
+                // The light/dark/system control only applies to the pre-2.1
+                // presets — the Herald appearances above already encode it.
+                if !themeManager.preset.isHeraldBrand {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Light / Dark")
+                            .brandEyebrow()
+                        Picker("Appearance", selection: colorSchemePreferenceBinding) {
+                            ForEach(ColorSchemePreference.allCases) { pref in
+                                Text(pref.label).tag(pref)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
                 }
 
                 Divider()
@@ -752,6 +809,58 @@ struct SettingsScreen: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    /// Currently selected Herald appearance, or `nil` when a pre-2.1 preset is active.
+    private var selectedAppearance: HeraldAppearance? {
+        HeraldAppearance.resolve(
+            preset: themeManager.preset,
+            colorScheme: themeManager.colorSchemePreference
+        )
+    }
+
+    private func appearanceRow(_ appearance: HeraldAppearance) -> some View {
+        let isSelected = selectedAppearance == appearance
+        return Button {
+            withAnimation(Design.Motion.quickResponse) {
+                themeManager.preset = appearance.preset
+                themeManager.colorSchemePreference = appearance.colorScheme
+            }
+            settingsStore.settings.themePreset = appearance.preset
+            settingsStore.settings.colorSchemePreference = appearance.colorScheme
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                // Swatch, ringed so true black stays visible on a dark ground.
+                Circle()
+                    .fill(appearance.swatch)
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Circle().strokeBorder(Design.Colors.borderStrong, lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(appearance.label)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Text(appearance.detail)
+                        .font(Design.Typography.caption2)
+                        .foregroundStyle(Design.Colors.tertiaryForeground)
+                }
+
+                Spacer(minLength: Design.Spacing.xs)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Design.Colors.accentHot)
+                }
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.appearance.\(appearance.rawValue)")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 
     private func themeSwatch(_ theme: ThemePreset) -> some View {
@@ -944,19 +1053,50 @@ struct SettingsScreen: View {
                             Spacer()
 
                             Picker("Voice", selection: ttsVoiceBinding) {
-                                ForEach(["Mia", "Chloe", "Milo", "Dean", "\u{51B0}\u{7CD6}", "\u{8309}\u{8389}", "\u{82CF}\u{6253}", "\u{767D}\u{6866}"], id: \.self) { v in
-                                    Text(v).tag(v)
+                                ForEach(SpeechVoice.allCases, id: \.rawValue) { v in
+                                    Text(v.rawValue).tag(v.rawValue)
                                 }
                             }
                             .pickerStyle(.menu)
                             .tint(Design.Brand.accent)
                         }
 
-                        Text("English: Mia, Chloe, Milo, Dean")
+                        Text("English: Mia, Chloe, Milo, Dean — Chinese: 冰糖, 茉莉, 苏打, 白桦")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
                     .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
+                    // Mimo TTS model selector
+                    HStack {
+                        Text("Mimo model")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Picker("Mimo model", selection: mimoModelBinding) {
+                            Text("Built-in voices").tag("mimo-v2.5-tts")
+                            Text("Voice design").tag("mimo-v2.5-tts-voicedesign")
+                            Text("Voice clone").tag("mimo-v2.5-tts-voiceclone")
+                        }
+                        .pickerStyle(.menu)
+                        .tint(Design.Brand.accent)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    sectionDivider
+
+                    TextField("Voice style (director notes)", text: mimoVoiceStyleBinding, axis: .vertical)
+                        .lineLimit(1...4)
+                        .textFieldStyle(.plain)
+
+                    if settingsStore.settings.mimoTTSModel == "mimo-v2.5-tts-voicedesign"
+                        && settingsStore.settings.mimoVoiceStyle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Voice design requires a style description.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     sectionDivider
 
@@ -1086,6 +1226,16 @@ struct SettingsScreen: View {
                 UserDefaults.standard.removeObject(forKey: "mimo.apiKey")
             }
             mimoAPIKey = await mimoKeychain.retrieve(key: "mimo.apiKey") ?? ""
+
+            // Load AUX model configuration
+            if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
+                let client = RelayAPIClient { relayBase }
+                let svc = AuxModelService(apiClient: client) {
+                    await sessionStore.currentAccessToken()
+                }
+                auxService = svc
+                await svc.load()
+            }
         }
     }
 
@@ -1217,6 +1367,12 @@ struct SettingsScreen: View {
     }
     private var ttsAppleVoiceIdentifierBinding: Binding<String> {
         Binding(get: { settingsStore.settings.ttsAppleVoiceIdentifier }, set: { settingsStore.settings.ttsAppleVoiceIdentifier = $0 })
+    }
+    private var mimoModelBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.mimoTTSModel }, set: { settingsStore.settings.mimoTTSModel = $0 })
+    }
+    private var mimoVoiceStyleBinding: Binding<String> {
+        Binding(get: { settingsStore.settings.mimoVoiceStyle }, set: { settingsStore.settings.mimoVoiceStyle = $0 })
     }
     private var availableAppleVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()

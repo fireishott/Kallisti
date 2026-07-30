@@ -3,12 +3,25 @@ import SwiftUI
 /// Lightweight keyword-based syntax tokenizer for code blocks.
 /// No third-party dependencies — just a ~150-keyword switch per language.
 struct SyntaxHighlighter {
-    // Colors matched to Herald brand palette
-    static let keywordColor  = Color(hex: 0xFF6B00)   // molten orange
-    static let stringColor   = Color(hex: 0x90EE90)   // soft green
-    static let commentColor  = Color(hex: 0x888888)   // muted grey
-    static let numberColor   = Color(hex: 0xFFF5E0)   // white-hot
-    static let defaultColor  = Color(hex: 0xF5F0E8)   // warm off-white
+    // Herald 2.1 code palette, resolved through the active theme so code blocks
+    // stay legible in Herald, Herald OLED, and Herald Light.
+    //
+    // The keyword color was `0xFF6B00` ("molten orange") before 2.1. Orange is
+    // not part of the Herald identity — keywords now carry the hot signal blue.
+    /// Read from the lock-guarded snapshot: tokenizing can run off the main actor,
+    /// and `MainActor.assumeIsolated` would trap rather than return.
+    private static var palette: ThemePalette { ThemeSnapshot.activePalette }
+
+    /// Keywords — the hot signal blue.
+    static var keywordColor: Color { palette.accentHot }
+    /// Strings — Herald success green.
+    static var stringColor: Color { palette.success }
+    /// Comments — recede to tertiary.
+    static var commentColor: Color { palette.tertiaryForeground }
+    /// Numbers and literals — Herald warning gold.
+    static var numberColor: Color { palette.warning }
+    /// Everything else — primary foreground.
+    static var defaultColor: Color { palette.foreground }
 
     private static let keywords: [String: Set<String>] = [
         "swift": ["func", "var", "let", "class", "struct", "enum", "protocol",

@@ -50,8 +50,8 @@ struct SSELineIteratorTests {
         // Frame 1: id: 1\nevent: text_delta\ndata: {"delta":"Hello"}\n\n
         // Frame 2: id: 2\nevent: text_delta\ndata: {"delta":"World"}\n\n
         let input = Data(
-            "id: 1\nevent: text_delta\ndata: {\"delta\":\"Hello\"}\n\n" +
-            "id: 2\nevent: text_delta\ndata: {\"delta\":\"World\"}\n\n".utf8
+            ("id: 1\nevent: text_delta\ndata: {\"delta\":\"Hello\"}\n\n" +
+             "id: 2\nevent: text_delta\ndata: {\"delta\":\"World\"}\n\n").utf8
         )
         var buffer = input
         let lines = drainSSELines(from: &buffer)
@@ -126,5 +126,42 @@ struct SSELineIteratorTests {
         let lines = drainSSELines(from: &buffer)
         #expect(lines == ["data: {}", "", ""])
         #expect(buffer.isEmpty)
+    }
+}
+
+@Suite("Facade wire format parses correctly")
+struct FacadeWireFormatTests {
+
+    /// Byte-for-byte what http_facade.py emits per event:
+    /// f"id: {seq}\nevent: {type}\ndata: {json}\n\n"
+    @Test("One facade frame in one chunk yields exactly four lines")
+    func facadeFrameYieldsFourLines() {
+        var buffer = Data("id: 2\nevent: text_delta\ndata: {\"delta\": \"B\", \"seq\": 2}\n\n".utf8)
+        let lines = drainSSELines(from: &buffer)
+        #expect(lines == [
+            "id: 2",
+            "event: text_delta",
+            "data: {\"delta\": \"B\", \"seq\": 2}",
+            "",
+        ])
+        #expect(buffer.isEmpty)
+    }
+
+    @Test("A frame split across chunk boundaries reassembles")
+    func splitFrameReassembles() {
+        var buffer = Data("id: 1\neve".utf8)
+        let first = drainSSELines(from: &buffer)
+        buffer.append(Data("nt: done\n\n".utf8))
+        let second = drainSSELines(from: &buffer)
+        #expect(first + second == ["id: 1", "event: done", ""])
+        #expect(buffer.isEmpty)
+    }
+
+    @Test("A terminal done frame keeps its JSON payload intact")
+    func doneFrameKeepsPayload() {
+        var buffer = Data("id: 5\nevent: done\ndata: {\"status\": \"completed\", \"text\": \"B36 CHECK\"}\n\n".utf8)
+        let lines = drainSSELines(from: &buffer)
+        #expect(lines.contains("data: {\"status\": \"completed\", \"text\": \"B36 CHECK\"}"))
+        #expect(lines.last == "")
     }
 }

@@ -88,22 +88,23 @@ func sseLines(from dataStream: AsyncStream<Data>) -> AsyncThrowingStream<String,
 func drainSSELines(from buffer: inout Data) -> [String] {
     guard !buffer.isEmpty else { return [] }
     var lines: [String] = []
-    var searchStart = buffer.startIndex
-    while let newlineIndex = buffer[searchStart...].firstIndex(of: 0x0A) {
-        let lineEnd = newlineIndex
-        // Strip \r if present (handle \r\n line endings)
-        var lineData: Data
-        if lineEnd > buffer.startIndex, buffer[lineEnd - 1] == 0x0D {
-            lineData = buffer[buffer.startIndex ..< (lineEnd - 1)]
-        } else {
-            lineData = buffer[buffer.startIndex ..< lineEnd]
+    var lineStart = buffer.startIndex
+    while let newlineIndex = buffer[lineStart...].firstIndex(of: 0x0A) {
+        // Slice from the CURRENT line start, not the buffer start. Data slices
+        // inherit the parent's index space, so using buffer.startIndex here
+        // made every line after the first include all preceding lines — which
+        // meant no line ever matched "data:" and no line was ever empty, so
+        // the SSE dispatch branch never fired and zero events were emitted.
+        var lineEnd = newlineIndex
+        if lineEnd > lineStart, buffer[lineEnd - 1] == 0x0D {
+            lineEnd -= 1                     // strip CR from CRLF endings
         }
-        lines.append(String(data: lineData, encoding: .utf8) ?? "")
-        searchStart = lineEnd + 1
+        lines.append(String(data: buffer[lineStart ..< lineEnd], encoding: .utf8) ?? "")
+        lineStart = newlineIndex + 1
     }
-    // Keep unconsumed bytes in buffer for next call
-    if searchStart < buffer.endIndex {
-        buffer = Data(buffer[searchStart...])
+    // Keep unconsumed bytes for the next call
+    if lineStart < buffer.endIndex {
+        buffer = Data(buffer[lineStart...])
     } else {
         buffer.removeAll(keepingCapacity: true)
     }

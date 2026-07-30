@@ -117,7 +117,7 @@ final class SessionListStore {
 
         do {
             let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
-            currentOffset = pageSize  // Use the requested page size, not actual count returned
+            currentOffset = response.sessions.count  // Advance by actual count — a short page means the list is exhausted
             totalCount = response.total
             // Merge with existing sessions to preserve locally-cached data across refreshes
             mergeSessions(response.sessions)

@@ -531,6 +531,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     var ttsAutoSpeakDuringStreaming: Bool
     var ttsAppleRate: Float
     var ttsAppleVoiceIdentifier: String
+    var mimoTTSModel: String
+    var mimoVoiceStyle: String
     var enterToSend: Bool
     var showReasoning: Bool
     var useStreaming: Bool
@@ -558,6 +560,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeakDuringStreaming: Bool = true,
         ttsAppleRate: Float = 1.0,
         ttsAppleVoiceIdentifier: String = "com.apple.ttsbundle.siri_female_en-US_compact",
+        mimoTTSModel: String = "mimo-v2.5-tts",
+        mimoVoiceStyle: String = "",
         enterToSend: Bool = false,
         showReasoning: Bool = true,
         useStreaming: Bool = true,
@@ -584,6 +588,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.ttsAutoSpeakDuringStreaming = ttsAutoSpeakDuringStreaming
         self.ttsAppleRate = ttsAppleRate
         self.ttsAppleVoiceIdentifier = ttsAppleVoiceIdentifier
+        self.mimoTTSModel = mimoTTSModel
+        self.mimoVoiceStyle = mimoVoiceStyle
         self.enterToSend = enterToSend
         self.showReasoning = showReasoning
         self.useStreaming = useStreaming
@@ -612,6 +618,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         case ttsAutoSpeakDuringStreaming
         case ttsAppleRate
         case ttsAppleVoiceIdentifier
+        case mimoTTSModel
+        case mimoVoiceStyle
         case enterToSend
         case showReasoning
         case useStreaming
@@ -649,6 +657,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         ttsAutoSpeakDuringStreaming = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeakDuringStreaming) ?? true
         ttsAppleRate = try container.decodeIfPresent(Float.self, forKey: .ttsAppleRate) ?? 1.0
         ttsAppleVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .ttsAppleVoiceIdentifier) ?? "com.apple.ttsbundle.siri_female_en-US_compact"
+        mimoTTSModel = try container.decodeIfPresent(String.self, forKey: .mimoTTSModel) ?? "mimo-v2.5-tts"
+        mimoVoiceStyle = try container.decodeIfPresent(String.self, forKey: .mimoVoiceStyle) ?? ""
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
         useStreaming = try container.decodeIfPresent(Bool.self, forKey: .useStreaming) ?? true
@@ -678,6 +688,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(ttsAutoSpeakDuringStreaming, forKey: .ttsAutoSpeakDuringStreaming)
         try container.encode(ttsAppleRate, forKey: .ttsAppleRate)
         try container.encode(ttsAppleVoiceIdentifier, forKey: .ttsAppleVoiceIdentifier)
+        try container.encode(mimoTTSModel, forKey: .mimoTTSModel)
+        try container.encode(mimoVoiceStyle, forKey: .mimoVoiceStyle)
         try container.encode(enterToSend, forKey: .enterToSend)
         try container.encode(showReasoning, forKey: .showReasoning)
         try container.encode(useStreaming, forKey: .useStreaming)

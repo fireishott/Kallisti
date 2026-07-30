@@ -67,3 +67,10 @@ AuthKey_*.p8
 relay/relay.db-shm
 relay/relay.db-wal
 main
+
+# Internal release/ops material — this repo is PUBLIC.
+# These carry internal hostnames, the fihadmin account, ASC key + issuer IDs and
+# keychain-variable references. Keep them local; never track them.
+*MARCHING-ORDERS*.md
+*MARCHING_ORDERS*.md
+deploy/
