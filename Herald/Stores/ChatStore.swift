@@ -23,7 +23,6 @@ final class ChatStore {
             // not on in-place updates (merge, message appends) to the same conversation.
             if oldValue?.id != conversation?.id {
                 autoTitleAttempted = false
-                autoCompressAttempted = false
             }
         }
     }

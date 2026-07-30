@@ -1062,16 +1062,7 @@ struct ChatScreen: View {
         }
     }
 
-    private func performCompress() async {
-        // Trigger context compression: send a system directive to summarize
-        // the conversation so far, then continue. The agent returns a concise
-        // summary that replaces the accumulated context.
-        let compressPrompt = "/compress"
-        messageText = ""
-        appendSystemMessage("Compressing session context…")
-        await chatStore.sendMessage(compressPrompt, attachments: [])
-        scrollToBottom()
-    }
+    // D5: performCompress() deleted — compress command removed from catalogs.
 
     /// Creates a new session on the server and switches to it, replacing the
     /// current conversation. This is the correct "new chat" path — unlike
