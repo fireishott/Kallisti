@@ -74,3 +74,6 @@ main
 *MARCHING-ORDERS*.md
 *MARCHING_ORDERS*.md
 deploy/
+
+# Local-only recovered ops docs (contain credentials). Never track.
+local-ops/
