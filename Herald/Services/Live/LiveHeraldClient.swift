@@ -409,12 +409,29 @@ final class LiveHeraldClient: HeraldClientProtocol {
                             donePayload = nil
                         }
 
-                        // Skip the extra server round-trip when the SSE done
-                        // payload already carries the canonical message. This
-                        // removes ~200-500ms of latency on every stream completion.
+                        // Prefer the text the `done` event already delivered.
+                        //
+                        // This ordering is load-bearing. `donePayload` is built
+                        // above with `message: nil` — its only construction site —
+                        // so `donePayload?.message` can never be non-nil, and the
+                        // server round-trip below reloads from a stub that returns
+                        // an empty conversation. With no terminal-text branch,
+                        // `resolveFinalMessage` therefore falls all the way through
+                        // to `Message(content: "", status: .delivered)`: a blank
+                        // bubble that still fires the delivered check and haptic.
+                        //
+                        // B35 (`6172ec0`) fixed this; the Build 41 refactor
+                        // (`71884b9`) reverted it. Restored for 2.4.0 and covered by
+                        // `TerminalMessageMappingTests`.
                         let finalMessage: Message
                         let usage: TokenUsage?
-                        if let doneMessage = donePayload?.message {
+                        if let streamed = Self.finalMessage(
+                            fromTerminalText: terminalResult?.text,
+                            jobId: jobId
+                        ) {
+                            finalMessage = streamed
+                            usage = donePayload?.usage
+                        } else if let doneMessage = donePayload?.message {
                             finalMessage = self.mapMessage(doneMessage)
                             usage = donePayload?.usage
                         } else {
@@ -632,6 +649,20 @@ final class LiveHeraldClient: HeraldClientProtocol {
             Self.logger.warning("Failed to refresh conversation after streaming: \(error.localizedDescription)")
             return currentConversation
         }
+    }
+
+    /// Map terminal SSE text to the final chat message.
+    ///
+    /// The `done` event already carries the canonical answer. Before B35 that
+    /// text was parsed and then dropped, forcing a fallback to
+    /// `/v1/conversations/current` — a stub that returns an empty message list —
+    /// so every reply rendered as an empty bubble. Returns `nil` for absent or
+    /// blank text so the caller can fall through to its other sources.
+    static func finalMessage(fromTerminalText text: String?, jobId: UUID) -> Message? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return Message(sender: .herald, content: text, jobID: jobId, status: .delivered)
     }
 
     private func resolveFinalMessage(

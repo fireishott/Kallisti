@@ -137,12 +137,11 @@ actor JobStreamCoordinator {
                     }
 
                     // Skip duplicates (compare against snapshot, not mutated value).
-                    // Allow seq == 0 when lastAppliedSeq is 0 (initial state) so
-                    // relays that number events from 0 don't have their first
-                    // event silently dropped.
-                    if seqBefore > 0 && envelope.seq <= seqBefore {
-                        continue
-                    }
+                    guard Self.shouldApply(
+                        seq: envelope.seq,
+                        lastAppliedSeq: seqBefore,
+                        isTerminal: envelope.type.isTerminal
+                    ) else { continue }
 
                     self.lastAppliedSeq = envelope.seq
                     self.lastAttempt = envelope.attempt
@@ -280,6 +279,25 @@ actor JobStreamCoordinator {
     /// the v2 envelope fields (contractVersion, jobId, conversationId, etc.) and
     /// sends only the payload in `data:`, with the type in `event:`.
     ///
+    /// Whether an inbound event should be applied.
+    ///
+    /// The facade replays a job's backlog renumbered from 0 on every reconnect and
+    /// ignores `Last-Event-ID`, so after a reconnect the terminal `done` arrives at
+    /// a seq we have already applied. Dropping it as a duplicate leaves the stream
+    /// hanging forever — the request never completes and no reply is ever shown —
+    /// so terminal events are always applied.
+    ///
+    /// `lastAppliedSeq == 0` is the initial state: relays that number events from 0
+    /// must not have their first event silently dropped.
+    ///
+    /// Added in B35 (`d7b6fe8`), reverted by the Build 41 refactor (`71884b9`),
+    /// restored for 2.4.0. Covered by `JobStreamCoordinatorTests`.
+    nonisolated static func shouldApply(seq: Int, lastAppliedSeq: Int, isTerminal: Bool) -> Bool {
+        if isTerminal { return true }
+        if lastAppliedSeq == 0 { return true }
+        return seq > lastAppliedSeq
+    }
+
     /// Returns `nil` for SSE comment keepalives (event == "comment" or empty data)
     /// without advancing the sequence counter.
     func parseEnvelope(from sseEvent: SSEEvent) -> JobEventEnvelope? {
