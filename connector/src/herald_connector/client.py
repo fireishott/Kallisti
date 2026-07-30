@@ -41,7 +41,6 @@ _GATEWAY_COMMANDS: list[dict] = [
     {"name": "undo", "description": "Remove the last user/assistant exchange", "category": "Session", "args": None, "aliases": [], "gatewayOnly": False},
     {"name": "title", "description": "Set a title for the current session", "category": "Session", "args": "[name]", "aliases": [], "gatewayOnly": False},
     {"name": "branch", "description": "Branch the current session", "category": "Session", "args": "[name]", "aliases": ["fork"], "gatewayOnly": False},
-    {"name": "compress", "description": "Manually compress conversation context", "category": "Session", "args": None, "aliases": [], "gatewayOnly": False},
     {"name": "rollback", "description": "List or restore filesystem checkpoints", "category": "Session", "args": "[number]", "aliases": [], "gatewayOnly": False},
     {"name": "stop", "description": "Kill all running background processes", "category": "Session", "args": None, "aliases": [], "gatewayOnly": False},
     {"name": "approve", "description": "Approve a pending dangerous command", "category": "Session", "args": "[session|always]", "aliases": [], "gatewayOnly": True},
@@ -1130,52 +1129,10 @@ class HeraldConnector:
             task.cancel()
         self._job_phases.pop(job_id, None)
 
-    async def _auto_compact_session(self, *, session_id: str) -> bool:
-        """Run Hermes's compress command to summarise older conversation history.
-
-        Returns True if compaction succeeded, False otherwise.
-        The compressor preserves system/developer instructions and recent turns
-        while replacing older middle history with a bounded summary.
-        """
-        try:
-            settings = self.executor.settings
-            hermes_cmd = settings.herald_command
-            cmd = [hermes_cmd, "compress", "--resume", session_id]
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=30.0,
-            )
-            if proc.returncode == 0:
-                logger.info(
-                    "Auto-compact session %s succeeded",
-                    session_id[:8] if session_id else "unknown",
-                )
-                return True
-            else:
-                stderr_text = stderr.decode("utf-8", errors="replace")[:200] if stderr else ""
-                logger.warning(
-                    "Auto-compact session %s failed (exit %d): %s",
-                    session_id[:8] if session_id else "unknown",
-                    proc.returncode, stderr_text,
-                )
-                return False
-        except asyncio.TimeoutError:
-            logger.warning("Auto-compact session %s timed out", session_id[:8])
-            return False
-        except FileNotFoundError:
-            logger.warning(
-                "Auto-compact: hermes command not found (%s)",
-                getattr(self.executor.settings, 'herald_command', 'unknown'),
-            )
-            return False
-        except Exception:
-            logger.warning("Auto-compact session %s error", session_id[:8], exc_info=True)
-            return False
+    # D5: _auto_compact_session deleted — it called `hermes compress` which
+    # is not a valid subcommand.  Compaction belongs to the agent's own
+    # ContextCompressor (threshold: 0.25), which has been working correctly
+    # this whole time.
 
     async def _handle_job_streaming(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
@@ -1274,38 +1231,10 @@ class HeraldConnector:
                 self._stop_job_heartbeat(job_id)
                 return
 
-            # Build 28: auto-compact when context is nearly full.
-            # This runs hermes compress to summarise older history before
-            # the upstream request, preventing context_exceeded failures.
-            _COMPACT_THRESHOLD = 0.8
-            if context_window is not None and estimated_tokens > context_window * _COMPACT_THRESHOLD and context_window > 0:
-                session_for_compact = job.get("sessionId")
-                if session_for_compact:
-                    try:
-                        compacted = await self._auto_compact_session(
-                            session_id=session_for_compact,
-                        )
-                        if compacted:
-                            # Re-estimate after compaction
-                            new_estimate = _estimate_payload_tokens(
-                                user_message=user_message,
-                                history=job.get("history", []),
-                                attachments=job.get("attachments"),
-                                provider=job.get("provider"),
-                            )
-                            logger.info(
-                                "Job %s: auto-compact reduced estimate from %d to %d tokens",
-                                job_id, estimated_tokens, new_estimate,
-                            )
-                            estimated_tokens = new_estimate
-                    except Exception:
-                        logger.warning(
-                            "Job %s: auto-compact failed, continuing with original context",
-                            job_id, exc_info=True,
-                        )
+            # D5: auto-compact shim deleted.  Compaction is handled by the
+            # agent's own ContextCompressor (threshold: 0.25).
 
-            # Double-check after compaction attempt
-            if estimated_tokens > context_window:
+            if context_window is not None and estimated_tokens > context_window:
                 await websocket.send(json.dumps({
                     "type": "job.failed",
                     "jobId": job_id,

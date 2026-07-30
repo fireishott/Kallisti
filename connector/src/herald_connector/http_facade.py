@@ -631,7 +631,6 @@ async def list_commands(request: Request) -> JSONResponse:
             {"name": "new", "description": "Start a new session"},
             {"name": "model", "description": "Switch models"},
             {"name": "profile", "description": "Switch profiles"},
-            {"name": "compress", "description": "Compress session context"},
             {"name": "retry", "description": "Retry last message"},
             {"name": "stop", "description": "Stop current response"},
         ]

@@ -630,12 +630,11 @@ final class ChatStore {
                     }
                     await self.autoTitleIfNeeded()
 
-                    // Auto-compress when context exceeds 85% — sends /compress
-                    // as a system directive so the user doesn't have to hit the
-                    // banner button manually.
-                    if let pct = self.conversation?.contextPercent, pct > 85.0 {
-                        await self.autoCompress()
-                    }
+                    // D5: autoCompress() deleted — it sent a /compress user
+                    // turn into the transcript, invoking a connector command
+                    // whose implementation called a nonexistent `hermes
+                    // compress` subcommand.  The agent's own ContextCompressor
+                    // handles compaction at 25%.
 
                     // Post local notification if app is in background
                     if UIApplication.shared.applicationState == .background {
@@ -1055,61 +1054,7 @@ final class ChatStore {
         }
     }
 
-    /// Automatically sends `/compress` when context exceeds 85%.
-    /// Only triggers once per conversation to avoid compression loops.
-    /// The compress directive is sent as a system message so the agent
-    /// summarizes existing context and the user perceives a seamless
-    /// continuation rather than a disruptive reload.
-    private var autoCompressAttempted = false
-
-    private func autoCompress() async {
-        guard !autoCompressAttempted else { return }
-        autoCompressAttempted = true
-        Self.logger.info("Auto-compressing at \(self.conversation?.contextPercent ?? 0) context")
-
-        // Reuse the same message-send pipeline; the agent handles /compress
-        // natively, producing a summary then resuming normal conversation.
-        let clientMessageID = UUID()
-        let compressMsg = Message(
-            id: clientMessageID,
-            clientMessageID: clientMessageID,
-            sender: .user,
-            content: "/compress",
-            status: .sending
-        )
-        if conversation == nil {
-            conversation = Conversation(title: "New Chat")
-        }
-        conversation?.messages.append(compressMsg)
-        conversation?.lastActivity = compressMsg.timestamp
-
-        // Don't use streaming for compress — it's a fast system directive.
-        let response = await heraldClient.send(
-            message: "/compress",
-            attachments: [],
-            clientMessageID: clientMessageID
-        )
-        if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-            conversation?.messages[idx].status = .delivered
-        }
-        conversation?.messages.append(response)
-        conversation?.lastActivity = response.timestamp
-        // Usage comes from the current conversation metadata, not the Message object
-        if let latestUsage = heraldClient.currentConversation?.latestUsage {
-            lastTokenUsage = latestUsage
-        }
-        if let conversation {
-            // Strip transient relay-reported fields before caching so stale
-            // context percent / token usage never survive a relaunch.
-            var cacheCopy = conversation
-            cacheCopy.contextPercent = nil
-            cacheCopy.latestUsage = nil
-            persistence.saveConversationCache(cacheCopy)
-            // Also reset in-memory state so the UI reflects post-compress.
-            self.conversation?.contextPercent = nil
-            onConversationChanged?()
-        }
-    }
+    // D5: autoCompress() and autoCompressAttempted deleted.
 
     private func autoTitleIfNeeded() async {
         let defaultTitles: Set<String> = ["New Chat", "Herald"]

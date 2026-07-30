@@ -495,14 +495,22 @@ class HeraldAPIExecutor:
     # ------------------------------------------------------------------
 
     async def _runs_available(self) -> bool:
-        """Check if /v1/runs endpoint is available on the API server."""
+        """Check if /v1/runs endpoint is available on the API server.
+
+        D5.6: Probe with GET /v1/capabilities (which is registered) instead
+        of GET /v1/runs (which is POST-only and always returns 405/401,
+        making the old check return True unconditionally).
+        """
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=5.0)) as client:
                 resp = await client.get(
-                    f"{self._base_url()}/v1/runs",
+                    f"{self._base_url()}/v1/capabilities",
                     headers=self._auth_headers(),
                 )
-                return resp.status_code != 404
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return "runs" in data.get("capabilities", [])
+                return False
         except Exception:
             return False
 

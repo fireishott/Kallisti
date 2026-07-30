@@ -36,6 +36,14 @@
 - **Context banner removed:** The "Session nearly full" banner was driven by
   the fabricated percentage. Deleted — the existing context ring is the
   correct notification surface.
+- **Auto-compress never executed (P1):** The connector's `_auto_compact_session`
+  called `hermes compress`, which is not a valid subcommand — the process always
+  exited non-zero. Deleted the entire shim. The agent's own ContextCompressor
+  (threshold: 0.25) has been compacting correctly all along. Also deleted the
+  iOS `autoCompress()` which sent a `/compress` user turn into the transcript,
+  and removed the compress command from both command catalogs. Fixed the
+  capability probe (`_runs_available`) to use GET /v1/capabilities instead of
+  GET /v1/runs (POST-only, always returned True).
 
 ## 2.3.6 (Build 31) - 2026-07-28
 
