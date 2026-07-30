@@ -1651,17 +1651,37 @@ final class ChatStore {
             Self.logger.info(
                 "Merge preserved \(localOnly.count) local message(s) absent from the refreshed conversation"
             )
-            refreshedConversation.messages.append(contentsOf: localOnly)
-            // Stable sort by timestamp: appending puts a preserved reply after
-            // messages that are chronologically later than it.
-            refreshedConversation.messages = refreshedConversation.messages
-                .enumerated()
-                .sorted { lhs, rhs in
-                    lhs.element.timestamp == rhs.element.timestamp
-                        ? lhs.offset < rhs.offset
-                        : lhs.element.timestamp < rhs.element.timestamp
+            // D2b: Splice local-only messages at their anchored position
+            // instead of sorting by timestamp.  Sorting mixed two clocks
+            // (host utcnow() vs phone Date.now) and inverted order when
+            // skew exceeded the inter-message gap (~sub-second).
+            //
+            // Algorithm: for each local-only message, find the last local
+            // message that precedes it AND exists in the refreshed array.
+            // Insert after that anchor.  Messages with no anchor append.
+            let localMessages = localConversation.messages
+            let refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+
+            for localMsg in localOnly {
+                // Find the anchor: the last message before localMsg in the
+                // local array that also exists in the refreshed array.
+                var anchorID: UUID? = nil
+                if let localIdx = localMessages.firstIndex(where: { $0.id == localMsg.id }) {
+                    for predecessor in localMessages[..<localIdx].reversed() {
+                        if refreshedIDsForAnchor.contains(predecessor.id) {
+                            anchorID = predecessor.id
+                            break
+                        }
+                    }
                 }
-                .map(\.element)
+
+                if let anchorID,
+                   let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID }) {
+                    refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                } else {
+                    refreshedConversation.messages.append(localMsg)
+                }
+            }
         }
 
         return refreshedConversation

@@ -511,11 +511,22 @@ class HeraldAPIExecutor:
 
         Maps to the existing StreamEvent vocabulary so client.py:1688-1723
         and the iOS app remain unchanged.
+
+        Accepts either an async iterable (aiter_lines) or a sync iterable.
         """
         current_event = None
         current_data_lines = []
 
-        for raw_line in lines:
+        # Support both sync and async iterables
+        if hasattr(lines, '__aiter__'):
+            line_iter = lines
+        else:
+            async def _async_wrap():
+                for item in lines:
+                    yield item
+            line_iter = _async_wrap()
+
+        async for raw_line in line_iter:
             line = raw_line.rstrip("\n\r")
 
             if line.startswith("event: "):
@@ -639,64 +650,20 @@ class HeraldAPIExecutor:
             if not run_id:
                 raise ValueError("No run_id in /v1/runs response")
 
-            # Stream events
+            # Stream events through the canonical SSE parser
             async with client.stream(
                 "GET",
                 f"{self._base_url()}/v1/runs/{run_id}/events",
                 headers=self._auth_headers(),
             ) as event_response:
                 event_response.raise_for_status()
-                async for raw_line in event_response.aiter_lines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    # Parse SSE properly
-                    if line.startswith("event: "):
-                        current_event = line[7:].strip()
-                        continue
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            data = {}
-
-                        if current_event == "reasoning.available":
-                            yield StreamEvent(
-                                type="reasoning_delta",
-                                data=data.get("text", ""),
-                            )
-                        elif current_event == "assistant.delta":
-                            text = data.get("text", "")
-                            if text:
-                                yield StreamEvent(type="text_delta", data=text)
-                        elif current_event == "tool.started":
-                            yield StreamEvent(
-                                type="tool_activity",
-                                label=data.get("tool", ""),
-                            )
-                        elif current_event in ("subagent.start", "subagent.complete"):
-                            yield StreamEvent(
-                                type="tool_activity",
-                                label=data.get("name", data.get("tool", "")),
-                            )
-                        elif current_event == "run.completed":
-                            yield StreamEvent(
-                                type="finish",
-                                session_id=data.get("session_id"),
-                                usage=data.get("usage"),
-                            )
-                            return
-                        elif current_event == "run.failed":
-                            yield StreamEvent(
-                                type="finish",
-                                data=data.get("error", "Run failed"),
-                            )
-                            return
-                        else:
-                            yield StreamEvent(type="keepalive")
+                async for event in self._parse_runs_sse(event_response.aiter_lines()):
+                    if event.type == "stream_interrupted":
+                        break  # Fall through to resume logic below
+                    yield event
+                else:
+                    # _parse_runs_sse returned normally (finish/failed)
+                    return
 
             # The events stream ended without run.completed/run.failed.
             # The run may still be executing on the host — attempt to
@@ -712,8 +679,6 @@ class HeraldAPIExecutor:
                     status_data = status_resp.json()
                     run_status = status_data.get("status", "")
                     if run_status in ("completed", "failed", "cancelled"):
-                        # Run finished while we were disconnected —
-                        # yield a proper finish with whatever data we have.
                         yield StreamEvent(
                             type="finish",
                             session_id=status_data.get("session_id"),
@@ -727,39 +692,15 @@ class HeraldAPIExecutor:
                         headers=self._auth_headers(),
                     ) as retry_response:
                         retry_response.raise_for_status()
-                        async for raw_line in retry_response.aiter_lines():
-                            line = raw_line.strip()
-                            if not line or line.startswith(":"):
-                                continue
-                            if line.startswith("event: "):
-                                current_event = line[7:].strip()
-                                continue
-                            if line.startswith("data: "):
-                                data_str = line[6:]
-                                try:
-                                    data = json.loads(data_str)
-                                except json.JSONDecodeError:
-                                    data = {}
-                                if current_event == "run.completed":
-                                    yield StreamEvent(
-                                        type="finish",
-                                        session_id=data.get("session_id"),
-                                        usage=data.get("usage"),
-                                    )
-                                    return
-                                elif current_event == "run.failed":
-                                    yield StreamEvent(
-                                        type="finish",
-                                        data=data.get("error", "Run failed"),
-                                    )
-                                    return
-                                # Non-terminal events during reconnect —
-                                # yield as keepalive so the client knows
-                                # the connection is alive
-                                yield StreamEvent(type="keepalive")
+                        async for event in self._parse_runs_sse(retry_response.aiter_lines()):
+                            if event.type == "stream_interrupted":
+                                break  # Try next attempt
+                            yield event
+                        else:
+                            # _parse_runs_sse returned normally
+                            return
                 except Exception:
-                    # Status check or reconnect failed — try next attempt
                     continue
 
-            # All reconnect attempts exhausted — report as interrupted
+            # All reconnect attempts exhausted
             yield StreamEvent(type="stream_interrupted")

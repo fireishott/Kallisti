@@ -359,8 +359,8 @@ actor JobStreamCoordinator {
             payload = .runRequeued(RunRequeuedPayload(fromAttempt: fromAttempt, toAttempt: toAttempt))
 
         case "reconnecting":
-            // D1: Connector signals that the events stream closed without
-            // run.completed — the run may still be executing (B4/D1).
+            // D1/D2: Connector signals that the events stream closed without
+            // run.completed — the run may still be executing.
             eventType = .runRequeued
             payload = .runRequeued(RunRequeuedPayload(fromAttempt: 0, toAttempt: 0))
 

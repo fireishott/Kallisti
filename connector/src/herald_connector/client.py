@@ -1722,9 +1722,9 @@ class HeraldConnector:
                     }
                     return
                 elif event.type == "stream_interrupted":
-                    # D1: The events stream ended without run.completed —
+                    # D1/D2: The events stream ended without run.completed —
                     # the run may still be executing. Signal reconnect
-                    # instead of a false "completed" (B4/D1).
+                    # instead of a false "completed".
                     yield {
                         "type": "reconnecting",
                         "data": {"reason": "run_events_closed"},
