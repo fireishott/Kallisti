@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -97,7 +98,7 @@ class InlineThinkParser:
 class StreamEvent:
     """A single event from the streaming chat completions endpoint."""
 
-    type: str  # "text_delta" | "reasoning_delta" | "tool_activity" | "finish"
+    type: str  # "text_delta" | "reasoning_delta" | "tool_activity" | "finish" | "stream_interrupted"
     data: str = ""
     label: str = ""
     session_id: str | None = None
@@ -504,11 +505,22 @@ class HeraldAPIExecutor:
 
         Maps to the existing StreamEvent vocabulary so client.py:1688-1723
         and the iOS app remain unchanged.
+
+        Accepts either an async iterable (aiter_lines) or a sync iterable.
         """
         current_event = None
         current_data_lines = []
 
-        for raw_line in lines:
+        # Support both sync and async iterables
+        if hasattr(lines, '__aiter__'):
+            line_iter = lines
+        else:
+            async def _async_wrap():
+                for item in lines:
+                    yield item
+            line_iter = _async_wrap()
+
+        async for raw_line in line_iter:
             line = raw_line.rstrip("\n\r")
 
             if line.startswith("event: "):
@@ -574,8 +586,9 @@ class HeraldAPIExecutor:
                 current_event = None
                 current_data_lines = []
 
-        # If we exited without a finish event, emit one
-        yield StreamEvent(type="finish")
+        # The events stream ended without run.completed/run.failed.
+        # The run may still be executing on the host (B4/D1).
+        yield StreamEvent(type="stream_interrupted")
 
     async def stream_message_runs(
         self,
@@ -629,64 +642,57 @@ class HeraldAPIExecutor:
             if not run_id:
                 raise ValueError("No run_id in /v1/runs response")
 
-            # Stream events
+            # Stream events through the canonical SSE parser
             async with client.stream(
                 "GET",
                 f"{self._base_url()}/v1/runs/{run_id}/events",
                 headers=self._auth_headers(),
             ) as event_response:
                 event_response.raise_for_status()
-                async for raw_line in event_response.aiter_lines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    # Parse SSE properly
-                    if line.startswith("event: "):
-                        current_event = line[7:].strip()
-                        continue
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            data = {}
+                async for event in self._parse_runs_sse(event_response.aiter_lines()):
+                    if event.type == "stream_interrupted":
+                        break  # Fall through to resume logic below
+                    yield event
+                else:
+                    # _parse_runs_sse returned normally (finish/failed)
+                    return
 
-                        if current_event == "reasoning.available":
-                            yield StreamEvent(
-                                type="reasoning_delta",
-                                data=data.get("text", ""),
-                            )
-                        elif current_event == "assistant.delta":
-                            text = data.get("text", "")
-                            if text:
-                                yield StreamEvent(type="text_delta", data=text)
-                        elif current_event == "tool.started":
-                            yield StreamEvent(
-                                type="tool_activity",
-                                label=data.get("tool", ""),
-                            )
-                        elif current_event in ("subagent.start", "subagent.complete"):
-                            yield StreamEvent(
-                                type="tool_activity",
-                                label=data.get("name", data.get("tool", "")),
-                            )
-                        elif current_event == "run.completed":
-                            yield StreamEvent(
-                                type="finish",
-                                session_id=data.get("session_id"),
-                                usage=data.get("usage"),
-                            )
-                            return
-                        elif current_event == "run.failed":
-                            yield StreamEvent(
-                                type="finish",
-                                data=data.get("error", "Run failed"),
-                            )
-                            return
+            # The events stream ended without run.completed/run.failed.
+            # The run may still be executing on the host — attempt to
+            # reconnect before giving up (B4/D1).
+            backoffs = [2, 4, 8]
+            for attempt, delay in enumerate(backoffs):
+                await asyncio.sleep(delay)
+                try:
+                    status_resp = await client.get(
+                        f"{self._base_url()}/v1/runs/{run_id}",
+                        headers=self._auth_headers(),
+                    )
+                    status_data = status_resp.json()
+                    run_status = status_data.get("status", "")
+                    if run_status in ("completed", "failed", "cancelled"):
+                        yield StreamEvent(
+                            type="finish",
+                            session_id=status_data.get("session_id"),
+                            usage=status_data.get("usage"),
+                        )
+                        return
+                    # Run still active — try to reconnect to /events
+                    async with client.stream(
+                        "GET",
+                        f"{self._base_url()}/v1/runs/{run_id}/events",
+                        headers=self._auth_headers(),
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        async for event in self._parse_runs_sse(retry_response.aiter_lines()):
+                            if event.type == "stream_interrupted":
+                                break  # Try next attempt
+                            yield event
                         else:
-                            yield StreamEvent(type="keepalive")
+                            # _parse_runs_sse returned normally
+                            return
+                except Exception:
+                    continue
 
-            # If we exited without a finish event, emit one
-            yield StreamEvent(type="finish")
+            # All reconnect attempts exhausted
+            yield StreamEvent(type="stream_interrupted")

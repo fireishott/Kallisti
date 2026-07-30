@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.0 (Build 4) - 2026-07-29
+
+### Fixed
+- **Out-of-order rendering (P0):** Two independent causes fixed. (a) The SSE
+  event parser in `stream_message_runs` never reset `current_event` between
+  frames, causing tool chips to duplicate and text to land in the wrong place.
+  Consolidated the duplicate parser into the canonical `_parse_runs_sse` which
+  correctly resets state. (b) The transcript merge sorted messages by wall-clock
+  timestamp, mixing host and phone clocks that can disagree by sub-second
+  amounts — enough to invert adjacent messages. Replaced with index-anchored
+  splicing that preserves server order.
+
 ## 2.3.6 (Build 31) - 2026-07-28
 
 ### Fixed
