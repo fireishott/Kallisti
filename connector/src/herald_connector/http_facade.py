@@ -1427,7 +1427,8 @@ async def session_generate_title(request: Request) -> JSONResponse:
 
     title = None
     try:
-        msgs = session_messages(session_id, limit=5)
+        # Title derivation reads role/text only — never ship reasoning here.
+        msgs = session_messages(session_id, limit=5, include_reasoning=False)
         for m in msgs:
             if m.get("role") == "user" and m.get("text"):
                 user_text = m["text"].strip()

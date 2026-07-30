@@ -52,13 +52,25 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _has_reasoning_column(conn: sqlite3.Connection) -> bool:
+    """True if messages.reasoning_content exists on this state.db."""
+    try:
+        cols = conn.execute("PRAGMA table_info(messages)").fetchall()
+        return any(c["name"] == "reasoning_content" for c in cols)
+    except sqlite3.Error:
+        return False
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 # UUIDv5 namespace for deriving app-facing UUIDs from Hermes session ids.
 # Using DNS namespace means the derivation is deterministic across all
 # compliant UUIDv5 implementations — the app can compute the same mapping
 # independently if desired.
-_APP_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # NAMESPACE_URL
+_APP_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # == uuid.NAMESPACE_DNS
+# ^ NAMESPACE_DNS, matching the paragraph above. It was mislabelled "NAMESPACE_URL"
+# for several releases; any tool that reconciles app ids must use DNS (…b810…),
+# not URL (…b811…), or it derives a different canonical id for every session.
 
 # B40: title generation runs in a throwaway ``title-<uuid4>`` session (B39 T2).
 # Those turns go through the same message handler, so Hermes records them with
@@ -159,8 +171,45 @@ def set_session_meta(session_id: str, **kwargs) -> None:
 
 # ── Message history ────────────────────────────────────────────────────────
 
+# Historical reasoning is returned so the collapsed "Thought process" block
+# survives a conversation refresh instead of vanishing the moment the stream
+# ends.  It is not free: the app re-fetches the *whole* conversation on a ~30 s
+# timer, `limit` is 200, and long-running ops sessions carry up to 237 KB of
+# chain-of-thought (max single row: 87,771 chars; mean: 553).  Typical phone
+# chats are 3-11 messages / 1-3 KB and are unaffected by these caps — they exist
+# purely so opening one of the big ops sessions on cellular cannot melt the poll.
+_REASONING_MAX_CHARS = 4000
+_REASONING_BUDGET_CHARS = 64_000
+_REASONING_TRUNCATED = "\n\n… (reasoning truncated)"
+
+
+def _apply_reasoning_budget(messages: list[dict]) -> list[dict]:
+    """Cap per-message reasoning, then spend a whole-conversation budget.
+
+    Walks newest → oldest so the most recent turns — the ones a user actually
+    expands — keep their chain-of-thought, and older turns give theirs up once
+    the budget is exhausted.  Dropping to "" is what the UI already expects for
+    "this message has no reasoning"; it renders no block at all.
+
+    Mutates *messages* in place and returns it.
+    """
+    spent = 0
+    for msg in reversed(messages):
+        text = msg.get("reasoning") or ""
+        if not text:
+            continue
+        if len(text) > _REASONING_MAX_CHARS:
+            text = text[:_REASONING_MAX_CHARS].rstrip() + _REASONING_TRUNCATED
+        if spent + len(text) > _REASONING_BUDGET_CHARS:
+            msg["reasoning"] = ""
+            continue
+        spent += len(text)
+        msg["reasoning"] = text
+    return messages
+
+
 def session_messages(
-    session_id: str, limit: int = 200
+    session_id: str, limit: int = 200, include_reasoning: bool = True
 ) -> list[dict]:
     """Return messages for a session in chronological order.
 
@@ -169,13 +218,22 @@ def session_messages(
 
     *session_id* may be an app-facing UUID; it is resolved to the Hermes
     session id before querying state.db.
+
+    *include_reasoning* attaches stored chain-of-thought (subject to
+    ``_apply_reasoning_budget``).  Callers that only read role/text — the title
+    derivation path — pass False and skip the transfer entirely.
     """
     hermes_id = _resolve_hermes_id(session_id) or session_id
     conn = _connect()
     try:
+        # `reasoning_content` is present on current Hermes schemas but selecting
+        # it unconditionally makes an older state.db raise OperationalError and
+        # take *all* conversation loading down with it.  Probe, don't assume.
+        want_reasoning = include_reasoning and _has_reasoning_column(conn)
+        reasoning_select = "reasoning_content" if want_reasoning else "'' AS reasoning_content"
         rows = conn.execute(
-            """
-            SELECT id, role, content, reasoning_content, timestamp
+            f"""
+            SELECT id, role, content, {reasoning_select}, timestamp
             FROM messages
             WHERE session_id = ?
               AND role IN ('user', 'assistant')
@@ -201,10 +259,11 @@ def session_messages(
     finally:
         conn.close()
 
-    return [_message_to_dict(r) for r in rows]
+    messages = [_message_to_dict(r, include_reasoning=want_reasoning) for r in rows]
+    return _apply_reasoning_budget(messages) if want_reasoning else messages
 
 
-def _message_to_dict(row: sqlite3.Row) -> dict:
+def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
     role = "herald" if row["role"] == "assistant" else row["role"]
 
     # Message ids are ints; the iOS app declares id: UUID.
@@ -221,7 +280,7 @@ def _message_to_dict(row: sqlite3.Row) -> dict:
         "deliveryStatus": "delivered",
         "jobId": None,
         "attachments": None,
-        "reasoning": row["reasoning_content"] or "",
+        "reasoning": (row["reasoning_content"] or "") if include_reasoning else "",
     }
 
 
