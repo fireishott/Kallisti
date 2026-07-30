@@ -131,7 +131,7 @@ class FacadeContext:
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
-        self.agent_version: Callable[[], str | None] | None = None
+        self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
 
 
 _context = FacadeContext()
@@ -1079,6 +1079,8 @@ async def host_current(request: Request) -> JSONResponse:
     if getattr(ctx, "agent_version", None) is not None:
         try:
             agent_version = ctx.agent_version()
+            if inspect.isawaitable(agent_version):
+                agent_version = await agent_version
         except Exception:  # noqa: BLE001
             agent_version = None
     return JSONResponse({
@@ -1106,7 +1108,14 @@ async def host_enrollment_codes(request: Request) -> JSONResponse:
 
 
 async def session_conversation(request: Request) -> JSONResponse:
-    """Get message history for a session."""
+    """Get message history for a session.
+
+    Shape is dictated by ConversationResponse/RelayConversation
+    (LiveHeraldClient.swift:32, :43-65) — `conversation` is required and its
+    `id` must be a UUID. The connector RPC returns a flat
+    {sessionId, messages, title} (client.py:2819), so normalize here exactly
+    as current_conversation() does (http_facade.py:1139-1146).
+    """
     await require_auth(request)
     ctx = get_context()
     session_id = request.path_params.get("id", "")
@@ -1115,7 +1124,20 @@ async def session_conversation(request: Request) -> JSONResponse:
     result = ctx.session_conversation(session_id)
     if inspect.isawaitable(result):
         result = await result
-    return JSONResponse(result)
+    result = result or {}
+    if "conversation" in result:
+        return JSONResponse(result)
+    return JSONResponse({"conversation": {
+        # Echo the app-facing UUID the client asked for. Never return the
+        # Hermes session id here (e.g. "api-9af38ce…") — it is not a UUID and
+        # RelayConversation.id has no fallback (LiveHeraldClient.swift:58).
+        "id": _coerce_uuid(session_id) or _coerce_uuid(result.get("sessionId")) or _stable_conversation_id(),
+        "title": result.get("title") or "New Chat",
+        "updatedAt": _now_iso(),
+        "messages": result.get("messages") or [],
+        "latestUsage": None,
+        "latestContext": None,
+    }})
 
 
 async def current_conversation(request: Request) -> JSONResponse:

@@ -2559,27 +2559,48 @@ class HeraldConnector:
     # ------------------------------------------------------------------
 
     _hermes_agent_version_cache: str | None = None
+    _hermes_agent_version_failed_at: float = 0.0
+    _AGENT_VERSION_RETRY_SECONDS: float = 60.0
 
-    def _hermes_agent_version(self) -> str | None:
-        """Parse `Hermes Agent v0.19.0 (...)` from the CLI's --version output.
+    async def _hermes_agent_version(self) -> str | None:
+        """Parse `Hermes Agent v0.19.0 (…)` from the CLI's --version output.
 
-        Cached for the process lifetime: this shells out, and /v1/hosts/current
-        is polled on every Settings appearance.
+        Only *successes* are cached for the process lifetime. A failure is
+        retried after _AGENT_VERSION_RETRY_SECONDS: `hermes --version` performs
+        an upstream check that can exceed the timeout under host load, and a
+        permanently cached failure pinned Settings → Hermes Agent to "—" for
+        the whole process lifetime (build 2).
+
+        Runs in a thread — this used to block the facade's event loop for 11s.
         """
-        if self._hermes_agent_version_cache is not None:
-            return self._hermes_agent_version_cache or None
-        try:
+        if self._hermes_agent_version_cache:
+            return self._hermes_agent_version_cache
+
+        import time
+        if (time.monotonic() - self._hermes_agent_version_failed_at) < self._AGENT_VERSION_RETRY_SECONDS:
+            return None
+
+        def _probe() -> str | None:
             import re
             command = self._resolve_hermes_command()
             result = subprocess.run(
-                [command, "--version"], capture_output=True, text=True, timeout=10
+                [command, "--version"], capture_output=True, text=True, timeout=30
             )
-            match = re.search(r"v?(\d+\.\d+\.\d+)", (result.stdout or "").splitlines()[0])
-            self._hermes_agent_version_cache = match.group(1) if match else ""
+            blob = (result.stdout or "") + "\n" + (result.stderr or "")
+            match = re.search(r"v?(\d+\.\d+\.\d+)", blob)
+            return match.group(1) if match else None
+
+        try:
+            version = await asyncio.to_thread(_probe)
         except Exception:  # noqa: BLE001 — never break the route
             logger.warning("Could not resolve Hermes agent version", exc_info=True)
-            self._hermes_agent_version_cache = ""
-        return self._hermes_agent_version_cache or None
+            version = None
+
+        if version:
+            self._hermes_agent_version_cache = version
+        else:
+            self._hermes_agent_version_failed_at = time.monotonic()
+        return version
 
     # ------------------------------------------------------------------
     # Cron RPC handlers — thin wrappers around `hermes cron` CLI subcommands.

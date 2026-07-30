@@ -304,7 +304,25 @@ class HeraldAPIExecutor:
         attachments: list[dict] | None = None,
         reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream a chat completion, yielding events as they arrive."""
+        """Stream a chat completion, yielding events as they arrive.
+
+        Prefers /v1/runs (reasoning + tool events) when available,
+        falls back to /v1/chat/completions. Gate on env var
+        HERALD_RUNS_STREAMING_ENABLED (default '1').
+        """
+        # Try /v1/runs first if enabled
+        import os
+        runs_enabled = os.environ.get("HERALD_RUNS_STREAMING_ENABLED", "1") != "0"
+        if runs_enabled and await self._runs_available():
+            async for event in self.stream_message_runs(
+                latest_user_message=latest_user_message,
+                history=history,
+                session_id=session_id,
+                attachments=attachments,
+                reasoning_effort=reasoning_effort,
+            ):
+                yield event
+            return
         headers = {
             **self._auth_headers(),
             "Content-Type": "application/json",
@@ -346,12 +364,19 @@ class HeraldAPIExecutor:
                 response.raise_for_status()
                 result_session_id = response.headers.get("X-Hermes-Session-Id") or session_id
 
+                current_sse_event = None  # Track SSE event type for hermes.tool.progress
+
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
                     if not line:
+                        # Blank line = end of SSE event, reset
+                        current_sse_event = None
                         continue
                     if line.startswith(":"):
                         # SSE comment (keepalive), skip
+                        continue
+                    if line.startswith("event: "):
+                        current_sse_event = line[7:].strip()
                         continue
                     if line == "data: [DONE]":
                         break
@@ -362,6 +387,16 @@ class HeraldAPIExecutor:
                     try:
                         chunk = json.loads(json_str)
                     except json.JSONDecodeError:
+                        continue
+
+                    # Handle hermes.tool.progress custom SSE events
+                    if current_sse_event == "hermes.tool.progress":
+                        tool_name = chunk.get("tool", "")
+                        if tool_name:
+                            yield StreamEvent(
+                                type="tool_activity",
+                                label=tool_name,
+                            )
                         continue
 
                     choices = chunk.get("choices", [])
@@ -447,3 +482,211 @@ class HeraldAPIExecutor:
                 session_id=result_session_id,
                 usage=accumulated_usage,
             )
+
+    # ------------------------------------------------------------------
+    # /v1/runs streaming (reasoning + tool events)
+    # ------------------------------------------------------------------
+
+    async def _runs_available(self) -> bool:
+        """Check if /v1/runs endpoint is available on the API server."""
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=5.0)) as client:
+                resp = await client.get(
+                    f"{self._base_url()}/v1/runs",
+                    headers=self._auth_headers(),
+                )
+                return resp.status_code != 404
+        except Exception:
+            return False
+
+    async def _parse_runs_sse(self, lines) -> AsyncIterator[StreamEvent]:
+        """Parse SSE events from /v1/runs/{run_id}/events.
+
+        Maps to the existing StreamEvent vocabulary so client.py:1688-1723
+        and the iOS app remain unchanged.
+        """
+        current_event = None
+        current_data_lines = []
+
+        for raw_line in lines:
+            line = raw_line.rstrip("\n\r")
+
+            if line.startswith("event: "):
+                current_event = line[7:].strip()
+                continue
+
+            if line.startswith("data: "):
+                current_data_lines.append(line[6:])
+                continue
+
+            if line.startswith("id: "):
+                # SSE id — skip for now
+                continue
+
+            if line.strip() == "":
+                # Blank line = dispatch event
+                if current_event and current_data_lines:
+                    data_str = "\n".join(current_data_lines)
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        data = {}
+
+                    if current_event == "reasoning.available":
+                        yield StreamEvent(
+                            type="reasoning_delta",
+                            data=data.get("text", ""),
+                        )
+                    elif current_event == "assistant.delta":
+                        text = data.get("text", "")
+                        if text:
+                            yield StreamEvent(type="text_delta", data=text)
+                    elif current_event == "tool.started":
+                        yield StreamEvent(
+                            type="tool_activity",
+                            label=data.get("tool", ""),
+                        )
+                    elif current_event == "tool.completed":
+                        # Tool done — could yield a keepalive or skip
+                        pass
+                    elif current_event in ("subagent.start", "subagent.complete"):
+                        yield StreamEvent(
+                            type="tool_activity",
+                            label=data.get("name", data.get("tool", "")),
+                        )
+                    elif current_event == "run.completed":
+                        yield StreamEvent(
+                            type="finish",
+                            session_id=data.get("session_id"),
+                            usage=data.get("usage"),
+                        )
+                        return
+                    elif current_event == "run.failed":
+                        yield StreamEvent(
+                            type="finish",
+                            data=data.get("error", "Run failed"),
+                        )
+                        return
+                    else:
+                        # Unmapped event → keepalive
+                        yield StreamEvent(type="keepalive")
+
+                current_event = None
+                current_data_lines = []
+
+        # If we exited without a finish event, emit one
+        yield StreamEvent(type="finish")
+
+    async def stream_message_runs(
+        self,
+        *,
+        latest_user_message: str,
+        history: list[HeraldConversationMessage] | None = None,
+        session_id: str | None = None,
+        attachments: list[dict] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream via /v1/runs — exposes reasoning + tool events.
+
+        Falls back to /v1/chat/completions if /v1/runs is unavailable.
+        """
+        headers = {
+            **self._auth_headers(),
+            "Content-Type": "application/json",
+        }
+        if session_id:
+            headers["X-Hermes-Session-Id"] = session_id
+
+        payload = {
+            "model": "hermes-agent",
+            "messages": self._messages_payload(
+                latest_user_message=latest_user_message,
+                history=history,
+                attachments=attachments,
+            ),
+            "stream": True,
+        }
+
+        if not self._is_llama_backend():
+            if reasoning_effort and reasoning_effort != "off":
+                payload["think"] = True
+            else:
+                payload["think"] = False
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
+        ) as client:
+            # Start a run
+            resp = await client.post(
+                f"{self._base_url()}/v1/runs",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            run_data = resp.json()
+            run_id = run_data.get("run_id") or run_data.get("id")
+
+            if not run_id:
+                raise ValueError("No run_id in /v1/runs response")
+
+            # Stream events
+            async with client.stream(
+                "GET",
+                f"{self._base_url()}/v1/runs/{run_id}/events",
+                headers=self._auth_headers(),
+            ) as event_response:
+                event_response.raise_for_status()
+                async for raw_line in event_response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    # Parse SSE properly
+                    if line.startswith("event: "):
+                        current_event = line[7:].strip()
+                        continue
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            data = {}
+
+                        if current_event == "reasoning.available":
+                            yield StreamEvent(
+                                type="reasoning_delta",
+                                data=data.get("text", ""),
+                            )
+                        elif current_event == "assistant.delta":
+                            text = data.get("text", "")
+                            if text:
+                                yield StreamEvent(type="text_delta", data=text)
+                        elif current_event == "tool.started":
+                            yield StreamEvent(
+                                type="tool_activity",
+                                label=data.get("tool", ""),
+                            )
+                        elif current_event in ("subagent.start", "subagent.complete"):
+                            yield StreamEvent(
+                                type="tool_activity",
+                                label=data.get("name", data.get("tool", "")),
+                            )
+                        elif current_event == "run.completed":
+                            yield StreamEvent(
+                                type="finish",
+                                session_id=data.get("session_id"),
+                                usage=data.get("usage"),
+                            )
+                            return
+                        elif current_event == "run.failed":
+                            yield StreamEvent(
+                                type="finish",
+                                data=data.get("error", "Run failed"),
+                            )
+                            return
+                        else:
+                            yield StreamEvent(type="keepalive")
+
+            # If we exited without a finish event, emit one
+            yield StreamEvent(type="finish")

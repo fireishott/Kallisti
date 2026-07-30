@@ -3,15 +3,18 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _default_state_dir() -> Path:
     configured = os.getenv("HERMES_MOBILE_CONNECTOR_HOME")
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".herald"
+    return Path.home() / ".hermes-mobile"
 
 
 @dataclass
@@ -96,6 +99,11 @@ class ConnectorStateStore:
 
     def load(self) -> ConnectorState:
         if not self.state_path.exists():
+            logger.error(
+                "Connector state file not found at %s (HERMES_MOBILE_CONNECTOR_HOME=%s)",
+                self.state_path,
+                os.getenv("HERMES_MOBILE_CONNECTOR_HOME", "<unset>"),
+            )
             raise RuntimeError(
                 "Connector is not set up yet. Run `herald setup` first "
                 "or use the legacy `herald enroll --code ...` flow."
