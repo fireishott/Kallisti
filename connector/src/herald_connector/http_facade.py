@@ -104,6 +104,7 @@ JobEventsProvider = Callable[[str], Coroutine[Any, Any, AsyncIterator[dict]]]
 SessionConversationProvider = Callable[[str], Coroutine[Any, Any, dict]]
 CurrentConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
 ClearConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
+PushRegisterProvider = Callable[[dict], Coroutine[Any, Any, dict]]
 
 
 class FacadeContext:
@@ -131,6 +132,7 @@ class FacadeContext:
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
+        self.push_register: PushRegisterProvider | None = None
         self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
 
 
@@ -307,8 +309,10 @@ def _prune_http_jobs() -> None:
 async def _run_http_job(job_id: str, handler, text, history, session_id,
                         attachments, reasoning_effort) -> None:
     """Drain the connector's message generator into the job record."""
+    from .reasoning_sanitizer import strip_reasoning
     job = _http_jobs[job_id]
     accumulated = ""
+    accumulated_reasoning = ""
     # Bounds the state.db lookup that resolves which session this turn landed
     # in, so an identical message sent days ago can never be matched instead.
     # A small skew allowance covers clock jitter between writer and reader.
@@ -342,6 +346,8 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     data = event.get("data", {}) or {}
                     if etype == "text_delta":
                         accumulated += data.get("delta", "")
+                    if etype == "reasoning_delta":
+                        accumulated_reasoning += data.get("delta", "")
                     if etype == "done":
                         # The connector's own terminal event (client.py:1695-1717) carries
                         # the final text and, on failure, the error + category/action.
@@ -380,15 +386,17 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # Record the canonical mapping: app_uuid → hermes_id
                             canonical_app_id = _app_uuid(hermes_sid)
                             _persist_hermes_mapping(canonical_app_id, hermes_sid)
-                            # B38 P0-2: record the mapping under BOTH the app's id
-                            # and the canonical id so future lookups resolve either
-                            # way.  Do NOT mutate job["conversationId"] — the app
-                            # already received it in the POST response, and changing
-                            # it later causes replies to land in the wrong thread.
+                            # A compose UUID is an alias, not another session.
+                            # Rebind the in-flight client to the canonical UUID
+                            # once Hermes has materialized the actual session.
                             response_conv_id = job.get("conversationId")
-                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
                             if response_conv_id and response_conv_id != canonical_app_id:
                                 _persist_hermes_mapping(response_conv_id, hermes_sid)
+                                _publish({
+                                    "type": "conversation_rebind",
+                                    "data": {"from": response_conv_id, "to": canonical_app_id},
+                                })
+                            job["conversationId"] = canonical_app_id
 
                             # B38 P1-1: auto-generate a title if the session
                             # has none.  Fire-and-forget — don't delay the
@@ -401,8 +409,6 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # app's conversation titleless.
                             from .session_store import get_session_meta, set_session_meta
                             title_ids = [canonical_app_id]
-                            if response_conv_id and response_conv_id != canonical_app_id:
-                                title_ids.append(response_conv_id)
                             existing_title = next(
                                 (t for t in (
                                     get_session_meta(i).get("title") for i in title_ids
@@ -446,6 +452,9 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         if job["status"] == "running":
             job["status"] = "completed"
         if job["status"] == "completed":
+            # Strip inline <think>...</think> blocks that may have accumulated
+            # from text_delta events on models without separate reasoning_delta.
+            accumulated = strip_reasoning(accumulated).strip()
             job["message"] = _relay_message("herald", accumulated, job_id=job_id)
         terminal = {
             "type": "done",
@@ -453,6 +462,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 "jobId": job_id,
                 "status": job["status"],
                 "text": accumulated,
+                "reasoning": accumulated_reasoning if accumulated_reasoning else None,
                 "error": job.get("error"),
                 "errorCategory": job.get("errorCategory"),
                 "errorAction": job.get("errorAction"),
@@ -1052,11 +1062,33 @@ async def get_inbox(request: Request) -> JSONResponse:
 
 
 async def push_register(request: Request) -> JSONResponse:
-    """Register for push notifications."""
+    """Persist the current device's APNs token for direct delivery."""
     await require_auth(request)
-    body = await request.json()
-    logger.info("Push registration: %s", body.get("deviceToken", "?")[:16])
-    return JSONResponse({"registered": True})
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    # ``apnsToken`` is the current iOS contract. Accept the old key only for
+    # already-released clients, and never log the token or any identifying part
+    # of it.
+    token = str(body.get("apnsToken") or body.get("deviceToken") or "").strip()
+    environment = str(body.get("pushEnvironment") or "production").strip().lower()
+    if not token:
+        raise HTTPException(status_code=400, detail="apnsToken is required")
+    if environment not in {"production", "development"}:
+        raise HTTPException(status_code=400, detail="pushEnvironment must be production or development")
+
+    ctx = get_context()
+    if ctx.push_register is None:
+        raise HTTPException(status_code=503, detail="Push registration is unavailable")
+    result = await ctx.push_register({"token": token, "environment": environment})
+    if result.get("registered") is not True:
+        raise HTTPException(status_code=503, detail="Push registration was not accepted")
+    logger.info("Push registration accepted (environment=%s)", environment)
+    return JSONResponse({"registered": True, "environment": environment})
 
 
 async def host_current(request: Request) -> JSONResponse:

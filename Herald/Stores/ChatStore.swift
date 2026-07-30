@@ -353,7 +353,7 @@ final class ChatStore {
                     chatLiveActivity.endActivity()
                     return
                 }
-                if !msg.content.isEmpty && msg.status != .sending {
+                if (!msg.content.isEmpty || !msg.reasoning.isEmpty) && msg.status != .sending {
                     streamingPhase = .idle
                     chatLiveActivity.endActivity()
                     return
@@ -443,13 +443,24 @@ final class ChatStore {
                     self.streamingPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
-                    self.enqueueDelta(delta, placeholderID: placeholderID)
-
-                    // Stream to TTS if enabled during streaming
-                    if let settings = self.ttsSettingsProvider?(),
-                       settings.enabled,
-                       settings.autoSpeakDuringStreaming {
-                        self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                    // If this delta opens an inline <think>/<thinking> block and
+                    // no separate reasoning_delta stream has started, route to the
+                    // reasoning buffer so it appears in the collapsible thought
+                    // bubble rather than the visible answer content.
+                    let hasOpenThinkTag = delta.range(
+                        of: #"<think(?:ing)?>"#, options: .regularExpression
+                    ) != nil
+                    if hasOpenThinkTag && reasoningStartedAt == nil {
+                        reasoningStartedAt = .now
+                        self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                    } else {
+                        // Stream to TTS only for non-reasoning content
+                        if let settings = self.ttsSettingsProvider?(),
+                           settings.enabled,
+                           settings.autoSpeakDuringStreaming {
+                            self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                        }
+                        self.enqueueDelta(delta, placeholderID: placeholderID)
                     }
 
                 case .reasoningDelta(let delta):
@@ -514,6 +525,7 @@ final class ChatStore {
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
+                    var isCredibleCompletion = false
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
@@ -600,22 +612,20 @@ final class ChatStore {
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                         }
+                        let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let resolvedReasoning = resolved.reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // A response is credible if it has visible text, reasoning, OR usage.
+                        // Reasoning-only completions (model thinks but emits empty answer body)
+                        // must not leave the placeholder stuck in isStreaming=true forever.
+                        isCredibleCompletion = !resolvedText.isEmpty
+                            || !resolvedReasoning.isEmpty
+                            || usage != nil
                         self.conversation?.messages[idx] = resolved
-                    }
-                    // D1.5: Defence in depth — a terminal event with empty
-                    // content and no usage is not a credible completion.  It
-                    // likely came from a premature stream close (B4/D1).
-                    // Treat as reconnecting so polling keeps trying.
-                    let isCredibleCompletion = !finalMessage.content
-                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || usage != nil
-
-                    if isCredibleCompletion {
                         // Mark user message as delivered if it's still in sending state
-                        if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                            if self.conversation?.messages[idx].status == .sending {
-                                self.conversation?.messages[idx].status = .delivered
-                            }
+                        if isCredibleCompletion,
+                           let userIdx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }),
+                           self.conversation?.messages[userIdx].status == .sending {
+                            self.conversation?.messages[userIdx].status = .delivered
                         }
                     }
                     let oldTitle = self.conversation?.title
@@ -760,6 +770,8 @@ final class ChatStore {
                         guidance = "The request timed out. Check your connection and retry."
                     case "empty_response":
                         guidance = "Herald returned an empty response. Try again or start a new session."
+                    case "upstream_interrupted":
+                        guidance = "The model was interrupted upstream. Please retry."
                     default:
                         guidance = errorMessage
                     }

@@ -131,7 +131,12 @@ actor JobStreamCoordinator {
 
                     // Detect seq gaps (only after first event — we don't know
                     // the relay's starting sequence number until we've seen one).
-                    if seqBefore > 0 && envelope.seq > seqBefore + 1 {
+                    // Allow a gap of 1 extra seq to absorb jitter from rapid
+                    // reasoning_delta bursts; a gap > 2 is a genuine loss.
+                    // Never reconnect mid-reasoning: the facade's backlog replay
+                    // would double-insert reasoning chunks and scramble bubble order.
+                    let isReasoningActive = envelope.type == .reasoningDelta || self.lastAppliedSeq > 0
+                    if seqBefore > 0 && envelope.seq > seqBefore + 2 && !isReasoningActive {
                         self.logger.warning("Seq gap detected: expected \(seqBefore + 1), got \(envelope.seq). Reconnecting.")
                         break  // Reconnect from lastAppliedSeq
                     }

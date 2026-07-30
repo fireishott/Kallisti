@@ -13,7 +13,7 @@ struct ReasoningView: View {
     let duration: TimeInterval?
 
     @State private var isExpanded = false
-    @State private var pulse = false
+    @State private var pulseOpacity: Double = 1.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
@@ -37,22 +37,24 @@ struct ReasoningView: View {
             RoundedRectangle(cornerRadius: Design.CornerRadius.md)
                 .stroke(Design.Colors.divider, lineWidth: 1)
         )
-        .onAppear {
-            // Match initial streaming state — onChange(of:) only fires on
-            // changes, not on the initial value, so we must sync here.
-            isExpanded = isStreaming
+        // Use task(id:) so animation state is always re-synchronized on
+        // isStreaming value changes AND on any view re-mount (LazyVStack
+        // recycle, etc.). onAppear+onChange missed the re-mount case where
+        // the view is removed and re-inserted while isStreaming is already
+        // true — leaving a non-pulsing, collapsed header mid-stream.
+        .task(id: isStreaming) {
             if isStreaming {
-                withAnimation(Design.Motion.breathe) { pulse = true }
-            }
-        }
-        .onChange(of: isStreaming) { _, streaming in
-            if streaming {
-                withAnimation(Design.Motion.standard) { isExpanded = true }
-                withAnimation(Design.Motion.breathe) { pulse = true }
+                isExpanded = true
+                withAnimation(
+                    .easeInOut(duration: 0.9)
+                    .repeatForever(autoreverses: true)
+                ) {
+                    pulseOpacity = 0.35
+                }
             } else {
                 withAnimation(Design.Motion.standard) {
                     isExpanded = false
-                    pulse = false
+                    pulseOpacity = 1.0
                 }
             }
         }
@@ -73,7 +75,7 @@ struct ReasoningView: View {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Design.Colors.secondaryForeground)
-                    .opacity(isStreaming && pulse ? 0.4 : 1.0)
+                    .opacity(isStreaming ? pulseOpacity : 1.0)
 
                 Text(headerLabel)
                     .font(.system(.caption, weight: .medium))
