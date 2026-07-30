@@ -6,7 +6,7 @@
 # a dirty or incomplete file here means something stripped it between xcodegen and archive.
 set -euo pipefail
 
-cd ~/Herald-b34
+cd ~/Herald
 
 # Gate 1: file must be git-clean (no unstaged changes)
 if ! git diff --quiet Herald/Herald.entitlements; then
