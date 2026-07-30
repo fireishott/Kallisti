@@ -579,10 +579,20 @@ final class ChatStore {
                         }
                         self.conversation?.messages[idx] = resolved
                     }
-                    // Mark user message as delivered if it's still in sending state
-                    if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                        if self.conversation?.messages[idx].status == .sending {
-                            self.conversation?.messages[idx].status = .delivered
+                    // D1.5: Defence in depth — a terminal event with empty
+                    // content and no usage is not a credible completion.  It
+                    // likely came from a premature stream close (B4/D1).
+                    // Treat as reconnecting so polling keeps trying.
+                    let isCredibleCompletion = !finalMessage.content
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || usage != nil
+
+                    if isCredibleCompletion {
+                        // Mark user message as delivered if it's still in sending state
+                        if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+                            if self.conversation?.messages[idx].status == .sending {
+                                self.conversation?.messages[idx].status = .delivered
+                            }
                         }
                     }
                     let oldTitle = self.conversation?.title
@@ -608,7 +618,9 @@ final class ChatStore {
                     // Haptic feedback on response completion — fired immediately
                     // in the stream handler so it's synchronous with the content
                     // appearing, not delayed by the ChatScreen's onChange observer.
-                    HapticEngine.responseReceived()
+                    if isCredibleCompletion {
+                        HapticEngine.responseReceived()
+                    }
 
                     // Finish TTS streaming — flush any remaining buffered text
                     self.ttsService?.finishStream()

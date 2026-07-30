@@ -358,6 +358,12 @@ actor JobStreamCoordinator {
             let toAttempt = json["to_attempt"] as? Int ?? 0
             payload = .runRequeued(RunRequeuedPayload(fromAttempt: fromAttempt, toAttempt: toAttempt))
 
+        case "reconnecting":
+            // D1: Connector signals that the events stream closed without
+            // run.completed — the run may still be executing (B4/D1).
+            eventType = .runRequeued
+            payload = .runRequeued(RunRequeuedPayload(fromAttempt: 0, toAttempt: 0))
+
         case "started":
             eventType = .runStarted
             let phase = json["phase"] as? String ?? "starting"

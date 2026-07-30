@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.0 (Build 4) - 2026-07-29
+
+### Fixed
+- **Premature terminal event (P0):** The connector synthesized a `finish` event
+  when the run-events SSE stream closed without `run.completed`, causing the iOS
+  app to show a green delivered check and fire the completion haptic while tool
+  calls were still executing on the host. The connector now yields
+  `stream_interrupted` instead, attempts to reconnect to the events stream (3
+  attempts with exponential backoff), and the iOS side treats an empty-content
+  completion without usage as non-credible — keeping the composer in Stop state
+  and continuing to poll.
+
 ## 2.3.6 (Build 31) - 2026-07-28
 
 ### Fixed

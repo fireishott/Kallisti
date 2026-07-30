@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -97,7 +98,7 @@ class InlineThinkParser:
 class StreamEvent:
     """A single event from the streaming chat completions endpoint."""
 
-    type: str  # "text_delta" | "reasoning_delta" | "tool_activity" | "finish"
+    type: str  # "text_delta" | "reasoning_delta" | "tool_activity" | "finish" | "stream_interrupted"
     data: str = ""
     label: str = ""
     session_id: str | None = None
@@ -365,6 +366,7 @@ class HeraldAPIExecutor:
                 result_session_id = response.headers.get("X-Hermes-Session-Id") or session_id
 
                 current_sse_event = None  # Track SSE event type for hermes.tool.progress
+                seen_tool_calls = False  # D1.4: track tool-call state
 
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
@@ -445,6 +447,7 @@ class HeraldAPIExecutor:
                     # Tool-call deltas — the model is invoking tools.
                     tool_calls = delta.get("tool_calls")
                     if tool_calls:
+                        seen_tool_calls = True
                         for tc in tool_calls:
                             func = tc.get("function", {})
                             name = func.get("name", "")
@@ -466,6 +469,13 @@ class HeraldAPIExecutor:
                         remaining_reasoning = think_parser.flush()
                         if remaining_reasoning:
                             yield StreamEvent(type="reasoning_delta", data=remaining_reasoning)
+                        if seen_tool_calls:
+                            # D1.4: Tool calls were seen in this stream —
+                            # "stop" means end-of-segment, not end-of-turn.
+                            # The agentic loop may still be executing on the
+                            # host. Yield interrupted so the client can reconnect.
+                            yield StreamEvent(type="stream_interrupted")
+                            return
                         yield StreamEvent(
                             type="finish",
                             session_id=result_session_id,
@@ -473,15 +483,12 @@ class HeraldAPIExecutor:
                         )
                         return
 
-            # If we exited the stream without a finish event, emit one
+            # The stream ended without a terminal finish_reason.
+            # The run may still be executing on the host (B4/D1).
             remaining_reasoning = think_parser.flush()
             if remaining_reasoning:
                 yield StreamEvent(type="reasoning_delta", data=remaining_reasoning)
-            yield StreamEvent(
-                type="finish",
-                session_id=result_session_id,
-                usage=accumulated_usage,
-            )
+            yield StreamEvent(type="stream_interrupted")
 
     # ------------------------------------------------------------------
     # /v1/runs streaming (reasoning + tool events)
@@ -574,8 +581,11 @@ class HeraldAPIExecutor:
                 current_event = None
                 current_data_lines = []
 
-        # If we exited without a finish event, emit one
-        yield StreamEvent(type="finish")
+        # The events stream ended without run.completed/run.failed.
+        # The run may still be executing on the host — reporting "completed"
+        # here is what made the app show a delivered check and fire the
+        # completion haptic mid-turn (B4/D1).
+        yield StreamEvent(type="stream_interrupted")
 
     async def stream_message_runs(
         self,
@@ -688,5 +698,68 @@ class HeraldAPIExecutor:
                         else:
                             yield StreamEvent(type="keepalive")
 
-            # If we exited without a finish event, emit one
-            yield StreamEvent(type="finish")
+            # The events stream ended without run.completed/run.failed.
+            # The run may still be executing on the host — attempt to
+            # reconnect before giving up (B4/D1).
+            backoffs = [2, 4, 8]
+            for attempt, delay in enumerate(backoffs):
+                await asyncio.sleep(delay)
+                try:
+                    status_resp = await client.get(
+                        f"{self._base_url()}/v1/runs/{run_id}",
+                        headers=self._auth_headers(),
+                    )
+                    status_data = status_resp.json()
+                    run_status = status_data.get("status", "")
+                    if run_status in ("completed", "failed", "cancelled"):
+                        # Run finished while we were disconnected —
+                        # yield a proper finish with whatever data we have.
+                        yield StreamEvent(
+                            type="finish",
+                            session_id=status_data.get("session_id"),
+                            usage=status_data.get("usage"),
+                        )
+                        return
+                    # Run still active — try to reconnect to /events
+                    async with client.stream(
+                        "GET",
+                        f"{self._base_url()}/v1/runs/{run_id}/events",
+                        headers=self._auth_headers(),
+                    ) as retry_response:
+                        retry_response.raise_for_status()
+                        async for raw_line in retry_response.aiter_lines():
+                            line = raw_line.strip()
+                            if not line or line.startswith(":"):
+                                continue
+                            if line.startswith("event: "):
+                                current_event = line[7:].strip()
+                                continue
+                            if line.startswith("data: "):
+                                data_str = line[6:]
+                                try:
+                                    data = json.loads(data_str)
+                                except json.JSONDecodeError:
+                                    data = {}
+                                if current_event == "run.completed":
+                                    yield StreamEvent(
+                                        type="finish",
+                                        session_id=data.get("session_id"),
+                                        usage=data.get("usage"),
+                                    )
+                                    return
+                                elif current_event == "run.failed":
+                                    yield StreamEvent(
+                                        type="finish",
+                                        data=data.get("error", "Run failed"),
+                                    )
+                                    return
+                                # Non-terminal events during reconnect —
+                                # yield as keepalive so the client knows
+                                # the connection is alive
+                                yield StreamEvent(type="keepalive")
+                except Exception:
+                    # Status check or reconnect failed — try next attempt
+                    continue
+
+            # All reconnect attempts exhausted — report as interrupted
+            yield StreamEvent(type="stream_interrupted")
