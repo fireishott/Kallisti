@@ -338,13 +338,13 @@ actor JobStreamCoordinator {
             let toolCallId = json["tool_call_id"] as? String ?? ""
             let name = json["name"] as? String ?? "tool"
             let args = json["args"] as? String ?? ""
-            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args))
+            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args, emoji: json["emoji"] as? String))
 
         case "tool.completed":
             eventType = .toolCompleted
             let toolCallId = json["tool_call_id"] as? String ?? ""
             let output = json["output"] as? String ?? ""
-            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output))
+            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output, isError: json["is_error"] as? Bool ?? false, durationMs: json["duration_ms"] as? Int))
 
         case "approval.required":
             eventType = .approvalRequired
@@ -457,7 +457,7 @@ actor JobStreamCoordinator {
             return nil
         case .toolStarted:
             if case .toolStarted(let payload) = envelope.payload {
-                return .toolActivity(payload.name)
+                return .toolStarted(ToolActivity(label: payload.args.isEmpty ? payload.name : payload.args, toolCallID: payload.toolCallId, name: payload.name, emoji: payload.emoji, argsPreview: payload.args))
             }
             return .toolActivity("Working...")
         case .toolProgress:
@@ -466,7 +466,10 @@ actor JobStreamCoordinator {
             }
             return .toolActivity("Working...")
         case .toolCompleted:
-            return .toolActivity("Done")
+            if case .toolCompleted(let payload) = envelope.payload {
+                return .toolCompleted(toolCallID: payload.toolCallId, resultPreview: payload.output, isError: payload.isError, durationMs: payload.durationMs)
+            }
+            return nil
         case .commentary:
             return .heartbeat(phase: "commentary")
         case .approvalRequired:

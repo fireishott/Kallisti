@@ -80,10 +80,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let deliveryStatus: String?
         let jobId: UUID?
         let attachments: [RelayAttachment]?
+        let reasoning: String?
 
         enum CodingKeys: String, CodingKey {
             case id, role, text, timestamp
-            case clientMessageId, deliveryStatus, jobId, attachments
+            case clientMessageId, deliveryStatus, jobId, attachments, reasoning
         }
 
         init(from decoder: Decoder) throws {
@@ -100,6 +101,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
             jobId = try container.decodeIfPresent(UUID.self, forKey: .jobId)
             attachments = try container.decodeIfPresent([RelayAttachment].self, forKey: .attachments)
+            reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
         }
     }
 
@@ -603,7 +605,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             timestamp: relayMessage.timestamp,
             jobID: relayMessage.jobId,
             status: mapDeliveryStatus(relayMessage.deliveryStatus, sender: relayMessage.role),
-            attachments: attachments
+            attachments: attachments,
+            reasoning: relayMessage.reasoning ?? ""
         )
     }
 

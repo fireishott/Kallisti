@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -18,6 +20,7 @@ READ_TIMEOUT = 300.0  # 5 minutes — long enough for Claude thinking, catches d
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
+logger = logging.getLogger(__name__)
 
 
 class InlineThinkParser:
@@ -211,17 +214,17 @@ class HeraldAPIExecutor:
 
     async def health_check(self) -> bool:
         """Return True if the API server is reachable and healthy."""
-        try:
-            async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT) as client:
-                response = await client.get(
-                    f"{self._base_url()}/v1/health",
-                    headers=self._auth_headers(),
-                )
-                if response.status_code == 200:
-                    body = response.json()
-                    return body.get("status") == "ok" or body.get("data", {}).get("status") == "ok"
-        except Exception:  # noqa: BLE001
-            pass
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT) as client:
+                    response = await client.get(f"{self._base_url()}/v1/health", headers=self._auth_headers())
+                    if response.status_code == 200:
+                        body = response.json()
+                        return body.get("status") == "ok" or body.get("data", {}).get("status") == "ok"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("health check attempt %s/3 failed: %s", attempt + 1, exc)
+            if attempt < 2:
+                await asyncio.sleep(1)
         return False
 
     # ------------------------------------------------------------------
@@ -313,7 +316,9 @@ class HeraldAPIExecutor:
         """
         # Try /v1/runs first if enabled
         import os
-        runs_enabled = os.environ.get("HERALD_RUNS_STREAMING_ENABLED", "1") != "0"
+        # The runs endpoint remains opt-in until its replay semantics are
+        # validated against every deployed Hermes version.
+        runs_enabled = os.environ.get("HERALD_RUNS_STREAMING_ENABLED", "0") == "1"
         if runs_enabled and await self._runs_available():
             async for event in self.stream_message_runs(
                 latest_user_message=latest_user_message,
@@ -394,10 +399,26 @@ class HeraldAPIExecutor:
                     # Handle hermes.tool.progress custom SSE events
                     if current_sse_event == "hermes.tool.progress":
                         tool_name = chunk.get("tool", "")
-                        if tool_name:
+                        tool_call_id = chunk.get("toolCallId", "")
+                        if chunk.get("status", "running") == "running" and tool_name:
                             yield StreamEvent(
-                                type="tool_activity",
+                                type="tool_started" if tool_call_id else "tool_activity",
                                 label=tool_name,
+                                data=json.dumps({
+                                    "toolCallId": tool_call_id,
+                                    "argsPreview": chunk.get("label", ""),
+                                    "emoji": chunk.get("emoji", ""),
+                                }),
+                            )
+                        elif tool_call_id:
+                            yield StreamEvent(
+                                type="tool_completed",
+                                data=json.dumps({
+                                    "toolCallId": tool_call_id,
+                                    "isError": bool(chunk.get("error")),
+                                    "resultPreview": chunk.get("resultPreview", ""),
+                                    "durationMs": chunk.get("durationMs"),
+                                }),
                             )
                         continue
 
@@ -502,16 +523,20 @@ class HeraldAPIExecutor:
         making the old check return True unconditionally).
         """
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=5.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
                 resp = await client.get(
                     f"{self._base_url()}/v1/capabilities",
                     headers=self._auth_headers(),
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return "runs" in data.get("capabilities", [])
+                    available = bool(data.get("features", {}).get("run_events_sse")) \
+                        or "runs" in data.get("endpoints", {})
+                    logger.info("runs_available=%s", available)
+                    return available
                 return False
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - availability must not break chat
+            logger.warning("runs availability probe failed: %s", exc)
             return False
 
     async def _parse_runs_sse(self, lines) -> AsyncIterator[StreamEvent]:
@@ -551,43 +576,46 @@ class HeraldAPIExecutor:
 
             if line.strip() == "":
                 # Blank line = dispatch event
-                if current_event and current_data_lines:
+                if current_data_lines:
                     data_str = "\n".join(current_data_lines)
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         data = {}
 
-                    if current_event == "reasoning.available":
+                    event_name = current_event or data.get("event", "")
+                    if event_name == "reasoning.available":
                         yield StreamEvent(
                             type="reasoning_delta",
                             data=data.get("text", ""),
                         )
-                    elif current_event == "assistant.delta":
-                        text = data.get("text", "")
+                    elif event_name in ("assistant.delta", "message.delta"):
+                        text = data.get("text", data.get("delta", ""))
                         if text:
                             yield StreamEvent(type="text_delta", data=text)
-                    elif current_event == "tool.started":
+                    elif event_name == "tool.started":
                         yield StreamEvent(
-                            type="tool_activity",
+                            type="tool_started",
                             label=data.get("tool", ""),
+                            data=json.dumps({"toolCallId": data.get("toolCallId", ""), "argsPreview": data.get("preview", "")}),
                         )
-                    elif current_event == "tool.completed":
-                        # Tool done — could yield a keepalive or skip
-                        pass
-                    elif current_event in ("subagent.start", "subagent.complete"):
+                    elif event_name == "tool.completed":
+                        yield StreamEvent(type="tool_completed", data=json.dumps({"toolCallId": data.get("toolCallId", ""), "resultPreview": data.get("resultPreview", ""), "isError": bool(data.get("error")), "durationMs": data.get("durationMs")}))
+                    elif event_name == "approval.request":
+                        yield StreamEvent(type="tool_activity", label=data.get("prompt", "Approval required"))
+                    elif event_name in ("subagent.start", "subagent.complete"):
                         yield StreamEvent(
                             type="tool_activity",
                             label=data.get("name", data.get("tool", "")),
                         )
-                    elif current_event == "run.completed":
+                    elif event_name == "run.completed":
                         yield StreamEvent(
                             type="finish",
                             session_id=data.get("session_id"),
                             usage=data.get("usage"),
                         )
                         return
-                    elif current_event == "run.failed":
+                    elif event_name == "run.failed":
                         yield StreamEvent(
                             type="finish",
                             data=data.get("error", "Run failed"),

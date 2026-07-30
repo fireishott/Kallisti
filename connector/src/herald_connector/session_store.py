@@ -175,7 +175,7 @@ def session_messages(
     try:
         rows = conn.execute(
             """
-            SELECT id, role, content, timestamp
+            SELECT id, role, content, reasoning_content, timestamp
             FROM messages
             WHERE session_id = ?
               AND role IN ('user', 'assistant')
@@ -221,6 +221,7 @@ def _message_to_dict(row: sqlite3.Row) -> dict:
         "deliveryStatus": "delivered",
         "jobId": None,
         "attachments": None,
+        "reasoning": row["reasoning_content"] or "",
     }
 
 

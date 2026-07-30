@@ -417,11 +417,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                                     if not get_session_meta(i).get("title"):
                                         set_session_meta(i, title=existing_title)
                             else:
-                                asyncio.create_task(
-                                    _auto_title_and_persist(
-                                        handler, text, hermes_sid, title_ids
-                                    )
-                                )
+                                # LLM title runs used the full tool-capable agent
+                                # and raced the app's own generator.  Keep title
+                                # generation deterministic, immediate and side-effect free.
+                                cleaned = text.strip().split("\n", 1)[0].strip()
+                                derived = cleaned[:47].rstrip() + ("..." if len(cleaned) > 50 else "")
+                                derived = derived or "New Chat"
+                                for i in title_ids:
+                                    set_session_meta(i, title=derived)
                         continue          # re-emitted with jobId in the finally block
                     _publish({"type": etype, "data": data})
             finally:
@@ -1006,15 +1009,16 @@ async def connector_events(request: Request) -> StreamingResponse:
     """SSE stream of connector health events."""
     import asyncio as _asyncio
     async def stream():
-        yield "event: connected\ndata: {}\n\n"
-        while True:
-            try:
+        try:
+            yield "event: connected\ndata: {}\n\n"
+            while True:
                 await _asyncio.sleep(30)
                 if await request.is_disconnected():
                     break
                 yield "event: health_check\ndata: {\"status\": \"online\"}\n\n"
-            except Exception:
-                break
+        except _asyncio.CancelledError:
+            yield ": bye\n\n"
+            raise
     return StreamingResponse(stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
@@ -1251,6 +1255,9 @@ async def job_events(request: Request) -> StreamingResponse:
                         return
                     yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
                     seq += 1
+            except asyncio.CancelledError:
+                yield ": bye\n\n"
+                raise
             finally:
                 if queue in job["subscribers"]:
                     job["subscribers"].remove(queue)
@@ -1523,7 +1530,9 @@ async def create_session(request: Request) -> JSONResponse:
         set_session_meta(session_id, title=title)
     return JSONResponse({"session": {
         "id": session_id,
-        "title": title,
+        # This is an optimistic response only; placeholders still must not be
+        # written to the sidecar where they shadow a derived title.
+        "title": title or "New Chat",
         "previewText": "",
         "updatedAt": _now_iso(),
         "source": "api_server",

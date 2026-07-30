@@ -21,6 +21,11 @@ struct ToolStartedPayload: Codable, Sendable, Hashable {
     let toolCallId: String
     let name: String
     let args: String
+    let emoji: String?
+
+    init(toolCallId: String, name: String, args: String, emoji: String? = nil) {
+        self.toolCallId = toolCallId; self.name = name; self.args = args; self.emoji = emoji
+    }
 }
 
 struct ToolProgressPayload: Codable, Sendable, Hashable {
@@ -31,6 +36,12 @@ struct ToolProgressPayload: Codable, Sendable, Hashable {
 struct ToolCompletedPayload: Codable, Sendable, Hashable {
     let toolCallId: String
     let output: String
+    let isError: Bool
+    let durationMs: Int?
+
+    init(toolCallId: String, output: String, isError: Bool = false, durationMs: Int? = nil) {
+        self.toolCallId = toolCallId; self.output = output; self.isError = isError; self.durationMs = durationMs
+    }
 }
 
 struct CommentaryPayload: Codable, Sendable, Hashable {

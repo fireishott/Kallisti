@@ -1636,6 +1636,32 @@ class HeraldConnector:
                         "type": "tool_activity",
                         "data": {"label": event.label, "seq": source_seq},
                     }
+                elif event.type == "tool_started":
+                    source_seq += 1
+                    details = json.loads(event.data or "{}")
+                    yield {
+                        "type": "tool.started",
+                        "data": {
+                            "tool_call_id": details.get("toolCallId", ""),
+                            "name": event.label or "tool",
+                            "args": details.get("argsPreview", ""),
+                            "emoji": details.get("emoji", ""),
+                            "seq": source_seq,
+                        },
+                    }
+                elif event.type == "tool_completed":
+                    source_seq += 1
+                    details = json.loads(event.data or "{}")
+                    yield {
+                        "type": "tool.completed",
+                        "data": {
+                            "tool_call_id": details.get("toolCallId", ""),
+                            "output": details.get("resultPreview", ""),
+                            "is_error": details.get("isError", False),
+                            "duration_ms": details.get("durationMs"),
+                            "seq": source_seq,
+                        },
+                    }
                 elif event.type == "keepalive":
                     source_seq += 1
                     yield {
@@ -1925,12 +1951,12 @@ class HeraldConnector:
 
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "restart", unit],
+                ["systemctl", "--user", "restart", "--no-block", unit],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
                 logger.info("hermes.restart: restarted %s", unit)
-                return {"restarting": True, "message": f"Restarting {unit}"}
+                return {"restarting": True, "message": "Restart requested"}
 
             detail = (result.stderr or "").strip() or f"systemctl exited {result.returncode}"
             logger.warning("hermes.restart: systemctl restart %s failed: %s", unit, detail)
@@ -3609,7 +3635,11 @@ You MUST return a JSON object with exactly these fields:
                 self._active_adapter_mode = "runs_v2"
                 return adapter
             else:
-                logger.warning("Runtime adapter: API server health check failed — api_server=%s, falling back to CLI", api_url or "http://localhost:8642")
+                # Do not silently degrade a streamed chat into the tool-less
+                # CLI path during a gateway restart. The API adapter returns a
+                # retryable failure that the app already knows how to render.
+                logger.error("Runtime adapter: API server unavailable — refusing CLI fallback for streamed turn")
+                return HeraldAPIRuntimeAdapter(executor)
 
         logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))

@@ -85,9 +85,7 @@ final class ChatStore {
     private static let deltaFlushInterval: Duration = .milliseconds(16)  // 60 fps cap
     private static let deltaFlushByteThreshold = 4_096
 
-    /// Whether `autoTitleIfNeeded` has already been attempted for the current
-    /// conversation. Prevents re-attempting on every stream completion when
-    /// the title RPC fails and the title remains a default placeholder.
+    /// Whether deterministic local title derivation has run for this conversation.
     private var autoTitleAttempted = false
 
     /// Set by `clearConversation()` to force the next `loadConversationIfNeeded()`
@@ -478,6 +476,32 @@ final class ChatStore {
                     // Show tool progress on Lock Screen / Dynamic Island
                     self.chatLiveActivity.startToolCall(toolName: label)
                     self.chatLiveActivity.updateToolProgress(label)
+
+                case .toolStarted(let activity):
+                    self.streamingProgressAt = .now
+                    progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        for i in conv.messages[idx].toolActivities.indices { conv.messages[idx].toolActivities[i].isActive = false }
+                        conv.messages[idx].toolActivities.append(activity)
+                        conv.messages[idx].toolActivity = activity.label
+                        self.conversation = conv
+                    }
+                    self.chatLiveActivity.startToolCall(toolName: activity.label)
+                    self.chatLiveActivity.updateToolProgress(activity.label)
+
+                case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
+                    self.streamingProgressAt = .now
+                    progressContinuation?.yield(())
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+                       let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }) {
+                        conv.messages[idx].toolActivities[activityIdx].isActive = false
+                        conv.messages[idx].toolActivities[activityIdx].finishedAt = .now
+                        conv.messages[idx].toolActivities[activityIdx].resultPreview = resultPreview
+                        conv.messages[idx].toolActivities[activityIdx].isError = isError
+                        conv.messages[idx].toolActivities[activityIdx].durationMs = durationMs
+                        self.conversation = conv
+                    }
 
                 case .keepalive:
                     // Transport keepalives prove the connection is alive but do
@@ -1067,22 +1091,6 @@ final class ChatStore {
 
         autoTitleAttempted = true
 
-        // Try LLM-generated title with timeout and retry
-        let assistantContent = conv.messages.first(where: { $0.sender == .herald })?.content ?? ""
-        let generated = await generateTitleWithRetry(
-            sessionId: conv.id,
-            userMessage: String(raw.prefix(500)),
-            assistantMessage: String(assistantContent.prefix(500))
-        )
-        if let generated {
-            // Re-verify title is still a default (user may have renamed during RPC)
-            if let current = conversation, defaultTitles.contains(current.title) {
-                conversation?.title = generated
-                onTitleChanged?(current.id, generated)
-            }
-            return
-        }
-
         // Deterministic local fallback: smart truncation of first message.
         // Strip leading slash commands and common prefixes, then use the
         // first meaningful line as the title.
@@ -1093,53 +1101,10 @@ final class ChatStore {
         let title = firstLine.count > 50
             ? String(firstLine.prefix(47)).trimmingCharacters(in: .whitespaces) + "..."
             : firstLine
-        do {
-            _ = try await heraldClient.renameSession(id: conv.id, title: title)
-            if let current = conversation, defaultTitles.contains(current.title) {
-                conversation?.title = title
-                onTitleChanged?(current.id, title)
-            }
-        } catch {
-            Self.logger.warning("Auto-title rename failed for session \(conv.id): \(error.localizedDescription)")
-            appendLog(level: .warn, "Auto-title rename failed: \(error.localizedDescription)")
+        if let current = conversation, defaultTitles.contains(current.title) {
+            conversation?.title = title
+            onTitleChanged?(current.id, title)
         }
-    }
-
-    /// Attempt to generate a title via RPC with a 5-second timeout and up to 2 attempts.
-    /// Returns nil on failure (all attempts exhausted or timeout).
-    private func generateTitleWithRetry(sessionId: UUID, userMessage: String, assistantMessage: String) async -> String? {
-        let maxAttempts = 2
-        let timeoutSeconds: TimeInterval = 12  // Relay has a 15s timeout; stay under it
-
-        for attempt in 1...maxAttempts {
-            let title: String? = await withCheckedContinuation { continuation in
-                let task = Task { @MainActor in
-                    do {
-                        let result = try await self.heraldClient.generateSessionTitle(
-                            sessionId: sessionId,
-                            userMessage: userMessage,
-                            assistantMessage: assistantMessage
-                        )
-                        guard !Task.isCancelled else {
-                            continuation.resume(returning: nil)
-                            return
-                        }
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(returning: nil)
-                    }
-                }
-                // Timeout: cancel the RPC task if it hasn't completed
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(timeoutSeconds))
-                    task.cancel()
-                }
-            }
-            if let title { return title }
-            Self.logger.warning("Title RPC attempt \(attempt)/\(maxAttempts) failed for session \(sessionId)")
-        }
-        Self.logger.error("Title RPC failed after \(maxAttempts) attempts for session \(sessionId)")
-        return nil
     }
 
     func deleteMessage(_ message: Message) {
@@ -1595,7 +1560,43 @@ final class ChatStore {
             refreshedConversation.messages.map { Self.messageFingerprint($0) }
         )
 
+        // A streamed agent turn is accumulated locally, while history stores
+        // one assistant row per tool boundary. Recognize that complete run
+        // before preserving the local bubble, then keep its artifacts on the
+        // final persisted segment.
+        var segmentedLocalIDs = Set<UUID>()
+        for local in localConversation.messages where local.sender == .herald && !local.isStreaming {
+            guard !refreshedIDs.contains(local.id),
+                  !refreshedFingerprints.contains(Self.messageFingerprint(local)) else { continue }
+            let localText = Self.normalizedMessageContent(local.content)
+            guard !localText.isEmpty else { continue }
+            for start in refreshedConversation.messages.indices {
+                guard refreshedConversation.messages[start].sender == .herald else { continue }
+                var end = start
+                var pieces: [String] = []
+                while end < refreshedConversation.messages.count,
+                      refreshedConversation.messages[end].sender == .herald {
+                    pieces.append(refreshedConversation.messages[end].content)
+                    let joined = Self.normalizedMessageContent(pieces.joined(separator: " "))
+                    if pieces.count >= 2, joined == localText,
+                       joined.count >= Int(Double(localText.count) * 0.9) {
+                        segmentedLocalIDs.insert(local.id)
+                        refreshedConversation.messages[end].toolActivities = local.toolActivities
+                        refreshedConversation.messages[end].toolActivity = local.toolActivity
+                        refreshedConversation.messages[end].codeDiff = local.codeDiff
+                        refreshedConversation.messages[end].reasoning = local.reasoning
+                        refreshedConversation.messages[end].reasoningDuration = local.reasoningDuration
+                        break
+                    }
+                    if joined.count > localText.count { break }
+                    end += 1
+                }
+                if segmentedLocalIDs.contains(local.id) { break }
+            }
+        }
+
         let localOnly = localConversation.messages.filter { message in
+            if segmentedLocalIDs.contains(message.id) { return false }
             if refreshedIDs.contains(message.id) { return false }
             // The server assigns its own message ids; jobID and content are the
             // only cross-identity handles we have, and matching on them keeps
@@ -1654,7 +1655,12 @@ final class ChatStore {
     /// Sender + normalized content, used to recognize the same message across
     /// the local/server id boundary.
     private static func messageFingerprint(_ message: Message) -> String {
-        "\(message.sender)|\(message.content.trimmingCharacters(in: .whitespacesAndNewlines))"
+        "\(message.sender)|\(normalizedMessageContent(message.content))"
+    }
+
+    private static func normalizedMessageContent(_ content: String) -> String {
+        content.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     private func mergeAttachments(_ localAttachments: [MessageAttachment], onto remoteAttachments: [MessageAttachment]) -> [MessageAttachment] {

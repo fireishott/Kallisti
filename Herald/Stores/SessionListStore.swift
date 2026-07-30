@@ -395,9 +395,20 @@ final class SessionListStore {
     /// Merges incoming sessions with the existing list, preserving locally-cached
     /// data across refresh cycles. Sessions are deduplicated by ID.
     private func mergeSessions(_ sessions: [SessionSummary]) {
-        let existingIDs = Set(pinnedSessions.map(\.id) + recentSessions.map(\.id) + archivedSessions.map(\.id))
-        let newSessions = sessions.filter { !existingIDs.contains($0.id) }
-        splitSessions(pinnedSessions + newSessions + recentSessions + archivedSessions)
+        let existing = pinnedSessions + recentSessions + archivedSessions
+        let incomingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        var merged = existing.map { local in
+            guard let server = incomingByID[local.id] else { return local }
+            // The server is authoritative for live metadata. Pin/archive remain
+            // local until their mutations have been acknowledged by a refresh.
+            var value = server
+            value.isPinned = local.isPinned
+            value.isArchived = local.isArchived
+            return value
+        }
+        let existingIDs = Set(existing.map(\.id))
+        merged += sessions.filter { !existingIDs.contains($0.id) }
+        splitSessions(merged)
     }
 
     private func splitSessions(_ sessions: [SessionSummary]) {
