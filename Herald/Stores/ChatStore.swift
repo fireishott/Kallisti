@@ -883,11 +883,21 @@ final class ChatStore {
     /// If the server completed a response while the app was backgrounded,
     /// this will pick it up and clear the stale streaming state.
     func recoverStalledStream() async {
-        guard isStreaming else { return }
+        // D3: streamingPhase may only be non-idle while isStreaming is true.
+        // If no stream is in flight, reconcile immediately.
+        guard isStreaming else {
+            streamingPhase = .idle
+            return
+        }
 
         // Refresh conversation from server
         let refreshed = await refreshActiveConversation()
-        guard let refreshed else { return }
+        guard let refreshed else {
+            // Couldn't reach server — clear phase so the banner doesn't latch
+            // if the stream has since resolved.
+            if !isStreaming { streamingPhase = .idle }
+            return
+        }
 
         // Check if the server has a completed response that we missed
         let serverMessages = refreshed.messages
@@ -910,6 +920,7 @@ final class ChatStore {
             streamingTask = nil
             chatLiveActivity.endActivity()
             pendingMessageSentAt = nil
+            streamingPhase = .idle  // D3: Stream resolved, clear phase
 
             if let latestUsage = conversation?.latestUsage {
                 lastTokenUsage = latestUsage
@@ -926,6 +937,7 @@ final class ChatStore {
         streamingTask = nil
         chatLiveActivity.endActivity()
         ttsService?.stop()
+        streamingPhase = .idle  // D3: A cancelled stream is not reconnecting
 
         // Flush any buffered deltas onto the placeholder before finalizing.
         if let sid = streamingMessageID {
@@ -956,6 +968,14 @@ final class ChatStore {
             persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
+    }
+
+    /// `streamingPhase` is UI-only state that outlives the transport it describes.
+    /// Backgrounding kills the SSE task without a terminal event, so the phase must
+    /// be reconciled against `isStreaming` on every foreground — otherwise a
+    /// "Reconnecting…" banner latches until relaunch (B4/D3).
+    func reconcileStreamingPhase() {
+        if !isStreaming { streamingPhase = .idle }
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID, duration: TimeInterval) async {

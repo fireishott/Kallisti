@@ -762,6 +762,10 @@ final class AppContainer {
         // connection may have died silently. Force a conversation reload — if
         // the server has the completed response, we'll pick it up and clear
         // the stale streaming state.
+        // D3: Reconcile streamingPhase unconditionally — backgrounding kills
+        // the SSE task without a terminal event, so a "Reconnecting…" banner
+        // can latch even after the stream resolves.
+        chatStore.reconcileStreamingPhase()
         if chatStore.isStreaming {
             await chatStore.recoverStalledStream()
         }
@@ -783,6 +787,7 @@ final class AppContainer {
         await talkStore.refreshReadiness()
         reconcileLiveActivities()
         updateWidgetData()
+        chatStore.reconcileStreamingPhase()  // D3: Same gap as handleAppDidBecomeActive
         await chatStore.loadConversation()
         await inboxStore.loadInbox(force: true)
     }
