@@ -732,34 +732,49 @@ struct SettingsScreen: View {
     private var appearanceSection: some View {
         SettingsSectionView(title: "Appearance") {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-                // Theme preset picker
+                // Herald 2.1 appearances. Each writes both stored axes
+                // (preset + color scheme) via HeraldAppearance.
+                VStack(spacing: 0) {
+                    ForEach(HeraldAppearance.allCases) { appearance in
+                        appearanceRow(appearance)
+                        if appearance != HeraldAppearance.allCases.last {
+                            Divider()
+                                .overlay(Design.Colors.divider)
+                                .padding(.leading, 34)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("settings.appearance.heraldPicker")
+
+                Divider()
+                    .overlay(Design.Colors.divider)
+
+                // Pre-2.1 themes, kept as secondary options.
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Theme")
-                        .font(Design.Typography.footnote)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    Text("Other Themes")
+                        .brandEyebrow()
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            ForEach(ThemePreset.allCases) { theme in
+                            ForEach(ThemePreset.legacyPresets) { theme in
                                 themeSwatch(theme)
                             }
                         }
                     }
                 }
 
-                Divider()
-                    .overlay(Design.Colors.divider)
-
-                // Light/Dark/System toggle
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Appearance")
-                        .font(Design.Typography.footnote)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                    Picker("Appearance", selection: colorSchemePreferenceBinding) {
-                        ForEach(ColorSchemePreference.allCases) { pref in
-                            Text(pref.label).tag(pref)
+                // The light/dark/system control only applies to the pre-2.1
+                // presets — the Herald appearances above already encode it.
+                if !themeManager.preset.isHeraldBrand {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Light / Dark")
+                            .brandEyebrow()
+                        Picker("Appearance", selection: colorSchemePreferenceBinding) {
+                            ForEach(ColorSchemePreference.allCases) { pref in
+                                Text(pref.label).tag(pref)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
                 }
 
                 Divider()
@@ -794,6 +809,58 @@ struct SettingsScreen: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    /// Currently selected Herald appearance, or `nil` when a pre-2.1 preset is active.
+    private var selectedAppearance: HeraldAppearance? {
+        HeraldAppearance.resolve(
+            preset: themeManager.preset,
+            colorScheme: themeManager.colorSchemePreference
+        )
+    }
+
+    private func appearanceRow(_ appearance: HeraldAppearance) -> some View {
+        let isSelected = selectedAppearance == appearance
+        return Button {
+            withAnimation(Design.Motion.quickResponse) {
+                themeManager.preset = appearance.preset
+                themeManager.colorSchemePreference = appearance.colorScheme
+            }
+            settingsStore.settings.themePreset = appearance.preset
+            settingsStore.settings.colorSchemePreference = appearance.colorScheme
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                // Swatch, ringed so true black stays visible on a dark ground.
+                Circle()
+                    .fill(appearance.swatch)
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Circle().strokeBorder(Design.Colors.borderStrong, lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(appearance.label)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Text(appearance.detail)
+                        .font(Design.Typography.caption2)
+                        .foregroundStyle(Design.Colors.tertiaryForeground)
+                }
+
+                Spacer(minLength: Design.Spacing.xs)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Design.Colors.accentHot)
+                }
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.appearance.\(appearance.rawValue)")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 
     private func themeSwatch(_ theme: ThemePreset) -> some View {

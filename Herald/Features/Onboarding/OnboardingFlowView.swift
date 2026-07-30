@@ -344,9 +344,9 @@ private struct WelcomeStepView: View {
     var body: some View {
         ZStack {
             VStack(alignment: .leading, spacing: 0) {
-                // Brand row
+                // Brand row — mono eyebrow, per the 2.1 type hierarchy.
                 HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                    Text("HERMES · iOS")
+                    Text("HERALD · SELF-HOSTED")
                         .brandEyebrow(Design.Colors.foreground)
                     Spacer()
                     let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
@@ -356,25 +356,29 @@ private struct WelcomeStepView: View {
                 .padding(.horizontal, Design.Spacing.md)
                 .padding(.top, Design.Spacing.lg)
 
-            Spacer(minLength: Design.Spacing.xxl)
+            Spacer(minLength: Design.Spacing.lg)
 
-            // Huge mono display
+            // Brand mark + serif display. Herald 2.1 leads with the seal and an
+            // editorial serif wordmark; the old 64pt uppercase mono lockup read
+            // as a terminal banner and still said "Hermes on iOS".
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Hermes")
-                    Text("on")
-                        .foregroundStyle(Design.Colors.tertiaryForeground)
-                    Text("iOS.")
-                }
-                .font(.system(size: 64, weight: .regular, design: .monospaced))
-                .tracking(-3.2)
-                .textCase(.uppercase)
-                .foregroundStyle(Design.Colors.foreground)
-                .lineSpacing(-6)
+                HeraldSealMark(size: 88)
+                    .padding(.bottom, Design.Spacing.xxs)
 
-                Text("An iOS client for the\nHermes Agent framework.")
+                Text("Herald")
+                    .font(Design.Typography.display)
+                    .foregroundStyle(Design.Colors.foreground)
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+
+                Text("Ancient signal.\nModern interface.")
                     .font(Design.Typography.editorialItalic)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("A native iOS client for the Hermes Agent framework.")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, Design.Spacing.md)

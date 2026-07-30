@@ -13,21 +13,106 @@ enum ColorSchemePreference: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Resolved color set for one theme in one color scheme.
+///
+/// The first five fields are the original (pre-2.1) contract. Herald 2.1 needs a
+/// richer vocabulary — layered surfaces, a real accent pair, semantic signals,
+/// texture weight — so those are appended with defaults derived from the core
+/// five. That keeps every pre-2.1 preset constructing exactly as before while
+/// letting the Herald presets supply full fidelity.
 struct ThemePalette {
     let background: Color
     let foreground: Color
     let secondaryForeground: Color
     let surface: Color
     let divider: Color
+
+    // MARK: Herald 2.1 additions
+
+    /// Deepest ground, behind `background`. Used for gutters and scrims.
+    let deepInk: Color
+    /// Large dark fields and panels (Herald: templeBlue).
+    let panel: Color
+    /// Elevated card surface, one step above `surface`.
+    let surfaceRaised: Color
+    /// Selected / active surface fill.
+    let surfaceSelected: Color
+    /// Tertiary text.
+    let tertiaryForeground: Color
+    /// Primary interactive color.
+    let accent: Color
+    /// Focus / progress / active-status color — brighter than `accent`.
+    let accentHot: Color
+
+    let success: Color
+    let warning: Color
+    let danger: Color
+
+    /// Relief-print stipple opacity for backgrounds. 0 disables texture.
+    let textureOpacity: Double
+    /// Opacity for the icon watermark in wallpapers and empty states.
+    let watermarkOpacity: Double
+    /// OLED-style presentation: sharper card edges, lower halo.
+    let prefersSharpEdges: Bool
+
+    init(
+        background: Color,
+        foreground: Color,
+        secondaryForeground: Color,
+        surface: Color,
+        divider: Color,
+        deepInk: Color? = nil,
+        panel: Color? = nil,
+        surfaceRaised: Color? = nil,
+        surfaceSelected: Color? = nil,
+        tertiaryForeground: Color? = nil,
+        accent: Color? = nil,
+        accentHot: Color? = nil,
+        success: Color = Color(hex: 0x00C275),
+        warning: Color = Color(hex: 0xCF9A2F),
+        danger: Color = Color(hex: 0xCF1322),
+        textureOpacity: Double = 0,
+        watermarkOpacity: Double = 0.18,
+        prefersSharpEdges: Bool = false
+    ) {
+        self.background = background
+        self.foreground = foreground
+        self.secondaryForeground = secondaryForeground
+        self.surface = surface
+        self.divider = divider
+        self.deepInk = deepInk ?? background
+        self.panel = panel ?? surface
+        self.surfaceRaised = surfaceRaised ?? surface
+        self.surfaceSelected = surfaceSelected ?? divider
+        self.tertiaryForeground = tertiaryForeground ?? secondaryForeground.opacity(0.85)
+        self.accent = accent ?? divider
+        self.accentHot = accentHot ?? (accent ?? divider)
+        self.success = success
+        self.warning = warning
+        self.danger = danger
+        self.textureOpacity = textureOpacity
+        self.watermarkOpacity = watermarkOpacity
+        self.prefersSharpEdges = prefersSharpEdges
+    }
 }
 
 enum ThemePreset: String, Codable, CaseIterable, Identifiable {
-    case herald, midnight, ember, mono, cyberpunk, slate
+    /// `herald` is the Herald 2.1 branded default (deep cobalt "Temple Blue").
+    /// `heraldOLED` is the premium true-black variant. The remaining presets are
+    /// pre-2.1 and kept intact as secondary options.
+    case herald, heraldOLED, midnight, ember, mono, cyberpunk, slate
     var id: String { rawValue }
+
+    /// The two first-class Herald 2.1 appearances, in Settings display order.
+    static let heraldPresets: [ThemePreset] = [.herald, .heraldOLED]
+
+    /// Pre-2.1 presets, retained as secondary options.
+    static let legacyPresets: [ThemePreset] = [.midnight, .ember, .mono, .cyberpunk, .slate]
 
     var label: String {
         switch self {
         case .herald: "Herald"
+        case .heraldOLED: "Herald OLED"
         case .midnight: "Midnight"
         case .ember: "Ember"
         case .mono: "Mono"
@@ -36,9 +121,30 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Short description shown beneath the option in the Appearance section.
+    var appearanceDescription: String {
+        switch self {
+        case .herald: "Deep cobalt. The Herald default."
+        case .heraldOLED: "True black. Sharper edges, less texture."
+        case .midnight: "Violet on near-black."
+        case .ember: "Warm red on brown-black."
+        case .mono: "Neutral greyscale."
+        case .cyberpunk: "High-contrast green terminal."
+        case .slate: "Muted blue-grey."
+        }
+    }
+
+    /// True for the Herald 2.1 brand themes, which carry the full token set.
+    var isHeraldBrand: Bool {
+        self == .herald || self == .heraldOLED
+    }
+
     var accent: Color {
         switch self {
-        case .herald: Color(hex: 0xFF6B00)
+        // Herald 2.1: signal blue. Orange is retired — it was never part of
+        // the Herald identity, only the pre-2.1 placeholder accent.
+        case .herald: HeraldTheme.Cobalt.signalBlue
+        case .heraldOLED: HeraldTheme.OLED.accent
         case .midnight: Color(hex: 0x8B5CF6)
         case .ember: Color(hex: 0xEF4444)
         case .mono: Color(hex: 0xA1A1AA)
@@ -50,12 +156,50 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
     var darkColors: ThemePalette {
         switch self {
         case .herald:
+            // Herald 2.1 default — deep cobalt. Controlled contrast on purpose:
+            // the ground is a material, not a void.
             return ThemePalette(
-                background: Color(hex: 0x1A1D23),
-                foreground: Color(hex: 0xF0F2F5),
-                secondaryForeground: Color(hex: 0xF0F2F5).opacity(0.6),
-                surface: Color.white.opacity(0.08),
-                divider: Color.white.opacity(0.1)
+                background: HeraldTheme.Cobalt.background,
+                foreground: HeraldTheme.Cobalt.bone,
+                secondaryForeground: HeraldTheme.Cobalt.mist,
+                surface: HeraldTheme.Cobalt.surface,
+                divider: HeraldTheme.Cobalt.divider,
+                deepInk: HeraldTheme.Cobalt.deepInk,
+                panel: HeraldTheme.Cobalt.templeBlue,
+                surfaceRaised: HeraldTheme.Cobalt.surfaceRaised,
+                surfaceSelected: HeraldTheme.Cobalt.royalBlue,
+                tertiaryForeground: HeraldTheme.Cobalt.steel,
+                accent: HeraldTheme.Cobalt.signalBlue,
+                accentHot: HeraldTheme.Cobalt.signalBlueHot,
+                success: HeraldTheme.Signal.success,
+                warning: HeraldTheme.Signal.warning,
+                danger: HeraldTheme.Signal.danger,
+                textureOpacity: HeraldTheme.Texture.cobalt,
+                watermarkOpacity: HeraldTheme.Mark.watermarkOpacity,
+                prefersSharpEdges: false
+            )
+        case .heraldOLED:
+            // Premium black. Near-black ground rather than #000 so cards can
+            // still separate; true black is reserved for the deepest layer.
+            return ThemePalette(
+                background: HeraldTheme.OLED.nearBlack,
+                foreground: HeraldTheme.OLED.foreground,
+                secondaryForeground: HeraldTheme.OLED.secondary,
+                surface: HeraldTheme.OLED.surface,
+                divider: HeraldTheme.OLED.divider,
+                deepInk: HeraldTheme.OLED.black,
+                panel: HeraldTheme.OLED.surface,
+                surfaceRaised: HeraldTheme.OLED.surfaceRaised,
+                surfaceSelected: HeraldTheme.OLED.surfaceRaised,
+                tertiaryForeground: HeraldTheme.OLED.tertiary,
+                accent: HeraldTheme.OLED.accent,
+                accentHot: HeraldTheme.OLED.accentHot,
+                success: HeraldTheme.Signal.success,
+                warning: HeraldTheme.Signal.warning,
+                danger: HeraldTheme.Signal.danger,
+                textureOpacity: HeraldTheme.Texture.oled,
+                watermarkOpacity: HeraldTheme.Mark.watermarkOpacityOLED,
+                prefersSharpEdges: true
             )
         case .midnight:
             return ThemePalette(
@@ -102,13 +246,29 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var lightColors: ThemePalette {
         switch self {
-        case .herald:
+        // Both Herald brand themes share one light counterpart: cool paper,
+        // cobalt ink. "OLED light" is a contradiction, so heraldOLED resolves
+        // here too rather than inventing a washed-out black theme.
+        case .herald, .heraldOLED:
             return ThemePalette(
-                background: Color(hex: 0xF8FAFC),
-                foreground: Color(hex: 0x1E293B),
-                secondaryForeground: Color(hex: 0x1E293B).opacity(0.6),
-                surface: Color.black.opacity(0.04),
-                divider: Color.black.opacity(0.1)
+                background: HeraldTheme.Light.background,
+                foreground: HeraldTheme.Light.foreground,
+                secondaryForeground: HeraldTheme.Light.secondary,
+                surface: HeraldTheme.Light.surface,
+                divider: HeraldTheme.Light.divider,
+                deepInk: HeraldTheme.Light.surface,
+                panel: HeraldTheme.Light.surface,
+                surfaceRaised: HeraldTheme.Light.surfaceRaised,
+                surfaceSelected: HeraldTheme.Light.accentHot.opacity(0.16),
+                tertiaryForeground: HeraldTheme.Light.tertiary,
+                accent: HeraldTheme.Light.accent,
+                accentHot: HeraldTheme.Light.accentHot,
+                success: HeraldTheme.Signal.success,
+                warning: HeraldTheme.Signal.warning,
+                danger: HeraldTheme.Signal.danger,
+                textureOpacity: HeraldTheme.Texture.light,
+                watermarkOpacity: 0.10,
+                prefersSharpEdges: self == .heraldOLED
             )
         case .mono:
             return ThemePalette(
@@ -137,6 +297,99 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     func colors(for scheme: ColorScheme) -> ThemePalette {
         scheme == .dark ? darkColors : lightColors
+    }
+}
+
+// MARK: - Herald Appearance (Settings-facing)
+
+/// The four first-class appearances offered in Settings → Appearance.
+///
+/// Herald has always had two independent axes: a `ThemePreset` (color identity)
+/// and a `ColorSchemePreference` (light/dark/system). Rather than add a redundant
+/// `heraldLight` preset, this type presents the sanctioned *combinations* as
+/// single choices, and writes through to both stored axes — so existing
+/// UserDefaults keys and their migrations are untouched.
+enum HeraldAppearance: String, CaseIterable, Identifiable {
+    /// Herald identity, following the iOS system light/dark setting.
+    case system
+    /// Herald branded dark — deep cobalt. The 2.1 default.
+    case herald
+    /// Herald OLED — premium true black.
+    case heraldOLED
+    /// Herald Light — cool paper, cobalt ink.
+    case heraldLight
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .herald: "Herald"
+        case .heraldOLED: "Herald OLED"
+        case .heraldLight: "Herald Light"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .system: "Follows your iOS appearance setting."
+        case .herald: "Deep cobalt. The Herald default."
+        case .heraldOLED: "True black. Sharper edges, less texture."
+        case .heraldLight: "Cool paper with cobalt ink."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .herald: "moon.stars.fill"
+        case .heraldOLED: "circle.fill"
+        case .heraldLight: "sun.max.fill"
+        }
+    }
+
+    /// The stored axes this appearance corresponds to.
+    var preset: ThemePreset {
+        self == .heraldOLED ? .heraldOLED : .herald
+    }
+
+    var colorScheme: ColorSchemePreference {
+        switch self {
+        case .system: .system
+        case .herald, .heraldOLED: .dark
+        case .heraldLight: .light
+        }
+    }
+
+    /// Swatch color representing the appearance in the picker.
+    var swatch: Color {
+        switch self {
+        case .system: HeraldTheme.Cobalt.royalBlue
+        case .herald: HeraldTheme.Cobalt.surface
+        case .heraldOLED: HeraldTheme.OLED.black
+        case .heraldLight: HeraldTheme.Light.background
+        }
+    }
+
+    /// Resolve the current stored state to an appearance, or `nil` when a
+    /// pre-2.1 preset is active (in which case Settings shows the legacy
+    /// theme + light/dark controls instead).
+    static func resolve(
+        preset: ThemePreset,
+        colorScheme: ColorSchemePreference
+    ) -> HeraldAppearance? {
+        switch preset {
+        case .heraldOLED:
+            return .heraldOLED
+        case .herald:
+            switch colorScheme {
+            case .system: return .system
+            case .dark: return .herald
+            case .light: return .heraldLight
+            }
+        default:
+            return nil
+        }
     }
 }
 
@@ -200,26 +453,13 @@ struct ChatWallpaperBackground: View {
         }
     }
 
+    /// Herald 2.1 default wallpaper: deep ink ground, restrained blue field, and
+    /// a low-opacity icon watermark. Resolves per theme — cobalt under Herald,
+    /// near-black with a pulled-back glow under Herald OLED — so the single
+    /// `.default` selection is correct in every appearance.
     @ViewBuilder
     private var defaultBackground: some View {
-        ZStack {
-            Color(.systemBackground)
-            GeometryReader { geo in
-                let markSize = min(geo.size.width * 0.9, 440)
-                Image("AppIconImage")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: markSize, height: markSize)
-                    .opacity(0.18)
-                    .position(x: geo.size.width * 0.5, y: geo.size.height * 0.35)
-            }
-            RadialGradient(
-                colors: [tint.opacity(0.04), .clear],
-                center: .center,
-                startRadius: 0,
-                endRadius: 500
-            )
-        }
+        HeraldBrandField(isReadingSurface: true)
     }
 
     @ViewBuilder
