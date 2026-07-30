@@ -19,6 +19,13 @@
   timestamp, mixing host and phone clocks that can disagree by sub-second
   amounts — enough to invert adjacent messages. Replaced with index-anchored
   splicing that preserves server order.
+- **"Reconnecting…" banner never clears (P1):** `streamingPhase` was never
+  reset to `.idle` on foreground — `recoverStalledStream()` had no assignment
+  in any branch, `cancelStreaming()` skipped it entirely, and
+  `handleAppDidBecomeActive()` only ran recovery when `isStreaming` was true
+  (which it isn't once the job resolves). Added `reconcileStreamingPhase()`
+  called unconditionally on every foreground path, plus a belt-and-braces
+  view guard requiring `isStreaming` before showing the banner.
 
 ## 2.3.6 (Build 31) - 2026-07-28
 

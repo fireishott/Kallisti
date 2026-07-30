@@ -69,7 +69,10 @@ struct ChatScreen: View {
                 if contextProgress > 0.85 {
                     contextWarningBanner
                 }
-                if chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
+                // D3: Belt-and-braces — require an actual in-flight stream
+                // before showing the banner, so a latched .reconnecting can't
+                // survive even if the store fix is bypassed.
+                if chatStore.isStreaming, chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
                     streamingPhaseBanner
                 }
                 messageList
