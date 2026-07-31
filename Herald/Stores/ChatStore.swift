@@ -1743,8 +1743,28 @@ final class ChatStore {
         //
         // Named separately rather than shadowing `localOnly`: Swift does not allow
         // redeclaring a binding in the same scope.
+        // B19: the assumption above — that surviving a merge proves the stream
+        // is gone — is false, and it was killing live turns.
+        //
+        // Conversation refreshes are also fired on a timer while a job is still
+        // running, so a merge is NOT evidence that the stream ended.  On a
+        // tool-heavy turn the agent emits tool events for tens of seconds before
+        // any text, so the placeholder is legitimately empty at that moment.
+        // The refresh then settled it and, finding no content and no reasoning,
+        // marked it .failed/"empty_response" — which is the REGENERATE chip.
+        // The real answer arrived seconds later and had nowhere to land.
+        //
+        // Observed 2026-07-30 23:15: job ran 23:15:42→23:16:35, refreshes at
+        // :15:52, :16:00, :16:07, :16:12 killed the turn, and the reply (1357
+        // chars, finish_reason=stop) was never rendered.  It only ever hit slow
+        // turns, because a fast reply produces text before the first refresh.
+        //
+        // `activeStreams` is the authority on whether a stream still owns a
+        // placeholder; only settle the ones nothing is streaming into.
+        let livePlaceholders = Set(activeStreams.values)
         let settledLocalOnly: [Message] = localOnly.map { message in
             guard message.isStreaming else { return message }
+            guard !livePlaceholders.contains(message.id) else { return message }
             var settled = message
             settled.isStreaming = false
             if settled.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
