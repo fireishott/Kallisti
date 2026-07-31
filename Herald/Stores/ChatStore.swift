@@ -1488,6 +1488,10 @@ final class ChatStore {
                 guard !Task.isCancelled else { break }
                 let fresh = await self.refreshActiveConversation()
                 self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
+                // Build 28: a successful merge that includes the terminal
+                // turn satisfies the pending reconciliation marker set at
+                // .finished.  Future merges are ordinary refreshes.
+                self.pendingServerReconciliation = false
                 if let latestUsage = self.conversation?.latestUsage {
                     self.lastTokenUsage = latestUsage
                 }
@@ -1803,7 +1807,25 @@ final class ChatStore {
             // the same answer from appearing twice.
             if let jobID = message.jobID,
                refreshedJobKeys.contains("\(jobID.uuidString)|\(message.sender)") {
-                continue
+                // Build 28: a local terminal row with streamed content
+                // must not be dropped just because the server snapshot
+                // contains a partial/tool-boundary row tagged with the
+                // same jobID.  The server tags every assistant row since
+                // job_started_at with the job ID; only the final stop
+                // row carries the complete answer.  If the local row has
+                // content and the server row is a prefix/subset, keep
+                // the local row so it reaches the splice.
+                let localContent = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if localContent.isEmpty { continue }
+                // Non-empty local content: keep and let the splice
+                // anchor it.  The B39 T5 guard (above) already protects
+                // against empty/prefix server copies for matched rows;
+                // this extends that protection to the dedupe path.
+                Self.logger.debug(
+                    "B28: preserving local terminal row \(message.id.uuidString.prefix(8)) "
+                    + "(jobId=\(jobID.uuidString.prefix(8))) despite refreshed jobKey match "
+                    + "— local content is non-empty"
+                )
             }
             if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let candidates = refreshedIndicesByFingerprint[Self.messageFingerprint(message)] {
