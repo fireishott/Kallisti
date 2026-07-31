@@ -42,6 +42,77 @@ def _sidecar_path() -> Path:
     return Path(connector_home) / "session_meta.json"
 
 
+def _device_registry_path() -> Path:
+    connector_home = os.getenv(
+        "HERMES_MOBILE_CONNECTOR_HOME"
+    ) or str(Path.home() / ".hermes-mobile")
+    return Path(connector_home) / "device_registry.json"
+
+
+# ── Device registry (Build 28) ────────────────────────────────────────────
+#
+# Maps auth_token → installation_id and installation_id → session_ids.
+# Used to scope session lists when allDevices=false.  The registry is a
+# connector-local JSON sidecar; it does not require state.db schema changes.
+
+
+def record_pairing_device(token: str, installation_id: str) -> None:
+    """Record an auth token → installation_id mapping at pairing time."""
+    registry = _load_device_registry()
+    registry.setdefault("tokens", {})[token] = {
+        "installationId": installation_id,
+        "pairedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    _save_device_registry(registry)
+
+
+def device_id_for_token(token: str) -> str | None:
+    """Return the installation_id for an auth token, or None."""
+    if not token:
+        return None
+    registry = _load_device_registry()
+    entry = registry.get("tokens", {}).get(token)
+    return entry.get("installationId") if isinstance(entry, dict) else None
+
+
+def record_session_device(session_id: str, device_id: str) -> None:
+    """Record that *session_id* belongs to *device_id* (installation_id)."""
+    registry = _load_device_registry()
+    registry.setdefault("sessions", {})[str(session_id)] = {
+        "deviceId": device_id,
+        "recordedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    _save_device_registry(registry)
+
+
+def _load_device_registry() -> dict:
+    try:
+        with open(_device_registry_path()) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+        return {}
+
+
+def _save_device_registry(data: dict) -> None:
+    _device_registry_path().parent.mkdir(parents=True, exist_ok=True)
+    tmp = _device_registry_path().with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp.rename(_device_registry_path())
+
+
+def _session_belongs_to_device(session_id: str, device_id: str) -> bool:
+    """True if *session_id* is recorded as owned by *device_id*."""
+    registry = _load_device_registry()
+    entry = registry.get("sessions", {}).get(str(session_id))
+    if isinstance(entry, dict):
+        return entry.get("deviceId") == device_id
+    # Legacy sessions predating device tracking: visible to all devices
+    # (they have no owner, so filtering them out would hide history).
+    # A migration quarantine rule can change this default later.
+    return True
+
+
 # ── Connection ─────────────────────────────────────────────────────────────
 
 def _connect() -> sqlite3.Connection:
@@ -631,7 +702,7 @@ def get_attachment(message_id: str, index: int) -> dict | None:
 # ── Session list ───────────────────────────────────────────────────────────
 
 def session_list(
-    limit: int = 50, offset: int = 0
+    limit: int = 50, offset: int = 0, device_id: str | None = None
 ) -> tuple[list[dict], int]:
     """Return (sessions_page, total_count) for the app's sessions.
 
@@ -640,6 +711,10 @@ def session_list(
     app-facing UUID via ``_app_uuid()`` so all 736 sessions become visible.
     Pin/archive state is overlaid from the local sidecar; tombstoned ids
     (deleted) are dropped.
+
+    When *device_id* is provided (Build 28), sessions without a recorded
+    device are treated as visible to all devices (legacy).  Sessions
+    explicitly owned by a different device are excluded.
 
     **total** matches the count of *emittable* rows (after tombstone filter),
     not the raw ``SELECT COUNT(*)`` — this fixes the "Load more" bar that was
@@ -718,6 +793,12 @@ def session_list(
             meta = sidecar.get(app_id, {})
             if meta.get("tombstone"):
                 tombstoned_count += 1
+                continue
+
+            # Build 28: when scoped to a single device, exclude sessions
+            # explicitly owned by a different device.  Legacy sessions
+            # without a recorded owner are visible to all devices.
+            if device_id and not _session_belongs_to_device(canonical_id, device_id):
                 continue
 
             # B40: fall back to the opening user message before the "New Chat"
@@ -951,7 +1032,7 @@ def _find_session_by_assistant_reply(
 
 # ── Session search ─────────────────────────────────────────────────────────
 
-def session_search(query: str, limit: int = 20) -> list[dict]:
+def session_search(query: str, limit: int = 20, device_id: str | None = None) -> list[dict]:
     """Full-text-like search across session titles.
 
     Simple LIKE search since state.db has no FTS index on sessions.
@@ -1004,6 +1085,10 @@ def session_search(query: str, limit: int = 20) -> list[dict]:
 
         meta = sidecar.get(app_id, {})
         if meta.get("tombstone"):
+            continue
+
+        # Build 28: device scope filter (same contract as session_list).
+        if device_id and not _session_belongs_to_device(canonical_id, device_id):
             continue
 
         sessions.append({

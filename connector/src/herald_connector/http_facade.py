@@ -668,6 +668,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             if response_conv_id and response_conv_id != canonical_app_id:
                                 _persist_hermes_mapping(response_conv_id, hermes_sid)
 
+                            # Build 28: attribute this session to the
+                            # requesting device so allDevices filtering can
+                            # scope session lists.
+                            device_id = job.get("installationId")
+                            if device_id:
+                                from .session_store import record_session_device
+                                record_session_device(canonical_app_id, device_id)
+
                             # B38 P1-1: auto-generate a title if the session
                             # has none.  Fire-and-forget — don't delay the
                             # job completion for title generation.
@@ -1176,10 +1184,16 @@ async def send_message(request: Request) -> JSONResponse:
     user_message = _relay_message("user", text, client_message_id=client_message_id,
                                   delivery_status="sent")
 
+    # Build 28: resolve the requesting device identity from the auth token
+    # so the session can be attributed to a device for allDevices scoping.
+    from .session_store import device_id_for_token
+    installation_id = device_id_for_token(await _extract_token(request))
+
     _http_jobs[job_id] = {
         "jobId": job_id,
         "status": "running",
         "conversationId": app_conversation_id,
+        "installationId": installation_id,
         "message": None,
         "error": None,
         "errorCategory": None,
@@ -1377,6 +1391,11 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
     # First redeem — build the response, mark, and persist.
     token = ctx.connector_credential or ctx.paired_device_id or "herald-connector"
     _default_validator.add_token(token)
+    # Build 28: record token→device so allDevices filtering can
+    # resolve the requesting device identity from the auth token.
+    if installation_id:
+        from .session_store import record_pairing_device
+        record_pairing_device(token, installation_id)
     import uuid as _uuid
     payload = {
         "user": {"id": ctx.paired_user_id or str(_uuid.uuid4()), "displayName": "Herald User"},
@@ -1476,12 +1495,23 @@ async def get_sessions(request: Request) -> JSONResponse:
     because it is missing." Never drop this key.
     """
     await require_auth(request)
-    from .session_store import session_list
+    from .session_store import session_list, device_id_for_token
 
     limit = int(request.query_params.get("limit", "50"))
     offset = int(request.query_params.get("offset", "0"))
+    # Build 28: honour allDevices scope.  When false, filter to the
+    # requesting device's sessions.  Parse strictly: any value other
+    # than "true" (case-insensitive) is treated as false.
+    all_devices_raw = request.query_params.get("allDevices", "true")
+    all_devices = all_devices_raw.lower() == "true"
+    device_id = None
+    if not all_devices:
+        token = await _extract_token(request)
+        device_id = device_id_for_token(token)
     try:
-        sessions, total = await asyncio.to_thread(session_list, limit=limit, offset=offset)
+        sessions, total = await asyncio.to_thread(
+            session_list, limit=limit, offset=offset, device_id=device_id,
+        )
     except Exception:
         logger.exception("session_list query failed")
         sessions, total = [], 0
@@ -2072,9 +2102,17 @@ async def session_search_handler(request: Request) -> JSONResponse:
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse({"sessions": []})
-    from .session_store import session_search
+    from .session_store import session_search, device_id_for_token
 
-    results = await asyncio.to_thread(session_search, q)
+    # Build 28: honour allDevices scope.
+    all_devices_raw = request.query_params.get("allDevices", "true")
+    all_devices = all_devices_raw.lower() == "true"
+    device_id = None
+    if not all_devices:
+        token = await _extract_token(request)
+        device_id = device_id_for_token(token)
+
+    results = await asyncio.to_thread(session_search, q, device_id=device_id)
     return JSONResponse({"sessions": results})
 
 
