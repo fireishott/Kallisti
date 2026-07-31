@@ -340,6 +340,53 @@ def _prune_http_jobs() -> None:
             job["errorAction"] = "retry"
 
 
+def _bind_conversation_early(job: dict, text: str, job_started_at: float,
+                             data: dict) -> bool:
+    """Bind this conversation to its Hermes session as soon as one exists.
+
+    B20: the app_uuid → hermes_id mapping used to be written only when a job
+    *completed*.  POST /v1/messages resolves an incoming conversationId through
+    that mapping (``_resolve_hermes_id``), so anything sent while the agent was
+    still working resolved to nothing, went out with no session_id, and Hermes
+    minted a **new session** for it.  One chat then existed as two interleaved
+    Hermes sessions with replies arriving out of order — and, because the
+    serialization lock was also keyed on session_id, the two turns ran
+    concurrently instead of queueing.
+
+    Observed 2026-07-30 23:30: a typo correction sent 23s into a tool-heavy
+    turn forked run_f97c917b (replied 23:33:02) away from run_3e6bd5c1
+    (replied 23:31:09), and the app rendered both into one transcript.
+
+    Binding here is deliberately optimistic — the reported id is only a claim
+    (see the B40 note on the `done` path) — but it is corrected at completion
+    by ``_find_session_by_assistant_reply``, which re-persists the mapping from
+    where the reply actually landed.  An early approximate binding that gets
+    corrected beats no binding at all, which silently forks the conversation.
+
+    Returns True once bound, so the caller stops retrying.
+    """
+    hermes_sid = data.get("sessionId")
+    if not hermes_sid:
+        # Hermes writes the user turn to state.db as soon as the run starts,
+        # so this resolves within a second or two of the first event.
+        from .session_store import _find_session_by_recent_message
+        hermes_sid = _find_session_by_recent_message(text, since=job_started_at)
+    if not hermes_sid:
+        return False
+
+    from .session_store import _app_uuid, _persist_hermes_mapping
+    canonical = _app_uuid(hermes_sid)
+    _persist_hermes_mapping(canonical, hermes_sid)
+    conv_id = job.get("conversationId")
+    if conv_id and conv_id != canonical:
+        _persist_hermes_mapping(conv_id, hermes_sid)
+    logger.info(
+        "Bound conversation %s → session %s at run start",
+        conv_id or canonical, hermes_sid,
+    )
+    return True
+
+
 async def _run_http_job(job_id: str, handler, text, history, session_id,
                         attachments, reasoning_effort) -> None:
     """Drain the connector's message generator into the job record."""
@@ -370,19 +417,37 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             # this, a fast double-send or a retry can collide with title
             # generation or another message, causing interleaved/corrupted
             # replies in the same conversation.
+            # B20: fall back to the app's conversation id when no Hermes
+            # session is bound yet.  The `if session_id` guard meant the very
+            # case that most needs serializing was the one case left unlocked:
+            # a follow-up sent while the first turn is still running has no
+            # mapping yet (it is only written when a job *completes*), so
+            # session_id is None, no lock is taken, and the two turns run
+            # concurrently — in two different Hermes sessions.  That is what
+            # interleaves one chat into two and strands a REGENERATE chip.
+            lock_key = session_id or job.get("conversationId")
             lock = None
-            if session_id:
-                lock = _session_locks.setdefault(session_id, asyncio.Lock())
+            if lock_key:
+                lock = _session_locks.setdefault(lock_key, asyncio.Lock())
                 if lock.locked():
                     logger.warning(
-                        "Session %s is busy; job %s is waiting for the lock",
-                        session_id, job_id,
+                        "Conversation %s is busy; job %s is waiting for the lock",
+                        lock_key, job_id,
                     )
                 await lock.acquire()
             try:
+                early_bound = session_id is not None
+                early_bind_attempts = 0
                 async for event in handler(text, history, session_id, attachments, reasoning_effort):
                     etype = event.get("type", "progress")
                     data = event.get("data", {}) or {}
+                    # Bind on the first events only; capped so a turn that
+                    # never resolves cannot run a DB query per delta.
+                    if not early_bound and early_bind_attempts < 8:
+                        early_bind_attempts += 1
+                        early_bound = _bind_conversation_early(
+                            job, text, job_started_at, data
+                        )
                     if etype == "text_delta":
                         accumulated += data.get("delta", "")
                     if etype == "reasoning_delta":
