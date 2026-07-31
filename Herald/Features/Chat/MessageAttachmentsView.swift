@@ -392,11 +392,6 @@ private struct FullScreenImageViewer: View {
                         .padding(.vertical, 6)
                         .background(.red.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
                         .transition(.move(edge: .top).combined(with: .opacity))
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                                withAnimation { saveError = nil }
-                            }
-                        }
                 }
                 Spacer()
             }
