@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import QuickLook
+import UniformTypeIdentifiers
 
 /// Renders the attachments on a chat message: images inline (tap to view full
 /// screen) and files as cards (tap to open/share). Assistant images that ship
@@ -30,7 +31,12 @@ struct MessageAttachmentsView: View {
             }
         }
         .fullScreenCover(item: $fullScreenImage) { payload in
-            FullScreenImageViewer(image: payload.image, fileName: payload.fileName)
+            FullScreenImageViewer(
+                image: payload.image,
+                fileName: payload.fileName,
+                imageData: payload.imageData,
+                mimeType: payload.mimeType
+            )
         }
         .quickLookPreview($previewURL)
     }
@@ -38,16 +44,22 @@ struct MessageAttachmentsView: View {
     @ViewBuilder
     private var imageLayout: some View {
         if images.count == 1 {
-            AttachmentImageView(attachment: images[0], maxWidth: 260, maxHeight: 320) { image in
-                fullScreenImage = FullScreenImagePayload(image: image, fileName: images[0].fileName)
+            AttachmentImageView(attachment: images[0], maxWidth: 260, maxHeight: 320) { uiImage, data, mime in
+                fullScreenImage = FullScreenImagePayload(
+                    image: uiImage, fileName: images[0].fileName,
+                    imageData: data, mimeType: mime
+                )
             }
         } else {
             let columns = [GridItem(.flexible(), spacing: Design.Spacing.xxs),
                            GridItem(.flexible(), spacing: Design.Spacing.xxs)]
             LazyVGrid(columns: columns, spacing: Design.Spacing.xxs) {
                 ForEach(images) { image in
-                    AttachmentImageView(attachment: image, maxWidth: 150, maxHeight: 150) { uiImage in
-                        fullScreenImage = FullScreenImagePayload(image: uiImage, fileName: image.fileName)
+                    AttachmentImageView(attachment: image, maxWidth: 150, maxHeight: 150) { uiImage, data, mime in
+                        fullScreenImage = FullScreenImagePayload(
+                            image: uiImage, fileName: image.fileName,
+                            imageData: data, mimeType: mime
+                        )
                     }
                 }
             }
@@ -79,6 +91,8 @@ private struct FullScreenImagePayload: Identifiable {
     let id = UUID()
     let image: UIImage
     let fileName: String
+    let imageData: Data?
+    let mimeType: String?
 }
 
 struct IdentifiableURL: Identifiable {
@@ -89,18 +103,21 @@ struct IdentifiableURL: Identifiable {
 // MARK: - Inline image
 
 /// Shows an attachment image: the persisted thumbnail first (instant), then the
-/// full-resolution version once fetched. Tapping calls `onTap` with the loaded
-/// image for full-screen presentation.
+/// full-resolution version once fetched. Tapping opens the full-screen viewer.
+/// Uses a real Button (not just onTapGesture) for accessibility, and shows
+/// retry/error UI when the full-image fetch fails instead of an indefinite spinner.
 private struct AttachmentImageView: View {
     let attachment: MessageAttachment
     let maxWidth: CGFloat
     let maxHeight: CGFloat
-    let onTap: (UIImage) -> Void
+    let onTap: (UIImage, Data?, String?) -> Void
 
     @Environment(AttachmentService.self) private var attachmentService
 
     @State private var fullImage: UIImage?
+    @State private var fullImageData: Data?
     @State private var didStartLoad = false
+    @State private var loadFailed = false
 
     private var thumbnail: UIImage? {
         if let base64 = attachment.thumbnailBase64,
@@ -117,23 +134,28 @@ private struct AttachmentImageView: View {
     var body: some View {
         Group {
             if let image = fullImage ?? thumbnail {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: maxWidth, maxHeight: maxHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
-                            .stroke(Design.Colors.divider, lineWidth: 1)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
-                    .onTapGesture {
-                        if let full = fullImage {
-                            onTap(full)
-                        } else {
-                            Task { await loadAndOpen() }
-                        }
+                Button {
+                    if let full = fullImage {
+                        onTap(full, fullImageData, attachment.mimeType)
+                    } else {
+                        Task { await loadAndOpen() }
                     }
+                } label: {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                                .stroke(Design.Colors.divider, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Image: \(attachment.fileName)")
+                .accessibilityHint("Double-tap to view full screen")
+            } else if loadFailed {
+                retryPlaceholder
             } else {
                 placeholder
             }
@@ -142,7 +164,7 @@ private struct AttachmentImageView: View {
             // Auto-load full image when there's no thumbnail (assistant images).
             guard !didStartLoad, thumbnail == nil else { return }
             didStartLoad = true
-            fullImage = await attachmentService.image(for: attachment)
+            await loadFullImage()
         }
     }
 
@@ -153,11 +175,45 @@ private struct AttachmentImageView: View {
             .overlay(ProgressView())
     }
 
-    private func loadAndOpen() async {
-        let image = await attachmentService.image(for: attachment)
-        if let image {
+    private var retryPlaceholder: some View {
+        Button {
+            loadFailed = false
+            didStartLoad = false
+            Task { await loadFullImage() }
+        } label: {
+            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                .fill(Design.Colors.surface)
+                .frame(width: min(maxWidth, 180), height: min(maxHeight, 140))
+                .overlay(
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 18, weight: .medium))
+                        Text("Tap to retry")
+                            .font(Design.Typography.caption2)
+                    }
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Image load failed. \(attachment.fileName)")
+        .accessibilityHint("Double-tap to retry loading")
+    }
+
+    private func loadFullImage() async {
+        loadFailed = false
+        if let data = await attachmentService.data(for: attachment),
+           let image = UIImage(data: data) {
             fullImage = image
-            onTap(image)
+            fullImageData = data
+        } else {
+            loadFailed = true
+        }
+    }
+
+    private func loadAndOpen() async {
+        await loadFullImage()
+        if let image = fullImage {
+            onTap(image, fullImageData, attachment.mimeType)
         }
     }
 }
@@ -239,6 +295,12 @@ private struct AttachmentFileCard: View {
 private struct FullScreenImageViewer: View {
     let image: UIImage
     let fileName: String
+    /// Full-resolution bytes, if available.  When set, share and download
+    /// use a temporary file (preserving filename/MIME) rather than a bare
+    /// UIImage — the share sheet then offers all native destinations and
+    /// the file exporter writes to a user-chosen Files location.
+    let imageData: Data?
+    let mimeType: String?
 
     @Environment(\.dismiss) private var dismiss
     @State private var scale: CGFloat = 1
@@ -246,6 +308,9 @@ private struct FullScreenImageViewer: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var showShareSheet = false
+    @State private var showFileExporter = false
+    @State private var tempFileURL: URL?
+    @State private var saveError: String?
 
     var body: some View {
         ZStack {
@@ -291,37 +356,132 @@ private struct FullScreenImageViewer: View {
                             .padding(10)
                             .background(.ultraThinMaterial, in: Circle())
                     }
+                    .accessibilityLabel("Close viewer")
                     Spacer()
-                    Button { saveToPhotos() } label: {
+                    Button {
+                        prepareTempFile()
+                        if tempFileURL != nil { showFileExporter = true }
+                        else { saveToPhotos() }
+                    } label: {
                         Image(systemName: "square.and.arrow.down")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(10)
                             .background(.ultraThinMaterial, in: Circle())
                     }
-                    Button { showShareSheet = true } label: {
+                    .accessibilityLabel("Save image")
+                    Button {
+                        prepareTempFile()
+                        showShareSheet = true
+                    } label: {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(10)
                             .background(.ultraThinMaterial, in: Circle())
                     }
+                    .accessibilityLabel("Share image")
                 }
                 .padding(Design.Spacing.md)
+
+                if let saveError {
+                    Text(saveError)
+                        .font(Design.Typography.caption2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, Design.Spacing.md)
+                        .padding(.vertical, 6)
+                        .background(.red.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                withAnimation { saveError = nil }
+                            }
+                        }
+                }
                 Spacer()
             }
         }
         .statusBarHidden()
         .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [image])
+            if let url = tempFileURL {
+                ShareSheet(items: [url])
+            } else {
+                ShareSheet(items: [image])
+            }
+        }
+        .fileExporter(
+            isPresented: $showFileExporter,
+            document: tempFileURL.flatMap { TempFileDocument(url: $0) },
+            contentType: utTypeForMime(),
+            defaultFilename: fileName
+        ) { result in
+            if case .failure(let error) = result {
+                withAnimation { saveError = error.localizedDescription }
+            }
+        }
+        .onDisappear { cleanupTempFile() }
+    }
+
+    /// Materialize the image bytes to a temporary file so share/download
+    /// surfaces preserve the original filename and MIME type.  A bare
+    /// UIImage in the share sheet strips both.
+    private func prepareTempFile() {
+        guard tempFileURL == nil else { return }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeraldImageShare", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let ext = (fileName as NSString).pathExtension
+        let base = (fileName as NSString).deletingPathExtension
+        let safe = sanitized(base.isEmpty ? "image" : base)
+        let url = dir.appendingPathComponent("\(safe).\(ext.isEmpty ? "png" : ext)")
+        let data = imageData ?? image.pngData() ?? image.jpegData(compressionQuality: 0.92)
+        do {
+            try data?.write(to: url, options: .atomic)
+            tempFileURL = url
+        } catch {
+            saveError = "Could not prepare image for sharing."
         }
     }
 
-    /// Save the current image to the Photos library.  The nil completion
-    /// target/selector matches UIKit's minimal save API; a transient overlay
-    /// and haptic can be added later if needed.
+    private func cleanupTempFile() {
+        if let url = tempFileURL { try? FileManager.default.removeItem(at: url) }
+        tempFileURL = nil
+    }
+
     private func saveToPhotos() {
         UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+    }
+
+    private func utTypeForMime() -> UTType {
+        guard let mime = mimeType else { return .png }
+        if mime == "image/jpeg" { return .jpeg }
+        if mime == "image/webp" { return .webP }
+        if mime == "image/gif" { return .gif }
+        if mime == "image/bmp" { return .bmp }
+        if mime == "image/tiff" { return .tiff }
+        return .png
+    }
+
+    private func sanitized(_ name: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let cleaned = name.components(separatedBy: invalid).joined(separator: "_")
+        return cleaned.isEmpty ? "attachment" : cleaned
+    }
+}
+
+/// A trivial FileDocument so the .fileExporter modifier can write bytes
+/// to a user-chosen Files destination.
+private struct TempFileDocument: FileDocument {
+    let url: URL
+
+    static var readableContentTypes: [UTType] { [.png, .jpeg, .webP, .gif, .bmp, .tiff] }
+
+    init(url: URL) { self.url = url }
+
+    init(configuration: ReadConfiguration) throws { fatalError("read-only export") }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        try FileWrapper(regularFileWithContents: Data(contentsOf: url))
     }
 }
 

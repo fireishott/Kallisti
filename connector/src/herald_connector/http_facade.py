@@ -465,6 +465,13 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         # The connector's own terminal event (client.py:1695-1717) carries
                         # the final text and, on failure, the error + category/action.
                         accumulated = data.get("text") or accumulated
+                        # Build 26: accept pre-classified reasoning from the
+                        # connector's done event when available (the sync path now
+                        # strips mislabeled progress).  Only overwrite locally
+                        # accumulated reasoning if the done event carries an
+                        # explicit value.
+                        if "reasoning" in data:
+                            accumulated_reasoning = data["reasoning"] or ""
                         job["status"] = data.get("status", "completed")
                         job["error"] = data.get("error")
                         job["errorCategory"] = data.get("errorCategory")
@@ -622,6 +629,41 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             # Strip inline <think>...</think> blocks that may have accumulated
             # from text_delta events on models without separate reasoning_delta.
             accumulated = strip_reasoning(accumulated).strip()
+            accumulated_reasoning = strip_reasoning(accumulated_reasoning or "").strip()
+            # Build 26: classify the accumulated reasoning channel.  Some
+            # providers (e.g. Mimo) emit ordinary assistant progress/preamble
+            # text as reasoning.available events even though the same sentences
+            # also arrive on the untagged assistant.delta channel.  That is
+            # mislabeled progress, not chain-of-thought.
+            #
+            # Rule: if reasoning text is a non-empty prefix or subset of the
+            # visible answer text (after normalizing whitespace), it is
+            # duplicated progress and MUST NOT be published as reasoning.
+            # Only genuinely distinct content belongs in the thought card.
+            normalized_answer = " ".join(accumulated.split())
+            normalized_reasoning = " ".join(accumulated_reasoning.split())
+            if accumulated_reasoning and normalized_reasoning:
+                if normalized_answer.startswith(normalized_reasoning) or normalized_reasoning.startswith(normalized_answer):
+                    logger.info(
+                        "Job %s: reasoning channel is a prefix/subset of visible "
+                        "answer — suppressing as mislabeled progress (reasoning=%d chars, answer=%d chars)",
+                        job_id, len(accumulated_reasoning), len(accumulated),
+                    )
+                    accumulated_reasoning = ""
+                elif len(normalized_reasoning) < len(normalized_answer) * 1.5:
+                    # Short reasoning that isn't a direct prefix — check if
+                    # any substantial substring (≥80%) is contained in answer.
+                    overlap = 0
+                    for word in normalized_reasoning.split():
+                        if word in normalized_answer:
+                            overlap += 1
+                    if overlap > 0 and overlap / max(len(normalized_reasoning.split()), 1) > 0.8:
+                        logger.info(
+                            "Job %s: reasoning channel shares ≥80%% words with "
+                            "visible answer — suppressing as mislabeled progress",
+                            job_id,
+                        )
+                        accumulated_reasoning = ""
             # MEDIA: tag extraction.  This lived only on the WebSocket relay job path
             # (client.py:1301, _handle_job_complete).  Build 16 made /v1/runs the default
             # transport, so from B16 to B17 a MEDIA: tag was never parsed at all and the
@@ -1102,7 +1144,6 @@ async def send_message(request: Request) -> JSONResponse:
 async def message_attachment_bytes(request: Request) -> Response:
     """GET /v1/messages/{messageID}/attachments/{remoteIndex}
 
-    Mirror of the legacy relay endpoint (relay/app/main.py:2487-2530).
     Conversation loads carry attachment metadata only; full bytes are
     fetched on demand by AttachmentService.swift.  The envelope middleware
     passes non-JSON Content-Types through untouched, so this raw-bytes
@@ -1112,37 +1153,65 @@ async def message_attachment_bytes(request: Request) -> Response:
     from .session_store import get_attachment
 
     raw_msg_id = request.path_params.get("messageID", "")
+    if not raw_msg_id or not isinstance(raw_msg_id, str):
+        raise HTTPException(status_code=404, detail="Message not found.")
+    # Reject path-injection attempts before UUID coercion.
+    if "/" in raw_msg_id or "\\" in raw_msg_id or ".." in raw_msg_id:
+        raise HTTPException(status_code=404, detail="Message not found.")
     msg_id = _coerce_uuid(raw_msg_id)
     if not msg_id:
         raise HTTPException(status_code=404, detail="Message not found.")
 
+    raw_index = request.path_params.get("remoteIndex", "")
     try:
-        index = int(request.path_params.get("remoteIndex", ""))
+        index = int(raw_index)
+        if index < 0 or index > 255:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
     except (TypeError, ValueError):
         raise HTTPException(status_code=404, detail="Attachment not found.")
 
     att = get_attachment(msg_id, index)
     if att is None:
         raise HTTPException(status_code=404, detail="Attachment not found.")
+    if att.get("expired"):
+        raise HTTPException(status_code=410, detail="Attachment has expired.")
 
     data_b64 = att.get("data") or ""
     if not data_b64:
-        raise HTTPException(status_code=404, detail="Attachment has no stored data.")
+        raise HTTPException(status_code=410, detail="Attachment data was removed.")
 
     import base64
+    import hashlib
     try:
         payload = base64.b64decode(data_b64)
     except (ValueError, TypeError):
         raise HTTPException(status_code=422, detail="Attachment data is corrupt.")
 
+    # Enforce size cap (25 MB) before serving.
+    max_bytes = 25 * 1024 * 1024
+    if len(payload) > max_bytes:
+        raise HTTPException(status_code=422, detail="Attachment exceeds size limit.")
+
     filename = att.get("filename", "attachment")
     mime_type = att.get("mimeType", "application/octet-stream")
+    # Sanitize filename: strip path separators and quotes to prevent
+    # header-injection / content-disposition abuse.
+    safe_filename = str(filename).replace("/", "_").replace("\\", "_").replace('"', "'")[:255]
+    etag = hashlib.sha256(payload).hexdigest()[:32]
+
+    # If-None-Match support: conditional GET for bandwidth savings.
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status_code=304)
+
     return Response(
         content=payload,
         media_type=mime_type,
         headers={
-            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Content-Length": str(len(payload)),
             "Cache-Control": "private, max-age=86400",
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

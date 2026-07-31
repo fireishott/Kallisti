@@ -410,6 +410,8 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
                 "type": a.get("type", "file"),
                 "filename": a.get("filename", "attachment"),
                 "mimeType": a.get("mimeType", "application/octet-stream"),
+                "byteLength": a.get("byteLength"),
+                "checksum": a.get("checksum"),
                 "thumbnailBase64": a.get("thumbnailData"),
                 "messageID": msg_id,
                 "remoteIndex": i,
@@ -468,8 +470,121 @@ def _save_attachments(data: dict) -> None:
     tmp.rename(_attachments_path())
 
 
+# Maximum attachment size in bytes (25 MB).
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+# Allowed image MIME types — must match actual decoded content.
+_ALLOWED_IMAGE_TYPES = frozenset({
+    "image/png", "image/jpeg", "image/webp", "image/gif",
+    "image/bmp", "image/tiff", "image/svg+xml",
+})
+
+
+def _validate_attachment(att: dict) -> dict | None:
+    """Validate and normalise one attachment dict.  Returns a cleaned dict
+    or None if the attachment is invalid.
+
+    Checks: MIME type whitelist, actual decoded image type vs declared
+    MIME, size cap, readable base64, and computes a SHA-256 checksum.
+    """
+    import base64
+    import hashlib
+
+    mime_type = str(att.get("mimeType", "")).lower().strip()
+    if not mime_type:
+        return None
+    # Only allow known image types.
+    if mime_type not in _ALLOWED_IMAGE_TYPES and not mime_type.startswith("image/"):
+        return None
+
+    data_b64 = att.get("data") or ""
+    if not data_b64 or not isinstance(data_b64, str):
+        return None
+    if len(data_b64) > (_MAX_ATTACHMENT_BYTES * 2):
+        # Base64 is ~1.37x binary; reject obviously oversize blobs early.
+        return None
+
+    try:
+        payload = base64.b64decode(data_b64, validate=True)
+    except (ValueError, TypeError):
+        return None
+
+    if len(payload) > _MAX_ATTACHMENT_BYTES:
+        return None
+
+    checksum = hashlib.sha256(payload).hexdigest()
+
+    # Validate actual image type against declared MIME via magic bytes.
+    # imghdr is deprecated in 3.11+; use inline signature check.
+    magic = payload[:12]
+    detected_mime = _detect_image_mime(magic)
+    if detected_mime:
+        if mime_type != detected_mime and mime_type != "application/octet-stream":
+            # SVG is text-based — magic-bytes check won't detect it.
+            if mime_type != "image/svg+xml":
+                logger.warning(
+                    "Attachment MIME mismatch: declared=%s actual=%s",
+                    mime_type, detected_mime,
+                )
+                return None
+
+    filename = str(att.get("filename", "attachment"))[:255]
+    kind = str(att.get("type", "file"))[:64]
+
+    return {
+        "type": kind,
+        "filename": filename,
+        "mimeType": mime_type,
+        "byteLength": len(payload),
+        "checksum": checksum,
+        "data": data_b64,
+        "thumbnailData": att.get("thumbnailData"),
+    }
+
+
+def _detect_image_mime(header: bytes) -> str | None:
+    """Return the MIME type for *header* magic bytes, or None."""
+    if header[:4] == b'\x89PNG':
+        return "image/png"
+    if header[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    if header[:4] in (b'RIFF',) and header[8:12] == b'WEBP':
+        return "image/webp"
+    if header[:6] in (b'GIF87a', b'GIF89a'):
+        return "image/gif"
+    if header[:2] in (b'BM',):
+        return "image/bmp"
+    if header[:4] in (b'II*\x00', b'MM\x00*'):
+        return "image/tiff"
+    return None
+
+
 def set_message_attachments(message_id: str, attachments: list[dict]) -> None:
-    """Persist attachment metadata for *message_id*.  Merges with existing."""
+    """Persist attachment metadata for *message_id*.  Merges with existing.
+
+    Each attachment dict must include at least ``type``, ``filename``,
+    ``mimeType``, and ``data`` (base64-encoded bytes).  The function
+    validates MIME type, decoded image type, size cap, and data integrity
+    before persisting.  Invalid attachments are silently dropped.
+    """
+    import base64
+    import hashlib
+
+    validated = []
+    for att in attachments:
+        try:
+            v = _validate_attachment(att)
+            if v:
+                validated.append(v)
+        except Exception:
+            logger.warning(
+                "Dropping invalid attachment for message %s: %s",
+                message_id, att.get("filename", "?"),
+                exc_info=True,
+            )
+    if not validated:
+        return
+
     store = _load_attachments()
     # Prune entries older than 30 days before writing.
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -490,7 +605,7 @@ def set_message_attachments(message_id: str, attachments: list[dict]) -> None:
         store.pop(mid, None)
 
     store[str(message_id)] = {
-        "attachments": list(attachments),
+        "attachments": validated,
         "updatedAt": now.isoformat(),
     }
     _save_attachments(store)

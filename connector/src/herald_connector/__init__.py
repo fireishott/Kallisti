@@ -6,7 +6,7 @@ __all__ = ["__version__"]
 # phone which connector is actually running.  Keep in step with
 # pyproject.toml; connector/tests/test_connector_version.py enforces that.
 #
-# 0.5.2 — 2026-07-31 Build 23: terminal message projection preserves attachment
-#         metadata through the SSE done→iOS bridge; explicit deliveryStatus on
-#         _relay_message (pending user row is "sent", not "delivered").
-__version__ = "0.5.3"
+# 0.5.3 — 2026-07-31 Build 25: attachment persistence, dedup heuristic attempt.
+# 0.5.4 — 2026-07-31 Build 26: typed thought/progress classification, validated
+#         attachment store, facade download endpoint with security hardening.
+__version__ = "0.5.4"

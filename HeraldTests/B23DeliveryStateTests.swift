@@ -131,7 +131,7 @@ struct B23DeliveryStateTests {
         #expect(isCredible)
     }
 
-    @Test("Empty text with no attachments and no reasoning is not credible")
+    @Test("Empty text with no attachments is not credible")
     func emptyResponseIsNotCredible() {
         let msg = Message(
             sender: .herald,
@@ -141,15 +141,15 @@ struct B23DeliveryStateTests {
             reasoning: ""
         )
 
+        // Build 26: only visible text or valid attachments.
         let isCredible = !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !msg.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !msg.attachments.isEmpty
 
         #expect(!isCredible)
     }
 
-    @Test("Reasoning-only is credible (hidden thought still signals completion)")
-    func reasoningOnlyIsCredible() {
+    @Test("Reasoning-only is not credible (Build 26: hidden thought does not signal completion)")
+    func reasoningOnlyIsNotCredible() {
         let msg = Message(
             sender: .herald,
             content: "",
@@ -158,11 +158,12 @@ struct B23DeliveryStateTests {
             reasoning: "The user asked about... I should respond with..."
         )
 
+        // Build 26: only visible text or valid attachments make a completion
+        // credible.  Hidden reasoning alone never counts.
         let isCredible = !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !msg.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !msg.attachments.isEmpty
 
-        #expect(isCredible)
+        #expect(!isCredible)
     }
 
     // MARK: - Merge: server "delivered" must not overwrite active user row

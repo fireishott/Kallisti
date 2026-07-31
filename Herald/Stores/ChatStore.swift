@@ -93,6 +93,15 @@ final class ChatStore {
     /// the /new bug where a stale cached conversation survives the clear.
     private var needsServerRefresh = false
 
+    /// Build 26: true after a terminal completion when the active-chat
+    /// projection was persisted but the server's conversation snapshot has
+    /// not yet been proven to contain this terminal turn.  The next explicit
+    /// refresh (chat-list tap, foreground, poll) should reconcile through
+    /// mergeConversationMetadata — which preserves local attachments and
+    /// content via B39 T5 guards — rather than silently replacing the local
+    /// answer array.
+    private var pendingServerReconciliation = false
+
     var isStreaming: Bool { streamingMessageID != nil }
     var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
 
@@ -223,6 +232,19 @@ final class ChatStore {
         } catch {
             Self.logger.warning("Failed to load selected conversation \(id): \(error.localizedDescription)")
         }
+    }
+
+    /// Build 26: atomically persist the current conversation to the local
+    /// cache.  Called inside the .finished handler after the terminal message
+    /// replaces the streaming placeholder but before activeStreams ownership
+    /// is cleared — so a polling refresh or foreground recovery cannot
+    /// remove the answer the user already saw.
+    private func cacheModifiedConversation() {
+        guard let conversation else { return }
+        var cacheCopy = conversation
+        cacheCopy.contextPercent = nil
+        cacheCopy.latestUsage = nil
+        persistence.saveConversationCache(cacheCopy)
     }
 
     func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
@@ -434,17 +456,6 @@ final class ChatStore {
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
-        /// Build 25: synchronous mirror of everything routed to the reasoning
-        /// channel.  The real buffers flush on a 33ms task, so reading only the
-        /// placeholder's `.reasoning` would falsely detect divergence during
-        /// flush lag.
-        var reasoningAccumulator = ""
-        /// Text deltas held back while reasoning is active because the same
-        /// sentence arrived on BOTH the reasoning and untagged text channels.
-        var suppressedText = ""
-        /// false once the first non-duplicate text delta arrives — divergence
-        /// is sticky because the channels have genuinely split.
-        var reasoningDeDupActive = true
 
         streamingPhase = .sending
 
@@ -511,33 +522,7 @@ final class ChatStore {
                     ) != nil
                     if hasOpenThinkTag && reasoningStartedAt == nil {
                         reasoningStartedAt = .now
-                        reasoningAccumulator.append(delta)
                         self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
-                    } else if reasoningDeDupActive && reasoningStartedAt != nil {
-                        // Build 25: the same sentence may arrive on BOTH the
-                        // structured reasoning channel and the untagged text
-                        // channel.  Suppress text the reasoning already covers.
-                        suppressedText.append(delta)
-                        if reasoningAccumulator.contains(suppressedText) {
-                            // Still within reasoning bounds — suppress.
-                        } else {
-                            // Diverged: reasoning no longer covers this text.
-                            // Emit only the uncovered tail, then stop suppressing.
-                            reasoningDeDupActive = false
-                            let visible = Self.dedupVisibleTail(
-                                candidate: suppressedText,
-                                reasoning: reasoningAccumulator
-                            )
-                            suppressedText = ""
-                            if !visible.isEmpty {
-                                if let settings = self.ttsSettingsProvider?(),
-                                   settings.enabled,
-                                   settings.autoSpeakDuringStreaming {
-                                    self.ttsService?.speakStreaming(visible, voice: settings.voice)
-                                }
-                                self.enqueueDelta(visible, placeholderID: placeholderID)
-                            }
-                        }
                     } else {
                         // Stream to TTS only for non-reasoning content
                         if let settings = self.ttsSettingsProvider?(),
@@ -553,8 +538,6 @@ final class ChatStore {
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
-                    // Build 25: mirror for cross-channel de-duplication.
-                    reasoningAccumulator.append(delta)
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
                 case .toolActivity(let label):
@@ -699,23 +682,6 @@ final class ChatStore {
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                         }
-                        // Build 25: reconcile any suppressed text that the final
-                        // reasoning never covered.  If the turn ended while text
-                        // deltas were still being suppressed, the uncovered tail
-                        // is visible content the user should see.
-                        if !suppressedText.isEmpty {
-                            let finalReasoning = resolved.reasoning
-                            if !finalReasoning.contains(suppressedText) {
-                                let visible = Self.dedupVisibleTail(
-                                    candidate: suppressedText,
-                                    reasoning: finalReasoning
-                                )
-                                if !visible.isEmpty {
-                                    resolved.content.append(visible)
-                                }
-                            }
-                            suppressedText = ""
-                        }
                         let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Usage is returned by every provider on every turn, including turns
                         // that produced nothing.  Treating it as proof of a reply is what
@@ -734,27 +700,40 @@ final class ChatStore {
                         }
                     }
                     let oldTitle = self.conversation?.title
-                    // A POST /v1/messages response is a conversation carrying only the
-                    // user message just sent (http_facade.py:795, and see :1641 below).
-                    // Splicing a full local transcript into a one-message array runs
-                    // every historical message back through the local-only anchor path
-                    // for no benefit.  Take title/usage/context from it; leave the
-                    // message array alone.  A real GET .../conversation refresh — which
-                    // returns the full transcript — still goes through the full merge.
+                    // Build 26: the terminal message is authoritative in the
+                    // active chat.  Persist the cache atomically before clearing
+                    // stream ownership so a polling refresh, foreground recovery,
+                    // or stale currentConversation snapshot cannot remove the
+                    // answer the user already saw.
+                    //
+                    // currentConversation at this point is often the POST
+                    // acknowledgement (one user message) or an intermediate
+                    // polling snapshot that may not yet contain the terminal row.
+                    // A message-count heuristic cannot safely decide freshness —
+                    // equal or greater count does not prove the snapshot includes
+                    // this turn.  Only merge metadata (title, usage, context)
+                    // from the server; never replace the local message array
+                    // inside the .finished handler.
+                    self.cacheModifiedConversation()
                     let refreshed = self.heraldClient.currentConversation
-                    let localCount = self.conversation?.messages.count ?? 0
-                    let remoteCount = refreshed?.messages.count ?? 0
-                    if remoteCount > 0, remoteCount < localCount,
-                       let refreshed, var conv = self.conversation {
-                        if conv.title == "New Chat" || conv.title == "Herald" { conv.title = refreshed.title }
-                        conv.latestUsage = refreshed.latestUsage ?? conv.latestUsage
+                    if var conv = self.conversation {
+                        // Accept server-derived title only when local is a default.
+                        if conv.title == "New Chat" || conv.title == "Herald",
+                           let serverTitle = refreshed?.title,
+                           serverTitle != "New Chat", serverTitle != "Herald" {
+                            conv.title = serverTitle
+                        }
+                        conv.latestUsage = refreshed?.latestUsage ?? conv.latestUsage
+                        conv.contextPercent = refreshed?.contextPercent ?? conv.contextPercent
                         self.conversation = conv
-                    } else {
-                        self.conversation = self.mergeConversationMetadata(
-                            from: self.conversation,
-                            into: refreshed
-                        )
                     }
+                    // Deferred reconciliation: mark that a server refresh is
+                    // pending.  The next explicit session fetch (chat-list tap,
+                    // foreground, or poll) will reconcile through
+                    // mergeConversationMetadata, which preserves local attachments
+                    // and content when the server copy is empty or truncated
+                    // (B39 T5 guards at lines 1579-1595 and 1613-1618).
+                    self.pendingServerReconciliation = true
                     if let latestUsage = self.conversation?.latestUsage {
                         self.lastTokenUsage = latestUsage
                     } else if let usage {
@@ -1560,30 +1539,6 @@ final class ChatStore {
         var merged = resolved
         merged.content = streamedContent
         return merged
-    }
-
-    /// Build 25: return the suffix of *candidate* that is NOT covered by
-    /// *reasoning*.  When the same sentence arrives on both the structured
-    /// reasoning channel and the untagged text channel, the overlapping
-    /// prefix is suppressed; only the uncovered tail is emitted as visible
-    /// answer text.
-    ///
-    /// Returns the empty string if *candidate* is fully contained in
-    /// *reasoning* (fully suppressed).  The divergence scan is O(k·n) where
-    /// k = candidate.count, n = reasoning.count — but it only runs once per
-    /// turn (when the channels split); the common case is a single
-    /// ``contains`` call.
-    static func dedupVisibleTail(candidate: String, reasoning: String) -> String {
-        if reasoning.contains(candidate) { return "" }
-        // Walk backward to find the longest prefix still in reasoning.
-        var k = candidate.count - 1
-        while k > 0 {
-            if reasoning.contains(candidate.prefix(k)) {
-                return String(candidate.dropFirst(k))
-            }
-            k -= 1
-        }
-        return candidate
     }
 
     /// Internal rather than private so the merge invariants can be tested

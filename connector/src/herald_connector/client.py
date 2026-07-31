@@ -1867,6 +1867,7 @@ class HeraldConnector:
         runtime = await self.runtime_adapter_for_state_async(state)
 
         accumulated_text = ""
+        accumulated_reasoning = ""
         source_seq = 0
 
         # Emit started event
@@ -1891,6 +1892,7 @@ class HeraldConnector:
                         "data": {"delta": event.data, "seq": source_seq},
                     }
                 elif event.type == "reasoning_delta":
+                    accumulated_reasoning += event.data
                     source_seq += 1
                     yield {
                         "type": "reasoning_delta",
@@ -1939,6 +1941,34 @@ class HeraldConnector:
                     # locally accumulated deltas, which can be partial
                     # after an SSE interruption.
                     terminal_text = (event.output or accumulated_text).strip()
+                    # Build 26: classify accumulated reasoning vs visible
+                    # text.  If reasoning is a prefix/subset of the answer,
+                    # it is mislabeled progress, not chain-of-thought.
+                    from .reasoning_sanitizer import strip_reasoning
+                    clean_reasoning = strip_reasoning(accumulated_reasoning).strip()
+                    clean_text = strip_reasoning(terminal_text).strip()
+                    norm_answer = " ".join(clean_text.split())
+                    norm_reasoning = " ".join(clean_reasoning.split())
+                    if clean_reasoning and norm_reasoning:
+                        if norm_answer.startswith(norm_reasoning) or norm_reasoning.startswith(norm_answer):
+                            logger.info(
+                                "Job %s: reasoning channel is a prefix/subset of "
+                                "visible answer — suppressing as mislabeled progress "
+                                "(reasoning=%d chars, answer=%d chars)",
+                                job_id, len(clean_reasoning), len(clean_text),
+                            )
+                            clean_reasoning = ""
+                        elif len(norm_reasoning) < len(norm_answer) * 1.5:
+                            words_r = set(norm_reasoning.split())
+                            words_a = set(norm_answer.split())
+                            common = words_r & words_a
+                            if common and len(common) / max(len(words_r), 1) > 0.8:
+                                logger.info(
+                                    "Job %s: reasoning shares ≥80%% words with "
+                                    "answer — suppressing as mislabeled progress",
+                                    job_id,
+                                )
+                                clean_reasoning = ""
                     yield {
                         "type": "done",
                         "data": {
@@ -1946,6 +1976,7 @@ class HeraldConnector:
                             "text": terminal_text,
                             "sessionId": event.session_id or session_id,
                             "usage": event.usage,
+                            "reasoning": clean_reasoning or None,
                         },
                     }
                     return
