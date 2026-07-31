@@ -269,13 +269,47 @@ def _coerce_uuid(value: Any) -> str | None:
         return None
 
 
+def _relay_attachments(attachments: list | None) -> list | None:
+    """Shape connector attachments for LiveHeraldClient.RelayAttachment.
+
+    The extractor emits {type, filename, mimeType, data} (client.py:122-127) but the
+    iOS decoder declares `thumbnailData` (LiveHeraldClient.swift:66-70) and drops any
+    other key.  mapMessage then sets thumbnailBase64 = nil (LiveHeraldClient.swift:612)
+    and MessageAttachmentsView falls through to its placeholder (:106,:110,:138).
+    There is no fetch fallback — the messages/{id}/attachments/{index} endpoint that
+    Message.swift:12-17 describes is not implemented anywhere in this facade.
+
+    So emit BOTH keys: `thumbnailData` is what actually renders, `data` keeps any
+    relay-schema consumer working.  Do not "clean this up" by dropping one of them
+    without checking both decoders first.
+    """
+    if not attachments:
+        return None
+    shaped = []
+    for att in attachments:
+        payload = att.get("data") or att.get("thumbnailData")
+        if not payload:
+            continue
+        shaped.append({
+            "type": att.get("type", "file"),
+            "filename": att.get("filename", "attachment"),
+            "mimeType": att.get("mimeType", "application/octet-stream"),
+            "thumbnailData": payload,
+            "data": payload,
+        })
+    return shaped or None
+
+
 def _relay_message(role: str, text: str, *, client_message_id: Any = None,
-                   job_id: Any = None) -> dict:
+                   job_id: Any = None, attachments: list | None = None) -> dict:
     """Build one RelayMessage (LiveHeraldClient.swift:39-48).
 
     id / role / text / timestamp are non-optional on the app side.  `role` accepts
     "user", "herald", "system" — and "assistant"/"hermes" are aliased to .herald
     by MessageSender.init(from:) (Herald/Models/MessageSender.swift:13).
+
+    `attachments` was hardcoded None here, which meant the /v1/runs path could never
+    deliver an inline image no matter what the agent emitted.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -285,7 +319,7 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
         "timestamp": _now_iso(),
         "deliveryStatus": "delivered",
         "jobId": _coerce_uuid(job_id),
-        "attachments": None,
+        "attachments": _relay_attachments(attachments),
     }
 
 
@@ -486,7 +520,21 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             # Strip inline <think>...</think> blocks that may have accumulated
             # from text_delta events on models without separate reasoning_delta.
             accumulated = strip_reasoning(accumulated).strip()
-            job["message"] = _relay_message("herald", accumulated, job_id=job_id)
+            # MEDIA: tag extraction.  This lived only on the WebSocket relay job path
+            # (client.py:1301, _handle_job_complete).  Build 16 made /v1/runs the default
+            # transport, so from B16 to B17 a MEDIA: tag was never parsed at all and the
+            # agent's file paths rendered as dead text.  Same parser, same contract.
+            from .client import _extract_media_from_response
+            media_attachments, accumulated = _extract_media_from_response(accumulated)
+            if media_attachments:
+                logger.info(
+                    "Job %s: extracted %d inline attachment(s) from MEDIA: tags",
+                    job_id, len(media_attachments),
+                )
+            job["message"] = _relay_message(
+                "herald", accumulated, job_id=job_id,
+                attachments=media_attachments or None,
+            )
             # Tag the Hermes-written assistant messages with this job ID so
             # GET /v1/sessions/{id}/conversation returns jobId on each row.
             # Without this the iOS merge falls through to unsafe content
