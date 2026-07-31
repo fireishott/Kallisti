@@ -90,7 +90,7 @@ Then reply:
 ```
 There you go — corporate doggo with the CEO energy.
 
-MEDIA: /home/agent/.hermes-mobile/attachment_staging/1753929600-doggo.png
+MEDIA: ~/.hermes-mobile/attachment_staging/1753929600-doggo.png
 ```
 
 Verify before you emit the tag: `curl` can write a 404 HTML body to the path and exit 0
