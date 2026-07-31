@@ -1438,7 +1438,19 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
     import time as _time
     ctx = get_context()
     body = await request.json()
-    installation_id = body.get("installationId") or body.get("deviceId") or ""
+    # Build 30: accept both the nested iOS DTO (device.installationId) and
+    # the top-level form (installationId, deviceId).  The app sends installationId
+    # under a `device` key; the old code only read top-level and silently
+    # recorded an empty identity, breaking all-device scoping.
+    raw_installation_id = (
+        body.get("installationId")
+        or body.get("deviceId")
+        or ""
+    )
+    # Also try the nested DTO
+    if not raw_installation_id and isinstance(body.get("device"), dict):
+        raw_installation_id = body["device"].get("installationId") or ""
+    installation_id = str(raw_installation_id).strip()[:255]
     logger.info("Redeem body keys: %s, code raw: %s, installation: %s",
                 list(body.keys()), body.get("code", "?")[:20], installation_id[:12])
     code = (body.get("code") or "").upper().replace("-", "").replace(" ", "")

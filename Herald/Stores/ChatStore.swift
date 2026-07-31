@@ -102,6 +102,14 @@ final class ChatStore {
     /// answer array.
     private var pendingServerReconciliation = false
 
+    /// Build 30: monotonically increasing generation counter.  Every async
+    /// conversation mutation (poll, foreground refresh, explicit load) must
+    /// capture the current generation before the await and discard the result
+    /// if the store's generation has moved past it.  This prevents a stale
+    /// server snapshot (returned after the terminal row was committed) from
+    /// replacing the local answer array wholesale.
+    private var conversationGeneration: UInt64 = 0
+
     var isStreaming: Bool { streamingMessageID != nil }
     var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
 
@@ -218,6 +226,11 @@ final class ChatStore {
     private func loadConversation(id: UUID) async {
         isLoading = true
         defer { isLoading = false }
+        // Build 30: bump generation so any in-flight poll/refresh for a
+        // prior conversation is discarded.  Without this, navigating to a
+        // new chat while a poll response is in-flight could replace the
+        // just-loaded conversation with stale data from the old one.
+        conversationGeneration &+= 1
         do {
             let refreshed = try await heraldClient.loadConversation(id: id)
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
@@ -748,6 +761,12 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
+                    // Build 30: bump the conversation generation so any in-flight
+                    // poll/refresh captures are discarded.  This ensures a stale
+                    // server snapshot that arrived after terminal commit cannot
+                    // replace the local message array — the poll loop will re-fetch
+                    // on the next cycle and the server will include the terminal row.
+                    self.conversationGeneration &+= 1
 
                     // Haptic feedback on response completion — fired immediately
                     // in the stream handler so it's synchronous with the content
@@ -1486,7 +1505,17 @@ final class ChatStore {
             for delay in Self.pollingBackoffSeconds {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
+                let capturedGeneration = self.conversationGeneration
                 let fresh = await self.refreshActiveConversation()
+                // Build 30: discard stale poll results.  If the terminal
+                // row was committed while this poll was in flight, the
+                // server snapshot may lack it — applying it would delete
+                // the completed response.  The next poll cycle will include
+                // the terminal row and proceed normally.
+                guard capturedGeneration == self.conversationGeneration else {
+                    Self.logger.info("Poll dropped — generation moved (\(capturedGeneration) → \(self.conversationGeneration))")
+                    break
+                }
                 self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
                 // Build 28: a successful merge that includes the terminal
                 // turn satisfies the pending reconciliation marker set at
