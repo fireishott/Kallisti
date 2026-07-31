@@ -337,6 +337,18 @@ def session_messages(
               AND content NOT LIKE '[Current user objective preserved from compacted history]%'
               AND content NOT LIKE '[CONTEXT COMPACTION%'
               AND content NOT LIKE '[CONTEXT SUMMARY]:%'
+              -- B19: two more agent-injected turns that Hermes stores with
+              -- role='user' and display_kind NULL, making them
+              -- indistinguishable from something the person typed.  Both were
+              -- observed rendering as the user's own blue bubble on device:
+              --   "[Your previous response was cut off. It ended with: …]"
+              --   "[IMPORTANT: The user has invoked the "…" skill, …]"
+              -- The first is the self-continuation prompt Hermes issues after
+              -- a truncated response; because that continuation also forks a
+              -- new session, it was frequently the *only* user-role row in the
+              -- session the app resolved to.
+              AND content NOT LIKE '[Your previous response was cut off%'
+              AND content NOT LIKE '[IMPORTANT: The user has invoked the%'
             ORDER BY timestamp ASC
             LIMIT ?
             """,
@@ -626,6 +638,74 @@ def _find_session_by_recent_message(
     finally:
         conn.close()
     return row["session_id"] if row else None
+
+
+def _find_session_by_assistant_reply(
+    text: str, since: float | None = None
+) -> str | None:
+    """Find the Hermes session an assistant *reply* was actually written to.
+
+    B19: ``_find_session_by_recent_message`` locates a turn by its user text,
+    which silently breaks when Hermes forks mid-job.  When a response is
+    truncated the agent continues itself in a **new run**, and Hermes names a
+    session after each run id.  The user's text stays in the first session
+    while the continuation prompt and the real answer land in the second:
+
+        run_2e81373a…  user      "Big homie. Give me some fresh hood comedy"
+        run_6ef67ead…  user      "[Your previous response was cut off. …]"
+        run_6ef67ead…  assistant "Aight, here's the rotation for tonight. …"
+
+    Resolving by user text maps the conversation to the first session, so the
+    app reads back a session that contains no answer — the reply is not lost,
+    it is filed where the client never looks.  That is the "no response"
+    report, and the fork is also why an internal continuation prompt shows up
+    as the user's own bubble.
+
+    The reply is the message that has to be readable, so it is the correct
+    anchor.  The connector already holds the accumulated text it streamed, so
+    it can ask where that text landed.  Exact match first; a prefix match then
+    covers reasoning-stripping and trailing-whitespace drift between what was
+    streamed and what Hermes persisted.
+
+    Returns *None* if no matching assistant message is found, in which case the
+    caller should fall back to the user-text lookup.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+
+    conn = _connect()
+    try:
+        clauses = ["role = 'assistant'", "active = 1"]
+        params: list = []
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        where = " AND ".join(clauses)
+
+        row = conn.execute(
+            f"SELECT session_id FROM messages WHERE {where} AND content = ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (*params, stripped),
+        ).fetchone()
+        if row:
+            return row["session_id"]
+
+        # Prefix match. Long enough to stay unique against boilerplate
+        # openers, short enough to survive a truncated tail.
+        prefix = stripped[:120]
+        if len(prefix) < 24:
+            return None
+        escaped = prefix.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+        row = conn.execute(
+            f"SELECT session_id FROM messages WHERE {where} "
+            "AND content LIKE ? ESCAPE '\\' "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (*params, escaped + "%"),
+        ).fetchone()
+        return row["session_id"] if row else None
+    finally:
+        conn.close()
 
 
 # ── Session search ─────────────────────────────────────────────────────────

@@ -412,16 +412,47 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         # authority on where the message actually landed; a
                         # wrong mapping here files the reply under a session the
                         # app can never read back.
-                        from .session_store import _find_session_by_recent_message
-                        actual_sid = _find_session_by_recent_message(
-                            text, since=job_started_at
+                        from .session_store import (
+                            _find_session_by_assistant_reply,
+                            _find_session_by_recent_message,
+                        )
+                        # B19: anchor on the REPLY, not the prompt.  When a
+                        # response is truncated, Hermes continues itself in a
+                        # new run and names a new session after it; the user's
+                        # text stays behind in the first session while the
+                        # answer lands in the second.  Anchoring on the user
+                        # text maps the conversation to a session that holds no
+                        # answer, which is the "no response" bug — the reply is
+                        # filed where the client never looks.  The reply is the
+                        # message that has to be readable, so it decides.
+                        # `accumulated` already carries the final text (set from
+                        # the terminal event just above); job["message"] is not
+                        # built until much later, so it cannot be used here.
+                        # Strip reasoning the same way the message builder does
+                        # so this matches what Hermes persisted.
+                        reply_text = strip_reasoning(accumulated or "").strip()
+                        actual_sid = _find_session_by_assistant_reply(
+                            reply_text, since=job_started_at
                         )
                         if actual_sid and actual_sid != hermes_sid:
                             logger.warning(
-                                "Runtime reported session %s for job %s but the "
-                                "message was written to %s — trusting state.db",
-                                hermes_sid, job_id, actual_sid,
+                                "Job %s: reply landed in session %s, not the "
+                                "reported %s — following the reply",
+                                job_id, actual_sid, hermes_sid,
                             )
+                        if not actual_sid:
+                            # No reply to anchor on (reasoning-only turn, tool-
+                            # only turn, error).  Fall back to the user text.
+                            actual_sid = _find_session_by_recent_message(
+                                text, since=job_started_at
+                            )
+                            if actual_sid and actual_sid != hermes_sid:
+                                logger.warning(
+                                    "Runtime reported session %s for job %s but "
+                                    "the message was written to %s — trusting "
+                                    "state.db",
+                                    hermes_sid, job_id, actual_sid,
+                                )
                         hermes_sid = actual_sid or hermes_sid
                         if hermes_sid:
                             from .session_store import _app_uuid, _persist_hermes_mapping
