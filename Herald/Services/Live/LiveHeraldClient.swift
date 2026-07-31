@@ -146,6 +146,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
     }
 
     private struct MessageCreateBody: Encodable {
+        let heraldProtocol: Int = 3           // Build 30: required protocol version
         let conversationId: UUID?
         let text: String
         let clientMessageId: UUID

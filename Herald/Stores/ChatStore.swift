@@ -1862,8 +1862,13 @@ final class ChatStore {
                 if let claim = candidates.first(where: { !claimedRefreshedIndices.contains($0) }) {
                     claimedRefreshedIndices.insert(claim)
                     localToRefreshedIndex[message.id] = claim
+                    continue
                 }
-                continue
+                // Build 30: all fingerprint candidates were already claimed.
+                // Fall through to append as a local-only message, which the
+                // anchor-splice pass will re-insert after its nearest neighbour.
+                // The old unconditional `continue` silently dropped the terminal
+                // row — this was HOLE 1 in the 2:03:06 disappearance.
             }
             localOnly.append(message)
         }

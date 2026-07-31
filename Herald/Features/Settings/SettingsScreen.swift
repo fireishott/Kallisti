@@ -628,44 +628,84 @@ struct SettingsScreen: View {
                         ?? "—"
                 )
 
-                // AUX Model Configuration
-                if let aux = auxService, !aux.tasks.isEmpty {
-                    SettingsSectionView(title: "Auxiliary Models") {
-                        ForEach(aux.tasks) { task in
+                // AUX Model Configuration — Build 30: always render the section
+                // so it never disappears because of a load error or empty response.
+                SettingsSectionView(title: "Auxiliary Models") {
+                    if let aux = auxService {
+                        if aux.tasks.isEmpty {
                             HStack {
-                                VStack(alignment: .leading) {
-                                    Text(task.task)
-                                        .font(Design.Typography.callout)
-                                    Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
-                                        .font(Design.Typography.caption)
-                                        .foregroundStyle(Design.Colors.secondaryForeground)
-                                }
-                                Spacer()
-                                Menu {
-                                    Button("Auto") {
-                                        Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
-                                    }
-                                    ForEach(modelStore.models, id: \.name) { m in
-                                        Button(m.name) {
-                                            Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
-                                        }
-                                    }
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Text("Change")
-                                            .font(Design.Typography.caption)
-                                        Image(systemName: "chevron.up.chevron.down")
-                                            .font(.system(size: 10))
-                                    }
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 14))
                                     .foregroundStyle(Design.Colors.secondaryForeground)
-                                }
+                                Text("All tasks use Auto — configure a host to see options.")
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                Spacer()
                             }
                             .frame(minHeight: Design.Size.minTapTarget)
+                        } else {
+                            ForEach(aux.tasks) { task in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(task.task)
+                                            .font(Design.Typography.callout)
+                                        Text(task.isAuto ? "Auto" : "\(task.provider) · \(task.model)")
+                                            .font(Design.Typography.caption)
+                                            .foregroundStyle(Design.Colors.secondaryForeground)
+                                    }
+                                    Spacer()
+                                    Menu {
+                                        Button("Auto") {
+                                            Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
+                                        }
+                                        ForEach(modelStore.models, id: \.name) { m in
+                                            Button(m.name) {
+                                                Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text("Change")
+                                                .font(Design.Typography.caption)
+                                            Image(systemName: "chevron.up.chevron.down")
+                                                .font(.system(size: 10))
+                                        }
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
+                                    }
+                                }
+                                .frame(minHeight: Design.Size.minTapTarget)
 
-                            if task.task != aux.tasks.last?.task {
-                                sectionDivider
+                                if task.task != aux.tasks.last?.task {
+                                    sectionDivider
+                                }
                             }
                         }
+                        if let error = aux.lastError {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Design.Brand.warning)
+                                Text(error)
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Brand.warning)
+                                Spacer()
+                                Button("Retry") {
+                                    Task { await aux.load() }
+                                }
+                                .font(Design.Typography.caption)
+                            }
+                            .frame(minHeight: Design.Size.minTapTarget)
+                        }
+                    } else {
+                        HStack {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Connecting to host…")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                            Spacer()
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
                     }
                 }
 

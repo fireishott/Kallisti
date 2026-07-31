@@ -502,8 +502,16 @@ struct ChatScreen: View {
                             }
                         }
                     } else if modelStore.isLoading {
-                        ProgressView()
-                            .controlSize(.mini)
+                        // Build 30: the wide chip must never go blank during
+                        // a catalog refresh.  Show a label with spinner so
+                        // the iPad pill always has human-readable content.
+                        HStack(spacing: 4) {
+                            Text("Loading…")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
                     } else if modelStore.isError {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 10))
