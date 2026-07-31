@@ -94,7 +94,24 @@ final class ModelStore {
                 accessToken: token
             )
             models = response.models ?? []
-            activeModel = response.activeModel
+            // Build 28: a nil activeModel in the response does not mean
+            // "no model configured" — the relay returns {models: [],
+            // activeModel: null} when the connector RPC fails, which is
+            // indistinguishable from an unconfigured host.  Only replace
+            // a previously confirmed active model when the server
+            // explicitly names one.
+            if let serverActive = response.activeModel {
+                activeModel = serverActive
+            }
+            // When the server omits activeModel but we have no local
+            // value yet, synthesise from the catalog's first entry.
+            if activeModel == nil, let first = models.first {
+                activeModel = ActiveModel(
+                    name: first.name,
+                    provider: first.provider,
+                    contextWindow: first.contextWindow
+                )
+            }
             lastLoadedAt = .now
         } catch {
             errorMessage = error.localizedDescription

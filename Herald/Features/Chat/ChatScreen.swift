@@ -484,10 +484,27 @@ struct ChatScreen: View {
                 showContextPopover.toggle()
             } label: {
                 HStack(spacing: Design.Spacing.xs) {
-                    if modelStore.isLoading {
+                    if let model = displayedModelName {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 4) {
+                                chipModelText(model)
+                                if modelStore.isLoading {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                }
+                            }
+                            HStack(spacing: 4) {
+                                chipModelText(compactModelName(model))
+                                if modelStore.isLoading {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                }
+                            }
+                        }
+                    } else if modelStore.isLoading {
                         ProgressView()
                             .controlSize(.mini)
-                    } else if let model = displayedModelName {
+                    } else if modelStore.isError {
                         ViewThatFits(in: .horizontal) {
                             chipModelText(model)
                             chipModelText(compactModelName(model))
