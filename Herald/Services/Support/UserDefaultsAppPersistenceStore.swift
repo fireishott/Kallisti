@@ -143,12 +143,12 @@ final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
         }
     }
 
-    func loadSessionCache() -> [SessionSummary]? {
-        load([SessionSummary].self, key: Keys.sessionCache)
+    func loadSessionCache(key: String = Keys.sessionCache) -> [SessionSummary]? {
+        load([SessionSummary].self, key: key)
     }
 
-    func saveSessionCache(_ sessions: [SessionSummary]) {
-        save(sessions, key: Keys.sessionCache)
+    func saveSessionCache(_ sessions: [SessionSummary], key: String = Keys.sessionCache) {
+        save(sessions, key: key)
     }
 
     private static let logEntriesKey = "herald.logEntries"

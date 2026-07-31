@@ -23,8 +23,8 @@ protocol AppPersistenceStoreProtocol {
     func loadHealthQueryAnchorData(for identifier: String) -> Data?
     func saveHealthQueryAnchorData(_ data: Data?, for identifier: String)
     func clearHealthQueryAnchorData()
-    func loadSessionCache() -> [SessionSummary]?
-    func saveSessionCache(_ sessions: [SessionSummary])
+    func loadSessionCache(key: String) -> [SessionSummary]?
+    func saveSessionCache(_ sessions: [SessionSummary], key: String)
     func loadLogEntries() -> [LogEntry]?
     func saveLogEntries(_ entries: [LogEntry])
 }

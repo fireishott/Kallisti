@@ -66,8 +66,8 @@ final class MockPersistence: AppPersistenceStoreProtocol {
     func loadHealthQueryAnchorData(for identifier: String) -> Data? { nil }
     func saveHealthQueryAnchorData(_ data: Data?, for identifier: String) {}
     func clearHealthQueryAnchorData() {}
-    func loadSessionCache() -> [SessionSummary]? { nil }
-    func saveSessionCache(_ sessions: [SessionSummary]) {}
+    func loadSessionCache(key: String) -> [SessionSummary]? { nil }
+    func saveSessionCache(_ sessions: [SessionSummary], key: String) {}
     func loadLogEntries() -> [LogEntry]? { nil }
     func saveLogEntries(_ entries: [LogEntry]) {}
 }

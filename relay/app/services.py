@@ -1735,8 +1735,9 @@ def list_sessions(
 ) -> tuple[list[Conversation], int]:
     """List non-archived conversations for a user.
 
-    Sessions scoped to the given device_id OR with no device_id (user-scoped)
-    are included. Device-scoped sessions belonging to OTHER devices are excluded.
+    When *device_id* is provided (strict device-only mode), only sessions
+    owned by that exact device are included.  Sessions with a NULL device_id
+    (shared / CLI-created) appear only in all-devices mode (device_id=None).
     """
     from sqlalchemy import func as sqlfunc
 
@@ -1745,9 +1746,7 @@ def list_sessions(
         Conversation.is_archived.is_(False),
     )
     if device_id is not None:
-        base = base.where(
-            (Conversation.device_id == device_id) | (Conversation.device_id.is_(None))
-        )
+        base = base.where(Conversation.device_id == device_id)
 
     # Count total matching sessions
     count_stmt = select(sqlfunc.count()).select_from(base.subquery())
@@ -1781,9 +1780,7 @@ def search_sessions(db: Session, *, user_id: str, query: str, device_id: str | N
         Conversation.title.ilike(like_pattern) | message_match,
     )
     if device_id is not None:
-        base = base.where(
-            (Conversation.device_id == device_id) | (Conversation.device_id.is_(None))
-        )
+        base = base.where(Conversation.device_id == device_id)
     return list(
         db.scalars(
             base.order_by(Conversation.last_message_at.desc().nullslast()).limit(20)

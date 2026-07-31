@@ -51,13 +51,25 @@ final class SessionListStore {
     var hasMore: Bool { currentOffset < totalCount }
 
     /// Whether to include sessions from every device on the account rather than
-    /// just this device's (+ user-scoped) sessions. Backed by `UserSettings` via
+    /// just this device's sessions. Backed by `UserSettings` via
     /// `settingsStore` so the preference persists across launches.
     var showAllDevices: Bool {
         get { settingsStore.settings.showAllDevices }
         set {
             guard newValue != settingsStore.settings.showAllDevices else { return }
             settingsStore.settings.showAllDevices = newValue
+            // Cancel any in-flight load from the previous scope and clear
+            // visible lists so the user never sees stale foreign-device rows.
+            loadTask?.cancel()
+            loadTask = nil
+            loadGeneration &+= 1
+            pinnedSessions = []
+            recentSessions = []
+            searchResults = nil
+            totalCount = 0
+            currentOffset = 0
+            lastLoadAt = nil
+            errorMessage = nil
             Task { await loadSessions(forceRefresh: true) }
         }
     }
@@ -69,6 +81,11 @@ final class SessionListStore {
     private var searchTask: Task<Void, Never>?
     private var searchObservationTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
+
+    /// Monotonically increasing token incremented every time the device scope
+    /// changes.  In-flight responses carrying a stale generation are discarded
+    /// so a slow all-devices response cannot repopulate the "this device" list.
+    private var loadGeneration: UInt = 0
 
     /// Timestamp of last successful load for freshness checking.
     private var lastLoadAt: Date?
@@ -110,17 +127,23 @@ final class SessionListStore {
     private func performLoad() async {
         isLoading = true
         errorMessage = nil
+        let capturedGeneration = loadGeneration
+        let capturedScope = showAllDevices
         defer {
             isLoading = false
             loadTask = nil
         }
 
         do {
-            let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: showAllDevices)
-            currentOffset = response.sessions.count  // Advance by actual count — a short page means the list is exhausted
+            let response = try await heraldClient.listSessions(limit: pageSize, offset: 0, allDevices: capturedScope)
+            // Discard if the scope changed while the request was in flight.
+            guard loadGeneration == capturedGeneration else { return }
+            currentOffset = response.sessions.count
             totalCount = response.total
-            // Merge with existing sessions to preserve locally-cached data across refreshes
-            mergeSessions(response.sessions, firstPage: true)
+            // On first-page load, replace the visible window entirely rather
+            // than merging — this prevents foreign-device rows from surviving
+            // a scope switch.
+            splitSessions(response.sessions)
             lastLoadAt = Date()
             saveCachedSessions()
         } catch {
@@ -363,6 +386,7 @@ final class SessionListStore {
         totalCount = 0
         currentOffset = 0
         lastLoadAt = nil
+        loadGeneration &+= 1
         searchTask?.cancel()
         searchTask = nil
         loadTask?.cancel()
@@ -448,13 +472,20 @@ final class SessionListStore {
 
     // MARK: - Session Cache
 
+    /// Cache key distinct from the unscoped key used by older builds.
+    /// The suffix isolates "this device" and "all devices" caches so that
+    /// relaunching with the toggle off never restores an all-devices list.
+    private var scopedCacheKey: String {
+        showAllDevices ? "herald.sessionCache.allDevices" : "herald.sessionCache.thisDevice"
+    }
+
     private func loadCachedSessions() {
-        guard let cached = persistence.loadSessionCache() else { return }
+        guard let cached = persistence.loadSessionCache(key: scopedCacheKey) else { return }
         splitSessions(cached)
     }
 
     private func saveCachedSessions() {
         let allSessions = pinnedSessions + recentSessions + archivedSessions
-        persistence.saveSessionCache(allSessions)
+        persistence.saveSessionCache(allSessions, key: scopedCacheKey)
     }
 }
