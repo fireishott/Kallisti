@@ -684,10 +684,10 @@ struct SettingsScreen: View {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle")
                                     .font(.system(size: 14))
-                                    .foregroundStyle(Design.Brand.warning)
+                                    .foregroundStyle(Design.Colors.warning)
                                 Text(error)
                                     .font(Design.Typography.caption)
-                                    .foregroundStyle(Design.Brand.warning)
+                                    .foregroundStyle(Design.Colors.warning)
                                 Spacer()
                                 Button("Retry") {
                                     Task { await aux.load() }
