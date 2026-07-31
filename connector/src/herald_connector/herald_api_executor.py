@@ -395,11 +395,12 @@ class HeraldAPIExecutor:
         falls back to /v1/chat/completions. Gate on env var
         HERALD_RUNS_STREAMING_ENABLED (default '0' — opt-in).
         """
-        # Try /v1/runs first if enabled
+        # Build 16: /v1/runs is the canonical production chat path.
+        # The chat/completions fallback has been removed — it used a different
+        # session contract (header-only X-Hermes-Session-Id) and could silently
+        # bypass the JSON session_id continuity that /v1/runs guarantees.
         import os
-        # The runs endpoint remains opt-in until its replay semantics are
-        # validated against every deployed Hermes version.
-        runs_enabled = os.environ.get("HERALD_RUNS_STREAMING_ENABLED", "0") == "1"
+        runs_enabled = os.environ.get("HERALD_RUNS_STREAMING_ENABLED", "1") == "1"
         if runs_enabled and await self._runs_available():
             async for event in self.stream_message_runs(
                 latest_user_message=latest_user_message,
@@ -410,6 +411,20 @@ class HeraldAPIExecutor:
             ):
                 yield event
             return
+
+        # /v1/runs is unavailable — fail explicitly rather than silently
+        # falling back to a different executor with different semantics.
+        logger.error(
+            "runs_unavailable: /v1/runs endpoint is not reachable. "
+            "Chat cannot proceed without the runs API."
+        )
+        yield StreamEvent(
+            type="error",
+            data="/v1/runs is unavailable. Please ensure the Hermes API server supports the runs endpoint.",
+            session_id=session_id,
+            error_category="runs_unavailable",
+        )
+        return
         headers = {
             **self._auth_headers(),
             "Content-Type": "application/json",

@@ -719,7 +719,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
 
-        return Message(sender: .herald, content: "", jobID: jobId, status: .delivered)
+        // Build 16: never produce a blank delivered bubble. When all sources
+        // (SSE terminal text, done payload message, conversation reload) fail
+        // to produce a non-empty assistant response, surface an explicit
+        // failure so the user sees a retryable error instead of a blank reply
+        // with a delivered checkmark and haptic.
+        return Message(sender: .system, content: "Herald completed but returned no message.", jobID: jobId, status: .failed)
     }
 
     private func validateRequestBodySize(for body: MessageCreateBody) throws {

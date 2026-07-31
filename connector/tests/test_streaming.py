@@ -855,24 +855,31 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
 
 
 def test_sse_comments_skipped_without_creating_events():
-    """SSE comment lines (starting with ':') from the API server should be
-    skipped without producing StreamEvents.
+    """SSE comment lines (starting with ':') from the /v1/runs events endpoint
+    should be skipped without producing StreamEvents.
 
-    Exercises the real HeraldAPIExecutor.stream_message() with a mocked
-    httpx transport so SSE comment lines flow through the real parsing logic.
+    Build 16: /v1/runs is now the canonical streaming path. This test
+    exercises the real HeraldAPIExecutor.stream_message() → runs SSE parser
+    with a mocked httpx transport so SSE comment lines flow through
+    _parse_runs_sse.
     """
     from unittest.mock import patch
 
     from herald_connector.herald_api_executor import HeraldAPIExecutor
 
+    # Runs SSE events with interspersed comments/id lines
     sse_lines = [
         ": keepalive",
-        'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+        'event: assistant.delta',
+        'data: {"text": "Hello"}',
+        "",
         ": heartbeat",
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'event: run.completed',
+        'data: {"session_id": "s1"}',
+        "",
     ]
 
-    class MockResponse:
+    class MockEventResponse:
         status_code = 200
         headers: dict = {}
 
@@ -883,12 +890,22 @@ def test_sse_comments_skipped_without_creating_events():
             for line in sse_lines:
                 yield line
 
-    class MockStreamContext:
+    class MockEventStreamContext:
         async def __aenter__(self):
-            return MockResponse()
+            return MockEventResponse()
 
         async def __aexit__(self, *args):
             return False
+
+    class MockRunsResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"run_id": "run-1"}
 
     class MockClient:
         async def __aenter__(self):
@@ -897,8 +914,16 @@ def test_sse_comments_skipped_without_creating_events():
         async def __aexit__(self, *args):
             return False
 
+        async def get(self, *args, **kwargs):
+            # _runs_available probe
+            r = type("Resp", (), {"status_code": 200, "json": lambda s: {"features": {"run_events_sse": True}}})()
+            return r
+
+        async def post(self, *args, **kwargs):
+            return MockRunsResponse()
+
         def stream(self, *args, **kwargs):
-            return MockStreamContext()
+            return MockEventStreamContext()
 
     mock_client_instance = MockClient()
 
@@ -911,7 +936,8 @@ def test_sse_comments_skipped_without_creating_events():
             ):
                 events.append(event)
 
-        # Only the two data lines produce StreamEvents; comments are skipped
+        # Only the assistant.delta and run.completed produce StreamEvents;
+        # comments and blank lines are skipped.
         assert len(events) == 2
         assert events[0].type == "text_delta"
         assert events[0].data == "Hello"
@@ -921,11 +947,11 @@ def test_sse_comments_skipped_without_creating_events():
 
 
 def test_sse_comment_lines_do_not_yield_keepalive():
-    """SSE comments interspersed between data chunks should not generate
-    keepalive StreamEvents — only actual data lines produce events.
+    """SSE comments interspersed between /v1/runs events data chunks should
+    not generate keepalive StreamEvents — only actual data lines produce events.
 
-    Exercises the real HeraldAPIExecutor.stream_message() with a mocked
-    httpx transport so SSE comment lines flow through the real parsing logic.
+    Build 16: exercises the runs SSE parser via stream_message() with a mocked
+    httpx transport so SSE comment lines flow through _parse_runs_sse.
     """
     from unittest.mock import patch
 
@@ -933,13 +959,17 @@ def test_sse_comment_lines_do_not_yield_keepalive():
 
     sse_lines = [
         ": keepalive",
-        'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+        'event: assistant.delta',
+        'data: {"text": "Hello"}',
+        "",
         ": heartbeat",
         ": ping",
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'event: run.completed',
+        'data: {"session_id": "s1"}',
+        "",
     ]
 
-    class MockResponse:
+    class MockEventResponse:
         status_code = 200
         headers: dict = {}
 
@@ -950,12 +980,22 @@ def test_sse_comment_lines_do_not_yield_keepalive():
             for line in sse_lines:
                 yield line
 
-    class MockStreamContext:
+    class MockEventStreamContext:
         async def __aenter__(self):
-            return MockResponse()
+            return MockEventResponse()
 
         async def __aexit__(self, *args):
             return False
+
+    class MockRunsResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"run_id": "run-1"}
 
     class MockClient:
         async def __aenter__(self):
@@ -964,8 +1004,15 @@ def test_sse_comment_lines_do_not_yield_keepalive():
         async def __aexit__(self, *args):
             return False
 
+        async def get(self, *args, **kwargs):
+            r = type("Resp", (), {"status_code": 200, "json": lambda s: {"features": {"run_events_sse": True}}})()
+            return r
+
+        async def post(self, *args, **kwargs):
+            return MockRunsResponse()
+
         def stream(self, *args, **kwargs):
-            return MockStreamContext()
+            return MockEventStreamContext()
 
     mock_client_instance = MockClient()
 
