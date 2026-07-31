@@ -295,6 +295,13 @@ final class TalkStore {
 
     func toggleMute() async {
         isMuted.toggle()
+        // Build 30: mute must actually stop captured speech from reaching
+        // VAD/ASR, not just flip a boolean that the UI reads.
+        if isMuted {
+            hermesCoordinator?.stopCapture()
+        } else {
+            hermesCoordinator?.resumeCapture()
+        }
     }
 
     /// Manually interrupt assistant speech (e.g., from a stop button).

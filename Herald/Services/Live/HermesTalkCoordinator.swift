@@ -437,6 +437,17 @@ final class HermesTalkCoordinator {
         notifyState()
     }
 
+    /// Build 30: stop audio capture without ending the session.
+    /// VAD sees silence and no samples accumulate while muted.
+    func stopCapture() {
+        capture.isMuted = true
+    }
+
+    /// Build 30: resume audio capture after unmuting.
+    func resumeCapture() {
+        capture.isMuted = false
+    }
+
     // MARK: - Barge-in
 
     private func startBargeInMonitoring() {

@@ -49,6 +49,12 @@ final class TalkAudioCapture {
     private var isRecording = false
     private(set) var currentPower: Float = -160.0  // dBFS
 
+    /// Build 30: when true, capture power is forced to the floor and buffers
+    /// are not accumulated.  The audio engine stays running so the orange
+    /// privacy dot remains (iOS requires it while the session is active), but
+    /// no speech data reaches VAD or ASR.
+    var isMuted: Bool = false
+
     private var flushTask: Task<Void, Never>?
     private var currentAccumulator: TapAccumulator?
 
@@ -221,6 +227,12 @@ final class TalkAudioCapture {
                     guard let self else { break }
                     try? await Task.sleep(for: .milliseconds(100))
                     guard self.isRecording else { continue }
+
+                    // Build 30: mute prevents speech detection and buffer
+                    // accumulation.  The audio engine stays active so iOS
+                    // keeps the orange privacy indicator, but VAD sees
+                    // silence and no samples are written to the WAV output.
+                    if self.isMuted { continue }
 
                     if self.currentPower > self.silenceThreshold {
                         self.lastSpeechTime = Date()

@@ -150,6 +150,13 @@ struct VoiceOrb: View {
             withAnimation(Design.Motion.breathe) { pulseScale = 1.1 }
         case .thinking:
             withAnimation(Design.Motion.pulse) { pulseScale = 1.05 }
+        case .listening:
+            // Build 30: the listening orb was static (fell into default).
+            // A subtle breath shows the mic is live without competing with
+            // speaking/thinking states.  Reduce Motion uses opacity pulse.
+            withAnimation(Design.Motion.breathe(reduceMotion: false)) {
+                pulseScale = 1.04
+            }
         default:
             withAnimation(Design.Motion.gentle) { pulseScale = 1.0 }
         }
