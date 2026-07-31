@@ -21,7 +21,7 @@ struct PendingAttachment: Identifiable, Sendable {
     /// The Herald API server accepts a 1 MB request body for the whole message payload,
     /// so individual attachments still need additional aggregate request-size validation.
     static let maxFileSize = 350 * 1024
-    static let maxAttachmentsPerMessage = 4
+    static let maxAttachmentsPerMessage = 10
 
     private static let supportedTextMimeTypes: Set<String> = [
         "text/plain",
