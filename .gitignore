@@ -77,3 +77,8 @@ deploy/
 
 # Local-only recovered ops docs (contain credentials). Never track.
 local-ops/
+
+# Screenshots — never track app screenshots in a public repo (PII risk)
+docs/screenshots/
+docs/social-preview.png
+docs/assets/rebrand/screenshots/ui/
