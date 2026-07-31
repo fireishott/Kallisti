@@ -338,6 +338,19 @@ struct ChatScreen: View {
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(Design.Colors.foreground)
                             .lineLimit(1)
+                    } else if modelStore.isLoading {
+                        Text("Model…")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
+                    } else {
+                        // Never render an unlabeled status capsule on iPad.
+                        // It looked like a toggle in compact split-view widths
+                        // and concealed both the failure and the way to retry.
+                        Text(modelStore.isError ? "Model unavailable" : "Model")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
                     }
 
                     contextRing(progress: contextProgress)

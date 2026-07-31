@@ -213,6 +213,7 @@ final class SessionListStore {
             persistence.currentSessionId = session.id
             let conversation = try await heraldClient.loadConversation(id: session.id)
             chatStore.conversation = conversation
+            persistence.currentSessionId = conversation.id
             if let latestUsage = conversation.latestUsage {
                 chatStore.lastTokenUsage = latestUsage
             }

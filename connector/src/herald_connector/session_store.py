@@ -127,6 +127,26 @@ def _canonical_app_id(app_uuid: str) -> str:
     return app_uuid
 
 
+def _display_app_id(hermes_id: str, sidecar: dict) -> str:
+    """Return the one client-visible UUID for a Hermes session.
+
+    A new chat starts with a UUID minted by iOS.  Hermes later creates its own
+    non-UUID session id, from which the connector can derive a canonical UUID.
+    Showing both identifiers as session rows creates duplicate chats with the
+    same content.  Prefer the originating draft alias when it exists: it is the
+    ID held by the device, works on another device when explicitly selected,
+    and still resolves to the Hermes id through the sidecar.
+    """
+    canonical = _app_uuid(hermes_id)
+    aliases = sorted(
+        key for key, value in sidecar.items()
+        if isinstance(value, dict)
+        and value.get("_alias_of") == canonical
+        and not value.get("tombstone")
+    )
+    return aliases[0] if aliases else canonical
+
+
 def _persist_hermes_mapping(app_uuid: str, hermes_id: str) -> None:
     """Record the app-uuid ↔ hermes-id mapping in the sidecar.
 
@@ -389,11 +409,13 @@ def session_list(
     try:
         for r in rows:
             hermes_id = r["id"]
-            app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+            canonical_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
 
             # Persist the reverse mapping in the sidecar for session_messages /
             # session_title lookups later.
-            _persist_hermes_mapping(app_id, hermes_id)
+            _persist_hermes_mapping(canonical_id, hermes_id)
+            sidecar = _load_sidecar()
+            app_id = _display_app_id(hermes_id, sidecar)
 
             meta = sidecar.get(app_id, {})
             if meta.get("tombstone"):
@@ -609,8 +631,10 @@ def session_search(query: str, limit: int = 20) -> list[dict]:
     sessions: list[dict] = []
     for r in rows:
         hermes_id = r["id"]
-        app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
-        _persist_hermes_mapping(app_id, hermes_id)
+        canonical_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+        _persist_hermes_mapping(canonical_id, hermes_id)
+        sidecar = _load_sidecar()
+        app_id = _display_app_id(hermes_id, sidecar)
 
         meta = sidecar.get(app_id, {})
         if meta.get("tombstone"):

@@ -296,7 +296,23 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         )
                     }
 
-                    self.currentConversation = self.mapConversation(response.conversation)
+                    // A pending POST is an acknowledgement, not a refreshed
+                    // conversation.  The connector intentionally returns just
+                    // the accepted user message here; replacing the open
+                    // conversation with that one-row payload discarded all
+                    // earlier turns and the live assistant placeholder.  The
+                    // subsequent UI merge then had to guess identity from text,
+                    // which is unsafe for repeated content and tool/reasoning
+                    // turns.  Keep the selected conversation authoritative until
+                    // an explicit GET /sessions/{id}/conversation reconciles it.
+                    let acceptedConversation = self.mapConversation(response.conversation)
+                    if self.currentConversation == nil {
+                        self.currentConversation = acceptedConversation
+                    } else if self.currentConversation?.id != acceptedConversation.id {
+                        Self.logger.error(
+                            "Ignoring POST acknowledgement for a different conversation (selected=\(self.currentConversation?.id.uuidString ?? "nil"), ack=\(acceptedConversation.id.uuidString))"
+                        )
+                    }
                     self.connectionStatus = .connected
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
@@ -369,7 +385,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     continuation.yield(.messageSent(jobID: jobId))
 
-                    let conversationId = self.currentConversation?.id ?? UUID()
+                    // Bind this stream to the conversation captured by the
+                    // request body, never whatever another device/load changed
+                    // `currentConversation` to while the POST was in flight.
+                    let conversationId = body.conversationId ?? acceptedConversation.id
                     let coordinator = JobStreamCoordinator(
                         jobId: jobId,
                         conversationId: conversationId,

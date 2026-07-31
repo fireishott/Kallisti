@@ -120,7 +120,7 @@ final class ChatStore {
 
     var heraldClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
-    let persistence: any AppPersistenceStoreProtocol
+    var persistence: any AppPersistenceStoreProtocol
 
     /// TTS service for speaking responses during/after streaming.
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
@@ -164,6 +164,17 @@ final class ChatStore {
         }
         // After clearConversation(), bypass the local cache and force a
         // server fetch so the UI never shows the stale archived conversation.
+        // `conversations/current` is connector-global in direct-connector
+        // deployments.  It cannot identify which thread this physical device
+        // had selected.  A persisted selection is therefore always loaded by
+        // its explicit ID, even when a local cache is present.
+        if let selectedID = persistence.currentSessionId {
+            needsServerRefresh = false
+            await loadConversation(id: selectedID)
+            clearNotificationsForCurrentConversation()
+            return
+        }
+
         guard conversation == nil || needsServerRefresh else { return }
         needsServerRefresh = false
         await loadConversation()
@@ -195,6 +206,25 @@ final class ChatStore {
         clearNotificationsForCurrentConversation()
     }
 
+    private func loadConversation(id: UUID) async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let refreshed = try await heraldClient.loadConversation(id: id)
+            conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+            persistence.currentSessionId = conversation?.id
+            if let conversation {
+                var cacheCopy = conversation
+                cacheCopy.contextPercent = nil
+                cacheCopy.latestUsage = nil
+                persistence.saveConversationCache(cacheCopy)
+                onConversationChanged?()
+            }
+        } catch {
+            Self.logger.warning("Failed to load selected conversation \(id): \(error.localizedDescription)")
+        }
+    }
+
     func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty || !attachments.isEmpty else { return }
@@ -214,6 +244,15 @@ final class ChatStore {
         )
         if conversation == nil {
             conversation = Conversation(title: "New Chat")
+        }
+        // Establish a stable, device-local conversation identity before the
+        // first POST. Without this the connector falls back to its process-wide
+        // singleton and iPhone/iPad messages land in whichever chat spoke last.
+        if let conversation {
+            persistence.currentSessionId = conversation.id
+            if heraldClient.currentConversation?.id != conversation.id {
+                _ = try? await heraldClient.loadConversation(id: conversation.id)
+            }
         }
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp

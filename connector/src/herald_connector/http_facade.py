@@ -394,17 +394,18 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # Record the canonical mapping: app_uuid → hermes_id
                             canonical_app_id = _app_uuid(hermes_sid)
                             _persist_hermes_mapping(canonical_app_id, hermes_sid)
-                            # A compose UUID is an alias, not another session.
-                            # Rebind the in-flight client to the canonical UUID
-                            # once Hermes has materialized the actual session.
+                            # A compose UUID is the app's durable conversation
+                            # identity.  Keep it on the in-flight job as well:
+                            # changing `conversationId` mid-stream leaves iOS
+                            # rendering a placeholder under the original UUID
+                            # while polling/reload follows the new UUID.  That
+                            # split is what produced replies in unrelated chats.
+                            # The sidecar mapping makes either id resolve to the
+                            # same Hermes session without exposing this internal
+                            # canonicalization to the client.
                             response_conv_id = job.get("conversationId")
                             if response_conv_id and response_conv_id != canonical_app_id:
                                 _persist_hermes_mapping(response_conv_id, hermes_sid)
-                                _publish({
-                                    "type": "conversation_rebind",
-                                    "data": {"from": response_conv_id, "to": canonical_app_id},
-                                })
-                            job["conversationId"] = canonical_app_id
 
                             # B38 P1-1: auto-generate a title if the session
                             # has none.  Fire-and-forget — don't delay the
@@ -417,6 +418,8 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # app's conversation titleless.
                             from .session_store import get_session_meta, set_session_meta
                             title_ids = [canonical_app_id]
+                            if response_conv_id:
+                                title_ids.append(response_conv_id)
                             existing_title = next(
                                 (t for t in (
                                     get_session_meta(i).get("title") for i in title_ids
