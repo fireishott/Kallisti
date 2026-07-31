@@ -80,10 +80,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let deliveryStatus: String?
         let jobId: UUID?
         let attachments: [RelayAttachment]?
+        let reasoning: String?
 
         enum CodingKeys: String, CodingKey {
             case id, role, text, timestamp
-            case clientMessageId, deliveryStatus, jobId, attachments
+            case clientMessageId, deliveryStatus, jobId, attachments, reasoning
         }
 
         init(from decoder: Decoder) throws {
@@ -100,6 +101,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
             jobId = try container.decodeIfPresent(UUID.self, forKey: .jobId)
             attachments = try container.decodeIfPresent([RelayAttachment].self, forKey: .attachments)
+            reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
         }
     }
 
@@ -294,7 +296,23 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         )
                     }
 
-                    self.currentConversation = self.mapConversation(response.conversation)
+                    // A pending POST is an acknowledgement, not a refreshed
+                    // conversation.  The connector intentionally returns just
+                    // the accepted user message here; replacing the open
+                    // conversation with that one-row payload discarded all
+                    // earlier turns and the live assistant placeholder.  The
+                    // subsequent UI merge then had to guess identity from text,
+                    // which is unsafe for repeated content and tool/reasoning
+                    // turns.  Keep the selected conversation authoritative until
+                    // an explicit GET /sessions/{id}/conversation reconciles it.
+                    let acceptedConversation = self.mapConversation(response.conversation)
+                    if self.currentConversation == nil {
+                        self.currentConversation = acceptedConversation
+                    } else if self.currentConversation?.id != acceptedConversation.id {
+                        Self.logger.error(
+                            "Ignoring POST acknowledgement for a different conversation (selected=\(self.currentConversation?.id.uuidString ?? "nil"), ack=\(acceptedConversation.id.uuidString))"
+                        )
+                    }
                     self.connectionStatus = .connected
 
                     Self.logger.info("POST /messages replyState: \(response.replyState)")
@@ -367,7 +385,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     continuation.yield(.messageSent(jobID: jobId))
 
-                    let conversationId = self.currentConversation?.id ?? UUID()
+                    // Bind this stream to the conversation captured by the
+                    // request body, never whatever another device/load changed
+                    // `currentConversation` to while the POST was in flight.
+                    let conversationId = body.conversationId ?? acceptedConversation.id
                     let coordinator = JobStreamCoordinator(
                         jobId: jobId,
                         conversationId: conversationId,
@@ -603,7 +624,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             timestamp: relayMessage.timestamp,
             jobID: relayMessage.jobId,
             status: mapDeliveryStatus(relayMessage.deliveryStatus, sender: relayMessage.role),
-            attachments: attachments
+            attachments: attachments,
+            reasoning: relayMessage.reasoning ?? ""
         )
     }
 
@@ -697,7 +719,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
 
-        return Message(sender: .herald, content: "", jobID: jobId, status: .delivered)
+        // Build 16: never produce a blank delivered bubble. When all sources
+        // (SSE terminal text, done payload message, conversation reload) fail
+        // to produce a non-empty assistant response, surface an explicit
+        // failure so the user sees a retryable error instead of a blank reply
+        // with a delivered checkmark and haptic.
+        return Message(sender: .system, content: "Herald completed but returned no message.", jobID: jobId, status: .failed)
     }
 
     private func validateRequestBodySize(for body: MessageCreateBody) throws {

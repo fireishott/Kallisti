@@ -52,13 +52,25 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _has_reasoning_column(conn: sqlite3.Connection) -> bool:
+    """True if messages.reasoning_content exists on this state.db."""
+    try:
+        cols = conn.execute("PRAGMA table_info(messages)").fetchall()
+        return any(c["name"] == "reasoning_content" for c in cols)
+    except sqlite3.Error:
+        return False
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 # UUIDv5 namespace for deriving app-facing UUIDs from Hermes session ids.
 # Using DNS namespace means the derivation is deterministic across all
 # compliant UUIDv5 implementations — the app can compute the same mapping
 # independently if desired.
-_APP_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # NAMESPACE_URL
+_APP_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # == uuid.NAMESPACE_DNS
+# ^ NAMESPACE_DNS, matching the paragraph above. It was mislabelled "NAMESPACE_URL"
+# for several releases; any tool that reconciles app ids must use DNS (…b810…),
+# not URL (…b811…), or it derives a different canonical id for every session.
 
 # B40: title generation runs in a throwaway ``title-<uuid4>`` session (B39 T2).
 # Those turns go through the same message handler, so Hermes records them with
@@ -98,16 +110,61 @@ def _resolve_hermes_id(app_uuid: str) -> str | None:
     return meta.get("_hermes_id") if meta else None
 
 
+def _canonical_app_id(app_uuid: str) -> str:
+    """Return the listable UUID for an app id, following draft aliases.
+
+    ``POST /v1/sessions`` creates a UUID before Hermes has created its own
+    session.  Once the turn lands, that UUID is only an alias for the stable
+    UUIDv5 derived from Hermes' id; it must never become a second row.
+    """
+    meta = get_session_meta(app_uuid) or {}
+    alias = meta.get("_alias_of")
+    if alias and alias != app_uuid:
+        return str(alias)
+    hermes_id = meta.get("_hermes_id")
+    if hermes_id:
+        return _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+    return app_uuid
+
+
+def _display_app_id(hermes_id: str, sidecar: dict) -> str:
+    """Return the one client-visible UUID for a Hermes session.
+
+    A new chat starts with a UUID minted by iOS.  Hermes later creates its own
+    non-UUID session id, from which the connector can derive a canonical UUID.
+    Showing both identifiers as session rows creates duplicate chats with the
+    same content.  Prefer the originating draft alias when it exists: it is the
+    ID held by the device, works on another device when explicitly selected,
+    and still resolves to the Hermes id through the sidecar.
+    """
+    canonical = _app_uuid(hermes_id)
+    aliases = sorted(
+        key for key, value in sidecar.items()
+        if isinstance(value, dict)
+        and value.get("_alias_of") == canonical
+        and not value.get("tombstone")
+    )
+    return aliases[0] if aliases else canonical
+
+
 def _persist_hermes_mapping(app_uuid: str, hermes_id: str) -> None:
     """Record the app-uuid ↔ hermes-id mapping in the sidecar.
 
     Idempotent — if the mapping already exists it is re-written to the same
     value.  The app_uuid is deterministic so the sidecar entry is stable.
     """
-    existing = _resolve_hermes_id(app_uuid)
-    if existing == hermes_id:
-        return  # Already recorded, avoid unnecessary writes.
-    set_session_meta(app_uuid, _hermes_id=hermes_id)
+    canonical = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+    if app_uuid != canonical:
+        # Draft ids remain resolvable for an in-flight client, but aliases are
+        # deliberately tombstoned so session_list cannot emit duplicate rows.
+        set_session_meta(
+            app_uuid,
+            _hermes_id=hermes_id,
+            _alias_of=canonical,
+            tombstone=True,
+        )
+    if _resolve_hermes_id(canonical) != hermes_id:
+        set_session_meta(canonical, _hermes_id=hermes_id)
 
 
 def _deterministic_uuid(prefix: str, value: Any) -> str:
@@ -157,10 +214,87 @@ def set_session_meta(session_id: str, **kwargs) -> None:
     _save_sidecar(sidecar)
 
 
+# ── Message → job correlation ──────────────────────────────────────────────
+#
+# Hermes writes assistant messages to state.db without a jobId column, so a
+# conversation refresh returns rows with ``jobId: None``.  The iOS merge then
+# can't match persisted assistant rows to the live streaming placeholder by
+# identity, and falls through to content heuristics that are unsafe for
+# partial history, repeated phrases, tool boundaries, and reasoning text.
+#
+# This map records (app_message_uuid → job_id) when a job completes, and
+# ``_message_to_dict`` consults it.  It is process-local (dies with the
+# connector); the iOS client only needs it for the first conversation refresh
+# after a job completes — after that the client has its own correlation.
+_message_job_map: dict[str, str] = {}
+# TTL guard: entries older than this are dropped so a long-running connector
+# doesn't grow unbounded.  The iOS polling cadence is ~30s max; 120s is plenty.
+_MESSAGE_JOB_MAP_TTL = 120.0
+_message_job_map_timestamps: dict[str, float] = {}
+
+
+def set_message_job_id(message_id: str, job_id: str) -> None:
+    """Record that *message_id* was produced by *job_id*."""
+    _message_job_map[message_id] = job_id
+    import time as _time
+    _message_job_map_timestamps[message_id] = _time.time()
+
+
+def get_message_job_id(message_id: str) -> str | None:
+    """Return the job ID for *message_id*, or None."""
+    now = __import__("time").time()
+    # Prune expired entries on read
+    stale = [
+        mid for mid, ts in _message_job_map_timestamps.items()
+        if now - ts > _MESSAGE_JOB_MAP_TTL
+    ]
+    for mid in stale:
+        _message_job_map.pop(mid, None)
+        _message_job_map_timestamps.pop(mid, None)
+    return _message_job_map.get(message_id)
+
+
 # ── Message history ────────────────────────────────────────────────────────
 
+# Historical reasoning is returned so the collapsed "Thought process" block
+# survives a conversation refresh instead of vanishing the moment the stream
+# ends.  It is not free: the app re-fetches the *whole* conversation on a ~30 s
+# timer, `limit` is 200, and long-running ops sessions carry up to 237 KB of
+# chain-of-thought (max single row: 87,771 chars; mean: 553).  Typical phone
+# chats are 3-11 messages / 1-3 KB and are unaffected by these caps — they exist
+# purely so opening one of the big ops sessions on cellular cannot melt the poll.
+_REASONING_MAX_CHARS = 4000
+_REASONING_BUDGET_CHARS = 64_000
+_REASONING_TRUNCATED = "\n\n… (reasoning truncated)"
+
+
+def _apply_reasoning_budget(messages: list[dict]) -> list[dict]:
+    """Cap per-message reasoning, then spend a whole-conversation budget.
+
+    Walks newest → oldest so the most recent turns — the ones a user actually
+    expands — keep their chain-of-thought, and older turns give theirs up once
+    the budget is exhausted.  Dropping to "" is what the UI already expects for
+    "this message has no reasoning"; it renders no block at all.
+
+    Mutates *messages* in place and returns it.
+    """
+    spent = 0
+    for msg in reversed(messages):
+        text = msg.get("reasoning") or ""
+        if not text:
+            continue
+        if len(text) > _REASONING_MAX_CHARS:
+            text = text[:_REASONING_MAX_CHARS].rstrip() + _REASONING_TRUNCATED
+        if spent + len(text) > _REASONING_BUDGET_CHARS:
+            msg["reasoning"] = ""
+            continue
+        spent += len(text)
+        msg["reasoning"] = text
+    return messages
+
+
 def session_messages(
-    session_id: str, limit: int = 200
+    session_id: str, limit: int = 200, include_reasoning: bool = True
 ) -> list[dict]:
     """Return messages for a session in chronological order.
 
@@ -169,13 +303,23 @@ def session_messages(
 
     *session_id* may be an app-facing UUID; it is resolved to the Hermes
     session id before querying state.db.
+
+    *include_reasoning* attaches stored chain-of-thought (subject to
+    ``_apply_reasoning_budget``).  Callers that only read role/text — the title
+    derivation path — pass False and skip the transfer entirely.
     """
+    session_id = _canonical_app_id(session_id)
     hermes_id = _resolve_hermes_id(session_id) or session_id
     conn = _connect()
     try:
+        # `reasoning_content` is present on current Hermes schemas but selecting
+        # it unconditionally makes an older state.db raise OperationalError and
+        # take *all* conversation loading down with it.  Probe, don't assume.
+        want_reasoning = include_reasoning and _has_reasoning_column(conn)
+        reasoning_select = "reasoning_content" if want_reasoning else "'' AS reasoning_content"
         rows = conn.execute(
-            """
-            SELECT id, role, content, timestamp
+            f"""
+            SELECT id, role, content, {reasoning_select}, timestamp
             FROM messages
             WHERE session_id = ?
               AND role IN ('user', 'assistant')
@@ -201,16 +345,22 @@ def session_messages(
     finally:
         conn.close()
 
-    return [_message_to_dict(r) for r in rows]
+    messages = [_message_to_dict(r, include_reasoning=want_reasoning) for r in rows]
+    return _apply_reasoning_budget(messages) if want_reasoning else messages
 
 
-def _message_to_dict(row: sqlite3.Row) -> dict:
+def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
     role = "herald" if row["role"] == "assistant" else row["role"]
 
     # Message ids are ints; the iOS app declares id: UUID.
     msg_id = _coerce_uuid(row["id"])
     if msg_id is None:
         msg_id = _deterministic_uuid("msg", row["id"])
+
+    # Consult the job map — if this message was produced by a known job,
+    # return its jobId so the iOS client can correlate assistant rows
+    # with the live streaming placeholder by identity, not content heuristics.
+    resolved_job_id = get_message_job_id(msg_id)
 
     return {
         "id": msg_id,
@@ -219,8 +369,9 @@ def _message_to_dict(row: sqlite3.Row) -> dict:
         "text": row["content"],
         "timestamp": _epoch_to_iso(row["timestamp"]),
         "deliveryStatus": "delivered",
-        "jobId": None,
+        "jobId": resolved_job_id,
         "attachments": None,
+        "reasoning": (row["reasoning_content"] or "") if include_reasoning else "",
     }
 
 
@@ -303,11 +454,13 @@ def session_list(
     try:
         for r in rows:
             hermes_id = r["id"]
-            app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+            canonical_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
 
             # Persist the reverse mapping in the sidecar for session_messages /
             # session_title lookups later.
-            _persist_hermes_mapping(app_id, hermes_id)
+            _persist_hermes_mapping(canonical_id, hermes_id)
+            sidecar = _load_sidecar()
+            app_id = _display_app_id(hermes_id, sidecar)
 
             meta = sidecar.get(app_id, {})
             if meta.get("tombstone"):
@@ -351,7 +504,7 @@ def session_list(
     # Count all tombstones in the sidecar (across all keys, not just this page).
     total_tombstones = sum(
         1 for v in sidecar.values()
-        if isinstance(v, dict) and v.get("tombstone")
+        if isinstance(v, dict) and v.get("tombstone") and not v.get("_alias_of")
     )
     total = max(0, db_total - total_tombstones)
     return sessions, total
@@ -370,6 +523,7 @@ def session_title(session_id: str) -> str | None:
     ``"title": null`` on GET /v1/sessions/{id}/conversation and left the
     thread showing a placeholder forever.
     """
+    session_id = _canonical_app_id(session_id)
     meta = get_session_meta(session_id)
     if meta.get("title"):
         return meta["title"]
@@ -522,8 +676,10 @@ def session_search(query: str, limit: int = 20) -> list[dict]:
     sessions: list[dict] = []
     for r in rows:
         hermes_id = r["id"]
-        app_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
-        _persist_hermes_mapping(app_id, hermes_id)
+        canonical_id = _coerce_uuid(hermes_id) or _app_uuid(hermes_id)
+        _persist_hermes_mapping(canonical_id, hermes_id)
+        sidecar = _load_sidecar()
+        app_id = _display_app_id(hermes_id, sidecar)
 
         meta = sidecar.get(app_id, {})
         if meta.get("tombstone"):

@@ -120,7 +120,7 @@ final class SessionListStore {
             currentOffset = response.sessions.count  // Advance by actual count — a short page means the list is exhausted
             totalCount = response.total
             // Merge with existing sessions to preserve locally-cached data across refreshes
-            mergeSessions(response.sessions)
+            mergeSessions(response.sessions, firstPage: true)
             lastLoadAt = Date()
             saveCachedSessions()
         } catch {
@@ -213,6 +213,7 @@ final class SessionListStore {
             persistence.currentSessionId = session.id
             let conversation = try await heraldClient.loadConversation(id: session.id)
             chatStore.conversation = conversation
+            persistence.currentSessionId = conversation.id
             if let latestUsage = conversation.latestUsage {
                 chatStore.lastTokenUsage = latestUsage
             }
@@ -394,10 +395,31 @@ final class SessionListStore {
 
     /// Merges incoming sessions with the existing list, preserving locally-cached
     /// data across refresh cycles. Sessions are deduplicated by ID.
-    private func mergeSessions(_ sessions: [SessionSummary]) {
-        let existingIDs = Set(pinnedSessions.map(\.id) + recentSessions.map(\.id) + archivedSessions.map(\.id))
-        let newSessions = sessions.filter { !existingIDs.contains($0.id) }
-        splitSessions(pinnedSessions + newSessions + recentSessions + archivedSessions)
+    private func mergeSessions(_ sessions: [SessionSummary], firstPage: Bool = false) {
+        let existing = pinnedSessions + recentSessions + archivedSessions
+        let incomingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        var merged = existing.map { local in
+            guard let server = incomingByID[local.id] else { return local }
+            // The server is authoritative for live metadata. Pin/archive remain
+            // local until their mutations have been acknowledged by a refresh.
+            var value = server
+            value.isPinned = local.isPinned
+            value.isArchived = local.isArchived
+            return value
+        }
+        let existingIDs = Set(existing.map(\.id))
+        merged += sessions.filter { !existingIDs.contains($0.id) }
+        if firstPage {
+            // A refresh owns the window it returned.  Remove stale local rows
+            // inside that window, but retain older rows that belong to later
+            // pages and in-memory drafts which have not sent a turn yet.
+            let cutoff = sessions.map(\.lastActivity).min() ?? .distantFuture
+            let incomingIDs = Set(sessions.map(\.id))
+            merged = merged.filter { row in
+                incomingIDs.contains(row.id) || row.lastActivity < cutoff
+            }
+        }
+        splitSessions(merged)
     }
 
     private func splitSessions(_ sessions: [SessionSummary]) {

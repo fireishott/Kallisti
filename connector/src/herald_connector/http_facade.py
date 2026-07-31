@@ -104,6 +104,7 @@ JobEventsProvider = Callable[[str], Coroutine[Any, Any, AsyncIterator[dict]]]
 SessionConversationProvider = Callable[[str], Coroutine[Any, Any, dict]]
 CurrentConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
 ClearConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
+PushRegisterProvider = Callable[[dict], Coroutine[Any, Any, dict]]
 
 
 class FacadeContext:
@@ -131,6 +132,7 @@ class FacadeContext:
         self.session_conversation: SessionConversationProvider | None = None
         self.current_conversation: CurrentConversationProvider | None = None
         self.clear_conversation: ClearConversationProvider | None = None
+        self.push_register: PushRegisterProvider | None = None
         self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
 
 
@@ -267,13 +269,47 @@ def _coerce_uuid(value: Any) -> str | None:
         return None
 
 
+def _relay_attachments(attachments: list | None) -> list | None:
+    """Shape connector attachments for LiveHeraldClient.RelayAttachment.
+
+    The extractor emits {type, filename, mimeType, data} (client.py:122-127) but the
+    iOS decoder declares `thumbnailData` (LiveHeraldClient.swift:66-70) and drops any
+    other key.  mapMessage then sets thumbnailBase64 = nil (LiveHeraldClient.swift:612)
+    and MessageAttachmentsView falls through to its placeholder (:106,:110,:138).
+    There is no fetch fallback — the messages/{id}/attachments/{index} endpoint that
+    Message.swift:12-17 describes is not implemented anywhere in this facade.
+
+    So emit BOTH keys: `thumbnailData` is what actually renders, `data` keeps any
+    relay-schema consumer working.  Do not "clean this up" by dropping one of them
+    without checking both decoders first.
+    """
+    if not attachments:
+        return None
+    shaped = []
+    for att in attachments:
+        payload = att.get("data") or att.get("thumbnailData")
+        if not payload:
+            continue
+        shaped.append({
+            "type": att.get("type", "file"),
+            "filename": att.get("filename", "attachment"),
+            "mimeType": att.get("mimeType", "application/octet-stream"),
+            "thumbnailData": payload,
+            "data": payload,
+        })
+    return shaped or None
+
+
 def _relay_message(role: str, text: str, *, client_message_id: Any = None,
-                   job_id: Any = None) -> dict:
+                   job_id: Any = None, attachments: list | None = None) -> dict:
     """Build one RelayMessage (LiveHeraldClient.swift:39-48).
 
     id / role / text / timestamp are non-optional on the app side.  `role` accepts
     "user", "herald", "system" — and "assistant"/"hermes" are aliased to .herald
     by MessageSender.init(from:) (Herald/Models/MessageSender.swift:13).
+
+    `attachments` was hardcoded None here, which meant the /v1/runs path could never
+    deliver an inline image no matter what the agent emitted.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -283,7 +319,7 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
         "timestamp": _now_iso(),
         "deliveryStatus": "delivered",
         "jobId": _coerce_uuid(job_id),
-        "attachments": None,
+        "attachments": _relay_attachments(attachments),
     }
 
 
@@ -307,12 +343,19 @@ def _prune_http_jobs() -> None:
 async def _run_http_job(job_id: str, handler, text, history, session_id,
                         attachments, reasoning_effort) -> None:
     """Drain the connector's message generator into the job record."""
+    from .reasoning_sanitizer import strip_reasoning
     job = _http_jobs[job_id]
     accumulated = ""
+    accumulated_reasoning = ""
     # Bounds the state.db lookup that resolves which session this turn landed
     # in, so an identical message sent days ago can never be matched instead.
     # A small skew allowance covers clock jitter between writer and reader.
     job_started_at = time.time() - 5.0
+
+    # A turn is only successful when the connector said so.  Tracked
+    # explicitly because "the generator ended" and "the turn completed" are
+    # different facts, and conflating them reported dead turns as delivered.
+    ended_reconnecting = False
 
     def _publish(event: dict) -> None:
         job["events"].append(event)
@@ -342,6 +385,11 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     data = event.get("data", {}) or {}
                     if etype == "text_delta":
                         accumulated += data.get("delta", "")
+                    if etype == "reasoning_delta":
+                        accumulated_reasoning += data.get("delta", "")
+                    # `reconnecting` means the transport dropped mid-turn, not
+                    # that the turn finished.  Any later event supersedes it.
+                    ended_reconnecting = (etype == "reconnecting")
                     if etype == "done":
                         # The connector's own terminal event (client.py:1695-1717) carries
                         # the final text and, on failure, the error + category/action.
@@ -380,13 +428,16 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # Record the canonical mapping: app_uuid → hermes_id
                             canonical_app_id = _app_uuid(hermes_sid)
                             _persist_hermes_mapping(canonical_app_id, hermes_sid)
-                            # B38 P0-2: record the mapping under BOTH the app's id
-                            # and the canonical id so future lookups resolve either
-                            # way.  Do NOT mutate job["conversationId"] — the app
-                            # already received it in the POST response, and changing
-                            # it later causes replies to land in the wrong thread.
+                            # A compose UUID is the app's durable conversation
+                            # identity.  Keep it on the in-flight job as well:
+                            # changing `conversationId` mid-stream leaves iOS
+                            # rendering a placeholder under the original UUID
+                            # while polling/reload follows the new UUID.  That
+                            # split is what produced replies in unrelated chats.
+                            # The sidecar mapping makes either id resolve to the
+                            # same Hermes session without exposing this internal
+                            # canonicalization to the client.
                             response_conv_id = job.get("conversationId")
-                            _persist_hermes_mapping(canonical_app_id, hermes_sid)
                             if response_conv_id and response_conv_id != canonical_app_id:
                                 _persist_hermes_mapping(response_conv_id, hermes_sid)
 
@@ -401,7 +452,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # app's conversation titleless.
                             from .session_store import get_session_meta, set_session_meta
                             title_ids = [canonical_app_id]
-                            if response_conv_id and response_conv_id != canonical_app_id:
+                            if response_conv_id:
                                 title_ids.append(response_conv_id)
                             existing_title = next(
                                 (t for t in (
@@ -417,11 +468,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                                     if not get_session_meta(i).get("title"):
                                         set_session_meta(i, title=existing_title)
                             else:
-                                asyncio.create_task(
-                                    _auto_title_and_persist(
-                                        handler, text, hermes_sid, title_ids
-                                    )
-                                )
+                                # LLM title runs used the full tool-capable agent
+                                # and raced the app's own generator.  Keep title
+                                # generation deterministic, immediate and side-effect free.
+                                cleaned = text.strip().split("\n", 1)[0].strip()
+                                derived = cleaned[:47].rstrip() + ("..." if len(cleaned) > 50 else "")
+                                derived = derived or "New Chat"
+                                for i in title_ids:
+                                    set_session_meta(i, title=derived)
                         continue          # re-emitted with jobId in the finally block
                     _publish({"type": etype, "data": data})
             finally:
@@ -441,15 +495,83 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         job["error"] = str(exc)
     finally:
         if job["status"] == "running":
-            job["status"] = "completed"
+            # The generator ended without the connector's own `done` event.
+            # That is never a success: promoting it to "completed" is what put
+            # a delivered check, a green dot and a completion haptic on turns
+            # that had been cut off — sometimes with no text at all.
+            job["status"] = "failed"
+            job["errorAction"] = "retry"
+            if ended_reconnecting:
+                job["error"] = "The connection dropped before Herald finished."
+                job["errorCategory"] = "upstream_interrupted"
+            elif accumulated.strip():
+                job["error"] = "Herald stopped before finishing this turn."
+                job["errorCategory"] = "upstream_interrupted"
+            else:
+                job["error"] = "Herald ended the turn without a reply."
+                job["errorCategory"] = "empty_response"
+            logger.warning(
+                "Job %s ended without a terminal event (%s); reporting %s",
+                job_id,
+                "after reconnecting" if ended_reconnecting else "generator exhausted",
+                job["errorCategory"],
+            )
         if job["status"] == "completed":
-            job["message"] = _relay_message("herald", accumulated, job_id=job_id)
+            # Strip inline <think>...</think> blocks that may have accumulated
+            # from text_delta events on models without separate reasoning_delta.
+            accumulated = strip_reasoning(accumulated).strip()
+            # MEDIA: tag extraction.  This lived only on the WebSocket relay job path
+            # (client.py:1301, _handle_job_complete).  Build 16 made /v1/runs the default
+            # transport, so from B16 to B17 a MEDIA: tag was never parsed at all and the
+            # agent's file paths rendered as dead text.  Same parser, same contract.
+            from .client import _extract_media_from_response
+            media_attachments, accumulated = _extract_media_from_response(accumulated)
+            if media_attachments:
+                logger.info(
+                    "Job %s: extracted %d inline attachment(s) from MEDIA: tags",
+                    job_id, len(media_attachments),
+                )
+            job["message"] = _relay_message(
+                "herald", accumulated, job_id=job_id,
+                attachments=media_attachments or None,
+            )
+            # Tag the Hermes-written assistant messages with this job ID so
+            # GET /v1/sessions/{id}/conversation returns jobId on each row.
+            # Without this the iOS merge falls through to unsafe content
+            # heuristics — the same text appearing in multiple turns, tool
+            # boundaries splitting one reply across rows, etc.
+            if hermes_sid:
+                try:
+                    from .session_store import (
+                        _connect as _ss_connect,
+                        _deterministic_uuid,
+                        set_message_job_id,
+                    )
+                    ss_conn = _ss_connect()
+                    try:
+                        rows = ss_conn.execute(
+                            "SELECT id FROM messages "
+                            "WHERE session_id = ? AND role = 'assistant' "
+                            "  AND timestamp >= ? AND active = 1",
+                            (hermes_sid, job_started_at),
+                        ).fetchall()
+                        for row in rows:
+                            app_msg_id = _deterministic_uuid("msg", row["id"])
+                            set_message_job_id(app_msg_id, job_id)
+                    finally:
+                        ss_conn.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to record message→job mapping for job %s", job_id,
+                        exc_info=True,
+                    )
         terminal = {
             "type": "done",
             "data": {
                 "jobId": job_id,
                 "status": job["status"],
                 "text": accumulated,
+                "reasoning": accumulated_reasoning if accumulated_reasoning else None,
                 "error": job.get("error"),
                 "errorCategory": job.get("errorCategory"),
                 "errorAction": job.get("errorAction"),
@@ -1006,15 +1128,16 @@ async def connector_events(request: Request) -> StreamingResponse:
     """SSE stream of connector health events."""
     import asyncio as _asyncio
     async def stream():
-        yield "event: connected\ndata: {}\n\n"
-        while True:
-            try:
+        try:
+            yield "event: connected\ndata: {}\n\n"
+            while True:
                 await _asyncio.sleep(30)
                 if await request.is_disconnected():
                     break
                 yield "event: health_check\ndata: {\"status\": \"online\"}\n\n"
-            except Exception:
-                break
+        except _asyncio.CancelledError:
+            yield ": bye\n\n"
+            raise
     return StreamingResponse(stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
@@ -1048,11 +1171,33 @@ async def get_inbox(request: Request) -> JSONResponse:
 
 
 async def push_register(request: Request) -> JSONResponse:
-    """Register for push notifications."""
+    """Persist the current device's APNs token for direct delivery."""
     await require_auth(request)
-    body = await request.json()
-    logger.info("Push registration: %s", body.get("deviceToken", "?")[:16])
-    return JSONResponse({"registered": True})
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    # ``apnsToken`` is the current iOS contract. Accept the old key only for
+    # already-released clients, and never log the token or any identifying part
+    # of it.
+    token = str(body.get("apnsToken") or body.get("deviceToken") or "").strip()
+    environment = str(body.get("pushEnvironment") or "production").strip().lower()
+    if not token:
+        raise HTTPException(status_code=400, detail="apnsToken is required")
+    if environment not in {"production", "development"}:
+        raise HTTPException(status_code=400, detail="pushEnvironment must be production or development")
+
+    ctx = get_context()
+    if ctx.push_register is None:
+        raise HTTPException(status_code=503, detail="Push registration is unavailable")
+    result = await ctx.push_register({"token": token, "environment": environment})
+    if result.get("registered") is not True:
+        raise HTTPException(status_code=503, detail="Push registration was not accepted")
+    logger.info("Push registration accepted (environment=%s)", environment)
+    return JSONResponse({"registered": True, "environment": environment})
 
 
 async def host_current(request: Request) -> JSONResponse:
@@ -1251,6 +1396,9 @@ async def job_events(request: Request) -> StreamingResponse:
                         return
                     yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
                     seq += 1
+            except asyncio.CancelledError:
+                yield ": bye\n\n"
+                raise
             finally:
                 if queue in job["subscribers"]:
                     job["subscribers"].remove(queue)
@@ -1420,7 +1568,8 @@ async def session_generate_title(request: Request) -> JSONResponse:
 
     title = None
     try:
-        msgs = session_messages(session_id, limit=5)
+        # Title derivation reads role/text only — never ship reasoning here.
+        msgs = session_messages(session_id, limit=5, include_reasoning=False)
         for m in msgs:
             if m.get("role") == "user" and m.get("text"):
                 user_text = m["text"].strip()
@@ -1523,7 +1672,9 @@ async def create_session(request: Request) -> JSONResponse:
         set_session_meta(session_id, title=title)
     return JSONResponse({"session": {
         "id": session_id,
-        "title": title,
+        # This is an optimistic response only; placeholders still must not be
+        # written to the sidecar where they shadow a derived title.
+        "title": title or "New Chat",
         "previewText": "",
         "updatedAt": _now_iso(),
         "source": "api_server",

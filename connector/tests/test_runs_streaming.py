@@ -17,6 +17,22 @@ from herald_connector.herald_api_executor import HeraldAPIExecutor, StreamEvent
 class TestRunsReasoningAvailableMapsToReasoningDelta:
     """D3: /v1/runs reasoning.available → StreamEvent(type='reasoning_delta')."""
 
+    def test_runs_payload_carries_session_id(self):
+        """A continued Herald turn must bind the existing Hermes transcript."""
+        payload = HeraldAPIExecutor._runs_request_payload(
+            latest_user_message="continue the existing chat",
+            session_id="run-existing-session",
+        )
+        assert payload["session_id"] == "run-existing-session"
+        assert payload["input"] == "continue the existing chat"
+
+    def test_new_runs_payload_does_not_invent_a_session_id(self):
+        payload = HeraldAPIExecutor._runs_request_payload(
+            latest_user_message="first turn",
+            session_id=None,
+        )
+        assert "session_id" not in payload
+
     @pytest.mark.asyncio
     async def test_reasoning_available_yields_reasoning_delta(self):
         """reasoning.available event with text → reasoning_delta StreamEvent."""
@@ -45,8 +61,13 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
         assert reasoning_events[0].data == "Let me think about this..."
 
     @pytest.mark.asyncio
-    async def test_tool_started_maps_to_tool_activity(self):
-        """tool.started event → StreamEvent(type='tool_activity')."""
+    async def test_tool_started_maps_to_tool_started(self):
+        """tool.started event → StreamEvent(type='tool_started') with a correlation payload.
+
+        babdfc6 replaced the untyped 'tool_activity' event with a
+        'tool_started'/'tool_completed' pair carrying a toolCallId so the
+        client can pair a completion with the call that opened it.
+        """
         executor = HeraldAPIExecutor(
             api_server_url="http://localhost:8642",
             api_server_key="test-key",
@@ -54,7 +75,7 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
 
         sse_lines = [
             'event: tool.started',
-            'data: {"tool": "web_search", "preview": "Searching..."}',
+            'data: {"tool": "web_search", "toolCallId": "call-1", "preview": "Searching..."}',
             '',
             'event: run.completed',
             'data: {"text": "Done"}',
@@ -65,13 +86,56 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
         async for event in executor._parse_runs_sse(iter(sse_lines)):
             events.append(event)
 
-        tool_events = [e for e in events if e.type == "tool_activity"]
+        tool_events = [e for e in events if e.type == "tool_started"]
         assert len(tool_events) == 1
         assert tool_events[0].label == "web_search"
+        assert json.loads(tool_events[0].data) == {
+            "toolCallId": "call-1",
+            "argsPreview": "Searching...",
+        }
+        # The old vocabulary must not come back alongside the new one.
+        assert not [e for e in events if e.type == "tool_activity"]
 
     @pytest.mark.asyncio
-    async def test_run_failed_yields_done_failed(self):
-        """run.failed event → StreamEvent(type='finish') with error info."""
+    async def test_tool_completed_carries_matching_call_id(self):
+        """tool.completed pairs with tool.started via toolCallId."""
+        executor = HeraldAPIExecutor(
+            api_server_url="http://localhost:8642",
+            api_server_key="test-key",
+        )
+
+        sse_lines = [
+            'event: tool.started',
+            'data: {"tool": "web_search", "toolCallId": "call-1", "preview": "Searching..."}',
+            '',
+            'event: tool.completed',
+            'data: {"toolCallId": "call-1", "resultPreview": "3 results", "durationMs": 812}',
+            '',
+            'event: run.completed',
+            'data: {"text": "Done"}',
+            '',
+        ]
+
+        events = []
+        async for event in executor._parse_runs_sse(iter(sse_lines)):
+            events.append(event)
+
+        completed = [e for e in events if e.type == "tool_completed"]
+        assert len(completed) == 1
+        payload = json.loads(completed[0].data)
+        assert payload["toolCallId"] == "call-1"
+        assert payload["resultPreview"] == "3 results"
+        assert payload["durationMs"] == 812
+        assert payload["isError"] is False
+
+    @pytest.mark.asyncio
+    async def test_run_failed_yields_error_not_finish(self):
+        """run.failed → StreamEvent(type='error').
+
+        This previously asserted type='finish', which client.py:1673 turns
+        into status="completed" while dropping `data` — so a failed run
+        reached the phone as a delivered answer.
+        """
         executor = HeraldAPIExecutor(
             api_server_url="http://localhost:8642",
             api_server_key="test-key",
@@ -87,9 +151,33 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
         async for event in executor._parse_runs_sse(iter(sse_lines)):
             events.append(event)
 
-        finish_events = [e for e in events if e.type == "finish"]
-        assert len(finish_events) == 1
-        assert finish_events[0].data == "Model overloaded"
+        assert [e for e in events if e.type == "finish"] == []
+        error_events = [e for e in events if e.type == "error"]
+        assert len(error_events) == 1
+        assert error_events[0].data == "Model overloaded"
+        # The server's own classification must survive the mapping.
+        assert error_events[0].error_category == "server"
+
+    @pytest.mark.asyncio
+    async def test_run_cancelled_yields_error(self):
+        """A cancelled run is not a delivered answer either."""
+        executor = HeraldAPIExecutor(
+            api_server_url="http://localhost:8642",
+            api_server_key="test-key",
+        )
+
+        sse_lines = [
+            'event: run.cancelled',
+            'data: {}',
+            '',
+        ]
+
+        events = []
+        async for event in executor._parse_runs_sse(iter(sse_lines)):
+            events.append(event)
+
+        assert [e for e in events if e.type == "finish"] == []
+        assert [e.type for e in events if e.type == "error"] == ["error"]
 
     @pytest.mark.asyncio
     async def test_sse_multiline_and_event_frames(self):

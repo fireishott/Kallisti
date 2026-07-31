@@ -109,8 +109,11 @@ final class PushRegistrationCoordinator {
                 relayPublicKey: brokerState.relayPublicKey,
                 tokenDebugSuffix: brokerState.tokenDebugSuffix
             )
-            struct Response: Decodable { let registered: Bool? }
-            let _: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
+            struct Response: Decodable { let registered: Bool }
+            let response: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
+            guard response.registered else {
+                throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the connector.")
+            }
             return true
         }
 
@@ -120,8 +123,11 @@ final class PushRegistrationCoordinator {
             pushEnvironment: pushEnvironment,
             bundleId: bundleID
         )
-        struct Response: Decodable { let registered: Bool? }
-        let _: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
+        struct Response: Decodable { let registered: Bool }
+        let response: Response = try await relayAPIClient.post(path: "push/register", body: body, accessToken: accessToken)
+        guard response.registered else {
+            throw RelayAPIClient.ClientError.requestFailed("Push registration was rejected by the connector.")
+        }
         return true
     }
 

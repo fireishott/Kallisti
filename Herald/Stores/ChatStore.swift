@@ -85,9 +85,7 @@ final class ChatStore {
     private static let deltaFlushInterval: Duration = .milliseconds(16)  // 60 fps cap
     private static let deltaFlushByteThreshold = 4_096
 
-    /// Whether `autoTitleIfNeeded` has already been attempted for the current
-    /// conversation. Prevents re-attempting on every stream completion when
-    /// the title RPC fails and the title remains a default placeholder.
+    /// Whether deterministic local title derivation has run for this conversation.
     private var autoTitleAttempted = false
 
     /// Set by `clearConversation()` to force the next `loadConversationIfNeeded()`
@@ -122,7 +120,7 @@ final class ChatStore {
 
     var heraldClient: any HeraldClientProtocol
     private let chatLiveActivity = LiveActivityService()
-    let persistence: any AppPersistenceStoreProtocol
+    var persistence: any AppPersistenceStoreProtocol
 
     /// TTS service for speaking responses during/after streaming.
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
@@ -166,6 +164,17 @@ final class ChatStore {
         }
         // After clearConversation(), bypass the local cache and force a
         // server fetch so the UI never shows the stale archived conversation.
+        // `conversations/current` is connector-global in direct-connector
+        // deployments.  It cannot identify which thread this physical device
+        // had selected.  A persisted selection is therefore always loaded by
+        // its explicit ID, even when a local cache is present.
+        if let selectedID = persistence.currentSessionId {
+            needsServerRefresh = false
+            await loadConversation(id: selectedID)
+            clearNotificationsForCurrentConversation()
+            return
+        }
+
         guard conversation == nil || needsServerRefresh else { return }
         needsServerRefresh = false
         await loadConversation()
@@ -197,6 +206,25 @@ final class ChatStore {
         clearNotificationsForCurrentConversation()
     }
 
+    private func loadConversation(id: UUID) async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let refreshed = try await heraldClient.loadConversation(id: id)
+            conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+            persistence.currentSessionId = conversation?.id
+            if let conversation {
+                var cacheCopy = conversation
+                cacheCopy.contextPercent = nil
+                cacheCopy.latestUsage = nil
+                persistence.saveConversationCache(cacheCopy)
+                onConversationChanged?()
+            }
+        } catch {
+            Self.logger.warning("Failed to load selected conversation \(id): \(error.localizedDescription)")
+        }
+    }
+
     func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty || !attachments.isEmpty else { return }
@@ -216,6 +244,15 @@ final class ChatStore {
         )
         if conversation == nil {
             conversation = Conversation(title: "New Chat")
+        }
+        // Establish a stable, device-local conversation identity before the
+        // first POST. Without this the connector falls back to its process-wide
+        // singleton and iPhone/iPad messages land in whichever chat spoke last.
+        if let conversation {
+            persistence.currentSessionId = conversation.id
+            if heraldClient.currentConversation?.id != conversation.id {
+                _ = try? await heraldClient.loadConversation(id: conversation.id)
+            }
         }
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp
@@ -355,7 +392,7 @@ final class ChatStore {
                     chatLiveActivity.endActivity()
                     return
                 }
-                if !msg.content.isEmpty && msg.status != .sending {
+                if (!msg.content.isEmpty || !msg.reasoning.isEmpty) && msg.status != .sending {
                     streamingPhase = .idle
                     chatLiveActivity.endActivity()
                     return
@@ -416,6 +453,15 @@ final class ChatStore {
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
                     self.activeStreams[jobID] = placeholderID
+                    // Correlate the placeholder with its server-assigned job
+                    // identity so the conversation refresh merge can match
+                    // persisted assistant rows back to this live placeholder
+                    // without relying on content heuristics.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].jobID = jobID
+                        self.conversation = conv
+                    }
                     // Arm the polling safety net. If the SSE stream fails silently
                     // (transport drop, proxy timeout, connector stall), polling
                     // recovers the response so the user isn't stuck staring at a
@@ -445,13 +491,24 @@ final class ChatStore {
                     self.streamingPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
-                    self.enqueueDelta(delta, placeholderID: placeholderID)
-
-                    // Stream to TTS if enabled during streaming
-                    if let settings = self.ttsSettingsProvider?(),
-                       settings.enabled,
-                       settings.autoSpeakDuringStreaming {
-                        self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                    // If this delta opens an inline <think>/<thinking> block and
+                    // no separate reasoning_delta stream has started, route to the
+                    // reasoning buffer so it appears in the collapsible thought
+                    // bubble rather than the visible answer content.
+                    let hasOpenThinkTag = delta.range(
+                        of: #"<think(?:ing)?>"#, options: .regularExpression
+                    ) != nil
+                    if hasOpenThinkTag && reasoningStartedAt == nil {
+                        reasoningStartedAt = .now
+                        self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                    } else {
+                        // Stream to TTS only for non-reasoning content
+                        if let settings = self.ttsSettingsProvider?(),
+                           settings.enabled,
+                           settings.autoSpeakDuringStreaming {
+                            self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                        }
+                        self.enqueueDelta(delta, placeholderID: placeholderID)
                     }
 
                 case .reasoningDelta(let delta):
@@ -479,6 +536,32 @@ final class ChatStore {
                     self.chatLiveActivity.startToolCall(toolName: label)
                     self.chatLiveActivity.updateToolProgress(label)
 
+                case .toolStarted(let activity):
+                    self.streamingProgressAt = .now
+                    progressContinuation?.yield(())
+                    self.flushPendingDeltas(placeholderID: placeholderID)
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        for i in conv.messages[idx].toolActivities.indices { conv.messages[idx].toolActivities[i].isActive = false }
+                        conv.messages[idx].toolActivities.append(activity)
+                        conv.messages[idx].toolActivity = activity.label
+                        self.conversation = conv
+                    }
+                    self.chatLiveActivity.startToolCall(toolName: activity.label)
+                    self.chatLiveActivity.updateToolProgress(activity.label)
+
+                case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
+                    self.streamingProgressAt = .now
+                    progressContinuation?.yield(())
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+                       let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }) {
+                        conv.messages[idx].toolActivities[activityIdx].isActive = false
+                        conv.messages[idx].toolActivities[activityIdx].finishedAt = .now
+                        conv.messages[idx].toolActivities[activityIdx].resultPreview = resultPreview
+                        conv.messages[idx].toolActivities[activityIdx].isError = isError
+                        conv.messages[idx].toolActivities[activityIdx].durationMs = durationMs
+                        self.conversation = conv
+                    }
+
                 case .keepalive:
                     // Transport keepalives prove the connection is alive but do
                     // NOT prove the model is making progress. Do not reset the
@@ -490,6 +573,7 @@ final class ChatStore {
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
+                    var isCredibleCompletion = false
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
@@ -576,29 +660,45 @@ final class ChatStore {
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                         }
+                        let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let resolvedReasoning = resolved.reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Usage is returned by every provider on every turn, including turns
+                        // that produced nothing.  Treating it as proof of a reply is what
+                        // put a delivered check and a completion haptic on empty bubbles.
+                        // Only rendered content — visible text or reasoning — makes a
+                        // completion credible.
+                        isCredibleCompletion = !resolvedText.isEmpty
+                            || !resolvedReasoning.isEmpty
                         self.conversation?.messages[idx] = resolved
-                    }
-                    // D1.5: Defence in depth — a terminal event with empty
-                    // content and no usage is not a credible completion.  It
-                    // likely came from a premature stream close (B4/D1).
-                    // Treat as reconnecting so polling keeps trying.
-                    let isCredibleCompletion = !finalMessage.content
-                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || usage != nil
-
-                    if isCredibleCompletion {
                         // Mark user message as delivered if it's still in sending state
-                        if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                            if self.conversation?.messages[idx].status == .sending {
-                                self.conversation?.messages[idx].status = .delivered
-                            }
+                        if isCredibleCompletion,
+                           let userIdx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }),
+                           self.conversation?.messages[userIdx].status == .sending {
+                            self.conversation?.messages[userIdx].status = .delivered
                         }
                     }
                     let oldTitle = self.conversation?.title
-                    self.conversation = self.mergeConversationMetadata(
-                        from: self.conversation,
-                        into: self.heraldClient.currentConversation
-                    )
+                    // A POST /v1/messages response is a conversation carrying only the
+                    // user message just sent (http_facade.py:795, and see :1641 below).
+                    // Splicing a full local transcript into a one-message array runs
+                    // every historical message back through the local-only anchor path
+                    // for no benefit.  Take title/usage/context from it; leave the
+                    // message array alone.  A real GET .../conversation refresh — which
+                    // returns the full transcript — still goes through the full merge.
+                    let refreshed = self.heraldClient.currentConversation
+                    let localCount = self.conversation?.messages.count ?? 0
+                    let remoteCount = refreshed?.messages.count ?? 0
+                    if remoteCount > 0, remoteCount < localCount,
+                       let refreshed, var conv = self.conversation {
+                        if conv.title == "New Chat" || conv.title == "Herald" { conv.title = refreshed.title }
+                        conv.latestUsage = refreshed.latestUsage ?? conv.latestUsage
+                        self.conversation = conv
+                    } else {
+                        self.conversation = self.mergeConversationMetadata(
+                            from: self.conversation,
+                            into: refreshed
+                        )
+                    }
                     if let latestUsage = self.conversation?.latestUsage {
                         self.lastTokenUsage = latestUsage
                     } else if let usage {
@@ -736,6 +836,8 @@ final class ChatStore {
                         guidance = "The request timed out. Check your connection and retry."
                     case "empty_response":
                         guidance = "Herald returned an empty response. Try again or start a new session."
+                    case "upstream_interrupted":
+                        guidance = "The model was interrupted upstream. Please retry."
                     default:
                         guidance = errorMessage
                     }
@@ -1067,22 +1169,6 @@ final class ChatStore {
 
         autoTitleAttempted = true
 
-        // Try LLM-generated title with timeout and retry
-        let assistantContent = conv.messages.first(where: { $0.sender == .herald })?.content ?? ""
-        let generated = await generateTitleWithRetry(
-            sessionId: conv.id,
-            userMessage: String(raw.prefix(500)),
-            assistantMessage: String(assistantContent.prefix(500))
-        )
-        if let generated {
-            // Re-verify title is still a default (user may have renamed during RPC)
-            if let current = conversation, defaultTitles.contains(current.title) {
-                conversation?.title = generated
-                onTitleChanged?(current.id, generated)
-            }
-            return
-        }
-
         // Deterministic local fallback: smart truncation of first message.
         // Strip leading slash commands and common prefixes, then use the
         // first meaningful line as the title.
@@ -1093,53 +1179,10 @@ final class ChatStore {
         let title = firstLine.count > 50
             ? String(firstLine.prefix(47)).trimmingCharacters(in: .whitespaces) + "..."
             : firstLine
-        do {
-            _ = try await heraldClient.renameSession(id: conv.id, title: title)
-            if let current = conversation, defaultTitles.contains(current.title) {
-                conversation?.title = title
-                onTitleChanged?(current.id, title)
-            }
-        } catch {
-            Self.logger.warning("Auto-title rename failed for session \(conv.id): \(error.localizedDescription)")
-            appendLog(level: .warn, "Auto-title rename failed: \(error.localizedDescription)")
+        if let current = conversation, defaultTitles.contains(current.title) {
+            conversation?.title = title
+            onTitleChanged?(current.id, title)
         }
-    }
-
-    /// Attempt to generate a title via RPC with a 5-second timeout and up to 2 attempts.
-    /// Returns nil on failure (all attempts exhausted or timeout).
-    private func generateTitleWithRetry(sessionId: UUID, userMessage: String, assistantMessage: String) async -> String? {
-        let maxAttempts = 2
-        let timeoutSeconds: TimeInterval = 12  // Relay has a 15s timeout; stay under it
-
-        for attempt in 1...maxAttempts {
-            let title: String? = await withCheckedContinuation { continuation in
-                let task = Task { @MainActor in
-                    do {
-                        let result = try await self.heraldClient.generateSessionTitle(
-                            sessionId: sessionId,
-                            userMessage: userMessage,
-                            assistantMessage: assistantMessage
-                        )
-                        guard !Task.isCancelled else {
-                            continuation.resume(returning: nil)
-                            return
-                        }
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(returning: nil)
-                    }
-                }
-                // Timeout: cancel the RPC task if it hasn't completed
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(timeoutSeconds))
-                    task.cancel()
-                }
-            }
-            if let title { return title }
-            Self.logger.warning("Title RPC attempt \(attempt)/\(maxAttempts) failed for session \(sessionId)")
-        }
-        Self.logger.error("Title RPC failed after \(maxAttempts) attempts for session \(sessionId)")
-        return nil
     }
 
     func deleteMessage(_ message: Message) {
@@ -1481,6 +1524,13 @@ final class ChatStore {
             refreshedConversation.latestUsage = localConversation.latestUsage
         }
 
+        // Local id → index in refreshedConversation.messages, for messages the
+        // server returned under a different id.  The anchor splice below needs
+        // this: the server mints its own message ids (http_facade.py:281), so id
+        // equality alone can never recognise a local message that the server
+        // *did* return.
+        var localToRefreshedIndex: [UUID: Int] = [:]
+
         for index in refreshedConversation.messages.indices {
             let remote = refreshedConversation.messages[index]
 
@@ -1511,6 +1561,8 @@ final class ChatStore {
             }
 
             guard let local else { continue }
+
+            localToRefreshedIndex[local.id] = index
 
             // B39 T5: defence in depth — if the local (streamed) message has
             // non-empty content and the server's version is empty or a strict
@@ -1563,6 +1615,43 @@ final class ChatStore {
             }
         }
 
+        // Turn projection dedup.  Hermes persists one assistant row per tool
+        // boundary; the matching loop above copies the placeholder's reasoning and
+        // tool timeline onto EVERY row sharing that jobId.  Keep those artifacts
+        // only on the last row of each jobId so the UI shows one "Thought process"
+        // card per turn.
+        //
+        // B18: grouped by jobId across the whole array rather than by contiguous
+        // run.  The B17 contiguous scan broke on any interruption — a nil-jobId
+        // tool row, a system row, or a local-only message spliced in by the anchor
+        // pass — and each fragment then kept its own reasoning card, which is the
+        // "thought bubbles above and below the answer" report.
+        do {
+            var lastIndexForJob: [UUID: Int] = [:]
+            for (index, message) in refreshedConversation.messages.enumerated()
+            where message.sender == .herald {
+                guard let jobID = message.jobID else { continue }
+                lastIndexForJob[jobID] = index
+            }
+            for (index, message) in refreshedConversation.messages.enumerated()
+            where message.sender == .herald {
+                guard let jobID = message.jobID,
+                      let keepIndex = lastIndexForJob[jobID],
+                      keepIndex != index else { continue }
+                if !refreshedConversation.messages[index].reasoning.isEmpty {
+                    Self.logger.debug(
+                        "Turn projection: stripping reasoning from row \(index) of jobId \(jobID) (kept on row \(keepIndex))"
+                    )
+                    refreshedConversation.messages[index].reasoning = ""
+                    refreshedConversation.messages[index].reasoningDuration = nil
+                }
+                if !refreshedConversation.messages[index].toolActivities.isEmpty {
+                    refreshedConversation.messages[index].toolActivities = []
+                    refreshedConversation.messages[index].toolActivity = nil
+                }
+            }
+        }
+
         // B40 P0-1: preserve EVERY local message the refreshed payload is
         // missing — not just streaming placeholders and artifact-carrying
         // replies.
@@ -1595,7 +1684,43 @@ final class ChatStore {
             refreshedConversation.messages.map { Self.messageFingerprint($0) }
         )
 
+        // A streamed agent turn is accumulated locally, while history stores
+        // one assistant row per tool boundary. Recognize that complete run
+        // before preserving the local bubble, then keep its artifacts on the
+        // final persisted segment.
+        var segmentedLocalIDs = Set<UUID>()
+        for local in localConversation.messages where local.sender == .herald && !local.isStreaming {
+            guard !refreshedIDs.contains(local.id),
+                  !refreshedFingerprints.contains(Self.messageFingerprint(local)) else { continue }
+            let localText = Self.normalizedMessageContent(local.content)
+            guard !localText.isEmpty else { continue }
+            for start in refreshedConversation.messages.indices {
+                guard refreshedConversation.messages[start].sender == .herald else { continue }
+                var end = start
+                var pieces: [String] = []
+                while end < refreshedConversation.messages.count,
+                      refreshedConversation.messages[end].sender == .herald {
+                    pieces.append(refreshedConversation.messages[end].content)
+                    let joined = Self.normalizedMessageContent(pieces.joined(separator: " "))
+                    if pieces.count >= 2, joined == localText,
+                       joined.count >= Int(Double(localText.count) * 0.9) {
+                        segmentedLocalIDs.insert(local.id)
+                        refreshedConversation.messages[end].toolActivities = local.toolActivities
+                        refreshedConversation.messages[end].toolActivity = local.toolActivity
+                        refreshedConversation.messages[end].codeDiff = local.codeDiff
+                        refreshedConversation.messages[end].reasoning = local.reasoning
+                        refreshedConversation.messages[end].reasoningDuration = local.reasoningDuration
+                        break
+                    }
+                    if joined.count > localText.count { break }
+                    end += 1
+                }
+                if segmentedLocalIDs.contains(local.id) { break }
+            }
+        }
+
         let localOnly = localConversation.messages.filter { message in
+            if segmentedLocalIDs.contains(message.id) { return false }
             if refreshedIDs.contains(message.id) { return false }
             // The server assigns its own message ids; jobID and content are the
             // only cross-identity handles we have, and matching on them keeps
@@ -1611,6 +1736,25 @@ final class ChatStore {
             return true
         }
 
+        // A streaming placeholder that survives a merge has, by definition, no live
+        // stream behind it any more — the stream that owned it is the one that triggered
+        // this merge.  Leaving isStreaming=true renders a permanently animating bubble
+        // that never receives its completion marker.
+        //
+        // Named separately rather than shadowing `localOnly`: Swift does not allow
+        // redeclaring a binding in the same scope.
+        let settledLocalOnly: [Message] = localOnly.map { message in
+            guard message.isStreaming else { return message }
+            var settled = message
+            settled.isStreaming = false
+            if settled.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               settled.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settled.status = .failed
+                settled.errorCategory = "empty_response"
+            }
+            return settled
+        }
+
         if !localOnly.isEmpty {
             Self.logger.info(
                 "Merge preserved \(localOnly.count) local message(s) absent from the refreshed conversation"
@@ -1624,9 +1768,20 @@ final class ChatStore {
             // message that precedes it AND exists in the refreshed array.
             // Insert after that anchor.  Messages with no anchor append.
             let localMessages = localConversation.messages
-            let refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+            // This is deliberately mutable.  Local-only messages are inserted
+            // in transcript order, and each insertion must become an anchor for
+            // the next one.  Keeping this set frozen meant a streamed assistant
+            // placeholder could only anchor to the older server row, so it was
+            // inserted *above* its just-inserted optimistic user prompt.
+            // Anchorable = every id the refreshed array can be addressed by: its own ids
+            // PLUS the local ids the matching loop proved are the same message under a
+            // server-assigned id.  Without the second half the walk-back at :1743 falls off
+            // the front of the array, anchorID stays nil, and the message is appended to the
+            // end of the transcript — replies rendering above the prompt that produced them.
+            var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+            refreshedIDsForAnchor.formUnion(localToRefreshedIndex.keys)
 
-            for localMsg in localOnly {
+            for localMsg in settledLocalOnly {
                 // Find the anchor: the last message before localMsg in the
                 // local array that also exists in the refreshed array.
                 var anchorID: UUID? = nil
@@ -1639,12 +1794,27 @@ final class ChatStore {
                     }
                 }
 
-                if let anchorID,
-                   let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID }) {
-                    refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                if let anchorID {
+                    // The anchor may be addressed either by its own id in the refreshed
+                    // array or by the local id of its server twin.  Resolve both.
+                    let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID })
+                        ?? localToRefreshedIndex[anchorID]
+                    if let anchorIdx {
+                        refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                        // Every index at or past the insertion point shifted by one.
+                        for (localID, idx) in localToRefreshedIndex where idx > anchorIdx {
+                            localToRefreshedIndex[localID] = idx + 1
+                        }
+                        localToRefreshedIndex[localMsg.id] = anchorIdx + 1
+                    } else {
+                        refreshedConversation.messages.append(localMsg)
+                        localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
+                    }
                 } else {
                     refreshedConversation.messages.append(localMsg)
+                    localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
                 }
+                refreshedIDsForAnchor.insert(localMsg.id)
             }
         }
 
@@ -1654,7 +1824,12 @@ final class ChatStore {
     /// Sender + normalized content, used to recognize the same message across
     /// the local/server id boundary.
     private static func messageFingerprint(_ message: Message) -> String {
-        "\(message.sender)|\(message.content.trimmingCharacters(in: .whitespacesAndNewlines))"
+        "\(message.sender)|\(normalizedMessageContent(message.content))"
+    }
+
+    private static func normalizedMessageContent(_ content: String) -> String {
+        content.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     private func mergeAttachments(_ localAttachments: [MessageAttachment], onto remoteAttachments: [MessageAttachment]) -> [MessageAttachment] {

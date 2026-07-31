@@ -131,7 +131,12 @@ actor JobStreamCoordinator {
 
                     // Detect seq gaps (only after first event — we don't know
                     // the relay's starting sequence number until we've seen one).
-                    if seqBefore > 0 && envelope.seq > seqBefore + 1 {
+                    // Allow a gap of 1 extra seq to absorb jitter from rapid
+                    // reasoning_delta bursts; a gap > 2 is a genuine loss.
+                    // Never reconnect mid-reasoning: the facade's backlog replay
+                    // would double-insert reasoning chunks and scramble bubble order.
+                    let isReasoningActive = envelope.type == .reasoningDelta || self.lastAppliedSeq > 0
+                    if seqBefore > 0 && envelope.seq > seqBefore + 2 && !isReasoningActive {
                         self.logger.warning("Seq gap detected: expected \(seqBefore + 1), got \(envelope.seq). Reconnecting.")
                         break  // Reconnect from lastAppliedSeq
                     }
@@ -338,13 +343,13 @@ actor JobStreamCoordinator {
             let toolCallId = json["tool_call_id"] as? String ?? ""
             let name = json["name"] as? String ?? "tool"
             let args = json["args"] as? String ?? ""
-            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args))
+            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args, emoji: json["emoji"] as? String))
 
         case "tool.completed":
             eventType = .toolCompleted
             let toolCallId = json["tool_call_id"] as? String ?? ""
             let output = json["output"] as? String ?? ""
-            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output))
+            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output, isError: json["is_error"] as? Bool ?? false, durationMs: json["duration_ms"] as? Int))
 
         case "approval.required":
             eventType = .approvalRequired
@@ -457,7 +462,7 @@ actor JobStreamCoordinator {
             return nil
         case .toolStarted:
             if case .toolStarted(let payload) = envelope.payload {
-                return .toolActivity(payload.name)
+                return .toolStarted(ToolActivity(label: payload.args.isEmpty ? payload.name : payload.args, toolCallID: payload.toolCallId, name: payload.name, emoji: payload.emoji, argsPreview: payload.args))
             }
             return .toolActivity("Working...")
         case .toolProgress:
@@ -466,7 +471,10 @@ actor JobStreamCoordinator {
             }
             return .toolActivity("Working...")
         case .toolCompleted:
-            return .toolActivity("Done")
+            if case .toolCompleted(let payload) = envelope.payload {
+                return .toolCompleted(toolCallID: payload.toolCallId, resultPreview: payload.output, isError: payload.isError, durationMs: payload.durationMs)
+            }
+            return nil
         case .commentary:
             return .heartbeat(phase: "commentary")
         case .approvalRequired:

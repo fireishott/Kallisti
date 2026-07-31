@@ -3310,6 +3310,26 @@ struct B40ConversationMergeTests {
         #expect(merged?.messages.map(\.content) == ["Opener", "First answer", "Follow-up"])
     }
 
+    /// The pending POST acknowledgement has only the historical server rows.
+    /// Both the just-sent prompt and the streamed reply are local-only during
+    /// terminal reconciliation.  Each inserted local row must become the next
+    /// row's anchor; otherwise the reply is inserted above its own prompt.
+    @Test @MainActor
+    func streamedReplyStaysBelowItsOptimisticPrompt() {
+        let store = makeStore()
+        let base = Date()
+        let historical = Message(sender: .herald, content: "Earlier answer", timestamp: base, status: .delivered)
+        let prompt = Message(sender: .user, content: "New prompt", timestamp: base.addingTimeInterval(1), status: .sending)
+        let reply = Message(sender: .herald, content: "New answer", timestamp: base.addingTimeInterval(2), status: .delivered)
+
+        let local = Conversation(title: "New Chat", messages: [historical, prompt, reply])
+        let refreshed = Conversation(title: "New Chat", messages: [historical])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.map(\.content) == ["Earlier answer", "New prompt", "New answer"])
+    }
+
     /// The server assigns its own message ids, so the same answer must not be
     /// re-added alongside the server's copy of it.
     @Test @MainActor

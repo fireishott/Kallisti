@@ -234,6 +234,7 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
     return None
 from .git_diff import capture_diff, capture_snapshot
 from .herald_api_executor import HeraldAPIExecutor
+from .tui_gateway_executor import TuiGatewayExecutor
 
 # Compatibility symbol retained for tests and extensions written before the
 # product rename. Internal code continues to use HeraldAPIExecutor.
@@ -832,6 +833,7 @@ class HeraldConnector:
             facade_ctx.session_conversation = self._rpc_session_conversation
             facade_ctx.current_conversation = self._rpc_current_conversation
             facade_ctx.clear_conversation = self._rpc_clear_conversation
+            facade_ctx.push_register = self._rpc_push_register
             from .http_facade import set_token_validator, AccessTokenValidator
             if state.connector_credential:
                 validator = AccessTokenValidator({state.connector_credential})
@@ -1254,7 +1256,7 @@ class HeraldConnector:
                 return
 
             # Job timeout
-            job_timeout = job.get("timeoutSeconds", 180)
+            job_timeout = job.get("timeoutSeconds", 420)
 
             # ----- Non-streaming request -----
             # send_text_message() is synchronous and drives its own event loop
@@ -1636,6 +1638,32 @@ class HeraldConnector:
                         "type": "tool_activity",
                         "data": {"label": event.label, "seq": source_seq},
                     }
+                elif event.type == "tool_started":
+                    source_seq += 1
+                    details = json.loads(event.data or "{}")
+                    yield {
+                        "type": "tool.started",
+                        "data": {
+                            "tool_call_id": details.get("toolCallId", ""),
+                            "name": event.label or "tool",
+                            "args": details.get("argsPreview", ""),
+                            "emoji": details.get("emoji", ""),
+                            "seq": source_seq,
+                        },
+                    }
+                elif event.type == "tool_completed":
+                    source_seq += 1
+                    details = json.loads(event.data or "{}")
+                    yield {
+                        "type": "tool.completed",
+                        "data": {
+                            "tool_call_id": details.get("toolCallId", ""),
+                            "output": details.get("resultPreview", ""),
+                            "is_error": details.get("isError", False),
+                            "duration_ms": details.get("durationMs"),
+                            "seq": source_seq,
+                        },
+                    }
                 elif event.type == "keepalive":
                     source_seq += 1
                     yield {
@@ -1648,6 +1676,21 @@ class HeraldConnector:
                         "data": {
                             "status": "completed",
                             "text": accumulated_text.strip(),
+                            "sessionId": event.session_id or session_id,
+                            "usage": event.usage,
+                        },
+                    }
+                    return
+                elif event.type == "error":
+                    # A sentinel-only Hermes reply represents an upstream
+                    # interruption, never a delivered assistant message.
+                    yield {
+                        "type": "done",
+                        "data": {
+                            "status": "failed",
+                            "error": event.data or "The model was interrupted upstream.",
+                            "errorCategory": event.error_category or "upstream_interrupted",
+                            "errorAction": "retry",
                             "sessionId": event.session_id or session_id,
                             "usage": event.usage,
                         },
@@ -1688,6 +1731,23 @@ class HeraldConnector:
                 conversation_id=action.get("conversationId"),
             )
         return {"success": True}
+
+    async def _rpc_push_register(self, params: dict) -> dict:
+        """Persist the mobile APNs token without ever logging its value."""
+        token = str(params.get("token") or "").strip()
+        environment = str(params.get("environment") or "production").strip().lower()
+        if not token:
+            return {"registered": False}
+        if environment not in {"production", "development"}:
+            return {"registered": False}
+
+        state = self.state_store.load()
+        state.device_token = token
+        state.device_token_environment = environment
+        self.state_store.save(state)
+        self._state = state
+        logger.info("APNs device token registered (environment=%s)", environment)
+        return {"registered": True, "environment": environment}
 
     async def _send_push_for_job(
         self,
@@ -1925,12 +1985,12 @@ class HeraldConnector:
 
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "restart", unit],
+                ["systemctl", "--user", "restart", "--no-block", unit],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
                 logger.info("hermes.restart: restarted %s", unit)
-                return {"restarting": True, "message": f"Restarting {unit}"}
+                return {"restarting": True, "message": "Restart requested"}
 
             detail = (result.stderr or "").strip() or f"systemctl exited {result.returncode}"
             logger.warning("hermes.restart: systemctl restart %s failed: %s", unit, detail)
@@ -3597,6 +3657,16 @@ You MUST return a JSON object with exactly these fields:
         api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
         api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
 
+        if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
+            gateway = TuiGatewayExecutor(gateway_url=os.getenv("HERALD_GW_URL", "http://127.0.0.1:9119"))
+            if await gateway.health_check():
+                logger.info("Runtime adapter: TuiGateway (streaming+reasoning) — url=%s", gateway.gateway_url)
+                adapter = HeraldAPIRuntimeAdapter(gateway)
+                self._health_cache = (now, adapter)
+                self._active_adapter_mode = "tui_ws"
+                return adapter
+            logger.error("Runtime adapter: TuiGateway unavailable — falling back to chat_completions")
+
         if api_url or api_key:
             executor = HeraldAPIExecutor(
                 api_server_url=api_url or "http://localhost:8642",
@@ -3609,7 +3679,11 @@ You MUST return a JSON object with exactly these fields:
                 self._active_adapter_mode = "runs_v2"
                 return adapter
             else:
-                logger.warning("Runtime adapter: API server health check failed — api_server=%s, falling back to CLI", api_url or "http://localhost:8642")
+                # Do not silently degrade a streamed chat into the tool-less
+                # CLI path during a gateway restart. The API adapter returns a
+                # retryable failure that the app already knows how to render.
+                logger.error("Runtime adapter: API server unavailable — refusing CLI fallback for streamed turn")
+                return HeraldAPIRuntimeAdapter(executor)
 
         logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))

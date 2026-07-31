@@ -3,6 +3,17 @@ import UIKit
 import UserNotifications
 import BackgroundTasks
 
+/// Carries a UIKit completion block across a concurrency hop.
+///
+/// `UNUserNotificationCenterDelegate`'s completion handlers are plain ObjC
+/// blocks that predate `Sendable` auditing, so strict concurrency will not let
+/// a `@Sendable` task closure capture them. They are safe to invoke exactly
+/// once from any thread, and we always invoke them on the main actor — which
+/// is what UIKit requires (see `HeraldAppDelegate`'s delegate methods).
+private struct UncheckedSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+}
+
 final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
@@ -76,39 +87,56 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
     /// suppress the banner to avoid self-notifications. All other conversations
     /// still deliver banners normally.
     ///
-    /// nonisolated because UNNotification is not Sendable.
+    /// Implemented in its completion-handler form rather than the `async` form.
+    /// The compiler-generated `@objc` thunk for a `nonisolated async` delegate
+    /// method resumes on the cooperative pool, so it calls UIKit's completion
+    /// block off the main thread — and UIKit asserts on the main thread inside
+    /// it (`_performBlockAfterCATransactionCommitSynchronizes:`), aborting the
+    /// process. Hopping to `@MainActor` ourselves and completing there is what
+    /// keeps that contract. `UNNotification` is not Sendable, so every value we
+    /// need is read here, on the delivering thread, before the hop.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        let (enabled, currentConversationId) = await MainActor.run {
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        let notificationConversationId =
+            notification.request.content.userInfo["conversationId"] as? String
+        let complete = UncheckedSendableBox(value: completionHandler)
+
+        Task { @MainActor in
             let container = AppContainer.sharedDefault()
-            return (
-                container.settingsStore.settings.notificationsEnabled,
-                container.chatStore.conversation?.id
-            )
-        }
-        guard enabled else { return [] }
+            guard container.settingsStore.settings.notificationsEnabled else {
+                complete.value([])
+                return
+            }
 
-        // Nav-aware suppression: if the user is viewing the same conversation
-        // the notification is for, suppress to avoid self-notification.
-        let userInfo = notification.request.content.userInfo
-        if let notificationConversationId = userInfo["conversationId"] as? String,
-           let currentId = currentConversationId,
-           notificationConversationId == currentId.uuidString.lowercased() {
-            return []
-        }
+            // Nav-aware suppression: if the user is viewing the same conversation
+            // the notification is for, suppress to avoid self-notification.
+            if let notificationConversationId,
+               let currentId = container.chatStore.conversation?.id,
+               notificationConversationId == currentId.uuidString.lowercased() {
+                complete.value([])
+                return
+            }
 
-        return [.banner, .list, .sound, .badge]
+            complete.value([.banner, .list, .sound, .badge])
+        }
     }
 
     // Handle tap on notification — deep-link into the conversation.
-    // nonisolated because UNNotificationResponse is not Sendable.
-    // Extracts primitive strings only, then delegates to AppContainer.
+    //
+    // Completion-handler form for the same reason as `willPresent` above: the
+    // thunk for the `async` form completed on a background thread, and UIKit's
+    // completion runs `_updateSnapshotAndStateRestoration…`, which asserts it
+    // is on the main thread. That assertion was the SIGABRT on every
+    // notification tap. `UNNotificationResponse` is not Sendable, so only
+    // primitives cross to the main actor.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
         let info = response.notification.request.content.userInfo
         let conversationIDString = info["conversationId"] as? String
         let conversationID = conversationIDString.flatMap { UUID(uuidString: $0) }
@@ -123,7 +151,9 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
             replyText = textResponse.userText
         }
 
-        await MainActor.run {
+        let complete = UncheckedSendableBox(value: completionHandler)
+
+        Task { @MainActor in
             let container = AppContainer.sharedDefault()
             container.handleNotificationRoute(
                 conversationID: conversationID,
@@ -132,6 +162,7 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
                 action: action,
                 replyText: replyText
             )
+            complete.value()
         }
     }
 

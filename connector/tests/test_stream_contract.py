@@ -1,14 +1,23 @@
-"""Tests for the Herald Stream Contract v2 golden fixtures.
+"""RESCUED 2026-07-30 from connector.backup-20260727-200203 on fih-ai-host.
 
-Validates:
-  - Every fixture parses against the Pydantic envelope models
-  - Events are ordered by seq (monotonically increasing)
-  - Exactly one terminal event (must be last)
-  - contractVersion is always 2
-  - jobId and conversationId are consistent across each fixture
+The `stream_contract` module and its golden fixtures were deleted in B7
+(7f02f76); this test outlived them in a backup directory and was almost
+lost when that backup was cleaned up.
+
+It is kept here because it encodes the invariants that keep regressing --
+seq-monotonic ordering, exactly one terminal event and it must be last,
+and jobId/conversationId consistency. It skips until the contract module
+is restored; if you rebuild Stream Contract v2, this suite wakes up on its own.
 """
 
 from __future__ import annotations
+
+import pytest
+
+pytest.importorskip(
+    "herald_connector.stream_contract",
+    reason="Stream Contract v2 module was deleted in B7 (7f02f76); restore it to enable.",
+)
 
 import json
 from pathlib import Path
