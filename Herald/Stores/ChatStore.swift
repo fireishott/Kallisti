@@ -662,12 +662,13 @@ final class ChatStore {
                         }
                         let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
                         let resolvedReasoning = resolved.reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
-                        // A response is credible if it has visible text, reasoning, OR usage.
-                        // Reasoning-only completions (model thinks but emits empty answer body)
-                        // must not leave the placeholder stuck in isStreaming=true forever.
+                        // Usage is returned by every provider on every turn, including turns
+                        // that produced nothing.  Treating it as proof of a reply is what
+                        // put a delivered check and a completion haptic on empty bubbles.
+                        // Only rendered content — visible text or reasoning — makes a
+                        // completion credible.
                         isCredibleCompletion = !resolvedText.isEmpty
                             || !resolvedReasoning.isEmpty
-                            || usage != nil
                         self.conversation?.messages[idx] = resolved
                         // Mark user message as delivered if it's still in sending state
                         if isCredibleCompletion,
@@ -677,10 +678,27 @@ final class ChatStore {
                         }
                     }
                     let oldTitle = self.conversation?.title
-                    self.conversation = self.mergeConversationMetadata(
-                        from: self.conversation,
-                        into: self.heraldClient.currentConversation
-                    )
+                    // A POST /v1/messages response is a conversation carrying only the
+                    // user message just sent (http_facade.py:795, and see :1641 below).
+                    // Splicing a full local transcript into a one-message array runs
+                    // every historical message back through the local-only anchor path
+                    // for no benefit.  Take title/usage/context from it; leave the
+                    // message array alone.  A real GET .../conversation refresh — which
+                    // returns the full transcript — still goes through the full merge.
+                    let refreshed = self.heraldClient.currentConversation
+                    let localCount = self.conversation?.messages.count ?? 0
+                    let remoteCount = refreshed?.messages.count ?? 0
+                    if remoteCount > 0, remoteCount < localCount,
+                       let refreshed, var conv = self.conversation {
+                        if conv.title == "New Chat" || conv.title == "Herald" { conv.title = refreshed.title }
+                        conv.latestUsage = refreshed.latestUsage ?? conv.latestUsage
+                        self.conversation = conv
+                    } else {
+                        self.conversation = self.mergeConversationMetadata(
+                            from: self.conversation,
+                            into: refreshed
+                        )
+                    }
                     if let latestUsage = self.conversation?.latestUsage {
                         self.lastTokenUsage = latestUsage
                     } else if let usage {
@@ -1506,6 +1524,13 @@ final class ChatStore {
             refreshedConversation.latestUsage = localConversation.latestUsage
         }
 
+        // Local id → index in refreshedConversation.messages, for messages the
+        // server returned under a different id.  The anchor splice below needs
+        // this: the server mints its own message ids (http_facade.py:281), so id
+        // equality alone can never recognise a local message that the server
+        // *did* return.
+        var localToRefreshedIndex: [UUID: Int] = [:]
+
         for index in refreshedConversation.messages.indices {
             let remote = refreshedConversation.messages[index]
 
@@ -1536,6 +1561,8 @@ final class ChatStore {
             }
 
             guard let local else { continue }
+
+            localToRefreshedIndex[local.id] = index
 
             // B39 T5: defence in depth — if the local (streamed) message has
             // non-empty content and the server's version is empty or a strict
@@ -1588,46 +1615,40 @@ final class ChatStore {
             }
         }
 
-        // Turn projection dedup: when Hermes persists more than one assistant
-        // row per turn (tool boundaries), the matching loop above copies the
-        // local placeholder's reasoning and tool timeline onto every row that
-        // shares the same jobId.  That produces duplicate "Thought process"
-        // cards interleaved with answer segments — one collapsed reasoning
-        // block per physical row.  Keep those artifacts only on the *last*
-        // row of each jobId group so the UI shows one reasoning card per turn.
+        // Turn projection dedup.  Hermes persists one assistant row per tool
+        // boundary; the matching loop above copies the placeholder's reasoning and
+        // tool timeline onto EVERY row sharing that jobId.  Keep those artifacts
+        // only on the last row of each jobId so the UI shows one "Thought process"
+        // card per turn.
+        //
+        // B18: grouped by jobId across the whole array rather than by contiguous
+        // run.  The B17 contiguous scan broke on any interruption — a nil-jobId
+        // tool row, a system row, or a local-only message spliced in by the anchor
+        // pass — and each fragment then kept its own reasoning card, which is the
+        // "thought bubbles above and below the answer" report.
         do {
-            var groupStart = 0
-            while groupStart < refreshedConversation.messages.count {
-                guard let groupJobID = refreshedConversation.messages[groupStart].jobID,
-                      refreshedConversation.messages[groupStart].sender == .herald
-                else { groupStart += 1; continue }
-
-                var groupEnd = groupStart + 1
-                while groupEnd < refreshedConversation.messages.count,
-                      refreshedConversation.messages[groupEnd].jobID == groupJobID,
-                      refreshedConversation.messages[groupEnd].sender == .herald {
-                    groupEnd += 1
+            var lastIndexForJob: [UUID: Int] = [:]
+            for (index, message) in refreshedConversation.messages.enumerated()
+            where message.sender == .herald {
+                guard let jobID = message.jobID else { continue }
+                lastIndexForJob[jobID] = index
+            }
+            for (index, message) in refreshedConversation.messages.enumerated()
+            where message.sender == .herald {
+                guard let jobID = message.jobID,
+                      let keepIndex = lastIndexForJob[jobID],
+                      keepIndex != index else { continue }
+                if !refreshedConversation.messages[index].reasoning.isEmpty {
+                    Self.logger.debug(
+                        "Turn projection: stripping reasoning from row \(index) of jobId \(jobID) (kept on row \(keepIndex))"
+                    )
+                    refreshedConversation.messages[index].reasoning = ""
+                    refreshedConversation.messages[index].reasoningDuration = nil
                 }
-
-                // More than one row shares this jobId — strip reasoning and
-                // tool artifacts from all but the last.
-                if groupEnd - groupStart > 1 {
-                    let lastIdx = groupEnd - 1
-                    for i in groupStart..<lastIdx {
-                        if !refreshedConversation.messages[i].reasoning.isEmpty {
-                            Self.logger.debug(
-                                "Turn projection: stripping reasoning from row \(i) of jobId \(groupJobID) (kept on row \(lastIdx))"
-                            )
-                            refreshedConversation.messages[i].reasoning = ""
-                            refreshedConversation.messages[i].reasoningDuration = nil
-                        }
-                        if !refreshedConversation.messages[i].toolActivities.isEmpty {
-                            refreshedConversation.messages[i].toolActivities = []
-                            refreshedConversation.messages[i].toolActivity = nil
-                        }
-                    }
+                if !refreshedConversation.messages[index].toolActivities.isEmpty {
+                    refreshedConversation.messages[index].toolActivities = []
+                    refreshedConversation.messages[index].toolActivity = nil
                 }
-                groupStart = groupEnd
             }
         }
 
@@ -1715,6 +1736,25 @@ final class ChatStore {
             return true
         }
 
+        // A streaming placeholder that survives a merge has, by definition, no live
+        // stream behind it any more — the stream that owned it is the one that triggered
+        // this merge.  Leaving isStreaming=true renders a permanently animating bubble
+        // that never receives its completion marker.
+        //
+        // Named separately rather than shadowing `localOnly`: Swift does not allow
+        // redeclaring a binding in the same scope.
+        let settledLocalOnly: [Message] = localOnly.map { message in
+            guard message.isStreaming else { return message }
+            var settled = message
+            settled.isStreaming = false
+            if settled.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               settled.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settled.status = .failed
+                settled.errorCategory = "empty_response"
+            }
+            return settled
+        }
+
         if !localOnly.isEmpty {
             Self.logger.info(
                 "Merge preserved \(localOnly.count) local message(s) absent from the refreshed conversation"
@@ -1733,9 +1773,15 @@ final class ChatStore {
             // the next one.  Keeping this set frozen meant a streamed assistant
             // placeholder could only anchor to the older server row, so it was
             // inserted *above* its just-inserted optimistic user prompt.
+            // Anchorable = every id the refreshed array can be addressed by: its own ids
+            // PLUS the local ids the matching loop proved are the same message under a
+            // server-assigned id.  Without the second half the walk-back at :1743 falls off
+            // the front of the array, anchorID stays nil, and the message is appended to the
+            // end of the transcript — replies rendering above the prompt that produced them.
             var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+            refreshedIDsForAnchor.formUnion(localToRefreshedIndex.keys)
 
-            for localMsg in localOnly {
+            for localMsg in settledLocalOnly {
                 // Find the anchor: the last message before localMsg in the
                 // local array that also exists in the refreshed array.
                 var anchorID: UUID? = nil
@@ -1748,11 +1794,25 @@ final class ChatStore {
                     }
                 }
 
-                if let anchorID,
-                   let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID }) {
-                    refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                if let anchorID {
+                    // The anchor may be addressed either by its own id in the refreshed
+                    // array or by the local id of its server twin.  Resolve both.
+                    let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID })
+                        ?? localToRefreshedIndex[anchorID]
+                    if let anchorIdx {
+                        refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                        // Every index at or past the insertion point shifted by one.
+                        for (localID, idx) in localToRefreshedIndex where idx > anchorIdx {
+                            localToRefreshedIndex[localID] = idx + 1
+                        }
+                        localToRefreshedIndex[localMsg.id] = anchorIdx + 1
+                    } else {
+                        refreshedConversation.messages.append(localMsg)
+                        localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
+                    }
                 } else {
                     refreshedConversation.messages.append(localMsg)
+                    localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
                 }
                 refreshedIDsForAnchor.insert(localMsg.id)
             }
