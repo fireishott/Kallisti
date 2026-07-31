@@ -742,7 +742,12 @@ struct ChatScreen: View {
                                 }
                             )
                             .equatable()
-                            .id(message.streamingCompositeID)
+                            // A message must retain one view identity for its
+                            // entire lifetime.  Keying it by content/reasoning
+                            // length recreated the stream row every token, which
+                            // made the thought-process view bounce around its
+                            // answer as LazyVStack recalculated its layout.
+                            .id(message.id)
                         }
                     }
 

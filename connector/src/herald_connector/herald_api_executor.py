@@ -769,6 +769,22 @@ class HeraldAPIExecutor:
             yield StreamEvent(type="reasoning_delta", data=remaining)
         yield StreamEvent(type="stream_interrupted")
 
+    @staticmethod
+    def _runs_request_payload(*, latest_user_message: str, session_id: str | None) -> dict:
+        """Build the documented `/v1/runs` request body.
+
+        The runs API owns its session binding in JSON, unlike the legacy
+        chat-completions API which reads the continuity header.
+        """
+        payload: dict = {
+            "model": "hermes-agent",
+            "input": latest_user_message,
+            "stream": True,
+        }
+        if session_id:
+            payload["session_id"] = session_id
+        return payload
+
     async def stream_message_runs(
         self,
         *,
@@ -794,11 +810,15 @@ class HeraldAPIExecutor:
         # {"error": {"message": "Missing 'input' field"}}, which raised on
         # raise_for_status() and failed every turn the moment the runs path was
         # enabled.  History is carried by the session, not the payload.
-        payload = {
-            "model": "hermes-agent",
-            "input": latest_user_message,
-            "stream": True,
-        }
+        payload = self._runs_request_payload(
+            latest_user_message=latest_user_message,
+            session_id=session_id,
+        )
+        # `/v1/runs` does not use the chat-completions continuity header.
+        # It binds an existing Hermes transcript only from this JSON field.
+        # Sending the id only as X-Hermes-Session-Id silently created a new
+        # `run_…` session for every Herald turn, which both duplicated sidebar
+        # rows and made the agent lose the conversation it had just answered.
 
         if not self._is_llama_backend():
             if reasoning_effort and reasoning_effort != "off":

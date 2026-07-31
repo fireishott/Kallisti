@@ -17,6 +17,22 @@ from herald_connector.herald_api_executor import HeraldAPIExecutor, StreamEvent
 class TestRunsReasoningAvailableMapsToReasoningDelta:
     """D3: /v1/runs reasoning.available → StreamEvent(type='reasoning_delta')."""
 
+    def test_runs_payload_carries_session_id(self):
+        """A continued Herald turn must bind the existing Hermes transcript."""
+        payload = HeraldAPIExecutor._runs_request_payload(
+            latest_user_message="continue the existing chat",
+            session_id="run-existing-session",
+        )
+        assert payload["session_id"] == "run-existing-session"
+        assert payload["input"] == "continue the existing chat"
+
+    def test_new_runs_payload_does_not_invent_a_session_id(self):
+        payload = HeraldAPIExecutor._runs_request_payload(
+            latest_user_message="first turn",
+            session_id=None,
+        )
+        assert "session_id" not in payload
+
     @pytest.mark.asyncio
     async def test_reasoning_available_yields_reasoning_delta(self):
         """reasoning.available event with text → reasoning_delta StreamEvent."""

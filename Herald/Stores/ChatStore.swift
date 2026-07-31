@@ -1676,7 +1676,12 @@ final class ChatStore {
             // message that precedes it AND exists in the refreshed array.
             // Insert after that anchor.  Messages with no anchor append.
             let localMessages = localConversation.messages
-            let refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+            // This is deliberately mutable.  Local-only messages are inserted
+            // in transcript order, and each insertion must become an anchor for
+            // the next one.  Keeping this set frozen meant a streamed assistant
+            // placeholder could only anchor to the older server row, so it was
+            // inserted *above* its just-inserted optimistic user prompt.
+            var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
 
             for localMsg in localOnly {
                 // Find the anchor: the last message before localMsg in the
@@ -1697,6 +1702,7 @@ final class ChatStore {
                 } else {
                     refreshedConversation.messages.append(localMsg)
                 }
+                refreshedIDsForAnchor.insert(localMsg.id)
             }
         }
 
