@@ -209,9 +209,12 @@ class TuiGatewayExecutor:
                     if text:
                         yield StreamEvent(type="text_delta", data=str(text))
                 elif event == "reasoning.available":
-                    text = data.get("text") or data.get("delta") or ""
-                    if text:
-                        yield StreamEvent(type="reasoning_delta", data=str(text))
+                    # Build 28: suppress — MiMo emits ordinary progress text
+                    # on this event, not distinct chain-of-thought.  Publishing
+                    # it as reasoning_delta duplicates the same prose into the
+                    # thought card and visible answer.  The text also arrives
+                    # on assistant.delta / message.delta.
+                    pass
                 elif event == "tool.started":
                     yield StreamEvent(type="tool_started", label=str(data.get("tool") or data.get("name") or "tool"), data=json.dumps({"toolCallId": data.get("tool_call_id") or data.get("toolCallId") or "", "argsPreview": data.get("preview") or data.get("args") or "", "emoji": data.get("emoji") or ""}))
                 elif event == "tool.completed":
