@@ -73,7 +73,16 @@ main
 # keychain-variable references. Keep them local; never track them.
 *MARCHING-ORDERS*.md
 *MARCHING_ORDERS*.md
+*DEPLOYMENT*.md
+*_FOR_CLAUDE_CODE.md
+HERALD_*_BUILD_*.md
+tf-build-*.sh
 deploy/
 
 # Local-only recovered ops docs (contain credentials). Never track.
 local-ops/
+
+# Screenshots — never track app screenshots in a public repo (PII risk)
+docs/screenshots/
+docs/social-preview.png
+docs/assets/rebrand/screenshots/ui/
