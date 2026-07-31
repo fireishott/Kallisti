@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import tempfile
 import time
 import uuid
 from typing import Any, AsyncIterator, Callable, Coroutine
@@ -393,6 +394,109 @@ def _bind_conversation_early(job: dict, text: str, job_started_at: float,
     return True
 
 
+# ── Inbound attachment staging (Build 28) ──────────────────────────────────
+
+_MAX_INBOUND_ATTACHMENT_BYTES = 50 * 1024 * 1024  # aggregate cap
+_MAX_INBOUND_ATTACHMENT_COUNT = 10
+_STAGING_ROOT = Path(tempfile.gettempdir()) / "herald-inbound-attachments"
+
+
+def _stage_inbound_attachments(
+    job_id: str, attachments: list[dict] | None
+) -> tuple[Path | None, str]:
+    """Decode and stage inbound attachment bytes to a per-job temp directory.
+
+    Returns (staging_dir, context_block).  context_block is a machine-
+    readable text block that references the staged files so Hermes'
+    /v1/runs text input can consume them.  The staging directory is
+    cleaned up by the caller when the job finishes.
+    """
+    import base64
+    import hashlib
+    import shutil
+
+    if not attachments:
+        return None, ""
+
+    if len(attachments) > _MAX_INBOUND_ATTACHMENT_COUNT:
+        logger.warning(
+            "Job %s: %d attachments exceeds limit of %d — truncating",
+            job_id, len(attachments), _MAX_INBOUND_ATTACHMENT_COUNT,
+        )
+        attachments = attachments[:_MAX_INBOUND_ATTACHMENT_COUNT]
+
+    staging_dir = _STAGING_ROOT / job_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "The user attached the following files. Use them if they are "
+        "relevant to the request.",
+        "",
+    ]
+    total_bytes = 0
+
+    for index, att in enumerate(attachments, start=1):
+        filename = str(att.get("filename", f"attachment-{index}"))[:255]
+        # Sanitise: strip path separators to prevent traversal.
+        safe_name = filename.replace("/", "_").replace("\\", "_").replace("\x00", "")
+        mime_type = str(att.get("mimeType", "application/octet-stream"))[:128]
+        data_b64 = att.get("data") or ""
+        if not data_b64 or not isinstance(data_b64, str):
+            continue
+        if len(data_b64) > _MAX_INBOUND_ATTACHMENT_BYTES * 2:
+            logger.warning("Job %s: attachment %d base64 too large", job_id, index)
+            continue
+
+        try:
+            payload = base64.b64decode(data_b64, validate=True)
+        except (ValueError, TypeError):
+            logger.warning("Job %s: attachment %d base64 invalid", job_id, index)
+            continue
+
+        if len(payload) > _MAX_INBOUND_ATTACHMENT_BYTES:
+            logger.warning("Job %s: attachment %d exceeds size cap", job_id, index)
+            continue
+        total_bytes += len(payload)
+        if total_bytes > _MAX_INBOUND_ATTACHMENT_BYTES:
+            logger.warning("Job %s: aggregate attachment size exceeded", job_id)
+            break
+
+        file_path = staging_dir / safe_name
+        file_path.write_bytes(payload)
+        checksum = hashlib.sha256(payload).hexdigest()[:16]
+
+        if mime_type.startswith("image/"):
+            lines.append(
+                f"- Image: `{file_path}` ({safe_name}, {mime_type}, "
+                f"{len(payload)} bytes, sha256:{checksum}). "
+                f"If you need to inspect this image, open it directly "
+                f"from that path."
+            )
+        else:
+            ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+            text_like = mime_type.startswith("text/") or ext in (
+                "json", "xml", "yaml", "yml", "csv", "md", "txt",
+                "py", "js", "ts", "swift", "sh", "toml", "ini", "cfg",
+            )
+            if text_like:
+                lines.append(
+                    f"- Text file: `{file_path}` ({safe_name}, {mime_type}, "
+                    f"{len(payload)} bytes, sha256:{checksum}). "
+                    f"Read it with read_file if you need its contents."
+                )
+            else:
+                lines.append(
+                    f"- File: `{file_path}` ({safe_name}, {mime_type}, "
+                    f"{len(payload)} bytes, sha256:{checksum})."
+                )
+
+    if not lines[2:]:  # no attachments successfully staged
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None, ""
+
+    return staging_dir, "\n".join(lines)
+
+
 async def _run_http_job(job_id: str, handler, text, history, session_id,
                         attachments, reasoning_effort) -> None:
     """Drain the connector's message generator into the job record."""
@@ -444,7 +548,21 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             try:
                 early_bound = session_id is not None
                 early_bind_attempts = 0
-                async for event in handler(text, history, session_id, attachments, reasoning_effort):
+                # Build 28: stage inbound attachments to a per-job temp
+                # directory and append a machine-readable context block to
+                # the user text so Hermes can access the files.  The
+                # /v1/runs API accepts a single string `input` — it does
+                # not support inline data-URLs or multipart content blocks.
+                staged_dir, attachment_context = _stage_inbound_attachments(
+                    job_id, attachments
+                )
+                text_with_attachments = text
+                if attachment_context:
+                    text_with_attachments = f"{text}\n\n{attachment_context}"
+                async for event in handler(
+                    text_with_attachments, history, session_id,
+                    attachments, reasoning_effort
+                ):
                     etype = event.get("type", "progress")
                     data = event.get("data", {}) or {}
                     # Bind on the first events only; capped so a turn that
@@ -603,6 +721,10 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         job["status"] = "failed"
         job["error"] = str(exc)
     finally:
+        # Build 28: remove staged attachment files when the job ends.
+        if staged_dir and staged_dir.exists():
+            import shutil
+            shutil.rmtree(staged_dir, ignore_errors=True)
         if job["status"] == "running":
             # The generator ended without the connector's own `done` event.
             # That is never a success: promoting it to "completed" is what put
