@@ -93,22 +93,26 @@ class FakeWebSocket:
 class FakeAdapter:
     """Adapter matching the HostRuntimeAdapter contract used by the job path.
 
-    ``send_text_message`` is synchronous by contract — ``_handle_job_complete``
-    calls it through ``asyncio.to_thread``.  ``before_return`` runs inside that
-    call, which is where a test can simulate the model touching the filesystem
-    or stalling.
+    For the streaming path (Build 22+), implements
+    ``send_text_message_streaming`` which yields ``StreamEvent`` objects
+    progressively.  For the complete/CLI paths, ``send_text_message``
+    provides a synchronous single-result API.
+
+    ``before_return`` runs inside the send call, which is where a test can
+    simulate the model touching the filesystem or stalling.
     """
 
     supports_streaming = True
 
     def __init__(self, text: str = "Hello world!", *, session_id: str | None = None,
                  usage: dict | None = None, raises: Exception | None = None,
-                 before_return=None):
+                 before_return=None, chunks: list[str] | None = None):
         self._text = text
         self._session_id = session_id
         self._usage = usage
         self._raises = raises
         self._before_return = before_return
+        self._chunks = chunks  # word-by-word deltas for streaming tests
         self.calls: list[dict] = []
 
     def send_text_message(self, **kwargs) -> RuntimeTurnResult:
@@ -120,6 +124,25 @@ class FakeAdapter:
         return RuntimeTurnResult(
             text=self._text, session_id=self._session_id, usage=self._usage,
         )
+
+    async def send_text_message_streaming(self, **kwargs):
+        """Progressive streaming generator (Build 22+ contract).
+
+        Yields one text_delta per chunk (or one full-text delta), then
+        a finish event carrying session_id and usage.
+
+        ``_before_return`` is run on a worker thread so a blocking sleep
+        doesn't stall the event loop and heartbeats can still fire.
+        """
+        self.calls.append(kwargs)
+        if self._before_return is not None:
+            await asyncio.to_thread(self._before_return)
+        if self._raises is not None:
+            raise self._raises
+        chunks = self._chunks or ([self._text] if self._text else [])
+        for chunk in chunks:
+            yield StreamEvent(type="text_delta", data=chunk)
+        yield StreamEvent(type="finish", session_id=self._session_id, usage=self._usage)
 
 
 # --------------------------------------------------------------------------
@@ -190,7 +213,7 @@ def test_job_heartbeat_sequence_increments(tmp_path):
 
 
 def test_handle_job_sends_started_then_result(tmp_path):
-    """job.started then exactly one job.result — no deltas on this path."""
+    """Build 22: streaming path emits job.started, job.progress deltas, job.result."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-happy")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
@@ -211,16 +234,19 @@ def test_handle_job_sends_started_then_result(tmp_path):
 
     asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
-    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
-    assert ws.sent[0]["jobId"] == "job-123"
-    assert ws.sent[1]["jobId"] == "job-123"
-    assert ws.sent[1]["text"] == "Hello world!"
-    assert ws.sent[1]["sessionId"] == "session-abc"
-    assert ws.sent[1]["usage"]["total_tokens"] == 125
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "job.started"
+    assert "job.result" in types
+    assert "job.progress" in types
+    result = next(m for m in ws.sent if m["type"] == "job.result")
+    assert result["jobId"] == "job-123"
+    assert result["text"] == "Hello world!"
+    assert result["sessionId"] == "session-abc"
+    assert result["usage"]["total_tokens"] == 125
 
 
 def test_handle_job_sends_failed_on_empty_response(tmp_path):
-    """A turn that returns no text should send job.failed after job.started."""
+    """A streaming turn that accumulates no text should send job.failed."""
     store = ConnectorStateStore(state_dir=tmp_path / "streaming-empty")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
@@ -232,11 +258,12 @@ def test_handle_job_sends_failed_on_empty_response(tmp_path):
     asyncio.run(connector._handle_job_streaming(ws, job, adapter))  # noqa: SLF001
 
     assert len(adapter.calls) == 1
-    assert len(ws.sent) == 2
-    assert ws.sent[0]["type"] == "job.started"
-    assert ws.sent[1]["type"] == "job.failed"
-    assert ws.sent[1]["jobId"] == "job-empty"
-    assert ws.sent[1]["errorCategory"] == "empty_response"
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "job.started"
+    assert types[-1] == "job.failed"
+    failure = ws.sent[-1]
+    assert failure["jobId"] == "job-empty"
+    assert failure["errorCategory"] == "empty_response"
 
 
 def test_handle_job_sends_failed_on_exception(tmp_path):
@@ -253,7 +280,8 @@ def test_handle_job_sends_failed_on_exception(tmp_path):
 
     assert [m["type"] for m in ws.sent] == ["job.started", "job.failed"]
     assert "API server gone" in ws.sent[1]["error"]
-    assert ws.sent[1]["retryable"] is False
+    failure = next(m for m in ws.sent if m["type"] == "job.failed")
+    assert failure["retryable"] is False
 
 
 def test_handle_job_marks_transport_failures_retryable(tmp_path):
@@ -805,8 +833,14 @@ def test_heartbeat_during_long_turn(tmp_path):
 
 
 def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
-    """During heartbeat-only periods, no text_delta or tool_activity events
-    should be fabricated. Only job.heartbeat messages should be sent."""
+    """During heartbeat-only periods, the connector never invents fake progress.
+
+    Build 22: the streaming path can emit job.progress for real upstream
+    deltas, but it must never fabricate a text_delta or tool_activity the
+    model did not produce.  Real progress events have kind='text_delta'; a
+    fabricated one would also carry that kind, so this test verifies that
+    no progress appears DURING the blocking pre-response silence.
+    """
     store = ConnectorStateStore(state_dir=tmp_path / "heartbeat-no-fabricate")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(
@@ -832,18 +866,18 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
 
         await connector._handle_job_streaming(ws, job, adapter)
 
-        # Everything before the terminal message must be a heartbeat: the
-        # connector must never invent progress it did not receive.
-        pre_terminal = []
+        # Collect messages emitted before the first real text delta
+        pre_text = []
         for msg in ws.sent:
-            if msg["type"] in ("job.result", "job.failed"):
+            if msg["type"] == "job.progress":
                 break
-            pre_terminal.append(msg)
+            pre_text.append(msg)
 
-        assert any(m["type"] == "job.heartbeat" for m in pre_terminal)
-        for msg in pre_terminal:
+        # At least one heartbeat must fire during the blocking setup.
+        assert any(m["type"] == "job.heartbeat" for m in pre_text)
+        for msg in pre_text:
             assert msg["type"] in ("job.started", "job.heartbeat"), (
-                f"Unexpected message type during silence: {msg['type']}"
+                f"Unexpected message type before first text: {msg['type']}"
             )
 
     asyncio.run(exercise())

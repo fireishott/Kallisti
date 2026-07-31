@@ -33,6 +33,7 @@ from herald_connector.client import (
     StructuredJobError,
     _estimate_payload_tokens,
 )
+from herald_connector.hermes_api_executor import StreamEvent
 from herald_connector.runtime_adapter import RuntimeTurnResult
 from herald_connector.state import ConnectorState, ConnectorStateStore
 
@@ -61,8 +62,10 @@ class FakeAdapter:
     """Adapter matching the HostRuntimeAdapter contract used by the WS job path.
 
     ``send_text_message`` is synchronous by contract — ``_handle_job_complete``
-    invokes it through ``asyncio.to_thread``.  Pass ``raises`` to exercise the
-    error-classification branches.
+    invokes it through ``asyncio.to_thread``.  For the streaming path (Build 22+),
+    ``send_text_message_streaming`` yields progressive deltas.
+
+    Pass ``raises`` to exercise the error-classification branches.
     """
 
     supports_streaming = True
@@ -82,6 +85,15 @@ class FakeAdapter:
         return RuntimeTurnResult(
             text=self._text, session_id=self._session_id, usage=self._usage,
         )
+
+    async def send_text_message_streaming(self, **kwargs):
+        """Progressive streaming generator for the Build 22 WS job path."""
+        self.calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        if self._text:
+            yield StreamEvent(type="text_delta", data=self._text)
+        yield StreamEvent(type="finish", session_id=self._session_id, usage=self._usage)
 
 
 # --------------------------------------------------------------------------
@@ -230,17 +242,14 @@ def test_preflight_does_not_warn_near_limit(tmp_path):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(adapter.calls) == 1
-    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
-    assert ws.sent[1]["text"] == "OK"
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "job.started"
+    assert "job.result" in types
     assert not [m for m in ws.sent if m.get("kind") == "context_warning"]
 
 
-def test_complete_path_emits_no_deltas(tmp_path):
-    """The WS job path emits one job.started and one job.result — no deltas.
-
-    Build 28 disabled streaming on this path; ``job.progress`` events with
-    ``kind: text_delta`` belong to the HTTP facade, not here.
-    """
+def test_streaming_path_emits_text_deltas(tmp_path):
+    """Build 22: the WS streaming path emits job.progress text_delta events."""
     store = ConnectorStateStore(state_dir=tmp_path / "preflight-normal")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
@@ -257,29 +266,24 @@ def test_complete_path_emits_no_deltas(tmp_path):
     with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
-    assert [m["type"] for m in ws.sent] == ["job.started", "job.result"]
-    assert not [m for m in ws.sent if m["type"] == "job.progress"]
-    assert ws.sent[1]["text"] == "Hello world!"
-    assert ws.sent[1]["sessionId"] == "sess-normal"
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "job.started"
+    # Build 22: streaming path emits progress deltas
+    progress_events = [m for m in ws.sent if m["type"] == "job.progress"]
+    assert len(progress_events) >= 1
+    assert any(m["kind"] == "text_delta" for m in progress_events)
+    result = next(m for m in ws.sent if m["type"] == "job.result")
+    assert result["text"] == "Hello world!"
+    assert result["sessionId"] == "sess-normal"
 
 
-def test_handle_job_streaming_delegates_to_complete(tmp_path):
-    """responseMode=streaming still resolves to the non-streaming path.
-
-    Guards the Build 28 decision: an adapter advertising streaming support
-    must not have ``send_text_message_streaming`` driven from the WS job
-    path.  If this ever changes, it should be a deliberate edit here.
-    """
+def test_handle_job_streaming_uses_streaming_adapter(tmp_path):
+    """Build 22: _handle_job_streaming drives the adapter's streaming method."""
     store = ConnectorStateStore(state_dir=tmp_path / "delegates")
     store.save(make_enrolled_state())
     connector = HermesMobileConnector(state_store=store)
 
-    class StreamingWouldFail(FakeAdapter):
-        async def send_text_message_streaming(self, **kwargs):
-            raise AssertionError("WS job path must not stream (Build 28)")
-            yield  # pragma: no cover
-
-    adapter = StreamingWouldFail("done")
+    adapter = FakeAdapter("done")
     ws = FakeWebSocket()
     job = {"id": "job-delegate", "latestUserMessage": "Hello", "history": []}
 

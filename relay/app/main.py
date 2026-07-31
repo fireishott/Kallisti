@@ -199,6 +199,7 @@ class ConnectorSession:
     host_id: str
     connection_nonce: str
     busy: bool = False
+    supports_streaming: bool = False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -887,7 +888,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Map voice transcript roles to standard roles for the connector."""
         return _ROLE_MAP.get(role, role)
 
-    def build_job_execute_payload(db: Session, *, job_id: str) -> dict:
+    def build_job_execute_payload(db: Session, *, job_id: str, user_id: str) -> dict:
         job = get_message_job(db, job_id=job_id)
         if job is None:
             raise RuntimeError("Message job not found.")
@@ -927,8 +928,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if job.reasoning_effort:
             job_data["reasoningEffort"] = job.reasoning_effort
-        # Build 28: responseMode defaults to "complete" — non-streaming only
-        job_data["responseMode"] = "complete"
+        # Build 22: select streaming mode when the connector advertises support.
+        # When streaming is unavailable, fall back to complete mode truthfully.
+        connector_session = connector_session_for_user(user_id) if user_id else None
+        supports_streaming = connector_session is not None and connector_session.supports_streaming
+        job_data["responseMode"] = "streaming" if supports_streaming else "complete"
         if voice_transcript_lines:
             job_data["voiceTranscriptContext"] = "\n".join(voice_transcript_lines)
         if user_message.attachments_data:
@@ -3092,6 +3096,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         websocket=websocket,
                         host_id=host_id,
                         connection_nonce=connection_nonce,
+                        supports_streaming=connector_info.get("supportsDraftStreaming", False),
                     ),
                 )
                 ready_payload = {
@@ -3117,7 +3122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
 
                     if claimed_job is not None:
-                        job_payload = build_job_execute_payload(db, job_id=claimed_job.id)
+                        job_payload = build_job_execute_payload(db, job_id=claimed_job.id, user_id=user_id)
                     else:
                         job_payload = None
 

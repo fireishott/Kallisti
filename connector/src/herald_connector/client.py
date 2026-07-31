@@ -459,7 +459,7 @@ class HeraldConnector:
         self._job_phases: dict[str, str] = {}
         self._pending_results: dict[str, list[dict]] = {}
         self._job_heartbeat_tasks: dict[str, asyncio.Task] = {}
-        self._heartbeat_seq: dict[str, int] = {}
+        self._job_source_seq: dict[str, int] = {}
         self._fastapi_host_ws_connected: bool = False
 
     @property
@@ -952,6 +952,7 @@ class HeraldConnector:
                     "heraldVersion": metadata.hermes_version,
                     "heraldModel": metadata.hermes_model,
                     "displayName": metadata.display_name,
+                    "supportsDraftStreaming": self._runtime_supports_streaming(state),
                 },
             }
             # Include resume info if reconnecting with active jobs
@@ -1104,14 +1105,17 @@ class HeraldConnector:
                 shutil.rmtree(staging_dir, ignore_errors=True)
 
     def _start_job_heartbeat(self, job_id: str, enqueue) -> None:
-        """Start a background task that emits job.heartbeat every 10 seconds."""
+        """Start a background task that emits job.heartbeat every 10 seconds.
+
+        Shares the same monotonic ``_job_source_seq`` counter with streaming
+        progress events so that heartbeat and text deltas never collide.
+        """
         async def _heartbeat_loop() -> None:
             try:
                 while True:
                     await asyncio.sleep(self.heartbeat_interval_seconds)
                     phase = self._job_phases.get(job_id, "starting")
-                    seq = self._heartbeat_seq.get(job_id, 0) + 1
-                    self._heartbeat_seq[job_id] = seq
+                    seq = self._next_source_seq(job_id)
                     pending_send = enqueue({
                         "type": "job.heartbeat",
                         "jobId": job_id,
@@ -1130,6 +1134,17 @@ class HeraldConnector:
         if task is not None:
             task.cancel()
         self._job_phases.pop(job_id, None)
+        self._job_source_seq.pop(job_id, None)
+
+    def _next_source_seq(self, job_id: str) -> int:
+        """Return the next monotonic source sequence for a job.
+
+        Shared by heartbeat, progress, tool, and terminal events so that every
+        event within a single job attempt carries a strictly increasing value.
+        """
+        seq = self._job_source_seq.get(job_id, 0) + 1
+        self._job_source_seq[job_id] = seq
+        return seq
 
     # D5: _auto_compact_session deleted — it called `hermes compress` which
     # is not a valid subcommand.  Compaction belongs to the agent's own
@@ -1139,16 +1154,260 @@ class HeraldConnector:
     async def _handle_job_streaming(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
     ) -> None:
-        """Process a job using the Hermes API server with streaming events.
+        """Process a job with progressive upstream streaming.
 
-        Build 28: This method is gated behind responseMode="streaming" and
-        exists only for debugging. Production uses _handle_job_complete.
+        Build 22 contract:
+        - One upstream streaming request
+        - Real upstream deltas forwarded as ``job.progress`` immediately
+        - One canonical sanitized answer accumulated independently
+        - One ``job.result`` sent after the true upstream terminal event
+        - Heartbeat and progress events share one monotonic sourceSeq
         """
-        # Delegate to the complete path — streaming is disabled in Build 28.
-        # The streaming path is retained behind an off-by-default flag;
-        # if reached (via explicit responseMode override), delegate to the
-        # complete path anyway.
-        await self._handle_job_complete(websocket, job, runtime, workdir=workdir)
+        from .reasoning_sanitizer import sanitize_message_content
+
+        job_id = job["id"]
+        try:
+            attempt = job.get("attempt", 0)
+            accumulated_text = ""
+            session_id: str | None = None
+            usage: dict | None = None
+
+            # Emit job.started (sourceSeq 0 — the heartbeat/progress counter
+            # starts at 1 via _next_source_seq).
+            await websocket.send(json.dumps({
+                "type": "job.started",
+                "jobId": job_id,
+                "phase": "starting",
+                "attempt": attempt,
+                "sourceSeq": 0,
+            }))
+            self._job_phases[job_id] = "starting"
+            self._start_job_heartbeat(job_id, lambda p: websocket.send(json.dumps(p)))
+
+            # Snapshot git state before Hermes runs so we can diff afterwards
+            pre_snapshot = await capture_snapshot(workdir) if workdir else None
+
+            history = [
+                RuntimeConversationMessage(role=item["role"], text=item["text"])
+                for item in job.get("history", [])
+            ]
+
+            # Prepend voice transcript context
+            user_message = job["latestUserMessage"]
+            voice_context = job.get("voiceTranscriptContext")
+            if voice_context:
+                user_message = (
+                    f"[Recent voice conversation for context]\n{voice_context}\n"
+                    f"[End voice conversation]\n\n{user_message}"
+                )
+
+            # Pre-flight context token estimate
+            context_window = job.get("contextWindow") or _context_window_for(
+                job.get("model", ""),
+                hermes_home=self._resolve_hermes_home(),
+                provider=job.get("provider"),
+            )
+            estimated_tokens = _estimate_payload_tokens(
+                user_message=user_message,
+                history=job.get("history", []),
+                attachments=job.get("attachments"),
+                provider=job.get("provider"),
+            )
+            logger.info(
+                "Pre-flight estimate: %d tokens / %d limit for model %s (job %s)",
+                estimated_tokens, context_window, job.get("model", "unknown"), job_id,
+            )
+
+            if context_window is not None and estimated_tokens > context_window:
+                await websocket.send(json.dumps({
+                    "type": "job.failed",
+                    "jobId": job_id,
+                    "retryable": False,
+                    "error": f"Session too long ({estimated_tokens} tokens) for model "
+                             f"{job.get('model', 'unknown')} ({context_window} token limit). "
+                             f"Start a new session or switch to a model with a larger context window.",
+                    "errorCategory": "context_exceeded",
+                    "errorDetail": {
+                        "estimatedTokens": estimated_tokens,
+                        "contextLimit": context_window,
+                        "model": job.get("model"),
+                        "action": "new_session",
+                    },
+                }))
+                self._stop_job_heartbeat(job_id)
+                return
+
+            # Absolute job timeout
+            job_timeout = job.get("timeoutSeconds", 420)
+
+            async with asyncio.timeout(job_timeout):
+                async for event in runtime.send_text_message_streaming(
+                    latest_user_message=user_message,
+                    history=history,
+                    session_id=job.get("sessionId"),
+                    attachments=job.get("attachments"),
+                    reasoning_effort=job.get("reasoningEffort"),
+                ):
+                    if event.type == "text_delta":
+                        accumulated_text += event.data
+                        self._job_phases[job_id] = "writing"
+                        seq = self._next_source_seq(job_id)
+                        await websocket.send(json.dumps({
+                            "type": "job.progress",
+                            "jobId": job_id,
+                            "kind": "text_delta",
+                            "delta": event.data,
+                            "attempt": attempt,
+                            "sourceSeq": seq,
+                        }))
+                    elif event.type == "reasoning_delta":
+                        self._job_phases[job_id] = "thinking"
+                        seq = self._next_source_seq(job_id)
+                        await websocket.send(json.dumps({
+                            "type": "job.progress",
+                            "jobId": job_id,
+                            "kind": "reasoning_delta",
+                            "delta": event.data,
+                            "attempt": attempt,
+                            "sourceSeq": seq,
+                        }))
+                    elif event.type in ("tool_started", "tool.completed", "tool_activity"):
+                        self._job_phases[job_id] = "tool"
+                        seq = self._next_source_seq(job_id)
+                        payload: dict = {
+                            "type": "job.progress",
+                            "jobId": job_id,
+                            "kind": event.type,
+                            "attempt": attempt,
+                            "sourceSeq": seq,
+                        }
+                        if hasattr(event, "label") and event.label:
+                            payload["label"] = event.label
+                        await websocket.send(json.dumps(payload))
+                    elif event.type == "finish":
+                        session_id = event.session_id
+                        usage = event.usage
+                    elif event.type == "error":
+                        raise StructuredJobError(
+                            event.data or "Upstream runtime error.",
+                            category=getattr(event, "error_category", None) or "internal_error",
+                        )
+                    elif event.type == "stream_interrupted":
+                        raise StructuredJobError(
+                            "Stream interrupted before completion.",
+                            category="upstream_interrupted",
+                            detail={"retryable": True, "action": "retry"},
+                        )
+                    # keepalive events are silently consumed — heartbeats prove
+                    # transport liveness independently.
+
+            # ----- Sanitize and validate the final answer -----
+            sanitized_text, was_stripped = sanitize_message_content(accumulated_text)
+            if was_stripped:
+                logger.info(
+                    "Job %s: reasoning stripped from streaming response (%d → %d chars)",
+                    job_id, len(accumulated_text), len(sanitized_text),
+                )
+
+            final_text = sanitized_text.strip()
+            if not final_text:
+                raise StructuredJobError(
+                    "Hermes API server returned an empty streaming response.",
+                    category="empty_response",
+                    detail={
+                        "message": "The AI returned no content. This may be due to context "
+                                   "overflow, a provider error, or the session being too long.",
+                        "retryable": False,
+                        "action": "retry_or_new_session",
+                    },
+                )
+
+            # Capture what files Hermes changed during this job
+            diff_data = await capture_diff(workdir, pre_snapshot) if pre_snapshot else None
+
+            # Extract MEDIA: tags from the response
+            media_attachments, cleaned_text = _extract_media_from_response(final_text)
+
+            result_payload: dict = {
+                "type": "job.result",
+                "jobId": job_id,
+                "text": cleaned_text,
+                "sessionId": session_id,
+                "usage": usage,
+                "reasoningStripped": was_stripped,
+            }
+            if media_attachments:
+                result_payload["attachments"] = media_attachments
+            if diff_data is not None:
+                result_payload["diff"] = diff_data
+
+            self._stop_job_heartbeat(job_id)
+            await websocket.send(json.dumps(result_payload))
+            await self._send_push_for_job(
+                job_id,
+                cleaned_text,
+                category="HERALD_MESSAGE_READY",
+                conversation_id=job.get("conversationId"),
+            )
+        except TimeoutError:
+            self._stop_job_heartbeat(job_id)
+            logger.warning("Job %s timed out after %ds", job_id, job_timeout)
+            await websocket.send(json.dumps({
+                "type": "job.failed",
+                "jobId": job_id,
+                "retryable": True,
+                "error": f"Job timed out after {job_timeout}s.",
+                "errorCategory": "timeout",
+                "errorAction": "retry",
+            }))
+            await self._send_push_for_job(
+                job_id,
+                "Herald took too long. Tap to retry.",
+                category="HERALD_JOB_ACTIVE",
+                conversation_id=job.get("conversationId"),
+            )
+        except Exception as error:  # noqa: BLE001
+            self._stop_job_heartbeat(job_id)
+
+            error_category = "internal_error"
+            error_action = "retry"
+            error_detail: dict = {}
+
+            if isinstance(error, StructuredJobError):
+                error_category = error.category
+                error_action = error.detail.get("action", "retry")
+                error_detail = error.detail
+            else:
+                error_category, error_action = self._classify_error(error)
+
+            failure_payload: dict = {
+                "type": "job.failed",
+                "jobId": job_id,
+                "retryable": self._is_retryable_job_error(error),
+                "error": str(error),
+                "errorCategory": error_category,
+                "errorAction": error_action,
+            }
+            if error_detail:
+                failure_payload["errorDetail"] = error_detail
+
+            await websocket.send(json.dumps(failure_payload))
+
+            action_messages = {
+                "context_exceeded": "Session too long. Start a new chat.",
+                "rate_limited": "Herald is busy. Try again in a moment.",
+                "timeout": "Herald took too long. Tap to retry.",
+                "empty_response": "No response received. Tap to retry.",
+                "upstream_interrupted": "Connection interrupted. Tap to retry.",
+                "internal_error": f"Herald ran into an issue: {str(error)[:80]}",
+            }
+            push_body = action_messages.get(error_category, action_messages["internal_error"])
+            await self._send_push_for_job(
+                job_id,
+                push_body,
+                category="HERALD_JOB_ACTIVE",
+                conversation_id=job.get("conversationId"),
+            )
 
     async def _handle_job_complete(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
@@ -3689,6 +3948,22 @@ You MUST return a JSON object with exactly these fields:
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._active_adapter_mode = "openai_v1_fallback"
         return cli_adapter
+
+    def _runtime_supports_streaming(self, state: ConnectorState) -> bool:
+        """Return True when the configured runtime can deliver real upstream deltas.
+
+        The TUI gateway and the Hermes API server both support progressive
+        streaming.  The CLI subprocess path does not — it only returns a
+        single complete response after the process exits.
+        """
+        if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
+            return True
+        config = state.runtime_config
+        api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
+        api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
+        if api_url or api_key:
+            return True
+        return False
 
     def apply_runtime_environment(self, state: ConnectorState) -> None:
         if state.runtime_config is not None and state.runtime_config.hermes_home:
