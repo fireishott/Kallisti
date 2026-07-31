@@ -1680,9 +1680,14 @@ final class ChatStore {
                 message.jobID.map { "\($0.uuidString)|\(message.sender)" }
             }
         )
-        let refreshedFingerprints = Set(
-            refreshedConversation.messages.map { Self.messageFingerprint($0) }
-        )
+        // Fingerprint → the refreshed indices carrying it, oldest first.  The
+        // set is what the dedupe checks; the map is what makes a deduped local
+        // message *anchorable* (see the claim loop below).
+        var refreshedIndicesByFingerprint: [String: [Int]] = [:]
+        for (index, message) in refreshedConversation.messages.enumerated() {
+            refreshedIndicesByFingerprint[Self.messageFingerprint(message), default: []].append(index)
+        }
+        let refreshedFingerprints = Set(refreshedIndicesByFingerprint.keys)
 
         // A streamed agent turn is accumulated locally, while history stores
         // one assistant row per tool boundary. Recognize that complete run
@@ -1719,21 +1724,50 @@ final class ChatStore {
             }
         }
 
-        let localOnly = localConversation.messages.filter { message in
-            if segmentedLocalIDs.contains(message.id) { return false }
-            if refreshedIDs.contains(message.id) { return false }
+        // B21: a local message deduped by *fingerprint* must also be recorded in
+        // `localToRefreshedIndex`, because that map is what the anchor walk-back
+        // below treats as "this local message exists in the refreshed array".
+        //
+        // The matching loop above can only recognise a message by id,
+        // clientMessageID or jobID — and the connector supplies none of those
+        // for a **user** row.  `session_store._message_to_dict` hardcodes
+        // `"clientMessageId": None`, and `jobId` comes from the
+        // `get_message_job_id` map, which is only written for assistant rows and
+        // only for 120s after the producing job completes.
+        //
+        // So on a real refresh the previous *reply* is matchable and the prompt
+        // between it and the live placeholder is not.  The walk-back skipped the
+        // prompt, anchored the placeholder to the reply above it, and spliced it
+        // in one slot too high — the follow-up question rendering *below* the
+        // answer it produced.  Observed 2.4.1(20), 2026-07-30 23:58.
+        //
+        // Deduping already proved these are the same message; recording where
+        // the server put it costs nothing and closes the identity gap.
+        // `B21FollowUpOrderTests` covers it.
+        var claimedRefreshedIndices = Set(localToRefreshedIndex.values)
+        var localOnly: [Message] = []
+        for message in localConversation.messages {
+            if segmentedLocalIDs.contains(message.id) { continue }
+            if refreshedIDs.contains(message.id) { continue }
             // The server assigns its own message ids; jobID and content are the
             // only cross-identity handles we have, and matching on them keeps
             // the same answer from appearing twice.
             if let jobID = message.jobID,
                refreshedJobKeys.contains("\(jobID.uuidString)|\(message.sender)") {
-                return false
+                continue
             }
             if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               refreshedFingerprints.contains(Self.messageFingerprint(message)) {
-                return false
+               let candidates = refreshedIndicesByFingerprint[Self.messageFingerprint(message)] {
+                // Claim the first row this fingerprint owns that no other local
+                // message has taken, so a question asked twice in one chat maps
+                // to two distinct rows rather than collapsing onto the first.
+                if let claim = candidates.first(where: { !claimedRefreshedIndices.contains($0) }) {
+                    claimedRefreshedIndices.insert(claim)
+                    localToRefreshedIndex[message.id] = claim
+                }
+                continue
             }
-            return true
+            localOnly.append(message)
         }
 
         // A streaming placeholder that survives a merge has, by definition, no live
