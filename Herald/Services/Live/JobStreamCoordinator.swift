@@ -5,7 +5,11 @@ import os
 /// Replaces the one-shot `streamJobEvents` that could not reconnect.
 actor JobStreamCoordinator {
     /// Terminal payload extracted from the done event.
-    struct TerminalResult: Sendable {
+    ///
+    /// @unchecked because messageJSON is [String: Any] which is not
+    /// compiler-Sendable, but this type is only ever consumed on @MainActor
+    /// via LiveHeraldClient.
+    struct TerminalResult: @unchecked Sendable {
         let text: String?
         let reasoning: String?
         let promptTokens: Int?
@@ -16,6 +20,12 @@ actor JobStreamCoordinator {
         let error: String?
         let errorCategory: String?
         let errorAction: String?
+        /// The serialized terminal message object from the `done` event's
+        /// `message` field (a RelayMessage dict).  Carries the canonical
+        /// server-assigned message ID and attachment metadata so
+        /// LiveHeraldClient can reconstruct a complete Message instead of a
+        /// text-only placeholder.
+        let messageJSON: [String: Any]?
     }
 
     enum RunResult: Sendable {
@@ -44,6 +54,9 @@ actor JobStreamCoordinator {
     private var pendingContextWindow: Int?
     private var pendingContextUsed: Int?
     private var pendingReasoning: String?
+    /// Raw JSON dict of the terminal `message` field from the `done` event.
+    /// Carries the canonical server-assigned message ID and attachment metadata.
+    private var pendingTerminalMessageJSON: [String: Any]?
 
     /// Watchdog timeout in seconds. If no SSE data (including heartbeats)
     /// arrives within this window, the stream is considered dead.
@@ -239,16 +252,26 @@ actor JobStreamCoordinator {
     // MARK: - Parsing
 
     /// Extract terminal text from the `message` field, which may be either
-    /// a plain string or a serialized message object with `content`/`role`.
+    /// a plain string or a serialized message object with `text`/`content`/`role`.
+    ///
+    /// Build 23: canonical field is `message.text` (the connector/facade
+    /// serializes RelayMessage where the text key is "text").  `message.content`
+    /// and top-level `text` are compatibility fallbacks.
     static func parseTerminalText(from json: [String: Any]) -> String? {
         guard let messageField = json["message"] else {
             return json["text"] as? String
         }
 
-        // Handle serialized message object: {"content": "...", "role": "assistant"}
-        if let messageDict = messageField as? [String: Any],
-           let content = messageDict["content"] as? String {
-            return content
+        // Handle serialized message object
+        if let messageDict = messageField as? [String: Any] {
+            // Canonical: RelayMessage.text is serialized as "text"
+            if let text = messageDict["text"] as? String {
+                return text
+            }
+            // Compatibility: older relay versions used "content"
+            if let content = messageDict["content"] as? String {
+                return content
+            }
         }
 
         // Handle legacy string form
@@ -381,6 +404,12 @@ actor JobStreamCoordinator {
 
         case "done":
             let status = json["status"] as? String ?? "completed"
+            // Capture the terminal message object so LiveHeraldClient can
+            // reconstruct a complete Message with server-assigned ID and
+            // attachment metadata (Build 23).
+            if let msgDict = json["message"] as? [String: Any] {
+                self.pendingTerminalMessageJSON = msgDict
+            }
             switch status {
             case "completed":
                 eventType = .runCompleted
@@ -497,6 +526,11 @@ actor JobStreamCoordinator {
     }
 
     private func extractTerminalResult(from envelope: JobEventEnvelope) -> TerminalResult {
+        // Snapshot the pending terminal message JSON captured in parseEnvelope
+        // so LiveHeraldClient can reconstruct a complete Message with the
+        // canonical server-assigned ID and attachment metadata (Build 23).
+        let rawMessageJSON = pendingTerminalMessageJSON
+
         switch envelope.payload {
         case .runCompleted(let p):
             return TerminalResult(
@@ -509,28 +543,32 @@ actor JobStreamCoordinator {
                 contextUsed: pendingContextUsed,
                 error: nil,
                 errorCategory: nil,
-                errorAction: nil
+                errorAction: nil,
+                messageJSON: rawMessageJSON
             )
         case .runFailed(let p):
             return TerminalResult(
                 text: nil, reasoning: nil,
                 promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
-                error: p.error, errorCategory: p.errorCategory, errorAction: p.errorAction
+                error: p.error, errorCategory: p.errorCategory, errorAction: p.errorAction,
+                messageJSON: nil
             )
         case .runCancelled(let p):
             return TerminalResult(
                 text: nil, reasoning: nil,
                 promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
-                error: p.reason, errorCategory: nil, errorAction: nil
+                error: p.reason, errorCategory: nil, errorAction: nil,
+                messageJSON: nil
             )
         default:
             return TerminalResult(
                 text: nil, reasoning: nil,
                 promptTokens: nil, completionTokens: nil, totalTokens: nil,
                 contextWindow: nil, contextUsed: nil,
-                error: nil, errorCategory: nil, errorAction: nil
+                error: nil, errorCategory: nil, errorAction: nil,
+                messageJSON: nil
             )
         }
     }

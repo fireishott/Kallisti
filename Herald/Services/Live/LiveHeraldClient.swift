@@ -448,7 +448,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         let usage: TokenUsage?
                         if let streamed = Self.finalMessage(
                             fromTerminalText: terminalResult?.text,
-                            jobId: jobId
+                            jobId: jobId,
+                            messageJSON: terminalResult?.messageJSON
                         ) {
                             finalMessage = streamed
                             usage = donePayload?.usage
@@ -680,11 +681,74 @@ final class LiveHeraldClient: HeraldClientProtocol {
     /// `/v1/conversations/current` — a stub that returns an empty message list —
     /// so every reply rendered as an empty bubble. Returns `nil` for absent or
     /// blank text so the caller can fall through to its other sources.
-    static func finalMessage(fromTerminalText text: String?, jobId: UUID) -> Message? {
+    ///
+    /// Build 23: when *messageJSON* is provided, reconstruct a complete Message
+    /// with the server-assigned ID and attachment metadata instead of a
+    /// text-only placeholder with a fresh UUID.  This preserves inline images
+    /// through the terminal projection path.
+    static func finalMessage(
+        fromTerminalText text: String?,
+        jobId: UUID,
+        messageJSON: [String: Any]? = nil
+    ) -> Message? {
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
+        // Prefer the canonical server message when available — it carries the
+        // real message ID and attachment metadata (Build 23).
+        if let json = messageJSON {
+            return mapTerminalMessage(json: json, fallbackText: text, jobId: jobId)
+        }
         return Message(sender: .herald, content: text, jobID: jobId, status: .delivered)
+    }
+
+    /// Reconstruct a Message from the terminal `done` event's serialized
+    /// message object (a RelayMessage dict).  Preserves the server-assigned
+    /// message ID and attachment metadata so inline images survive the
+    /// SSE→client bridge without a second network round-trip.
+    private static func mapTerminalMessage(
+        json: [String: Any],
+        fallbackText: String,
+        jobId: UUID
+    ) -> Message {
+        let messageId: UUID
+        if let idStr = json["id"] as? String, let parsed = UUID(uuidString: idStr) {
+            messageId = parsed
+        } else {
+            messageId = UUID()
+        }
+
+        let text = (json["text"] as? String) ?? (json["content"] as? String) ?? fallbackText
+
+        let roleStr = json["role"] as? String
+        let sender: MessageSender = roleStr == "user" ? .user : .herald
+
+        // Map attachments preserving thumbnailData for immediate rendering
+        // and remoteIndex for full-resolution fetch.
+        let attachments: [MessageAttachment]
+        if let rawAtts = json["attachments"] as? [[String: Any]] {
+            attachments = rawAtts.enumerated().map { index, att in
+                MessageAttachment(
+                    kind: att["type"] as? String ?? "file",
+                    fileName: att["filename"] as? String ?? "attachment",
+                    mimeType: att["mimeType"] as? String ?? "application/octet-stream",
+                    thumbnailBase64: att["thumbnailData"] as? String,
+                    messageID: messageId,
+                    remoteIndex: index
+                )
+            }
+        } else {
+            attachments = []
+        }
+
+        return Message(
+            id: messageId,
+            sender: sender,
+            content: text,
+            jobID: jobId,
+            status: .delivered,
+            attachments: attachments
+        )
     }
 
     private func resolveFinalMessage(

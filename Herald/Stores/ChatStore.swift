@@ -667,8 +667,12 @@ final class ChatStore {
                         // put a delivered check and a completion haptic on empty bubbles.
                         // Only rendered content — visible text or reasoning — makes a
                         // completion credible.
+                        // Build 23: an image-only response is a credible
+                        // completion.  Hidden reasoning alone should not be
+                        // sufficient for a visible delivered check.
                         isCredibleCompletion = !resolvedText.isEmpty
                             || !resolvedReasoning.isEmpty
+                            || !resolved.attachments.isEmpty
                         self.conversation?.messages[idx] = resolved
                         // Mark user message as delivered if it's still in sending state
                         if isCredibleCompletion,
@@ -808,8 +812,11 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
+                    // Build 23: cancellation must NOT mark the outgoing user
+                    // message as delivered.  The green check is a final-delivery
+                    // signal tied to a credible terminal result.
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                        self.conversation?.messages[idx].status = .delivered
+                        self.conversation?.messages[idx].status = .sending
                     }
                     await self.autoTitleIfNeeded()
 
@@ -1612,6 +1619,17 @@ final class ChatStore {
                     local.attachments,
                     onto: refreshedConversation.messages[index].attachments
                 )
+            }
+
+            // Build 23: a remote user message with deliveryStatus "delivered"
+            // must not overwrite a local user row that is still .sending or
+            // .sent — the green check is a final-delivery signal, not a
+            // connection signal.  Only a credible terminal result can mark
+            // the outgoing row delivered.
+            if local.sender == .user,
+               refreshedConversation.messages[index].status == .delivered,
+               local.status == .sending || local.status == .sent {
+                refreshedConversation.messages[index].status = local.status
             }
         }
 

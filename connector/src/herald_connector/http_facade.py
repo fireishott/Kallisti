@@ -301,7 +301,9 @@ def _relay_attachments(attachments: list | None) -> list | None:
 
 
 def _relay_message(role: str, text: str, *, client_message_id: Any = None,
-                   job_id: Any = None, attachments: list | None = None) -> dict:
+                   job_id: Any = None, attachments: list | None = None,
+                   delivery_status: str = "delivered",
+                   message_id: str | None = None) -> dict:
     """Build one RelayMessage (LiveHeraldClient.swift:39-48).
 
     id / role / text / timestamp are non-optional on the app side.  `role` accepts
@@ -310,14 +312,18 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
 
     `attachments` was hardcoded None here, which meant the /v1/runs path could never
     deliver an inline image no matter what the agent emitted.
+
+    Build 23: *delivery_status* is explicit.  A user message in a pending
+    acknowledgement must be "sent", not "delivered" — the green check is a
+    final-delivery signal tied to a credible terminal result.
     """
     return {
-        "id": str(uuid.uuid4()),
+        "id": message_id or str(uuid.uuid4()),
         "clientMessageId": _coerce_uuid(client_message_id),
         "role": role,
         "text": text,
         "timestamp": _now_iso(),
-        "deliveryStatus": "delivered",
+        "deliveryStatus": delivery_status,
         "jobId": _coerce_uuid(job_id),
         "attachments": _relay_attachments(attachments),
     }
@@ -672,6 +678,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 "errorCategory": job.get("errorCategory"),
                 "errorAction": job.get("errorAction"),
                 "usage": job.get("usage"),
+                "message": job.get("message"),
             },
         }
         _publish(terminal)
@@ -1023,7 +1030,8 @@ async def send_message(request: Request) -> JSONResponse:
         app_conversation_id = _stable_conversation_id()
 
     job_id = str(uuid.uuid4())
-    user_message = _relay_message("user", text, client_message_id=client_message_id)
+    user_message = _relay_message("user", text, client_message_id=client_message_id,
+                                  delivery_status="sent")
 
     _http_jobs[job_id] = {
         "jobId": job_id,

@@ -58,3 +58,55 @@ def test_oversize_attachment_is_dropped_not_truncated(tmp_path: Path):
     big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (11 * 1024 * 1024))
     attachments, _ = _extract_media_from_response(f"MEDIA: {big}")
     assert attachments == []
+
+
+# ── Build 23: delivery-status and terminal-message contract ──────────────
+
+
+def test_relay_message_respects_explicit_delivery_status():
+    """Build 23: _relay_message accepts an explicit delivery_status."""
+    msg = http_facade._relay_message(
+        "user", "hello", delivery_status="sent",
+    )
+    assert msg["deliveryStatus"] == "sent"
+    assert msg["role"] == "user"
+
+
+def test_relay_message_defaults_to_delivered():
+    """Default deliveryStatus is 'delivered' for backward compatibility."""
+    msg = http_facade._relay_message("herald", "reply")
+    assert msg["deliveryStatus"] == "delivered"
+
+
+def test_relay_message_preserves_message_id():
+    """Build 23: _relay_message accepts a stable message_id."""
+    msg = http_facade._relay_message(
+        "herald", "text", message_id="preserved-id",
+    )
+    assert msg["id"] == "preserved-id"
+
+
+def test_relay_attachments_none_is_none():
+    """None attachments produce None, not an empty list."""
+    assert http_facade._relay_attachments(None) is None
+
+
+def test_terminal_event_includes_message_when_present():
+    """Build 23: terminal done event carries the serialized message object."""
+    msg = http_facade._relay_message(
+        "herald", "image reply",
+        attachments=[{"type": "image", "filename": "a.png",
+                      "mimeType": "image/png", "data": "AA=="}],
+    )
+    terminal = {
+        "type": "done",
+        "data": {
+            "jobId": "test-job",
+            "status": "completed",
+            "text": "image reply",
+            "message": msg,
+        },
+    }
+    assert terminal["data"]["message"] is not None
+    assert terminal["data"]["message"]["attachments"] is not None
+    assert terminal["data"]["message"]["attachments"][0]["thumbnailData"] == "AA=="
