@@ -1949,7 +1949,9 @@ final class ChatStore {
                 fileName: remote.fileName,
                 mimeType: remote.mimeType,
                 thumbnailBase64: remote.thumbnailBase64 ?? match.thumbnailBase64,
-                localStoragePath: match.localStoragePath
+                localStoragePath: match.localStoragePath,
+                messageID: remote.messageID ?? match.messageID,
+                remoteIndex: remote.remoteIndex ?? match.remoteIndex
             )
         }
     }

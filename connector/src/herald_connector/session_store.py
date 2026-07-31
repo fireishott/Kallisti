@@ -412,7 +412,7 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
                 "mimeType": a.get("mimeType", "application/octet-stream"),
                 "byteLength": a.get("byteLength"),
                 "checksum": a.get("checksum"),
-                "thumbnailBase64": a.get("thumbnailData"),
+                "thumbnailData": a.get("thumbnailData"),
                 "messageID": msg_id,
                 "remoteIndex": i,
             }

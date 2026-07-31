@@ -713,10 +713,17 @@ class HeraldAPIExecutor:
 
                     event_name = current_event or data.get("event", "")
                     if event_name == "reasoning.available":
-                        yield StreamEvent(
-                            type="reasoning_delta",
-                            data=data.get("text", ""),
-                        )
+                        # Build 27: MiMo and other providers without a proven
+                        # distinct reasoning-summary capability emit ordinary
+                        # assistant progress/preamble text on this event name.
+                        # Publishing it as reasoning_delta projects the same
+                        # prose into both the thought card and the visible
+                        # answer.  Drop it — the text also arrives on the
+                        # untagged assistant.delta channel.
+                        # When a future provider is explicitly configured with
+                        # a distinct-reasoning capability, re-enable this path
+                        # through that flag.
+                        pass
                     elif event_name in ("assistant.delta", "message.delta"):
                         text = data.get("text", data.get("delta", ""))
                         if text:

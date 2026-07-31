@@ -630,40 +630,12 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             # from text_delta events on models without separate reasoning_delta.
             accumulated = strip_reasoning(accumulated).strip()
             accumulated_reasoning = strip_reasoning(accumulated_reasoning or "").strip()
-            # Build 26: classify the accumulated reasoning channel.  Some
-            # providers (e.g. Mimo) emit ordinary assistant progress/preamble
-            # text as reasoning.available events even though the same sentences
-            # also arrive on the untagged assistant.delta channel.  That is
-            # mislabeled progress, not chain-of-thought.
-            #
-            # Rule: if reasoning text is a non-empty prefix or subset of the
-            # visible answer text (after normalizing whitespace), it is
-            # duplicated progress and MUST NOT be published as reasoning.
-            # Only genuinely distinct content belongs in the thought card.
-            normalized_answer = " ".join(accumulated.split())
-            normalized_reasoning = " ".join(accumulated_reasoning.split())
-            if accumulated_reasoning and normalized_reasoning:
-                if normalized_answer.startswith(normalized_reasoning) or normalized_reasoning.startswith(normalized_answer):
-                    logger.info(
-                        "Job %s: reasoning channel is a prefix/subset of visible "
-                        "answer — suppressing as mislabeled progress (reasoning=%d chars, answer=%d chars)",
-                        job_id, len(accumulated_reasoning), len(accumulated),
-                    )
-                    accumulated_reasoning = ""
-                elif len(normalized_reasoning) < len(normalized_answer) * 1.5:
-                    # Short reasoning that isn't a direct prefix — check if
-                    # any substantial substring (≥80%) is contained in answer.
-                    overlap = 0
-                    for word in normalized_reasoning.split():
-                        if word in normalized_answer:
-                            overlap += 1
-                    if overlap > 0 and overlap / max(len(normalized_reasoning.split()), 1) > 0.8:
-                        logger.info(
-                            "Job %s: reasoning channel shares ≥80%% words with "
-                            "visible answer — suppressing as mislabeled progress",
-                            job_id,
-                        )
-                        accumulated_reasoning = ""
+            # Build 27: MiMo reasoning.available is already suppressed at
+            # the SSE parser (herald_api_executor.py).  Any remaining
+            # accumulated_reasoning came from inline <think> tags stripped
+            # from text deltas via think_parser — those are genuine
+            # embedded reasoning blocks and should be published.
+            accumulated_reasoning = strip_reasoning(accumulated_reasoning or "").strip()
             # MEDIA: tag extraction.  This lived only on the WebSocket relay job path
             # (client.py:1301, _handle_job_complete).  Build 16 made /v1/runs the default
             # transport, so from B16 to B17 a MEDIA: tag was never parsed at all and the
