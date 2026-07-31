@@ -505,11 +505,6 @@ struct ChatScreen: View {
                         ProgressView()
                             .controlSize(.mini)
                     } else if modelStore.isError {
-                        ViewThatFits(in: .horizontal) {
-                            chipModelText(model)
-                            chipModelText(compactModelName(model))
-                        }
-                    } else if modelStore.isError {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 10))
                             .foregroundStyle(Design.Colors.secondaryForeground)

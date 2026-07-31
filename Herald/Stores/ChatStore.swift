@@ -1822,9 +1822,7 @@ final class ChatStore {
                 // against empty/prefix server copies for matched rows;
                 // this extends that protection to the dedupe path.
                 Self.logger.debug(
-                    "B28: preserving local terminal row \(message.id.uuidString.prefix(8)) "
-                    + "(jobId=\(jobID.uuidString.prefix(8))) despite refreshed jobKey match "
-                    + "— local content is non-empty"
+                    "B28: preserving local terminal row \(message.id.uuidString.prefix(8)) (jobId=\(jobID.uuidString.prefix(8))) despite refreshed jobKey match — local content is non-empty"
                 )
             }
             if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
