@@ -1,4 +1,12 @@
-__all__ = ["__version__"]
+__all__ = ["__version__", "HERALD_PROTOCOL"]
+
+# Minimum connector version the app MUST negotiate.  The iOS app sends this
+# protocol version in every POST /v1/messages request; the connector rejects
+# mismatches so a stale TestFlight build cannot silently fall back to an old
+# contract.  Bump only when a clean-break protocol change requires coordinated
+# app + connector deployment.
+
+HERALD_PROTOCOL = 3
 
 # Single source of truth for the connector version.  Surfaced to the app as
 # `connectorVersion` (client.py:_detect_connector_version → the host payload)
@@ -15,4 +23,4 @@ __all__ = ["__version__"]
 # 0.6.0 — 2026-07-31 Build 28: inbound attachment staging and /v1/runs delivery;
 #         single-owner transcript reducer; user+device session isolation;
 #         authoritative model state; typed thought channel.
-__version__ = "0.6.0"
+__version__ = "0.6.1"

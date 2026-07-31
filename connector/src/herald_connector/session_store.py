@@ -102,15 +102,22 @@ def _save_device_registry(data: dict) -> None:
 
 
 def _session_belongs_to_device(session_id: str, device_id: str) -> bool:
-    """True if *session_id* is recorded as owned by *device_id*."""
+    """True if *session_id* is recorded as owned by *device_id*.
+
+    Build 30: legacy sessions without a recorded device owner are now
+    quarantined (return False) rather than being visible to every device
+    by default.  The old behaviour made the All Devices toggle cosmetic —
+    unowned sessions were intentionally leaked to every authenticated
+    device.  A migration can assign ownership later; until then, legacy
+    rows are hidden when All Devices is off.
+    """
     registry = _load_device_registry()
     entry = registry.get("sessions", {}).get(str(session_id))
     if isinstance(entry, dict):
         return entry.get("deviceId") == device_id
-    # Legacy sessions predating device tracking: visible to all devices
-    # (they have no owner, so filtering them out would hide history).
-    # A migration quarantine rule can change this default later.
-    return True
+    # Legacy sessions predating device tracking: quarantined.
+    # They are visible only when allDevices=true (which skips this check).
+    return False
 
 
 # ── Connection ─────────────────────────────────────────────────────────────

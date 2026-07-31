@@ -983,13 +983,45 @@ async def switch_profile(request: Request) -> JSONResponse:
 
 
 async def get_session(request: Request) -> JSONResponse:
+    """Return session bootstrap with stable user/device identity.
+
+    Build 30: the old implementation returned random uuid4() values on every
+    call, which made device identity unstable — pairing, session ownership,
+    and the All Devices toggle all depended on a stable installation ID that
+    this endpoint was not providing.  Now we resolve the authenticated
+    device's real identity from the registry and derive a stable user UUID.
+    """
     await require_auth(request)
     ctx = get_context()
-    import uuid as _uuid3
+    from .session_store import device_id_for_token
+    from . import HERALD_PROTOCOL as _HERALD_PROTOCOL
+    import hashlib as _hashlib
+    import uuid as _uuid
+
+    token = await _extract_token(request)
+    installation_id = device_id_for_token(token) if token else None
+
+    # Stable user identity: derive from the installation_id so it survives
+    # app relaunch / token refresh within the same device.
+    if installation_id:
+        user_seed = _hashlib.sha256(f"herald-user:{installation_id}".encode()).digest()[:16]
+        user_id = str(_uuid.UUID(bytes=user_seed))
+    else:
+        user_id = str(_uuid.uuid4())
+
     return JSONResponse({
-        "user": {"id": str(_uuid3.uuid4()), "displayName": "Herald User"},
-        "device": {"id": str(_uuid3.uuid4()), "registered": True},
-        "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
+        "user": {"id": user_id, "displayName": "Herald User"},
+        "device": {
+            "id": installation_id or str(_uuid.uuid4()),
+            "registered": bool(installation_id),
+        },
+        "session": {
+            "connectionStatus": "connected",
+            "isMockMode": False,
+            "backendEndpoint": ctx.public_base_url or "",
+            "lastSyncAt": None,
+            "protocol": _HERALD_PROTOCOL,
+        },
         "push": {"tokenRegistered": False},
     })
 
@@ -1132,6 +1164,28 @@ async def send_message(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Request body must be JSON")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    # ── Protocol negotiation (Build 30) ──────────────────────────────────
+    # Every POST /v1/messages MUST carry the app's protocol version.  A
+    # mismatch means the TestFlight build talks to a connector it wasn't
+    # built for — reject so the app can show "Connector update required"
+    # instead of silently using a broken contract.
+    from . import HERALD_PROTOCOL as _REQUIRED_PROTOCOL
+    client_protocol = body.get("heraldProtocol")
+    if not isinstance(client_protocol, int) or client_protocol != _REQUIRED_PROTOCOL:
+        raise HTTPException(
+            status_code=426,
+            detail={
+                "error": "protocol_mismatch",
+                "requiredProtocol": _REQUIRED_PROTOCOL,
+                "clientProtocol": client_protocol,
+                "message": (
+                    "This app version requires a connector update. "
+                    "Please update the Herald connector to continue."
+                ),
+            },
+        )
+
     text = body.get("text", "")
     history = body.get("history") or []
     session_id = body.get("sessionId")
@@ -1181,8 +1235,24 @@ async def send_message(request: Request) -> JSONResponse:
         app_conversation_id = _stable_conversation_id()
 
     job_id = str(uuid.uuid4())
+    # Build 30: echo attachment metadata in the user acknowledgement so the
+    # server-projected user row preserves attachment identity.  Without this,
+    # the client's mergeConversationMetadata overwrites the local optimistic
+    # row (which has attachment metadata) with a text-only server projection.
+    ack_attachments = None
+    if attachments and isinstance(attachments, list):
+        ack_attachments = [
+            {
+                "type": a.get("type", "file"),
+                "filename": a.get("filename", "attachment"),
+                "mimeType": a.get("mimeType", "application/octet-stream"),
+                "thumbnailData": a.get("thumbnailData") or a.get("data") or "",
+            }
+            for a in attachments
+            if isinstance(a, dict) and (a.get("thumbnailData") or a.get("data"))
+        ] or None
     user_message = _relay_message("user", text, client_message_id=client_message_id,
-                                  delivery_status="sent")
+                                  delivery_status="sent", attachments=ack_attachments)
 
     # Build 28: resolve the requesting device identity from the auth token
     # so the session can be attributed to a device for allDevices scoping.
@@ -2466,6 +2536,12 @@ routes = [
     Route("/v1/talk/session/{id}/turns", stub_talk_session_turns, methods=["GET"]),
     Route("/v1/gw/update", stub_gw_update, methods=["GET"]),
     Route("/v1/gw/update/check", stub_gw_update_check, methods=["POST"]),
+    # Non-v1 aliases — the iOS RelayAPIClient strips /v1 from gateway
+    # paths (RelayAPIClient.swift:324-345) when resolving against
+    # activeBaseURLString, so /gw/update resolves to POST host:8010/gw/update.
+    # Without these aliases the facade returns 404 for update check/apply.
+    Route("/gw/update", stub_gw_update, methods=["GET", "POST"]),
+    Route("/gw/update/check", stub_gw_update_check, methods=["POST"]),
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
 ]
 
