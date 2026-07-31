@@ -56,7 +56,11 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     let sender: MessageSender
     var content: String
     let timestamp: Date
-    let jobID: UUID?
+    /// The relay job ID that produced this message. Mutable so the streaming
+    /// placeholder (initialised nil) can acquire its job identity when
+    /// `.messageSent` arrives — without this, the conversation refresh merge
+    /// can't match a persisted assistant row to the live placeholder by jobID.
+    var jobID: UUID?
     var status: MessageStatus
     var toolActivity: String?
     var toolActivities: [ToolActivity]

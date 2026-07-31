@@ -453,6 +453,15 @@ final class ChatStore {
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
                     self.activeStreams[jobID] = placeholderID
+                    // Correlate the placeholder with its server-assigned job
+                    // identity so the conversation refresh merge can match
+                    // persisted assistant rows back to this live placeholder
+                    // without relying on content heuristics.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].jobID = jobID
+                        self.conversation = conv
+                    }
                     // Arm the polling safety net. If the SSE stream fails silently
                     // (transport drop, proxy timeout, connector stall), polling
                     // recovers the response so the user isn't stuck staring at a
@@ -1576,6 +1585,49 @@ final class ChatStore {
                     local.attachments,
                     onto: refreshedConversation.messages[index].attachments
                 )
+            }
+        }
+
+        // Turn projection dedup: when Hermes persists more than one assistant
+        // row per turn (tool boundaries), the matching loop above copies the
+        // local placeholder's reasoning and tool timeline onto every row that
+        // shares the same jobId.  That produces duplicate "Thought process"
+        // cards interleaved with answer segments — one collapsed reasoning
+        // block per physical row.  Keep those artifacts only on the *last*
+        // row of each jobId group so the UI shows one reasoning card per turn.
+        do {
+            var groupStart = 0
+            while groupStart < refreshedConversation.messages.count {
+                guard let groupJobID = refreshedConversation.messages[groupStart].jobID,
+                      refreshedConversation.messages[groupStart].sender == .herald
+                else { groupStart += 1; continue }
+
+                var groupEnd = groupStart + 1
+                while groupEnd < refreshedConversation.messages.count,
+                      refreshedConversation.messages[groupEnd].jobID == groupJobID,
+                      refreshedConversation.messages[groupEnd].sender == .herald {
+                    groupEnd += 1
+                }
+
+                // More than one row shares this jobId — strip reasoning and
+                // tool artifacts from all but the last.
+                if groupEnd - groupStart > 1 {
+                    let lastIdx = groupEnd - 1
+                    for i in groupStart..<lastIdx {
+                        if !refreshedConversation.messages[i].reasoning.isEmpty {
+                            Self.logger.debug(
+                                "Turn projection: stripping reasoning from row \(i) of jobId \(groupJobID) (kept on row \(lastIdx))"
+                            )
+                            refreshedConversation.messages[i].reasoning = ""
+                            refreshedConversation.messages[i].reasoningDuration = nil
+                        }
+                        if !refreshedConversation.messages[i].toolActivities.isEmpty {
+                            refreshedConversation.messages[i].toolActivities = []
+                            refreshedConversation.messages[i].toolActivity = nil
+                        }
+                    }
+                }
+                groupStart = groupEnd
             }
         }
 

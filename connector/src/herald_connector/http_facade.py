@@ -487,6 +487,36 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             # from text_delta events on models without separate reasoning_delta.
             accumulated = strip_reasoning(accumulated).strip()
             job["message"] = _relay_message("herald", accumulated, job_id=job_id)
+            # Tag the Hermes-written assistant messages with this job ID so
+            # GET /v1/sessions/{id}/conversation returns jobId on each row.
+            # Without this the iOS merge falls through to unsafe content
+            # heuristics — the same text appearing in multiple turns, tool
+            # boundaries splitting one reply across rows, etc.
+            if hermes_sid:
+                try:
+                    from .session_store import (
+                        _connect as _ss_connect,
+                        _deterministic_uuid,
+                        set_message_job_id,
+                    )
+                    ss_conn = _ss_connect()
+                    try:
+                        rows = ss_conn.execute(
+                            "SELECT id FROM messages "
+                            "WHERE session_id = ? AND role = 'assistant' "
+                            "  AND timestamp >= ? AND active = 1",
+                            (hermes_sid, job_started_at),
+                        ).fetchall()
+                        for row in rows:
+                            app_msg_id = _deterministic_uuid("msg", row["id"])
+                            set_message_job_id(app_msg_id, job_id)
+                    finally:
+                        ss_conn.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to record message→job mapping for job %s", job_id,
+                        exc_info=True,
+                    )
         terminal = {
             "type": "done",
             "data": {

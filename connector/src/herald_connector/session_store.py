@@ -214,6 +214,46 @@ def set_session_meta(session_id: str, **kwargs) -> None:
     _save_sidecar(sidecar)
 
 
+# ── Message → job correlation ──────────────────────────────────────────────
+#
+# Hermes writes assistant messages to state.db without a jobId column, so a
+# conversation refresh returns rows with ``jobId: None``.  The iOS merge then
+# can't match persisted assistant rows to the live streaming placeholder by
+# identity, and falls through to content heuristics that are unsafe for
+# partial history, repeated phrases, tool boundaries, and reasoning text.
+#
+# This map records (app_message_uuid → job_id) when a job completes, and
+# ``_message_to_dict`` consults it.  It is process-local (dies with the
+# connector); the iOS client only needs it for the first conversation refresh
+# after a job completes — after that the client has its own correlation.
+_message_job_map: dict[str, str] = {}
+# TTL guard: entries older than this are dropped so a long-running connector
+# doesn't grow unbounded.  The iOS polling cadence is ~30s max; 120s is plenty.
+_MESSAGE_JOB_MAP_TTL = 120.0
+_message_job_map_timestamps: dict[str, float] = {}
+
+
+def set_message_job_id(message_id: str, job_id: str) -> None:
+    """Record that *message_id* was produced by *job_id*."""
+    _message_job_map[message_id] = job_id
+    import time as _time
+    _message_job_map_timestamps[message_id] = _time.time()
+
+
+def get_message_job_id(message_id: str) -> str | None:
+    """Return the job ID for *message_id*, or None."""
+    now = __import__("time").time()
+    # Prune expired entries on read
+    stale = [
+        mid for mid, ts in _message_job_map_timestamps.items()
+        if now - ts > _MESSAGE_JOB_MAP_TTL
+    ]
+    for mid in stale:
+        _message_job_map.pop(mid, None)
+        _message_job_map_timestamps.pop(mid, None)
+    return _message_job_map.get(message_id)
+
+
 # ── Message history ────────────────────────────────────────────────────────
 
 # Historical reasoning is returned so the collapsed "Thought process" block
@@ -317,6 +357,11 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
     if msg_id is None:
         msg_id = _deterministic_uuid("msg", row["id"])
 
+    # Consult the job map — if this message was produced by a known job,
+    # return its jobId so the iOS client can correlate assistant rows
+    # with the live streaming placeholder by identity, not content heuristics.
+    resolved_job_id = get_message_job_id(msg_id)
+
     return {
         "id": msg_id,
         "clientMessageId": None,
@@ -324,7 +369,7 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
         "text": row["content"],
         "timestamp": _epoch_to_iso(row["timestamp"]),
         "deliveryStatus": "delivered",
-        "jobId": None,
+        "jobId": resolved_job_id,
         "attachments": None,
         "reasoning": (row["reasoning_content"] or "") if include_reasoning else "",
     }
