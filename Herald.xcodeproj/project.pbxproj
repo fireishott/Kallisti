@@ -149,6 +149,7 @@
 		7F44B2762B896D747A609959 /* HeraldWidgetData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 774D053324B25BA4BE97C2CD /* HeraldWidgetData.swift */; };
 		818314B9F663CE0FE181E067 /* InboxItemPriority.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B7D51CD4AD9A91B4DCA6BA /* InboxItemPriority.swift */; };
 		8205AC97008E0D16E113716E /* CronManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C9A641C1CEBE8C9E0230A0F /* CronManagerView.swift */; };
+		83241B5D786EF72BB163933F /* B23DeliveryStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B81BE0A983B62D5BBF68FB2 /* B23DeliveryStateTests.swift */; };
 		832687151645B01F87079665 /* SessionBootstrapServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */; };
 		83834D1976CAAF7F46A85115 /* MockNotesRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE230F45FF59C0A1160FD97D /* MockNotesRepository.swift */; };
 		83889635E7A4B688BE6F298A /* AppStoresTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE78A4AFFD68002BD6F2EB5D /* AppStoresTests.swift */; };
@@ -486,6 +487,7 @@
 		79E8FDA74E8689EA4263AC54 /* tts_error_response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = tts_error_response.json; sourceTree = "<group>"; };
 		7A40EB5BC4942655993A3286 /* AppTemplateUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateUITests.swift; sourceTree = "<group>"; };
 		7B3811CB56102D539581E629 /* tts_streaming_response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = tts_streaming_response.json; sourceTree = "<group>"; };
+		7B81BE0A983B62D5BBF68FB2 /* B23DeliveryStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = B23DeliveryStateTests.swift; sourceTree = "<group>"; };
 		7C66C0194CDF7E574F06D621 /* HandwritingRecognizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingRecognizing.swift; sourceTree = "<group>"; };
 		7C8403F487A93F9A55ED256F /* HeraldWidgetData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldWidgetData.swift; sourceTree = "<group>"; };
 		7D2CF4A4D4466C2EACE7ED7C /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
@@ -1172,6 +1174,7 @@
 				CBE24DF80549E3B6BD972039 /* B18TerminalStateTests.swift */,
 				FAD824A13B73B3D629503E8A /* B18TranscriptOrderTests.swift */,
 				0A68BF71814B9BAAF12BF111 /* B21FollowUpOrderTests.swift */,
+				7B81BE0A983B62D5BBF68FB2 /* B23DeliveryStateTests.swift */,
 				AC6147223A6404B126D3F471 /* HealthServiceTests.swift */,
 				FB51A45C6778C706B138BCA2 /* HeraldThemeTests.swift */,
 				82DCB33DBF34B15C4F911320 /* JobStreamCoordinatorTests.swift */,
@@ -1499,6 +1502,7 @@
 				640DB937D0622D9BB0FFD3BF /* B18TerminalStateTests.swift in Sources */,
 				D289B54EA69791A31238134C /* B18TranscriptOrderTests.swift in Sources */,
 				BCCD6EB36584893A1ACE1EDE /* B21FollowUpOrderTests.swift in Sources */,
+				83241B5D786EF72BB163933F /* B23DeliveryStateTests.swift in Sources */,
 				27752B86D80561ED7DF72D7D /* ChatStoreTestMocks.swift in Sources */,
 				2058D4034B69B28FA7F979F1 /* HealthServiceTests.swift in Sources */,
 				59AD7E8C8C12D0336259197A /* HeraldThemeTests.swift in Sources */,
