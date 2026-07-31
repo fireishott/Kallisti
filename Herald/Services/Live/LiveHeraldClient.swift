@@ -691,13 +691,14 @@ final class LiveHeraldClient: HeraldClientProtocol {
         jobId: UUID,
         messageJSON: [String: Any]? = nil
     ) -> Message? {
+        // When a canonical server message is present, always prefer it —
+        // attachments (e.g., inline images) are valid even with empty
+        // terminal text (image-only completion, Build 23).
+        if let json = messageJSON {
+            return mapTerminalMessage(json: json, fallbackText: text ?? "", jobId: jobId)
+        }
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
-        }
-        // Prefer the canonical server message when available — it carries the
-        // real message ID and attachment metadata (Build 23).
-        if let json = messageJSON {
-            return mapTerminalMessage(json: json, fallbackText: text, jobId: jobId)
         }
         return Message(sender: .herald, content: text, jobID: jobId, status: .delivered)
     }

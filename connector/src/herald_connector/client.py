@@ -1287,6 +1287,11 @@ class HeraldConnector:
                     elif event.type == "finish":
                         session_id = event.session_id
                         usage = event.usage
+                        # Prefer the canonical output from run.completed
+                        # over locally accumulated deltas, which can be
+                        # partial after an SSE interruption.
+                        if event.output:
+                            accumulated_text = event.output
                     elif event.type == "error":
                         raise StructuredJobError(
                             event.data or "Upstream runtime error.",
@@ -1930,11 +1935,15 @@ class HeraldConnector:
                         "data": {"seq": source_seq},
                     }
                 elif event.type == "finish":
+                    # Prefer the canonical output from run.completed over
+                    # locally accumulated deltas, which can be partial
+                    # after an SSE interruption.
+                    terminal_text = (event.output or accumulated_text).strip()
                     yield {
                         "type": "done",
                         "data": {
                             "status": "completed",
-                            "text": accumulated_text.strip(),
+                            "text": terminal_text,
                             "sessionId": event.session_id or session_id,
                             "usage": event.usage,
                         },

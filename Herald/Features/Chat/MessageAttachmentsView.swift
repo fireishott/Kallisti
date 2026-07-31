@@ -292,6 +292,13 @@ private struct FullScreenImageViewer: View {
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     Spacer()
+                    Button { saveToPhotos() } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(10)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                     Button { showShareSheet = true } label: {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 16, weight: .semibold))
@@ -308,6 +315,13 @@ private struct FullScreenImageViewer: View {
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [image])
         }
+    }
+
+    /// Save the current image to the Photos library.  The nil completion
+    /// target/selector matches UIKit's minimal save API; a transient overlay
+    /// and haptic can be added later if needed.
+    private func saveToPhotos() {
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
     }
 }
 

@@ -187,6 +187,7 @@ class StreamEvent:
     session_id: str | None = None
     usage: dict | None = None
     error_category: str | None = None
+    output: str | None = None  # canonical terminal text from run.completed (authoritative over deltas)
 
 
 @dataclass
@@ -749,6 +750,7 @@ class HeraldAPIExecutor:
                             type="finish",
                             session_id=data.get("session_id"),
                             usage=data.get("usage"),
+                            output=data.get("output"),
                         )
                         return
                     elif event_name in ("run.failed", "run.cancelled"):
@@ -785,11 +787,20 @@ class HeraldAPIExecutor:
         yield StreamEvent(type="stream_interrupted")
 
     @staticmethod
-    def _runs_request_payload(*, latest_user_message: str, session_id: str | None) -> dict:
+    def _runs_request_payload(
+        *,
+        latest_user_message: str,
+        session_id: str | None,
+        conversation_history: list[HeraldConversationMessage] | None = None,
+    ) -> dict:
         """Build the documented `/v1/runs` request body.
 
         The runs API owns its session binding in JSON, unlike the legacy
         chat-completions API which reads the continuity header.
+
+        conversation_history, when provided, is the prior conversation
+        context that Hermes does not load from its own database — the
+        caller must supply it so continuation runs see full context.
         """
         payload: dict = {
             "model": "hermes-agent",
@@ -798,6 +809,12 @@ class HeraldAPIExecutor:
         }
         if session_id:
             payload["session_id"] = session_id
+        if conversation_history:
+            payload["conversation_history"] = [
+                {"role": m.role, "content": m.text}
+                for m in conversation_history
+                if m.text.strip()
+            ]
         return payload
 
     async def stream_message_runs(
@@ -824,10 +841,12 @@ class HeraldAPIExecutor:
         # string and rejects a `messages` array outright with
         # {"error": {"message": "Missing 'input' field"}}, which raised on
         # raise_for_status() and failed every turn the moment the runs path was
-        # enabled.  History is carried by the session, not the payload.
+        # enabled.  conversation_history must be supplied explicitly in the
+        # payload — Hermes does not load it from the session database.
         payload = self._runs_request_payload(
             latest_user_message=latest_user_message,
             session_id=session_id,
+            conversation_history=history,
         )
         # `/v1/runs` does not use the chat-completions continuity header.
         # It binds an existing Hermes transcript only from this JSON field.
@@ -890,6 +909,7 @@ class HeraldAPIExecutor:
                             type="finish",
                             session_id=status_data.get("session_id"),
                             usage=status_data.get("usage"),
+                            output=status_data.get("output"),
                         )
                         return
                     if run_status in ("failed", "cancelled"):

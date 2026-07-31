@@ -25,7 +25,7 @@ import httpx
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 logger = logging.getLogger("herald.http_facade")
@@ -648,18 +648,25 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         _connect as _ss_connect,
                         _deterministic_uuid,
                         set_message_job_id,
+                        set_message_attachments,
                     )
                     ss_conn = _ss_connect()
                     try:
                         rows = ss_conn.execute(
                             "SELECT id FROM messages "
                             "WHERE session_id = ? AND role = 'assistant' "
-                            "  AND timestamp >= ? AND active = 1",
+                            "  AND timestamp >= ? AND active = 1 "
+                            "ORDER BY timestamp ASC",
                             (hermes_sid, job_started_at),
                         ).fetchall()
                         for row in rows:
                             app_msg_id = _deterministic_uuid("msg", row["id"])
                             set_message_job_id(app_msg_id, job_id)
+                        # Build 25: persist MEDIA: attachments so they survive
+                        # conversation refresh (state.db has no attachments column).
+                        if media_attachments and rows:
+                            last_msg_id = _deterministic_uuid("msg", rows[-1]["id"])
+                            set_message_attachments(last_msg_id, media_attachments)
                     finally:
                         ss_conn.close()
                 except Exception:
@@ -1087,6 +1094,57 @@ async def send_message(request: Request) -> JSONResponse:
         "context": None,
         "diff": None,
     })
+
+
+# ── Attachment serving ─────────────────────────────────────────────────────
+
+
+async def message_attachment_bytes(request: Request) -> Response:
+    """GET /v1/messages/{messageID}/attachments/{remoteIndex}
+
+    Mirror of the legacy relay endpoint (relay/app/main.py:2487-2530).
+    Conversation loads carry attachment metadata only; full bytes are
+    fetched on demand by AttachmentService.swift.  The envelope middleware
+    passes non-JSON Content-Types through untouched, so this raw-bytes
+    response is not wrapped.
+    """
+    await require_auth(request)
+    from .session_store import get_attachment
+
+    raw_msg_id = request.path_params.get("messageID", "")
+    msg_id = _coerce_uuid(raw_msg_id)
+    if not msg_id:
+        raise HTTPException(status_code=404, detail="Message not found.")
+
+    try:
+        index = int(request.path_params.get("remoteIndex", ""))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    att = get_attachment(msg_id, index)
+    if att is None:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    data_b64 = att.get("data") or ""
+    if not data_b64:
+        raise HTTPException(status_code=404, detail="Attachment has no stored data.")
+
+    import base64
+    try:
+        payload = base64.b64decode(data_b64)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Attachment data is corrupt.")
+
+    filename = att.get("filename", "attachment")
+    mime_type = att.get("mimeType", "application/octet-stream")
+    return Response(
+        content=payload,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=86400",
+        },
+    )
 
 
 # ── Pairing / Auth ───────────────────────────────────────────────────────
@@ -2140,6 +2198,7 @@ routes = [
     Route("/gw/profile/switch", switch_profile, methods=["POST"]),
     Route("/v1/gw/profile/switch", switch_profile, methods=["POST"]),
     Route("/v1/messages", send_message, methods=["POST"]),
+    Route("/v1/messages/{messageID}/attachments/{remoteIndex}", message_attachment_bytes, methods=["GET"]),
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
     Route("/gw/restart", gateway_restart, methods=["POST"]),

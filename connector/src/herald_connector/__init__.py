@@ -9,4 +9,4 @@ __all__ = ["__version__"]
 # 0.5.2 — 2026-07-31 Build 23: terminal message projection preserves attachment
 #         metadata through the SSE done→iOS bridge; explicit deliveryStatus on
 #         _relay_message (pending user row is "sent", not "delivered").
-__version__ = "0.5.2"
+__version__ = "0.5.3"

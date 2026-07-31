@@ -434,6 +434,17 @@ final class ChatStore {
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
+        /// Build 25: synchronous mirror of everything routed to the reasoning
+        /// channel.  The real buffers flush on a 33ms task, so reading only the
+        /// placeholder's `.reasoning` would falsely detect divergence during
+        /// flush lag.
+        var reasoningAccumulator = ""
+        /// Text deltas held back while reasoning is active because the same
+        /// sentence arrived on BOTH the reasoning and untagged text channels.
+        var suppressedText = ""
+        /// false once the first non-duplicate text delta arrives — divergence
+        /// is sticky because the channels have genuinely split.
+        var reasoningDeDupActive = true
 
         streamingPhase = .sending
 
@@ -500,7 +511,33 @@ final class ChatStore {
                     ) != nil
                     if hasOpenThinkTag && reasoningStartedAt == nil {
                         reasoningStartedAt = .now
+                        reasoningAccumulator.append(delta)
                         self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                    } else if reasoningDeDupActive && reasoningStartedAt != nil {
+                        // Build 25: the same sentence may arrive on BOTH the
+                        // structured reasoning channel and the untagged text
+                        // channel.  Suppress text the reasoning already covers.
+                        suppressedText.append(delta)
+                        if reasoningAccumulator.contains(suppressedText) {
+                            // Still within reasoning bounds — suppress.
+                        } else {
+                            // Diverged: reasoning no longer covers this text.
+                            // Emit only the uncovered tail, then stop suppressing.
+                            reasoningDeDupActive = false
+                            let visible = Self.dedupVisibleTail(
+                                candidate: suppressedText,
+                                reasoning: reasoningAccumulator
+                            )
+                            suppressedText = ""
+                            if !visible.isEmpty {
+                                if let settings = self.ttsSettingsProvider?(),
+                                   settings.enabled,
+                                   settings.autoSpeakDuringStreaming {
+                                    self.ttsService?.speakStreaming(visible, voice: settings.voice)
+                                }
+                                self.enqueueDelta(visible, placeholderID: placeholderID)
+                            }
+                        }
                     } else {
                         // Stream to TTS only for non-reasoning content
                         if let settings = self.ttsSettingsProvider?(),
@@ -516,6 +553,8 @@ final class ChatStore {
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
+                    // Build 25: mirror for cross-channel de-duplication.
+                    reasoningAccumulator.append(delta)
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
                 case .toolActivity(let label):
@@ -660,18 +699,31 @@ final class ChatStore {
                             resolved.content = regex.stringByReplacingMatches(in: resolved.content, range: range, withTemplate: "")
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                         }
+                        // Build 25: reconcile any suppressed text that the final
+                        // reasoning never covered.  If the turn ended while text
+                        // deltas were still being suppressed, the uncovered tail
+                        // is visible content the user should see.
+                        if !suppressedText.isEmpty {
+                            let finalReasoning = resolved.reasoning
+                            if !finalReasoning.contains(suppressedText) {
+                                let visible = Self.dedupVisibleTail(
+                                    candidate: suppressedText,
+                                    reasoning: finalReasoning
+                                )
+                                if !visible.isEmpty {
+                                    resolved.content.append(visible)
+                                }
+                            }
+                            suppressedText = ""
+                        }
                         let resolvedText = resolved.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let resolvedReasoning = resolved.reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Usage is returned by every provider on every turn, including turns
                         // that produced nothing.  Treating it as proof of a reply is what
                         // put a delivered check and a completion haptic on empty bubbles.
-                        // Only rendered content — visible text or reasoning — makes a
-                        // completion credible.
-                        // Build 23: an image-only response is a credible
-                        // completion.  Hidden reasoning alone should not be
-                        // sufficient for a visible delivered check.
+                        // Only rendered content — visible text or attachments — makes a
+                        // completion credible.  Hidden reasoning alone is never a visible
+                        // delivered check.
                         isCredibleCompletion = !resolvedText.isEmpty
-                            || !resolvedReasoning.isEmpty
                             || !resolved.attachments.isEmpty
                         self.conversation?.messages[idx] = resolved
                         // Mark user message as delivered if it's still in sending state
@@ -1508,6 +1560,30 @@ final class ChatStore {
         var merged = resolved
         merged.content = streamedContent
         return merged
+    }
+
+    /// Build 25: return the suffix of *candidate* that is NOT covered by
+    /// *reasoning*.  When the same sentence arrives on both the structured
+    /// reasoning channel and the untagged text channel, the overlapping
+    /// prefix is suppressed; only the uncovered tail is emitted as visible
+    /// answer text.
+    ///
+    /// Returns the empty string if *candidate* is fully contained in
+    /// *reasoning* (fully suppressed).  The divergence scan is O(k·n) where
+    /// k = candidate.count, n = reasoning.count — but it only runs once per
+    /// turn (when the channels split); the common case is a single
+    /// ``contains`` call.
+    static func dedupVisibleTail(candidate: String, reasoning: String) -> String {
+        if reasoning.contains(candidate) { return "" }
+        // Walk backward to find the longest prefix still in reasoning.
+        var k = candidate.count - 1
+        while k > 0 {
+            if reasoning.contains(candidate.prefix(k)) {
+                return String(candidate.dropFirst(k))
+            }
+            k -= 1
+        }
+        return candidate
     }
 
     /// Internal rather than private so the merge invariants can be tested
