@@ -43,6 +43,7 @@
 		264D3D870922431680F88729 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C382C287A04B063179F255B2 /* ChatInputBar.swift */; };
 		26592A63DBB6B38A69A106FA /* NoteExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1512D6B83D183D5172E7F68D /* NoteExportSheet.swift */; };
 		27752B86D80561ED7DF72D7D /* ChatStoreTestMocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA6F61DFC64DBDFF0C5CB6EC /* ChatStoreTestMocks.swift */; };
+		A1C8F3E7D5B2094E6A0C2D81 /* OutboxDurableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3B7D2C95A1F80E4C6D9A0B5 /* OutboxDurableTests.swift */; };
 		277DA40B95CCE3E09EAB5001 /* MockSecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE9F404D1E7B4F3B5519665 /* MockSecureStore.swift */; };
 		2798630458A02CBE5701A20E /* MessageReactionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69739260DD17C6229D2A945D /* MessageReactionPicker.swift */; };
 		27A4730E25856023C4E0E52E /* NoteRecognitionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E857F239BD33E0037CCFDFA /* NoteRecognitionCoordinatorTests.swift */; };
@@ -146,6 +147,7 @@
 		7C4B5F6A46275DECAF16FEF5 /* HeraldClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E849E65008CDBE8DFD00C7DE /* HeraldClientProtocol.swift */; };
 		7DA63AE4BB6F2BB4AA103B95 /* JobStreamCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82DCB33DBF34B15C4F911320 /* JobStreamCoordinatorTests.swift */; };
 		7E4AFCAB09EEA0C72989CFD5 /* StreamedContentPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12BD43164C6C82A6705B2C80 /* StreamedContentPreservationTests.swift */; };
+		7E5751C8CF8ECE1E2AC8A43C /* GatewayControlService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4661E19912A4A828B7518C8A /* GatewayControlService.swift */; };
 		7F44B2762B896D747A609959 /* HeraldWidgetData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 774D053324B25BA4BE97C2CD /* HeraldWidgetData.swift */; };
 		818314B9F663CE0FE181E067 /* InboxItemPriority.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B7D51CD4AD9A91B4DCA6BA /* InboxItemPriority.swift */; };
 		8205AC97008E0D16E113716E /* CronManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C9A641C1CEBE8C9E0230A0F /* CronManagerView.swift */; };
@@ -178,6 +180,7 @@
 		9ABE93130DFA0F6DBF32CB2C /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */; };
 		9AC08BD84DCDA40809F36FEF /* RelayAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D8CE1AB325DB26452D90ED1 /* RelayAPIClient.swift */; };
 		9ACA459C3AE47D462A1877D8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 950C501C931A4628EADF5421 /* CodeBlockView.swift */; };
+		9BBAB4588B8252EEA1C538B1 /* ChatOutboxRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0551C528E5F45CB7D9EDA9D0 /* ChatOutboxRecord.swift */; };
 		9D519FAED2B0031F3581BC6A /* SpeechSynthesizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084D3A13A3C9C996A7888932 /* SpeechSynthesizing.swift */; };
 		9DF4044B611AEF08DDECE3A5 /* VoiceSessionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */; };
 		9EAF5CA0B81815F92BFA4B01 /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77999D56108FB7AF8368C7DB /* MockSyncCoordinator.swift */; };
@@ -349,6 +352,7 @@
 /* Begin PBXFileReference section */
 		00418C3064912E9A185FF725 /* HeraldWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldWidgetBundle.swift; sourceTree = "<group>"; };
 		0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesTalkCoordinator.swift; sourceTree = "<group>"; };
+		0551C528E5F45CB7D9EDA9D0 /* ChatOutboxRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatOutboxRecord.swift; sourceTree = "<group>"; };
 		067906D33CC9DCAACEED6091 /* HeraldControls.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = HeraldControls.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		084D3A13A3C9C996A7888932 /* SpeechSynthesizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSynthesizing.swift; sourceTree = "<group>"; };
 		08827897CC69610DD892AF43 /* TableBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableBlockView.swift; sourceTree = "<group>"; };
@@ -426,6 +430,7 @@
 		4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingServiceProtocol.swift; sourceTree = "<group>"; };
 		457923CB71645597E197DACC /* MimoVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoVoiceCatalogTests.swift; sourceTree = "<group>"; };
 		4635699CD7B8487A10C4D76F /* HeraldActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldActivityAttributes.swift; sourceTree = "<group>"; };
+		4661E19912A4A828B7518C8A /* GatewayControlService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayControlService.swift; sourceTree = "<group>"; };
 		473F31B4F820435167075CE8 /* HeraldHostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldHostStore.swift; sourceTree = "<group>"; };
 		47B56823EBDD93AC6067B894 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		47C2C1D400AFD2DBBC90FCCA /* InboxActionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionDescriptor.swift; sourceTree = "<group>"; };
@@ -594,6 +599,7 @@
 		D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentHandler.swift; sourceTree = "<group>"; };
 		D94AFC9CE583A234483D02A8 /* HeraldIntents.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = HeraldIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA6F61DFC64DBDFF0C5CB6EC /* ChatStoreTestMocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStoreTestMocks.swift; sourceTree = "<group>"; };
+		E3B7D2C95A1F80E4C6D9A0B5 /* OutboxDurableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxDurableTests.swift; sourceTree = "<group>"; };
 		DC710002D88B4B50511DE76E /* SettingsSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSectionView.swift; sourceTree = "<group>"; };
 		DDCDDF124F28BE34A5209D52 /* AppPersistenceStoreProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceStoreProtocol.swift; sourceTree = "<group>"; };
 		DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInboxService.swift; sourceTree = "<group>"; };
@@ -704,6 +710,7 @@
 				74751CD6E17E567461B95789 /* AppleTTSService.swift */,
 				E0BC2BDBAD71C3F6934D7DB3 /* AuxModelService.swift */,
 				DEC481EA97B23C887B618669 /* FallbackTTSService.swift */,
+				4661E19912A4A828B7518C8A /* GatewayControlService.swift */,
 				0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */,
 				5BB0FCDC533F2E31D863DBAB /* HostStatusStreamService.swift */,
 				BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */,
@@ -777,6 +784,7 @@
 			children = (
 				E7D9911E63108664EBB2FFD6 /* AppSessionState.swift */,
 				F117895BEBAECC0274D7E0C6 /* AuthTokens.swift */,
+				0551C528E5F45CB7D9EDA9D0 /* ChatOutboxRecord.swift */,
 				321B727C66BCD005C201D787 /* CodeDiff.swift */,
 				71EBD1CFF7886DDC671DEFFA /* ConnectionStatus.swift */,
 				AA1983D2D61C7DC8E9FAF7F3 /* Conversation.swift */,
@@ -1175,6 +1183,7 @@
 				457923CB71645597E197DACC /* MimoVoiceCatalogTests.swift */,
 				FE230F45FF59C0A1160FD97D /* MockNotesRepository.swift */,
 				293E30EB5759A5C4B762C7E8 /* ModelStoreTests.swift */,
+				E3B7D2C95A1F80E4C6D9A0B5 /* OutboxDurableTests.swift */,
 				335CFA8379C6876DAB2A5B4A /* NoteDirectiveParserTests.swift */,
 				3E857F239BD33E0037CCFDFA /* NoteRecognitionCoordinatorTests.swift */,
 				494FEFB282E50AC8AB9D2D31 /* NotesIntegrationTests.swift */,
@@ -1490,6 +1499,7 @@
 			files = (
 				83889635E7A4B688BE6F298A /* AppStoresTests.swift in Sources */,
 				FB336C619EDA67C99762B7E9 /* AppTemplateTests.swift in Sources */,
+				A1C8F3E7D5B2094E6A0C2D81 /* OutboxDurableTests.swift in Sources */,
 				5E951952A581A8E3465AD27B /* AppleTTSServiceTests.swift in Sources */,
 				640DB937D0622D9BB0FFD3BF /* B18TerminalStateTests.swift in Sources */,
 				D289B54EA69791A31238134C /* B18TranscriptOrderTests.swift in Sources */,
@@ -1539,6 +1549,7 @@
 				1149AC9233AC36DE7FA7FB50 /* AuxModelService.swift in Sources */,
 				8E65554826FCB219698D2FB0 /* CanvasView.swift in Sources */,
 				264D3D870922431680F88729 /* ChatInputBar.swift in Sources */,
+				9BBAB4588B8252EEA1C538B1 /* ChatOutboxRecord.swift in Sources */,
 				D784039C81E632AE96747E13 /* ChatScreen.swift in Sources */,
 				712546D8F2CA69435AECD156 /* ChatStore.swift in Sources */,
 				9ACA459C3AE47D462A1877D8 /* CodeBlockView.swift in Sources */,
@@ -1561,6 +1572,7 @@
 				ED1B1D9400AA29285B0B5B98 /* EnrichedDocumentView.swift in Sources */,
 				45D1244C085B31873F192B13 /* EnrichmentResult.swift in Sources */,
 				C908BC4EF023E543CA2DB0CD /* FallbackTTSService.swift in Sources */,
+				7E5751C8CF8ECE1E2AC8A43C /* GatewayControlService.swift in Sources */,
 				B1DACC517FAF8137C899A28E /* GatewayLogsScreen.swift in Sources */,
 				D04629233DA83FAC6AE30C05 /* GatewayState.swift in Sources */,
 				CB671EBE4BF21A84DA15C0D7 /* GatewayStatusScreen.swift in Sources */,
@@ -1846,7 +1858,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.4.1;
@@ -1871,7 +1883,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.4.1;
@@ -1904,7 +1916,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.4.1;
@@ -1936,7 +1948,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -1952,7 +1964,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
 				MARKETING_VERSION = 2.4.1;
@@ -1968,7 +1980,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
@@ -1994,7 +2006,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
@@ -2009,7 +2021,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -2026,7 +2038,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldIntents/Info.plist;
 				MARKETING_VERSION = 2.4.1;
@@ -2042,7 +2054,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 101;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = HeraldWidgets/Info.plist;
 				MARKETING_VERSION = 2.4.1;
