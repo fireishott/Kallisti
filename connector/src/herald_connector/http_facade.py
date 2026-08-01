@@ -4722,8 +4722,11 @@ async def gateway_update_check(request: Request) -> JSONResponse:
                     / "hermes-agent" / "venv" / "bin" / "hermes"
                 )
                 if bin_path.is_file():
+                    # Build 107: use only supported flags. The --yes flag is
+                    # not supported on all Hermes installations and causes
+                    # "unrecognized arguments" errors.
                     _run_subprocess(
-                        [str(bin_path), "update", "--check", "--yes"],
+                        [str(bin_path), "update", "--check"],
                         capture_output=True, text=True, timeout=30,
                     )
                     hermes_latest, hermes_behind, last_checked = (
