@@ -472,6 +472,13 @@ final class AppContainer {
                         let (data, response) = try await URLSession.shared.data(for: request)
                         guard let http = response as? HTTPURLResponse,
                               (200..<300).contains(http.statusCode) else {
+                            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                            // Build 107: map 401/403 to invalid credential state.
+                            // The MiMo key is present but rejected by the server.
+                            // Surface a clear message so the user knows to update it.
+                            if statusCode == 401 || statusCode == 403 {
+                                return (ready: false, blockedReason: "Invalid MiMo API key — update it in Settings → Voice")
+                            }
                             return (ready: false, blockedReason: "Talk readiness request failed.")
                         }
                         struct Response: Decodable { let data: Readiness }

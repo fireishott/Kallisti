@@ -170,6 +170,25 @@ struct VoiceOverlayScreen: View {
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .multilineTextAlignment(.center)
 
+                // Build 107: Show "Update API Key" for API key issues
+                if let reason = talkStore.blockedReason,
+                   reason.localizedCaseInsensitiveContains("api key") || reason.localizedCaseInsensitiveContains("mimo") {
+                    Button {
+                        router.activeTab = .settings
+                        router.isVoiceOverlayPresented = false
+                    } label: {
+                        Text("Update API Key")
+                            .brandEyebrow(Design.Colors.foreground)
+                            .padding(.horizontal, Design.Spacing.lg)
+                            .padding(.vertical, Design.Spacing.xs)
+                            .background(Design.Colors.surface)
+                            .overlay(
+                                Capsule().stroke(Design.Colors.border, lineWidth: 1)
+                            )
+                            .clipShape(Capsule())
+                    }
+                }
+
                 // Show "Open Settings" for permission-related blocks
                 if let reason = talkStore.blockedReason,
                    reason.localizedCaseInsensitiveContains("microphone") || reason.localizedCaseInsensitiveContains("permission") {
