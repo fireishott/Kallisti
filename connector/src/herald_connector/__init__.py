@@ -1,5 +1,5 @@
 __all__ = ["__version__", "HERALD_PROTOCOL"]
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 # Minimum connector version the app MUST negotiate.  The iOS app sends this
 # protocol version in every POST /v1/messages request; the connector rejects
@@ -7,7 +7,7 @@ __version__ = "0.6.2"
 # contract.  Bump only when a clean-break protocol change requires coordinated
 # app + connector deployment.
 
-HERALD_PROTOCOL = 4
+HERALD_PROTOCOL = 5
 
 # Single source of truth for the connector version.  Surfaced to the app as
 # `connectorVersion` (client.py:_detect_connector_version → the host payload)
@@ -26,4 +26,7 @@ HERALD_PROTOCOL = 4
 # 0.6.2 — 2026-07-31 Build 31: attachment execution envelope (structured
 #         /v1/runs attachments + clean-text overrides), per-device tokens,
 #         server-acknowledged job cancellation, protocol 4.
-__version__ = "0.6.2"
+# 0.7.0 — 2026-08-01 Build 34: per-connection delivery-store schema validation
+#         (the empty-replacement Build 34 incident), deliveryStoreReady health
+#         probe, protocol 5.
+__version__ = "0.7.0"

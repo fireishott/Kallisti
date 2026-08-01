@@ -13,14 +13,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime
+import hashlib
 import inspect
 import json
 import logging
 import os
+import re
+import signal
+import socket
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
+from subprocess import run as _run_subprocess
 from typing import Any, AsyncIterator, Callable, Coroutine
 
 import httpx
@@ -29,6 +35,13 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+from .restart_operations import (
+    NON_TERMINAL_PHASES,
+    RestartConflictError,
+    RestartOperationStore,
+    get_restart_store,
+)
 
 logger = logging.getLogger("herald.http_facade")
 
@@ -136,6 +149,11 @@ class FacadeContext:
         self.clear_conversation: ClearConversationProvider | None = None
         self.push_register: PushRegisterProvider | None = None
         self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
+        # Build 33 Workstream A: durable restart operations
+        self.restart_store: RestartOperationStore | None = None
+        # Wired by the connector: sends a probe turn through the native relay
+        # and returns (passed: bool, detail: str). None → canary check skipped.
+        self.session_canary: Callable[[], Coroutine[Any, Any, tuple[bool, str]]] | None = None
 
 
 _context = FacadeContext()
@@ -388,11 +406,76 @@ def _bind_conversation_early(job: dict, text: str, job_started_at: float,
     conv_id = job.get("conversationId")
     if conv_id and conv_id != canonical:
         _persist_hermes_mapping(conv_id, hermes_sid)
+    # B33 WS B: mirror the binding into the SQLite delivery store so the
+    # durable store converges even when the binding is discovered before
+    # the `done` event.  Best-effort — see _persist_delivery_bindings.
+    _persist_delivery_bindings(
+        [conv_id or canonical, canonical], hermes_sid,
+        job.get("installationId"),
+    )
     logger.info(
         "Bound conversation %s → session %s at run start",
         conv_id or canonical, hermes_sid,
     )
     return True
+
+
+def _resolve_delivery_hermes_id(app_id: str) -> str | None:
+    """Resolve an app conversation UUID to its Hermes session id.
+
+    B33 WS B: the SQLite delivery store (conversation_bindings) is the
+    authority for app↔Hermes bindings; the JSON sidecar ``_hermes_id`` is
+    the legacy fallback for mappings that predate the startup migration.
+    Never raises.
+    """
+    try:
+        from .delivery_store import get_delivery_store
+        binding = get_delivery_store().get_binding(app_id)
+        if binding:
+            return binding["hermesSessionId"]
+    except Exception:
+        logger.debug(
+            "delivery binding lookup failed for %s", app_id, exc_info=True
+        )
+    from .session_store import _resolve_hermes_id
+    return _resolve_hermes_id(app_id)
+
+
+def _persist_delivery_bindings(
+    app_uuids: list[str] | tuple[str, ...], hermes_sid: str,
+    device_id: str | None,
+) -> None:
+    """Mirror app-conversation → Hermes-session bindings into the SQLite
+    delivery store (B33 WS B).
+
+    Best-effort and never fatal: a conflict (e.g. a draft alias whose
+    Hermes session is already bound to its canonical UUID — the table's
+    hermes_session_id is UNIQUE) is debug-logged and left to the sidecar.
+    """
+    if not hermes_sid:
+        return
+    try:
+        from .delivery_store import DuplicateConflictError, get_delivery_store
+        store = get_delivery_store()
+        ctx = get_context()
+        account_id = ctx.paired_user_id or ""
+        seen: set[str] = set()
+        for app_id in app_uuids:
+            if not app_id or app_id in seen:
+                continue
+            seen.add(app_id)
+            try:
+                store.get_or_create_binding(
+                    app_id, hermes_sid, account_id, device_id or ""
+                )
+            except DuplicateConflictError as exc:
+                logger.debug(
+                    "delivery: binding skipped for %s: %s", app_id, exc
+                )
+    except Exception:
+        logger.warning(
+            "delivery: binding persistence failed (non-fatal)", exc_info=True
+        )
 
 
 # ── Inbound attachment staging (Build 28) ──────────────────────────────────
@@ -511,7 +594,8 @@ def _stage_inbound_attachments(
 
 
 async def _run_http_job(job_id: str, handler, text, history, session_id,
-                        attachments, reasoning_effort) -> None:
+                        attachments, reasoning_effort,
+                        continuation_context: str | None = None) -> None:
     """Drain the connector's message generator into the job record."""
     from .reasoning_sanitizer import strip_reasoning
     job = _http_jobs[job_id]
@@ -570,8 +654,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     job_id, attachments
                 )
                 text_with_attachments = text
+                # Build 31 (fix): continuationContext is retry transport metadata.
+                # Prepend it to the Hermes input so the model resumes from the
+                # cut-off point, but never include it in `text` / `cleanText` —
+                # those are canonical user content stored and displayed verbatim.
+                if continuation_context:
+                    text_with_attachments = f"[{continuation_context}]\n\n{text}"
                 if attachment_context:
-                    text_with_attachments = f"{text}\n\n{attachment_context}"
+                    text_with_attachments = f"{text_with_attachments}\n\n{attachment_context}"
                 async for event in handler(
                     text_with_attachments, history, session_id,
                     staged_meta or attachments, reasoning_effort
@@ -689,6 +779,16 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                                 from .session_store import record_session_device
                                 record_session_device(canonical_app_id, device_id)
 
+                            # B33 WS B: persist the binding durably in the
+                            # delivery store.  The canonical id owns the
+                            # binding row (hermes_session_id is UNIQUE); the
+                            # compose UUID resolves through the sidecar if it
+                            # loses the race.
+                            _persist_delivery_bindings(
+                                [canonical_app_id, response_conv_id],
+                                hermes_sid, device_id,
+                            )
+
                             # B38 P1-1: auto-generate a title if the session
                             # has none.  Fire-and-forget — don't delay the
                             # job completion for title generation.
@@ -790,15 +890,17 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     "Job %s: extracted %d inline attachment(s) from MEDIA: tags",
                     job_id, len(media_attachments),
                 )
-            job["message"] = _relay_message(
-                "herald", accumulated, job_id=job_id,
-                attachments=media_attachments or None,
-            )
-            # Tag the Hermes-written assistant messages with this job ID so
-            # GET /v1/sessions/{id}/conversation returns jobId on each row.
-            # Without this the iOS merge falls through to unsafe content
-            # heuristics — the same text appearing in multiple turns, tool
-            # boundaries splitting one reply across rows, etc.
+            # Build 31 (fix): resolve the canonical assistant message UUID
+            # BEFORE building the relay message so the terminal event, history,
+            # and attachment store all share one identity.  Prior code called
+            # _relay_message with no message_id (random UUID), then persisted
+            # attachments under the deterministic Hermes-row UUID — so the
+            # live thumbnail rendered (base64 in the event) but full-resolution
+            # open/download/share 404'd.
+            # B33 WS B: hoisted so the delivery-store terminal mirror below
+            # can record the canonical user/assistant message identities.
+            assistant_message_id = None
+            user_msg_id = None
             if hermes_sid:
                 try:
                     from .session_store import (
@@ -819,11 +921,10 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         for row in rows:
                             app_msg_id = _deterministic_uuid("msg", row["id"])
                             set_message_job_id(app_msg_id, job_id)
-                        # Build 25: persist MEDIA: attachments so they survive
-                        # conversation refresh (state.db has no attachments column).
-                        if media_attachments and rows:
-                            last_msg_id = _deterministic_uuid("msg", rows[-1]["id"])
-                            set_message_attachments(last_msg_id, media_attachments)
+                        if rows:
+                            assistant_message_id = _deterministic_uuid("msg", rows[-1]["id"])
+                            if media_attachments:
+                                set_message_attachments(assistant_message_id, media_attachments)
                     finally:
                         ss_conn.close()
                 except Exception:
@@ -831,47 +932,81 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         "Failed to record message→job mapping for job %s", job_id,
                         exc_info=True,
                     )
-                # Build 31: record a clean-text override for the user message
-                # so _message_to_dict returns the original text instead of the
-                # Hermes-written augmented content (which carries staging paths
-                # and checksums from the attachment context block appended by
-                # _stage_inbound_attachments).
-                clean_text = job.get("cleanText")
-                client_msg_id = job.get("clientMessageId")
-                if clean_text and hermes_sid:
+            job["message"] = _relay_message(
+                "herald", accumulated, job_id=job_id,
+                attachments=media_attachments or None,
+                message_id=assistant_message_id,
+            )
+            # Build 31: record a clean-text override for the user message
+            # so _message_to_dict returns the original text instead of the
+            # Hermes-written augmented content (which carries staging paths
+            # and checksums from the attachment context block appended by
+            # _stage_inbound_attachments).
+            clean_text = job.get("cleanText")
+            client_msg_id = job.get("clientMessageId")
+            if clean_text and hermes_sid:
+                try:
+                    from .session_store import (
+                        _connect as _ss_connect2,
+                        _deterministic_uuid,
+                        record_message_override,
+                    )
+                    ss_conn2 = _ss_connect2()
                     try:
-                        from .session_store import (
-                            _connect as _ss_connect2,
-                            _deterministic_uuid,
-                            record_message_override,
-                        )
-                        ss_conn2 = _ss_connect2()
-                        try:
-                            # Find the user message row that Hermes just wrote
-                            # for this turn — the one closest to job_started_at
-                            user_rows = ss_conn2.execute(
-                                "SELECT id FROM messages "
-                                "WHERE session_id = ? AND role = 'user' "
-                                "  AND timestamp >= ? AND active = 1 "
-                                "ORDER BY timestamp ASC LIMIT 1",
-                                (hermes_sid, job_started_at),
-                            ).fetchall()
-                            if user_rows:
-                                user_msg_id = _deterministic_uuid(
-                                    "msg", user_rows[0]["id"]
-                                )
-                                record_message_override(
-                                    user_msg_id,
-                                    clean_text=clean_text,
-                                    client_message_id=client_msg_id,
-                                )
-                        finally:
-                            ss_conn2.close()
-                    except Exception:
-                        logger.warning(
-                            "Failed to record clean-text override for job %s",
-                            job_id, exc_info=True,
-                        )
+                        # Find the user message row that Hermes just wrote
+                        # for this turn — the one closest to job_started_at
+                        user_rows = ss_conn2.execute(
+                            "SELECT id FROM messages "
+                            "WHERE session_id = ? AND role = 'user' "
+                            "  AND timestamp >= ? AND active = 1 "
+                            "ORDER BY timestamp ASC LIMIT 1",
+                            (hermes_sid, job_started_at),
+                        ).fetchall()
+                        if user_rows:
+                            user_msg_id = _deterministic_uuid(
+                                "msg", user_rows[0]["id"]
+                            )
+                            record_message_override(
+                                user_msg_id,
+                                clean_text=clean_text,
+                                client_message_id=client_msg_id,
+                            )
+                    finally:
+                        ss_conn2.close()
+                except Exception:
+                    logger.warning(
+                        "Failed to record clean-text override for job %s",
+                        job_id, exc_info=True,
+                    )
+
+        # B33 WS B: mirror the terminal state into the delivery store so the
+        # request lifecycle is durable across connector restarts.  Never
+        # fatal — _http_jobs is the source of truth for the in-flight
+        # response, and reconcile_stale_jobs() re-fails rows whose process
+        # died mid-turn.
+        delivery_client_msg_id = job.get("clientMessageId")
+        if isinstance(delivery_client_msg_id, str) and delivery_client_msg_id:
+            try:
+                from .delivery_store import get_delivery_store
+                delivery_store = get_delivery_store()
+                if job["status"] == "completed":
+                    delivery_store.complete_message_request(
+                        delivery_client_msg_id,
+                        canonical_user_message_id=user_msg_id,
+                        terminal_message_id=assistant_message_id,
+                    )
+                elif job["status"] == "cancelled":
+                    delivery_store.cancel_message_request(delivery_client_msg_id)
+                else:
+                    delivery_store.fail_message_request(
+                        delivery_client_msg_id, job.get("errorCategory")
+                    )
+            except Exception:
+                logger.warning(
+                    "delivery: terminal update failed for %s (non-fatal)",
+                    delivery_client_msg_id, exc_info=True,
+                )
+
         terminal = {
             "type": "done",
             "data": {
@@ -929,7 +1064,21 @@ async def health_endpoint(request: Request) -> JSONResponse:
             db_ok = await ctx.health_check()
         except Exception:
             db_ok = False
-    return JSONResponse({"status": "ok" if db_ok else "degraded", "database": db_ok})
+    # deliveryStoreReady reflects the durability database (Build 34 P0):
+    # a working chat path needs the SQLite tables, not just the Hermes API
+    # health probe that ``database`` was overloaded onto.
+    delivery_store_ready = True
+    try:
+        from .delivery_store import get_delivery_store
+        delivery_store_ready = get_delivery_store().schema_ready()
+    except Exception:
+        delivery_store_ready = False
+    overall = "ok" if (db_ok and delivery_store_ready) else "degraded"
+    return JSONResponse({
+        "status": overall,
+        "database": db_ok,
+        "deliveryStoreReady": delivery_store_ready,
+    })
 
 
 async def health_alias(request: Request) -> JSONResponse:
@@ -1099,18 +1248,679 @@ async def list_commands(request: Request) -> JSONResponse:
     })
 
 
-async def gateway_restart(request: Request) -> JSONResponse:
-    """Restart a gateway component (hermes or connector)."""
+# ── Restart operations (Build 33 Workstream A) ─────────────────────────────
+#
+# Restarts are durable and phase-tracked.  The lifecycle:
+#
+#   GET  /v1/gw/restart/preflight?target=hermes   → restart-preflight-v1
+#   POST /v1/gw/restart  (Idempotency-Key header) → restart-operation-v1
+#   GET  /v1/gw/restart/{operationId}             → poll the operation
+#
+# Phases: accepted → stopping → starting → verifying → healthy | failed.
+# The operation row lives in the RestartOperationStore (SQLite) so it
+# survives the connector restarting itself; startup reconciliation marks
+# any row left non-terminal as failed.
+
+_RESTART_STEP_NAMES = [
+    "systemctl-is-active",
+    "pid-changed",
+    "hermes-ready",
+    "model-catalog",
+    "session-roundtrip",
+]
+
+_restart_tasks: dict[str, asyncio.Task] = {}
+_last_canary_result: bool | None = None
+
+
+def _hermes_profile() -> str:
+    """Resolve the active Hermes profile from HERMES_HOME."""
+    return os.path.basename(os.getenv("HERMES_HOME", "").rstrip("/")) or "ignyte"
+
+
+def _hermes_unit() -> str:
+    """Resolve the Hermes systemd user unit (per-profile gateway).
+
+    The .service suffix matches the contract fixture unit name
+    (hermes-gateway-{profile}.service); systemctl accepts it on all commands.
+    """
+    return os.getenv("HERMES_AGENT_UNIT") or f"hermes-gateway-{_hermes_profile()}.service"
+
+
+def _parse_systemd_timestamp(raw: str | None) -> str | None:
+    """Best-effort systemd timestamp → RFC 3339 UTC (Z suffix).
+
+    systemctl show emits localized human timestamps unless --timestamp=unix
+    is supported; either input is normalized here.  Never raises.
+    """
+    if not raw:
+        return None
+    try:
+        epoch = int(raw)
+        return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except (ValueError, OSError, OverflowError):
+        pass
+    for fmt in ("%a %Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.datetime.strptime(raw, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+    return raw
+
+
+def _query_unit_observed(unit: str) -> dict | None:
+    """Query `systemctl --user show <unit>` for MainPID / start / state.
+
+    Returns None when the unit is unknown or systemctl is unavailable —
+    never raises.  Keys: main_pid, exec_main_start_timestamp (RFC 3339),
+    active_state.
+    """
+    try:
+        result = _run_subprocess(
+            ["systemctl", "--user", "--timestamp=unix", "show", unit,
+             "--property=MainPID,ExecMainStartTimestamp,ActiveState"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        logger.debug("systemctl show %s failed", unit, exc_info=True)
+        return None
+    if result.returncode != 0:
+        # Fall back to the default (localized) timestamp format.
+        try:
+            result = _run_subprocess(
+                ["systemctl", "--user", "show", unit,
+                 "--property=MainPID,ExecMainStartTimestamp,ActiveState"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            parsed[key] = value.strip()
+    try:
+        main_pid = int(parsed.get("MainPID") or "0") or None
+    except ValueError:
+        main_pid = None
+    return {
+        "main_pid": main_pid,
+        "exec_main_start_timestamp": _parse_systemd_timestamp(
+            parsed.get("ExecMainStartTimestamp")
+        ),
+        "active_state": parsed.get("ActiveState"),
+    }
+
+
+def _compute_preflight_version(unit: str, observed: dict | None) -> str:
+    """Preflight version = hash of the observed gateway state.
+
+    The client sends this back with its restart request; if the gateway
+    state (MainPID / start time) has changed since, the version no longer
+    matches and the restart is rejected with 409 PREFLIGHT_STALE.
+    """
+    raw = "{}:{}{}".format(
+        unit,
+        (observed or {}).get("main_pid") or "",
+        (observed or {}).get("exec_main_start_timestamp") or "",
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def _active_work_counts() -> dict:
+    """Best-effort active-work counters from the facade job registry."""
+    running = queued = voice = tools = 0
+    for job in _http_jobs.values():
+        status = job.get("status", "")
+        if status == "running":
+            running += 1
+            if any(e.get("type") == "tool_activity" for e in (job.get("events") or [])):
+                tools += 1
+        elif status in ("queued", "pending"):
+            queued += 1
+    return {"running": running, "queued": queued, "voice": voice, "tools": tools}
+
+
+async def gateway_restart_preflight(request: Request) -> JSONResponse:
+    """GET /v1/gw/restart/preflight?target=hermes — can this restart safely?
+
+    Returns restart-preflight-v1 (see tests/fixtures/restart/preflight_ok.json).
+    The client MUST echo `preflightVersion` back with its restart request; a
+    stale version (gateway state changed since the preflight was shown) is
+    rejected with 409.
+    """
     await require_auth(request)
-    ctx = get_context()
-    if ctx.gateway_restart is None:
-        raise HTTPException(status_code=503, detail="Gateway control not available")
-    body = await request.json()
-    target = body.get("target", "hermes")
+    target = request.query_params.get("target", "hermes")
     if target not in ("hermes", "connector"):
         raise HTTPException(status_code=400, detail=f"Unknown target: {target}")
-    result = await ctx.gateway_restart(target)
-    return JSONResponse(result)
+
+    profile = _hermes_profile()
+    unit = _hermes_unit() if target == "hermes" else _JOURNAL_UNIT
+    observed = await asyncio.to_thread(_query_unit_observed, unit)
+
+    blocker: str | None = None
+    can_restart = True
+    if observed is None:
+        can_restart = False
+        blocker = (
+            f"Unit {unit} is not running under systemd "
+            "(systemctl --user show failed) — cannot restart it"
+        )
+    elif observed.get("active_state") != "active" or not observed.get("main_pid"):
+        can_restart = False
+        blocker = (
+            f"Unit {unit} is not active (state={observed.get('active_state') or 'unknown'})"
+        )
+
+    gateway_state = "running" if (observed or {}).get("active_state") == "active" \
+        else ((observed or {}).get("active_state") or "unknown")
+
+    return JSONResponse({
+        "$schema": "restart-preflight-v1",
+        "target": target,
+        "profile": profile,
+        "unit": unit,
+        "preflightVersion": _compute_preflight_version(unit, observed),
+        "activeWork": _active_work_counts(),
+        "canRestart": can_restart,
+        "blocker": blocker,
+        "observed": {
+            "mainPid": (observed or {}).get("main_pid"),
+            "execMainStartTimestamp": (observed or {}).get("exec_main_start_timestamp"),
+            "gatewayState": gateway_state,
+        },
+    })
+
+
+async def gateway_restart(request: Request) -> JSONResponse:
+    """Restart a gateway component (hermes or connector).
+
+    Two behaviours, selected by the Idempotency-Key header:
+
+    * With `Idempotency-Key` — Build 33 Workstream A flow: the body must
+      carry the `preflightVersion` the client observed.  An operation is
+      created in the durable RestartOperationStore (phase "accepted") and
+      the restart runs in the background through stopping → starting →
+      verifying → healthy|failed.  The response returns immediately; the
+      client polls GET /v1/gw/restart/{operationId}.  Replaying the same
+      key returns the same operation; a second key while one is active
+      returns 409 with the existing operation.
+
+    * Without the header — legacy one-shot behaviour: fire the RPC handler
+      and return its result, with "target" added to the response.
+    """
+    await require_auth(request)
+    ctx = get_context()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    body = body if isinstance(body, dict) else {}
+    target = body.get("target", "hermes")
+    # "relay" is deliberately NOT in the allowlist: the native facade has no
+    # relay restart handler — the Docker relay is gone and the connector's
+    # relay is embedded (facade :8010 + native relay WS :8765).  Restarting
+    # the connector restarts both.  Requesting "relay" must fail loudly
+    # rather than be silently accepted and do nothing.
+    if target not in ("hermes", "connector"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown target: {target}"
+                if target != "relay"
+                else "Restarting 'relay' is not supported: the native facade "
+                     "has no relay restart handler. Restart 'connector' to "
+                     "restart the embedded relay."
+            ),
+        )
+
+    idempotency_key = (
+        request.headers.get("Idempotency-Key")
+        or request.headers.get("idempotency-key")
+    )
+    if not idempotency_key:
+        # ── Legacy one-shot path (JSON-RPC bridge compatibility) ──────────
+        if ctx.gateway_restart is None:
+            raise HTTPException(status_code=503, detail="Gateway control not available")
+        result = await ctx.gateway_restart(target)
+        if isinstance(result, dict):
+            result = dict(result)
+            result.setdefault("target", target)
+        return JSONResponse(result)
+
+    # ── Build 33 idempotent, phase-tracked flow ───────────────────────────
+    store = ctx.restart_store or get_restart_store()
+
+    # Idempotent replay: same key → same operation, whatever its phase.
+    existing = store.get_by_idempotency_key(idempotency_key)
+    if existing is not None:
+        logger.info("restart: idempotent replay of %s", existing["operationId"])
+        return JSONResponse(existing)
+
+    preflight_version = body.get("preflightVersion")
+    if not isinstance(preflight_version, str) or not preflight_version:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "preflightVersion is required when Idempotency-Key is supplied — "
+                "run GET /v1/gw/restart/preflight first and echo its preflightVersion"
+            ),
+        )
+
+    unit = _hermes_unit() if target == "hermes" else _JOURNAL_UNIT
+    observed = await asyncio.to_thread(_query_unit_observed, unit)
+    current_version = _compute_preflight_version(unit, observed)
+    if current_version != preflight_version:
+        logger.warning(
+            "restart: stale preflight for %s (client=%s current=%s)",
+            unit, preflight_version, current_version,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "code": "PREFLIGHT_STALE",
+                    "message": (
+                        "The restart preflight is stale — the gateway state changed "
+                        "since it was shown. Run the preflight again and retry."
+                    ),
+                    "preflightVersion": preflight_version,
+                    "currentPreflightVersion": current_version,
+                },
+            },
+        )
+
+    try:
+        op = store.create_operation(
+            operation_id=str(uuid.uuid4()),
+            idempotency_key=idempotency_key,
+            target=target,
+            unit=unit,
+            preflight_version=preflight_version,
+            old_pid=(observed or {}).get("main_pid") if target == "hermes" else os.getpid(),
+            old_start_ts=(observed or {}).get("exec_main_start_timestamp")
+            if target == "hermes" else None,
+        )
+    except RestartConflictError as conflict:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "code": "RESTART_IN_PROGRESS",
+                    "message": (
+                        f"A restart is already in progress for target '{target}'."
+                    ),
+                    "operationId": conflict.operation_id,
+                },
+                "operation": conflict.operation,  # restart-operation-v1 payload
+            },
+        )
+
+    _start_restart_task(op["operationId"])
+    return JSONResponse(op)
+
+
+async def gateway_restart_status(request: Request) -> JSONResponse:
+    """GET /v1/gw/restart/{operationId} — poll the operation's current state."""
+    await require_auth(request)
+    ctx = get_context()
+    operation_id = request.path_params["operationId"]
+    store = ctx.restart_store or get_restart_store()
+    op = store.get_operation(operation_id)
+    if op is None:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown restart operation: {operation_id}"
+        )
+    return JSONResponse(op)
+
+
+# ── Background restart execution ───────────────────────────────────────────
+
+
+class _RestartFailure(Exception):
+    """Typed failure inside a restart operation — never leaks raw exceptions."""
+
+    def __init__(
+        self,
+        stage: str,
+        *,
+        exit_status: int | None = None,
+        retryable: bool = True,
+        action: str = "",
+        failed_check: dict | None = None,
+        skipped_note: str | None = None,
+    ) -> None:
+        super().__init__(action or stage)
+        self.stage = stage
+        self.exit_status = exit_status
+        self.retryable = retryable
+        self.action = action
+        self.failed_check = failed_check
+        self.skipped_note = skipped_note or f"{stage} failed"
+
+
+def _restart_active_timeout() -> float:
+    return float(os.getenv("HERALD_RESTART_ACTIVE_TIMEOUT", "120"))
+
+
+def _restart_poll_interval() -> float:
+    return float(os.getenv("HERALD_RESTART_POLL_INTERVAL", "1.0"))
+
+
+def _systemctl_is_active(unit: str) -> bool:
+    try:
+        result = _run_subprocess(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+async def _poll_unit_active(unit: str) -> bool:
+    """Poll `systemctl --user is-active` until active or timeout."""
+    deadline = time.monotonic() + _restart_active_timeout()
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(_systemctl_is_active, unit):
+            return True
+        await asyncio.sleep(_restart_poll_interval())
+    return False
+
+
+async def _run_restart_command(unit: str) -> int | None:
+    """`systemctl --user restart --no-block <unit>`; None = couldn't run."""
+    try:
+        result = await asyncio.to_thread(
+            _run_subprocess,
+            ["systemctl", "--user", "restart", "--no-block", unit],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode
+    except Exception:
+        logger.debug("systemctl restart %s failed to run", unit, exc_info=True)
+        return None
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _sanitize_journal(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text or "").strip()
+
+
+async def _journal_excerpt(unit: str) -> str | None:
+    """Last 5 journalctl lines for the unit — sanitized, never a raw error."""
+    try:
+        result = await asyncio.to_thread(
+            _run_subprocess,
+            ["journalctl", "--user", "-u", unit, "-n", "5", "--no-pager"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        excerpt = "\n".join(_sanitize_journal(line) for line in lines[-5:])
+        return excerpt or None
+    except Exception:
+        logger.debug("journalctl excerpt for %s failed", unit, exc_info=True)
+        return None
+
+
+def _schedule_connector_exit(delay_seconds: float = 0.5) -> None:
+    """SIGTERM the connector process after a short delay (systemd restarts it).
+
+    The operation row is already committed to SQLite before this runs, so
+    the restart state survives; startup reconciliation marks it failed
+    because the dying process cannot verify its own restart.
+    """
+    if os.name == "nt":
+        return
+    import platform as _platform
+    if _platform.system() != "Linux":
+        logger.warning(
+            "connector self-restart requested but this platform has no systemd — not exiting"
+        )
+        return
+
+    def _delayed_exit() -> None:
+        time.sleep(delay_seconds)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_delayed_exit, daemon=True).start()
+
+
+def _start_restart_task(operation_id: str) -> None:
+    task = asyncio.create_task(_run_restart_operation(operation_id))
+    _restart_tasks[operation_id] = task
+    task.add_done_callback(lambda _t, oid=operation_id: _restart_tasks.pop(oid, None))
+
+
+async def _probe_dashboard_health() -> tuple[bool, str]:
+    """Hermes readiness probe: dashboard health endpoint (port 9119 by default)."""
+    url = os.getenv("HERALD_DASHBOARD_HEALTH_URL", "http://127.0.0.1:9119/api/health")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3, read=5)) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                return True, "detail health ok"
+            return False, f"health endpoint returned {resp.status_code}"
+    except httpx.HTTPError:
+        return False, "health endpoint unreachable"
+    except Exception:
+        logger.debug("dashboard health probe failed", exc_info=True)
+        return False, "health endpoint unreachable"
+
+
+async def _probe_model_catalog() -> tuple[bool, str]:
+    """Model catalog load — succeeds when Hermes config/catalog is readable."""
+    ctx = get_context()
+    if ctx.model_catalog is None:
+        return True, "skipped: model catalog probe not configured"
+    try:
+        catalog = ctx.model_catalog()
+        if inspect.isawaitable(catalog):
+            catalog = await catalog
+        count = len((catalog or {}).get("models") or [])
+        return True, f"{count} models loaded"
+    except Exception:
+        return False, "model catalog load failed"
+
+
+async def _probe_session_canary() -> tuple[bool, str]:
+    """Authenticated relay round-trip canary (wired by the connector)."""
+    ctx = get_context()
+    if ctx.session_canary is None:
+        return True, "skipped: relay canary probe not configured"
+    try:
+        ok, detail = await ctx.session_canary()
+        return bool(ok), str(detail or "")
+    except Exception:
+        logger.debug("session canary probe failed", exc_info=True)
+        return False, "session canary failed"
+
+
+def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+async def _fail_operation(
+    store: RestartOperationStore,
+    operation_id: str,
+    unit: str,
+    passed_checks: list[dict],
+    failure: _RestartFailure,
+) -> None:
+    """Record the failed check plus skips, then complete the operation failed.
+
+    complete_operation REPLACES the checks array, so the full final list is
+    built here: checks that passed, the failed check (if any), then one
+    "skipped: …" entry per check that never ran.  The error is fully typed
+    (stage/exitStatus/journalExcerpt/retryable/action) — no raw exception
+    text ever reaches the wire.
+    """
+    final_checks: list[dict] = list(passed_checks)
+    if failure.failed_check is not None:
+        final_checks.append(failure.failed_check)
+    present = {c.get("name") for c in final_checks}
+    for name in _RESTART_STEP_NAMES:
+        if name not in present:
+            final_checks.append({
+                "name": name,
+                "passed": False,
+                "detail": f"skipped: {failure.skipped_note}",
+            })
+    store.complete_operation(
+        operation_id,
+        "failed",
+        checks=final_checks,
+        error={
+            "stage": failure.stage,
+            "exitStatus": failure.exit_status,
+            "journalExcerpt": await _journal_excerpt(unit),
+            "retryable": failure.retryable,
+            "action": failure.action,
+        },
+    )
+
+
+async def _run_restart_operation(operation_id: str) -> None:
+    """Drive one restart operation through its phases in the background.
+
+    accepted (persisted by the endpoint) → stopping → starting → verifying
+    → healthy | failed.  Every check lands in the operation's `checks`
+    array; every failure produces a typed error with a sanitized journal
+    excerpt — never a raw exception string.
+    """
+    ctx = get_context()
+    store = ctx.restart_store or get_restart_store()
+    details = store.get_operation_details(operation_id)
+    if details is None or details["phase"] not in NON_TERMINAL_PHASES:
+        return
+    unit = details["unit"]
+    target = details["target"]
+    checks: list[dict] = []
+    try:
+        # ── stopping ──────────────────────────────────────────────────────
+        store.update_phase(operation_id, "stopping")
+        if target == "connector":
+            # Self-restart: the record is durable in SQLite; the process dies
+            # before verification and startup reconciliation marks it failed.
+            checks.append({
+                "name": "connector-exit",
+                "passed": True,
+                "detail": "SIGTERM scheduled — operation state persisted",
+            })
+            store.update_phase(operation_id, "stopping", checks=checks)
+            _schedule_connector_exit()
+            return
+
+        exit_status = await _run_restart_command(unit)
+        if exit_status not in (None, 0):
+            raise _RestartFailure(
+                "stopping",
+                exit_status=exit_status,
+                action=(
+                    f"systemctl restart {unit} failed (exit {exit_status}). "
+                    f"Check journalctl --user -u {unit}."
+                ),
+            )
+
+        # ── starting: is-active, then MainPID changed ─────────────────────
+        store.update_phase(operation_id, "starting")
+        if not await _poll_unit_active(unit):
+            raise _RestartFailure(
+                "starting",
+                action=(
+                    f"Unit {unit} did not reach 'active' within "
+                    f"{_restart_active_timeout():.0f}s. "
+                    f"Check journalctl --user -u {unit}."
+                ),
+            )
+        checks.append({"name": "systemctl-is-active", "passed": True, "detail": "active"})
+
+        observed = await asyncio.to_thread(_query_unit_observed, unit)
+        new_pid = (observed or {}).get("main_pid")
+        old_pid = details.get("oldMainPid")
+        if not new_pid or new_pid == old_pid:
+            raise _RestartFailure(
+                "starting",
+                action=(
+                    f"MainPID of {unit} did not change after restart "
+                    f"(still {old_pid}). Check journalctl --user -u {unit}."
+                ),
+            )
+        checks.append({
+            "name": "pid-changed",
+            "passed": True,
+            "detail": f"{old_pid} → {new_pid}",
+        })
+        store.update_phase(operation_id, "verifying", checks=checks)
+
+        # ── verifying: dashboard health, model catalog, relay canary ──────
+        ready, ready_detail = await _probe_dashboard_health()
+        if not ready:
+            raise _RestartFailure(
+                "verifying",
+                failed_check={"name": "hermes-ready", "passed": False, "detail": ready_detail},
+                skipped_note="hermes not ready",
+                action="Check Hermes gateway logs on the host for configuration errors.",
+            )
+        checks.append({"name": "hermes-ready", "passed": True, "detail": ready_detail})
+
+        catalog_ok, catalog_detail = await _probe_model_catalog()
+        if not catalog_ok:
+            raise _RestartFailure(
+                "verifying",
+                failed_check={"name": "model-catalog", "passed": False, "detail": catalog_detail},
+                action=(
+                    "Hermes is up but its model catalog could not be loaded. "
+                    "Check ~/.hermes/config.yaml on the host."
+                ),
+            )
+        checks.append({"name": "model-catalog", "passed": True, "detail": catalog_detail})
+
+        canary_ok, canary_detail = await _probe_session_canary()
+        global _last_canary_result
+        _last_canary_result = bool(canary_ok)
+        if not canary_ok:
+            raise _RestartFailure(
+                "verifying",
+                failed_check={"name": "session-roundtrip", "passed": False, "detail": canary_detail},
+                action=(
+                    "Hermes did not reply to the connectivity canary. Check the "
+                    "relay gateway connection and Hermes agent logs on the host."
+                ),
+            )
+        checks.append({"name": "session-roundtrip", "passed": True, "detail": canary_detail})
+
+        store.complete_operation(operation_id, "healthy", checks=checks)
+        logger.info("restart: operation %s healthy (%d checks)", operation_id, len(checks))
+    except _RestartFailure as failure:
+        await _fail_operation(store, operation_id, unit, checks, failure)
+    except Exception:
+        logger.exception("restart: operation %s failed unexpectedly", operation_id)
+        await _fail_operation(
+            store, operation_id, unit, checks,
+            _RestartFailure(
+                "verifying",
+                action=(
+                    "Restart verification failed unexpectedly. Retry the restart; "
+                    "if it persists, check the connector logs on the host."
+                ),
+            ),
+        )
 
 
 async def gateway_status(request: Request) -> JSONResponse:
@@ -1127,6 +1937,7 @@ async def gateway_status(request: Request) -> JSONResponse:
     ctx = get_context()
 
     payload: dict = {
+        "$schema": "gateway-health-v1",
         "connectorConnected": True,
         "connectorVersion": ctx.connector_version or "0.0.0",
     }
@@ -1134,12 +1945,40 @@ async def gateway_status(request: Request) -> JSONResponse:
     # Relay status — best-effort from the paired device id.
     payload["relayConnected"] = bool(ctx.paired_device_id)
 
-    # Hermes status — best-effort from active jobs.
-    if ctx.gateway_restart is not None:
-        payload["hermesConnected"] = True
-        # Report the connector version as the relay version since the
-        # legacy relay is not running; avoids a confusing "—" in the UI.
-        payload["version"] = ctx.connector_version or "0.0.0"
+    # Hermes status — real health probes, NOT callback-exists inference.
+    # Build 33 Workstream A: hermesConnected used to be derived from
+    # `ctx.gateway_restart is not None` — "the connector CAN restart Hermes",
+    # not "Hermes is running".  Every probe below is independent and optional;
+    # partial data renders gracefully on the Settings → Gateway Status screen.
+    unit = _hermes_unit()
+    observed = await asyncio.to_thread(_query_unit_observed, unit)
+    hermes_connected = bool(
+        observed and observed.get("active_state") == "active" and observed.get("main_pid")
+    )
+    payload["hermesConnected"] = hermes_connected
+    payload["profile"] = _hermes_profile()
+    payload["unit"] = unit
+    payload["mainPid"] = (observed or {}).get("main_pid")
+    payload["execMainStartTimestamp"] = (observed or {}).get("exec_main_start_timestamp")
+    # Report the connector version as the relay version since the legacy relay
+    # is not running; avoids a confusing "—" in the UI.
+    payload["version"] = ctx.connector_version or "0.0.0"
+
+    # Dashboard reachability + readiness (port 9119 by default).
+    dashboard_port = int(os.getenv("HERALD_DASHBOARD_PORT", "9119"))
+    payload["dashboardAvailable"] = await asyncio.to_thread(
+        _port_open, "127.0.0.1", dashboard_port
+    )
+    hermes_ready, _ = await _probe_dashboard_health()
+    payload["hermesReady"] = hermes_ready
+
+    # Model catalog — load succeeded recently.
+    catalog_ok, _ = await _probe_model_catalog()
+    payload["modelCatalogAvailable"] = catalog_ok
+
+    # Last relay canary result (set by restart verification) if one exists.
+    if _last_canary_result is not None:
+        payload["sessionRoundtripOk"] = bool(_last_canary_result)
 
     # Uptime — connector process lifetime, not host uptime.
     try:
@@ -1247,6 +2086,7 @@ async def send_message(request: Request) -> JSONResponse:
     reasoning_effort = body.get("reasoningEffort")
     client_message_id = body.get("clientMessageId")
     raw_conversation_id = body.get("conversationId")
+    continuation_context = body.get("continuationContext")  # Build 31: retry resume hint
 
     # Resolve the app's conversation UUID to a Hermes session id.
     # P0-1: instead of a random uuid4() that maps to nothing, use the
@@ -1260,8 +2100,10 @@ async def send_message(request: Request) -> JSONResponse:
     if raw_conversation_id is not None:
         cid = _coerce_uuid(raw_conversation_id)
         if cid:
-            # Does this UUID already map to a Hermes session?
-            resolved = _resolve_hermes_id(cid)
+            # Does this UUID already map to a Hermes session?  B33 WS B: the
+            # SQLite delivery store is the authority for bindings; the
+            # sidecar is the legacy fallback for pre-migration mappings.
+            resolved = _resolve_delivery_hermes_id(cid)
             if resolved:
                 hermes_session_id = resolved
                 app_conversation_id = cid
@@ -1313,7 +2155,122 @@ async def send_message(request: Request) -> JSONResponse:
     # Build 28: resolve the requesting device identity from the auth token
     # so the session can be attributed to a device for allDevices scoping.
     from .session_store import device_id_for_token
-    installation_id = device_id_for_token(await _extract_token(request))
+    installation_id = device_id_for_token(await _extract_token(request)) or ""
+
+    # MessageResponse (LiveHeraldClient.swift:12-21): replyState and conversation
+    # are non-optional.  RelayConversation.title is a non-optional String and
+    # .updatedAt a non-optional Date — null in either is a decode failure.
+    #
+    # B40: return the conversation's real title.  The app merges this payload
+    # over its open thread on every send (ChatStore.mergeConversationMetadata),
+    # so the hardcoded "Herald" placeholder reset the title of an already-titled
+    # conversation on each turn — one half of "chat titles not being named".
+    # Computed here (not at the bottom) so the B33 duplicate response below can
+    # reuse it.
+    from .session_store import session_title as _session_title
+    try:
+        conversation_title = _session_title(app_conversation_id) or "Herald"
+    except Exception:                             # noqa: BLE001 — never fail a send
+        logger.exception("session_title lookup failed for %s", app_conversation_id)
+        conversation_title = "Herald"
+
+    # ── Build 33 Workstream B: durable delivery store ────────────────────
+    # POST /v1/messages is idempotent on clientMessageId: a transport-level
+    # retry of the same send (same id + same content hash) is answered with
+    # the existing job (replyState "duplicate"); the same id carrying
+    # different content is a 409 (replyState "conflict").  The request
+    # lifecycle is durable in SQLite so a connector restart between ack and
+    # completion no longer orphans the job; _http_jobs remains the hot cache
+    # and delivery.sqlite3 the authority.
+    #
+    # The FK from message_requests to conversation_bindings means a request
+    # can only be tracked for a bound conversation.  The app ensures this by
+    # calling POST /v1/conversations/ensure before the first message
+    # (LiveHeraldClient.swift:527); sends that arrive for an unbound
+    # conversation (legacy nil-conversationId path) proceed untracked rather
+    # than 500.
+    if hermes_session_id:
+        _persist_delivery_bindings(
+            [app_conversation_id], hermes_session_id, installation_id
+        )
+    if isinstance(client_message_id, str) and client_message_id:
+        from .delivery_store import (
+            DuplicateConflictError, get_delivery_store, request_sha256,
+        )
+        delivery_store = get_delivery_store()
+        # Eagerly create binding if missing — the Hermes session will be resolved
+        # when the job runs. Without this, a concurrent first-send from two devices
+        # can both skip durable tracking and get separate jobs.
+        binding = delivery_store.get_binding(app_conversation_id)
+        if binding is None:
+            hermes_sid = hermes_session_id or str(uuid.uuid4())
+            try:
+                delivery_store.get_or_create_binding(
+                    app_conversation_id, hermes_sid, "default", installation_id,
+                )
+            except DuplicateConflictError:
+                pass  # race; another device created it first
+        request_hash = request_sha256(text, attachments)
+        try:
+            request_row = delivery_store.create_message_request(
+                client_message_id, app_conversation_id, installation_id,
+                text, request_hash,
+            )
+        except DuplicateConflictError:
+            logger.warning(
+                "Message %s rejected: clientMessageId already used with "
+                "different content",
+                client_message_id,
+            )
+            return JSONResponse(status_code=409, content={
+                "$schema": "message-accepted-v1",
+                "replyState": "conflict",
+                "clientMessageId": client_message_id,
+                "jobId": None,
+                "state": None,
+                "error": "sameClientIdDifferentHash",
+                "message": (
+                    "This clientMessageId was already submitted with "
+                    "different content."
+                ),
+                "conversation": None,
+                "userMessage": None,
+                "usage": None,
+                "context": None,
+                "diff": None,
+            })
+        if request_row["state"] in ("running", "terminal"):
+            logger.info(
+                "Message %s is a duplicate (state=%s, job=%s) — "
+                "returning the existing job without resubmitting",
+                client_message_id, request_row["state"], request_row["jobId"],
+            )
+            return JSONResponse({
+                "$schema": "message-accepted-v1",
+                "replyState": "duplicate",
+                "clientMessageId": client_message_id,
+                "jobId": request_row["jobId"],
+                "state": "accepted",
+                "existingState": request_row["state"],
+                "conversation": {
+                    "id": app_conversation_id,
+                    "title": conversation_title,
+                    "updatedAt": _now_iso(),
+                    "messages": [],
+                    "latestUsage": None,
+                    "latestContext": None,
+                },
+                "userMessage": None,
+                "message": None,
+                "usage": None,
+                "context": None,
+                "diff": None,
+            })
+        # accepted / cancelled / permanent_failure: run it.  The last two
+        # are retries — accept_message_request moves them back to running.
+        delivery_store.accept_message_request(client_message_id, job_id)
+    else:
+        logger.warning("POST /v1/messages without clientMessageId — untracked")
 
     _http_jobs[job_id] = {
         "jobId": job_id,
@@ -1322,6 +2279,7 @@ async def send_message(request: Request) -> JSONResponse:
         "installationId": installation_id,
         "clientMessageId": client_message_id,
         "cleanText": text,           # Build 31: original text without staging context
+        "accountId": ctx.paired_user_id or "",   # B33 WS B: binding attribution
         "message": None,
         "error": None,
         "errorCategory": None,
@@ -1335,25 +2293,11 @@ async def send_message(request: Request) -> JSONResponse:
 
     task = asyncio.create_task(
         _run_http_job(job_id, ctx.message_handler, text, history,
-                      hermes_session_id, attachments, reasoning_effort)
+                      hermes_session_id, attachments, reasoning_effort,
+                      continuation_context)
     )
     _http_job_tasks[job_id] = task
     task.add_done_callback(lambda _t, jid=job_id: _http_job_tasks.pop(jid, None))
-
-    # MessageResponse (LiveHeraldClient.swift:12-21): replyState and conversation
-    # are non-optional.  RelayConversation.title is a non-optional String and
-    # .updatedAt a non-optional Date — null in either is a decode failure.
-    #
-    # B40: return the conversation's real title.  The app merges this payload
-    # over its open thread on every send (ChatStore.mergeConversationMetadata),
-    # so the hardcoded "Herald" placeholder reset the title of an already-titled
-    # conversation on each turn — one half of "chat titles not being named".
-    from .session_store import session_title as _session_title
-    try:
-        conversation_title = _session_title(app_conversation_id) or "Herald"
-    except Exception:                             # noqa: BLE001 — never fail a send
-        logger.exception("session_title lookup failed for %s", app_conversation_id)
-        conversation_title = "Herald"
 
     return JSONResponse({
         "replyState": "pending",
@@ -1860,7 +2804,7 @@ async def ensure_conversation(request: Request) -> JSONResponse:
     if raw_conversation_id:
         cid = _coerce_uuid(raw_conversation_id)
         if cid:
-            resolved = _resolve_hermes_id(cid)
+            resolved = _resolve_delivery_hermes_id(cid)
             if resolved:
                 # Already mapped — return existing session
                 return JSONResponse({
@@ -1912,6 +2856,14 @@ async def ensure_conversation(request: Request) -> JSONResponse:
         # Record device ownership
         token = await _extract_token(request)
         installation_id = device_id_for_token(token)
+
+        # B33 WS B: persist the binding durably in the delivery store —
+        # this is what makes the message_requests FK satisfiable for the
+        # app's very first send in a new conversation.
+        _persist_delivery_bindings(
+            [canonical_app_id, app_conversation_id],
+            hermes_session_id, installation_id,
+        )
         if installation_id:
             record_session_device(canonical_app_id, installation_id)
 
@@ -1921,14 +2873,15 @@ async def ensure_conversation(request: Request) -> JSONResponse:
             "created": True,
         })
     else:
-        # Could not discover the session.  Return the app UUID;
-        # the first job execution will create and bind it.
-        return JSONResponse({
-            "conversationId": app_conversation_id,
-            "sessionId": None,
-            "created": False,
-            "message": "Session will be created on first message",
-        })
+        # Build 31 (fix): fail-closed.  Returning HTTP 200 with sessionId: null
+        # let the client proceed to message submission without a real session,
+        # which collapsed all first messages onto one Hermes session and made
+        # replies unreachable.  Now the client blocks submission when the
+        # session cannot be established.
+        raise HTTPException(
+            status_code=503,
+            detail="Could not create or discover a Hermes session. The host may be starting up — wait and retry.",
+        )
 
 
 async def clear_current_conversation(request: Request) -> JSONResponse:
@@ -1969,6 +2922,44 @@ async def job_status(request: Request) -> JSONResponse:
             "message": job["message"],
             "attempt": 0,
             "lastSeq": max(len(job["events"]) - 1, 0),
+        }})
+
+    # B33 WS B: the job lifecycle is durable in the delivery store.  When
+    # the connector restarted after the ack, _http_jobs is empty but the
+    # message_requests row still holds job_id → state — answer the poll from
+    # the store so the client can render the terminal outcome instead of a
+    # hanging "running" placeholder.
+    try:
+        from .delivery_store import get_delivery_store
+        request_row = get_delivery_store().get_message_request_by_job(job_id)
+    except Exception:
+        request_row = None
+    if request_row is not None:
+        status = {
+            "accepted": "running",
+            "running": "running",
+            "terminal": "completed",
+            "permanent_failure": "failed",
+            "cancelled": "cancelled",
+        }.get(request_row["state"], "running")
+        return JSONResponse({"data": {
+            "jobId": job_id,
+            "status": status,
+            "conversationId": request_row["conversationId"],
+            "error": (
+                None if status != "failed" else
+                "The connector restarted before this job finished."
+            ),
+            "errorCategory": (
+                request_row["errorCategory"] if status == "failed" else None
+            ),
+            "errorAction": None,
+            "usage": None,
+            "context": None,
+            "diff": None,
+            "message": None,
+            "attempt": 0,
+            "lastSeq": 0,
         }})
 
     # Fallback: jobs created by the legacy relay WS path. Do not remove.
@@ -2828,8 +3819,16 @@ routes = [
     Route("/v1/commands", list_commands, methods=["GET"]),
     Route("/gw/restart", gateway_restart, methods=["POST"]),
     Route("/v1/gw/restart", gateway_restart, methods=["POST"]),
+    # Build 33 Workstream A — preflight MUST be registered before the
+    # {operationId} capture below or "preflight" would match as an id.
+    Route("/gw/restart/preflight", gateway_restart_preflight, methods=["GET"]),
+    Route("/v1/gw/restart/preflight", gateway_restart_preflight, methods=["GET"]),
+    Route("/gw/restart/{operationId}", gateway_restart_status, methods=["GET"]),
+    Route("/v1/gw/restart/{operationId}", gateway_restart_status, methods=["GET"]),
     Route("/gw/status", gateway_status, methods=["GET"]),
     Route("/v1/gw/status", gateway_status, methods=["GET"]),
+    Route("/gw/health", gateway_status, methods=["GET"]),
+    Route("/v1/gw/health", gateway_status, methods=["GET"]),
     Route("/gw/logs", gateway_logs, methods=["GET"]),
     Route("/v1/gw/logs", gateway_logs, methods=["GET"]),
     Route("/gw/logs/stream", gateway_logs_stream, methods=["GET"]),

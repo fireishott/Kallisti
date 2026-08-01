@@ -1,0 +1,947 @@
+"""Durable delivery store for POST /v1/messages idempotency and job tracking.
+
+Build 33 Workstream B (connector side): before this module, every POST
+/v1/messages created a fresh in-memory job unconditionally — no idempotency
+on clientMessageId, no durable storage, and jobs/events/message identity all
+died with the connector process.  The delivery store fixes the three gaps:
+
+  * conversation_bindings — app conversation UUID ↔ Hermes session id,
+    migrated from the JSON sidecar (session_meta.json ``_hermes_id`` entries)
+    and written atomically from then on.
+  * message_requests — one row per clientMessageId with a content hash, so a
+    transport-level retry of the same send is answered with the existing job
+    (replyState "duplicate") and the same id carrying different content is a
+    409 (replyState "conflict").
+  * message_attachments / job_events — provisioned for durable attachment
+    metadata and ordered per-job event logs.
+
+The in-memory ``_http_jobs`` dict in http_facade.py stays as the hot cache;
+this store is the authority.  Reconcile runs at connector startup.
+
+GUARDRAIL: same as restart_operations — never store bearer tokens or
+credentials here.  Message *text* is stored because idempotency on
+clientMessageId requires comparing request content; the store is local to
+the connector host, mode 0600.
+"""
+
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import logging
+import os
+import sqlite3
+import stat
+import threading
+import uuid
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger("herald.delivery_store")
+
+# Bumped any time the schema changes in a non-additive way.  A live process
+# whose DB has a lower user_version than this re-initializes the schema
+# before serving the next request.  Increment with caution — the message
+# is "the on-disk tables are no longer what the running code expects".
+_EXPECTED_SCHEMA_VERSION = 1
+
+# States for message_requests (must match the CHECK constraint verbatim).
+STATES = ("accepted", "running", "terminal", "permanent_failure", "cancelled")
+
+# A 'running' row older than this is a job the previous connector process
+# died mid-turn on — reconcile marks it permanent_failure at startup.
+_STALE_JOB_SECONDS = 600.0
+
+# ── Paths / time ──────────────────────────────────────────────────────────
+
+
+def delivery_db_path() -> Path:
+    """DB location: $HERMES_MOBILE_CONNECTOR_HOME/delivery.sqlite3."""
+    home = os.getenv("HERMES_MOBILE_CONNECTOR_HOME") or str(Path.home() / ".hermes-mobile")
+    return Path(home) / "delivery.sqlite3"
+
+
+def _utcnow_rfc3339() -> str:
+    """RFC 3339 UTC timestamp with a Z suffix (matches the contract fixtures)."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_rfc3339(value: str) -> datetime.datetime | None:
+    """Parse an RFC 3339 timestamp (``Z`` accepted).  None on any failure."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _coerce_uuid(value: Any) -> str | None:
+    """Lowercase UUID string, or None. Never raises."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+# ── Errors ────────────────────────────────────────────────────────────────
+
+
+class DuplicateConflictError(RuntimeError):
+    """A message request (or binding) collides with an existing durable row.
+
+    Raised by create_message_request when the same clientMessageId was
+    already submitted with different content, and by get_or_create_binding
+    when the app conversation id (or the Hermes session id, which is UNIQUE)
+    is already bound to a different session.
+    """
+
+    def __init__(self, client_message_id: str, detail: str) -> None:
+        super().__init__(detail)
+        self.client_message_id = client_message_id
+
+
+# ── Request hashing ───────────────────────────────────────────────────────
+
+
+def _attachment_ids(attachments: Any) -> list[str]:
+    """Stable attachment identity list for the request hash.
+
+    Prefers an explicit ``attachmentId``/``id`` from the payload; falls back
+    to a content-shape key so two byte-identical attachments hash identically
+    even when the app does not mint ids.  Sorted for hash stability.
+    """
+    ids: list[str] = []
+    for att in attachments or []:
+        if not isinstance(att, dict):
+            continue
+        aid = att.get("attachmentId") or att.get("id")
+        if aid is None:
+            aid = "|".join(
+                str(att.get(k, "")) for k in ("type", "filename", "mimeType")
+            )
+        ids.append(str(aid))
+    return sorted(ids)
+
+
+def request_sha256(clean_text: str, attachments: Any) -> str:
+    """SHA-256 of the canonical request payload.
+
+    ``json.dumps({"text": clean_text, "attachments": sorted_attachment_ids},
+    sort_keys=True)`` — two requests with the same clientMessageId only match
+    when both text AND attachment identity agree.
+    """
+    payload = json.dumps(
+        {"text": clean_text or "", "attachments": _attachment_ids(attachments)},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# ── Store ─────────────────────────────────────────────────────────────────
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_bindings (
+    app_conversation_id TEXT PRIMARY KEY,
+    hermes_session_id TEXT UNIQUE NOT NULL,
+    account_id TEXT NOT NULL,
+    owner_device_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_requests (
+    client_message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversation_bindings(app_conversation_id),
+    owner_device_id TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    clean_text TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('accepted','running','terminal','permanent_failure','cancelled')),
+    job_id TEXT UNIQUE,
+    canonical_user_message_id TEXT,
+    terminal_message_id TEXT,
+    error_category TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_attachments (
+    message_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    attachment_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_length INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL DEFAULT '',
+    blob_path TEXT,
+    thumbnail_path TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS job_events (
+    job_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, seq)
+);
+"""
+
+
+class DeliveryStore:
+    """SQLite-backed delivery store (WAL, foreign keys ON, mode 0600).
+
+    Thread-safe for the connector's event loop + background executor:
+    every mutation runs under a lock and uses a short busy timeout.
+    """
+
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self.db_path: Path = Path(db_path) if db_path is not None else delivery_db_path()
+        # RLock so _connect's schema-validation re-init can be called from
+        # _init_db without deadlocking on the same thread.
+        self._lock = threading.RLock()
+        self._init_db()
+
+    # ── connection helpers ────────────────────────────────────────────────
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open the SQLite file and (re)validate the schema before returning.
+
+        The connector may stay up for days.  If the file is unlinked and
+        replaced by an empty inode (Build 34 incident: an update script
+        recreated a 4096-byte shell with mode 0644 and no tables), live
+        requests would otherwise 500 with ``no such table: conversation_bindings``
+        forever.  Detecting the drift on every connection costs one
+        ``PRAGMA user_version`` and re-runs the idempotent CREATE TABLE
+        block if the schema version is missing.
+        """
+        # Tighten parent directory to mode 0700 — it is profile-owned.
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            current_mode = stat.S_IMODE(self.db_path.parent.stat().st_mode)
+            if current_mode != 0o700:
+                os.chmod(self.db_path.parent, 0o700)
+        except OSError:
+            logger.debug("delivery: could not chmod parent dir (non-fatal)")
+
+        conn, recovered = self._open_or_recover()
+        if recovered:
+            logger.warning(
+                "delivery: replaced non-database file at %s with a fresh schema",
+                self.db_path,
+            )
+        conn.row_factory = sqlite3.Row
+        # Schema validation — the table list is the source of truth.
+        # user_version is a cheap persistence check; the table-count probe
+        # detects the Build 34 incident (empty replacement file) where the
+        # page count and inode are present but the tables are not.
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            schema_version = int(row[0]) if row else 0
+        except sqlite3.DatabaseError:
+            schema_version = 0
+        try:
+            table_count = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+            ).fetchone()[0]
+        except sqlite3.DatabaseError:
+            table_count = 0
+
+        if schema_version < _EXPECTED_SCHEMA_VERSION or table_count < 4:
+            logger.warning(
+                "delivery: schema drift detected (user_version=%s, tables=%d) — "
+                "re-initializing %s", schema_version, table_count, self.db_path
+            )
+            with self._lock:
+                conn.executescript(_SCHEMA)
+                # Mark the schema so subsequent opens skip the re-init.
+                conn.execute(f"PRAGMA user_version = {_EXPECTED_SCHEMA_VERSION}")
+                conn.commit()
+
+        # Tighten the file and WAL sidecars to mode 0600 every time the
+        # path is opened.  The empty-replacement incident left the file at
+        # mode 0644; we re-secure without losing the in-flight WAL.
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm")):
+            try:
+                if path.exists():
+                    os.chmod(path, 0o600)
+            except OSError:
+                logger.debug("delivery: could not chmod %s (non-fatal)", path)
+
+        return conn
+
+    def _open_or_recover(self) -> tuple[sqlite3.Connection, bool]:
+        """Open the DB; replace a non-database file with a fresh one.
+
+        The Build 34 incident left a 4096-byte zero-filled file in place of
+        the SQLite database.  ``sqlite3.connect`` opens such a file but the
+        first ``PRAGMA`` raises ``DatabaseError: file is not a database``.
+        Rather than 500-ing forever, we close the handle, unlink the file
+        + sidecars, and reopen a fresh one.  The caller then sees a
+        normal, schema-less file and runs the standard schema init.
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        except sqlite3.DatabaseError:
+            # Path could not be opened as a SQLite file.  nuke + retry.
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                try:
+                    os.remove(str(self.db_path) + suffix)
+                except OSError:
+                    pass
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+            return conn, True
+
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.DatabaseError as exc:
+            conn.close()
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                try:
+                    os.remove(str(self.db_path) + suffix)
+                except OSError:
+                    pass
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+            return conn, True
+        return conn, False
+
+    def _secure_files(self) -> None:
+        """DB + WAL + SHM must be mode 0600 — the rows describe the host."""
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm")):
+            try:
+                if path.exists():
+                    os.chmod(path, 0o600)
+            except OSError:
+                logger.debug("delivery: could not chmod %s (non-fatal)", path)
+
+    def _init_db(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with self._connect() as conn:
+                # executescript: _SCHEMA holds four CREATE TABLE statements.
+                conn.executescript(_SCHEMA)
+                # Mark the schema so subsequent opens skip the re-init.
+                conn.execute(f"PRAGMA user_version = {_EXPECTED_SCHEMA_VERSION}")
+                conn.commit()
+        self._secure_files()
+
+    # ── health probe ──────────────────────────────────────────────────────
+
+    def schema_ready(self) -> bool:
+        """True when the four required tables exist and the file is 0600.
+
+        Used by /v1/health to expose ``deliveryStoreReady`` so the phone
+        can show ``Degraded`` instead of the current green ``Online`` lie.
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+                names = {r[0] for r in rows}
+                required = {
+                    "conversation_bindings",
+                    "message_requests",
+                    "message_attachments",
+                    "job_events",
+                }
+                if not required.issubset(names):
+                    return False
+            mode = stat.S_IMODE(self.db_path.stat().st_mode)
+            return (mode & 0o077) == 0
+        except (OSError, sqlite3.DatabaseError) as exc:
+            logger.warning("delivery: schema_ready check failed: %s", exc)
+            return False
+
+    # ── row → contract dict ───────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_binding(row: sqlite3.Row) -> dict:
+        """conversation-binding-v1 payload — the exact shape the app decodes."""
+        return {
+            "$schema": "conversation-binding-v1",
+            "appConversationId": row["app_conversation_id"],
+            "hermesSessionId": row["hermes_session_id"],
+            "accountId": row["account_id"],
+            "ownerDeviceId": row["owner_device_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _row_to_request(row: sqlite3.Row) -> dict:
+        """message-request-v1 payload — the exact shape the app decodes."""
+        return {
+            "$schema": "message-request-v1",
+            "clientMessageId": row["client_message_id"],
+            "conversationId": row["conversation_id"],
+            "installationId": row["owner_device_id"],
+            "requestSha256": row["request_sha256"],
+            "cleanText": row["clean_text"],
+            "state": row["state"],
+            "jobId": row["job_id"],
+            "canonicalUserMessageId": row["canonical_user_message_id"],
+            "terminalMessageId": row["terminal_message_id"],
+            "errorCategory": row["error_category"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    # ── conversation bindings ─────────────────────────────────────────────
+
+    def get_or_create_binding(
+        self,
+        app_conversation_id: str,
+        hermes_session_id: str,
+        account_id: str,
+        device_id: str,
+    ) -> dict:
+        """Atomically insert the binding or return the existing row.
+
+        Raises DuplicateConflictError when the app conversation id is already
+        bound to a *different* Hermes session, or when the Hermes session id
+        (UNIQUE) is already bound to a different app conversation id — e.g. a
+        draft alias racing the canonical UUID for the same session.
+        """
+        if not isinstance(app_conversation_id, str) or not app_conversation_id:
+            raise ValueError("app_conversation_id must be a non-empty string")
+        if not isinstance(hermes_session_id, str) or not hermes_session_id:
+            raise ValueError("hermes_session_id must be a non-empty string")
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO conversation_bindings "
+                    "(app_conversation_id, hermes_session_id, account_id, "
+                    " owner_device_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (app_conversation_id, hermes_session_id,
+                     account_id or "", device_id or "", now, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM conversation_bindings "
+                    "WHERE app_conversation_id = ?",
+                    (app_conversation_id,),
+                ).fetchone()
+                if row is None:
+                    # INSERT OR IGNORE swallowed the UNIQUE(hermes_session_id)
+                    # collision — the session is bound to another app id.
+                    other = conn.execute(
+                        "SELECT * FROM conversation_bindings "
+                        "WHERE hermes_session_id = ?",
+                        (hermes_session_id,),
+                    ).fetchone()
+                    if other is not None:
+                        raise DuplicateConflictError(
+                            app_conversation_id,
+                            f"Hermes session {hermes_session_id} is already bound "
+                            f"to conversation {other['app_conversation_id']}",
+                        )
+                    raise DuplicateConflictError(
+                        app_conversation_id,
+                        f"binding for {app_conversation_id} could not be created",
+                    )
+                if row["hermes_session_id"] != hermes_session_id:
+                    raise DuplicateConflictError(
+                        app_conversation_id,
+                        f"conversation {app_conversation_id} is already bound "
+                        f"to session {row['hermes_session_id']}",
+                    )
+                return self._row_to_binding(row)
+            finally:
+                conn.close()
+
+    def get_binding(self, app_conversation_id: str) -> dict | None:
+        """conversation-binding-v1 payload for the app id, or None."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM conversation_bindings "
+                    "WHERE app_conversation_id = ?",
+                    (app_conversation_id,),
+                ).fetchone()
+                return self._row_to_binding(row) if row is not None else None
+            finally:
+                conn.close()
+
+    def get_binding_by_hermes(self, hermes_session_id: str) -> dict | None:
+        """conversation-binding-v1 payload for the Hermes session, or None."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM conversation_bindings "
+                    "WHERE hermes_session_id = ?",
+                    (hermes_session_id,),
+                ).fetchone()
+                return self._row_to_binding(row) if row is not None else None
+            finally:
+                conn.close()
+
+    # ── message requests ──────────────────────────────────────────────────
+
+    def create_message_request(
+        self,
+        client_message_id: str,
+        conversation_id: str,
+        device_id: str,
+        clean_text: str,
+        request_sha256: str,
+    ) -> dict:
+        """Idempotent insert of a new accepted request.
+
+        * New clientMessageId → a fresh row in state 'accepted'.
+        * Same clientMessageId + same content hash → the existing row
+          (replay-safe, whatever its state).
+        * Same clientMessageId + different hash → DuplicateConflictError.
+        """
+        if not isinstance(client_message_id, str) or not client_message_id:
+            raise ValueError("client_message_id must be a non-empty string")
+        clean_text = clean_text or ""
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO message_requests "
+                    "(client_message_id, conversation_id, owner_device_id, "
+                    " request_sha256, clean_text, state, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+                    (client_message_id, conversation_id, device_id or "",
+                     request_sha256, clean_text, now, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM message_requests WHERE client_message_id = ?",
+                    (client_message_id,),
+                ).fetchone()
+                if row is None:
+                    # INSERT OR IGNORE swallowed a UNIQUE(job_id) collision on
+                    # a resurrected row — should not happen in practice.
+                    raise DuplicateConflictError(
+                        client_message_id,
+                        "request row could not be created for "
+                        f"{client_message_id}",
+                    )
+                if row["request_sha256"] != request_sha256:
+                    raise DuplicateConflictError(
+                        client_message_id,
+                        f"clientMessageId {client_message_id} was already "
+                        "submitted with different content",
+                    )
+                return self._row_to_request(row)
+            finally:
+                conn.close()
+
+    def _transition(
+        self,
+        client_message_id: str,
+        *,
+        set_clause: str,
+        params: tuple[Any, ...],
+        where: str,
+    ) -> dict:
+        """Shared UPDATE-then-return for lifecycle transitions.
+
+        The UPDATE targets only rows matching *where* (a state guard); a
+        rowcount of 0 means the transition is not allowed from the current
+        state and the existing row is returned unchanged (idempotent).
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    f"UPDATE message_requests SET {set_clause}, updated_at = ? "
+                    f"WHERE client_message_id = ? AND {where}",
+                    (*params, _utcnow_rfc3339(), client_message_id),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM message_requests WHERE client_message_id = ?",
+                    (client_message_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"No message request for {client_message_id}")
+                return self._row_to_request(row)
+            finally:
+                conn.close()
+
+    def accept_message_request(self, client_message_id: str, job_id: str) -> dict:
+        """Transition accepted → running and set job_id.
+
+        Also accepts 'cancelled'/'permanent_failure' rows: a transport-level
+        retry of a failed send must be able to run again with a fresh job.
+        Rows already 'running'/'terminal' are returned unchanged.
+        """
+        return self._transition(
+            client_message_id,
+            set_clause="state = 'running', job_id = ?",
+            params=(job_id,),
+            where="state IN ('accepted', 'cancelled', 'permanent_failure')",
+        )
+
+    def complete_message_request(
+        self,
+        client_message_id: str,
+        canonical_user_message_id: str | None = None,
+        terminal_message_id: str | None = None,
+    ) -> dict:
+        """Transition running → terminal, recording the message identities."""
+        return self._transition(
+            client_message_id,
+            set_clause="state = 'terminal', canonical_user_message_id = ?, "
+                       "terminal_message_id = ?",
+            params=(canonical_user_message_id, terminal_message_id),
+            where="state = 'running'",
+        )
+
+    def fail_message_request(self, client_message_id: str, error_category: str | None = None) -> dict:
+        """Transition running → permanent_failure with the error category."""
+        return self._transition(
+            client_message_id,
+            set_clause="state = 'permanent_failure', error_category = ?",
+            params=(error_category,),
+            where="state = 'running'",
+        )
+
+    def cancel_message_request(self, client_message_id: str) -> dict:
+        """Transition running (or accepted) → cancelled."""
+        return self._transition(
+            client_message_id,
+            set_clause="state = 'cancelled'",
+            params=(),
+            where="state IN ('running', 'accepted')",
+        )
+
+    def get_message_request(self, client_message_id: str) -> dict | None:
+        """message-request-v1 payload for the id, or None."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM message_requests WHERE client_message_id = ?",
+                    (client_message_id,),
+                ).fetchone()
+                return self._row_to_request(row) if row is not None else None
+            finally:
+                conn.close()
+
+    def get_message_request_by_job(self, job_id: str) -> dict | None:
+        """message-request-v1 payload for the job id, or None."""
+        if not job_id:
+            return None
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM message_requests WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                return self._row_to_request(row) if row is not None else None
+            finally:
+                conn.close()
+
+    # ── attachments ───────────────────────────────────────────────────────
+
+    def add_attachment(
+        self,
+        message_id: str,
+        ordinal: int,
+        attachment_id: str,
+        kind: str,
+        filename: str,
+        mime_type: str,
+        byte_length: int = 0,
+        sha256: str = "",
+        blob_path: str | None = None,
+        thumbnail_path: str | None = None,
+    ) -> None:
+        """Insert or replace one attachment row (keyed message_id + ordinal)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO message_attachments "
+                    "(message_id, ordinal, attachment_id, kind, filename, "
+                    " mime_type, byte_length, sha256, blob_path, thumbnail_path, "
+                    " created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (message_id, ordinal, attachment_id, kind, filename,
+                     mime_type, byte_length, sha256, blob_path, thumbnail_path,
+                     _utcnow_rfc3339()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_attachments(self, message_id: str) -> list[dict]:
+        """Attachment rows for *message_id*, ordered by ordinal."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM message_attachments "
+                    "WHERE message_id = ? ORDER BY ordinal ASC",
+                    (message_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    # ── job events ────────────────────────────────────────────────────────
+
+    def append_job_event(self, job_id: str, seq: int, event_json: str) -> None:
+        """Append one ordered event (json string) for a job. Idempotent per seq."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO job_events "
+                    "(job_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
+                    (job_id, seq, event_json, _utcnow_rfc3339()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_job_events(self, job_id: str) -> list[dict]:
+        """All events for a job, oldest first: {seq, event, createdAt}.
+
+        ``event`` is the parsed JSON object; a row whose JSON does not parse
+        is returned as ``{"raw": ...}`` so it can never crash a caller.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM job_events WHERE job_id = ? ORDER BY seq ASC",
+                    (job_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+        events: list[dict] = []
+        for row in rows:
+            try:
+                parsed = json.loads(row["event_json"])
+            except (ValueError, TypeError):
+                parsed = {"raw": row["event_json"]}
+            events.append({
+                "seq": row["seq"],
+                "event": parsed,
+                "createdAt": row["created_at"],
+            })
+        return events
+
+    # ── restart recovery ──────────────────────────────────────────────────
+
+    def reconcile_stale_jobs(self) -> None:
+        """Mark every 'running' request older than 10 minutes as failed.
+
+        Called at connector startup: a 'running' row means the previous
+        connector process accepted the job and died before the terminal
+        event — the client's retry will hit the same clientMessageId, so the
+        row must be out of the way (a retry re-accepts cancelled/
+        permanent_failure rows via accept_message_request).
+        """
+        cutoff = _utcnow_rfc3339()
+        now_ts = datetime.datetime.now(datetime.timezone.utc)
+        stale: list[str] = []
+        with self._lock:
+            conn = self._connect()
+            try:
+                for row in conn.execute(
+                    "SELECT client_message_id, updated_at FROM message_requests "
+                    "WHERE state = 'running'"
+                ).fetchall():
+                    updated = _parse_rfc3339(row["updated_at"])
+                    if updated is None:
+                        continue
+                    if (now_ts - updated).total_seconds() > _STALE_JOB_SECONDS:
+                        stale.append(row["client_message_id"])
+                for client_message_id in stale:
+                    conn.execute(
+                        "UPDATE message_requests SET state = 'permanent_failure', "
+                        " error_category = 'connector_restart', updated_at = ? "
+                        "WHERE client_message_id = ? AND state = 'running'",
+                        (cutoff, client_message_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        if stale:
+            logger.warning(
+                "delivery: marked %d stale running job(s) permanent_failure "
+                "(connector restart recovery)",
+                len(stale),
+            )
+
+    # ── legacy sidecar migration ──────────────────────────────────────────
+
+    @staticmethod
+    def _sidecar_path() -> Path:
+        connector_home = os.getenv(
+            "HERMES_MOBILE_CONNECTOR_HOME"
+        ) or str(Path.home() / ".hermes-mobile")
+        return Path(connector_home) / "session_meta.json"
+
+    @staticmethod
+    def _lookup_owner_device(app_id: str, hermes_id: str) -> str:
+        """Best-effort owner device from device_registry.json, else "".
+
+        The registry keys sessions by canonical app UUID; the sidecar may
+        hold a draft alias, so the canonical UUIDv5 derived from the Hermes
+        session id is tried as a fallback.
+        """
+        try:
+            from .session_store import _app_uuid  # local import: no cycles
+            candidates = {app_id, _app_uuid(hermes_id)}
+        except Exception:                            # noqa: BLE001
+            candidates = {app_id}
+        try:
+            connector_home = os.getenv(
+                "HERMES_MOBILE_CONNECTOR_HOME"
+            ) or str(Path.home() / ".hermes-mobile")
+            with open(Path(connector_home) / "device_registry.json") as fh:
+                registry = json.load(fh)
+            sessions = registry.get("sessions", {})
+            for candidate in candidates:
+                entry = sessions.get(candidate)
+                if isinstance(entry, dict) and entry.get("deviceId"):
+                    return str(entry["deviceId"])
+        except (OSError, ValueError):
+            pass
+        return ""
+
+    def migrate_bindings_from_sidecar(
+        self, sidecar_path: str | Path | None = None
+    ) -> int:
+        """Migrate legacy session_meta.json bindings into SQLite.
+
+        A binding is any sidecar entry with a ``_hermes_id`` whose key is a
+        valid UUID (draft aliases and canonical ids both qualify).  The
+        Hermes session id is UNIQUE, so when the same session appears under
+        both a canonical and a draft key the canonical row wins; drafts for
+        an already-migrated session are skipped.  On success the sidecar is
+        renamed ``session_meta.json.migrated``.  Returns the number of rows
+        migrated; 0 leaves the sidecar untouched.
+        """
+        path = Path(sidecar_path) if sidecar_path is not None else self._sidecar_path()
+        if not path.exists():
+            return 0
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            logger.warning(
+                "delivery: could not read %s — skipping migration", path
+            )
+            return 0
+        if not isinstance(data, dict):
+            return 0
+
+        try:
+            from .session_store import _app_uuid  # local import: no cycles
+        except Exception:                            # noqa: BLE001
+            _app_uuid = None
+
+        def _is_canonical(app_id: str, hermes_id: str) -> bool:
+            if _app_uuid is None:
+                return False
+            try:
+                return _app_uuid(hermes_id) == app_id
+            except Exception:                        # noqa: BLE001
+                return False
+
+        now = _utcnow_rfc3339()
+        rows: list[tuple[str, str, str, str]] = []
+        claimed: set[str] = set()
+
+        def _queue(app_id: Any, meta: Any) -> None:
+            if not isinstance(meta, dict) or not isinstance(app_id, str):
+                return
+            hermes_id = meta.get("_hermes_id")
+            if not isinstance(hermes_id, str) or not hermes_id:
+                return
+            # Only rows with valid UUIDs — the table's PRIMARY KEY is the
+            # app-facing UUID and the app decoders reject anything else.
+            if _coerce_uuid(app_id) is None:
+                logger.debug(
+                    "delivery: skipping sidecar key %r (not a UUID)", app_id
+                )
+                return
+            if hermes_id in claimed:
+                return  # a higher-priority row already owns this session
+            owner_device = self._lookup_owner_device(app_id, hermes_id)
+            rows.append((app_id, hermes_id, "", owner_device))
+            claimed.add(hermes_id)
+
+        # Pass 1: canonical keys (app id == uuid5(hermes id)) win — they are
+        # the durable app-facing identity and the hermes_session_id column is
+        # UNIQUE, so the canonical row must own the binding, not the draft.
+        for app_id, meta in data.items():
+            if isinstance(meta, dict) and isinstance(meta.get("_hermes_id"), str) \
+                    and _is_canonical(app_id, meta["_hermes_id"]):
+                _queue(app_id, meta)
+        # Pass 2: draft aliases for sessions not claimed in pass 1.
+        for app_id, meta in data.items():
+            _queue(app_id, meta)
+
+        if not rows:
+            return 0
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN")
+                for app_id, hermes_id, account_id, owner_device in rows:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO conversation_bindings "
+                        "(app_conversation_id, hermes_session_id, account_id, "
+                        " owner_device_id, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (app_id, hermes_id, account_id, owner_device, now, now),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+        path.rename(Path(str(path) + ".migrated"))
+        logger.info(
+            "delivery: migrated %d conversation binding(s) from %s",
+            len(rows), path.name,
+        )
+        return len(rows)
+
+
+# ── Process-wide singleton ────────────────────────────────────────────────
+#
+# Both the HTTP facade and the connector's startup reconciliation use one
+# store.  The singleton re-binds automatically when
+# HERMES_MOBILE_CONNECTOR_HOME changes (tests flip it per case).
+
+_store_singleton: DeliveryStore | None = None
+
+
+def get_delivery_store() -> DeliveryStore:
+    global _store_singleton
+    db_path = delivery_db_path()
+    if _store_singleton is None or _store_singleton.db_path != db_path:
+        _store_singleton = DeliveryStore(db_path)
+    return _store_singleton
+
+
+def reset_delivery_store() -> None:
+    """Drop the singleton (tests only — env-scoped stores re-resolve on demand)."""
+    global _store_singleton
+    _store_singleton = None
