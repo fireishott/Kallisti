@@ -230,7 +230,7 @@ final class ChatStore {
         // terminal completion, another load, or a session switch invalidated
         // our pre-await snapshot.
         guard conversationGeneration == capturedGeneration else {
-            Logger.app.info("loadConversation: discarded (generation \(capturedGeneration) → \(conversationGeneration))")
+            Logger.app.info("loadConversation: discarded (generation \(capturedGeneration) → \(self.conversationGeneration))")
             restartPendingPollingIfNeeded()
             return
         }
@@ -1214,7 +1214,7 @@ final class ChatStore {
             clientMessageID: UUID()
         )
         queuedOutboxItems.append(item)
-        Logger.app.info("Outbox: queued message \(item.clientMessageID.uuidString.prefix(8)) — \(queuedOutboxItems.count) pending")
+        Logger.app.info("Outbox: queued message \(item.clientMessageID.uuidString.prefix(8)) — \(self.queuedOutboxItems.count) pending")
     }
 
     /// Remove a queued item by ID.
@@ -1225,9 +1225,9 @@ final class ChatStore {
     /// Drain the outbox queue: submit each item FIFO, waiting for each
     /// preceding job to reach a server terminal state before starting the next.
     private func drainOutboxQueue() async {
-        while !queuedOutboxItems.isEmpty {
-            let item = queuedOutboxItems.removeFirst()
-            Logger.app.info("Outbox: draining \(item.clientMessageID.uuidString.prefix(8)) — \(queuedOutboxItems.count) remaining")
+        while !self.queuedOutboxItems.isEmpty {
+            let item = self.queuedOutboxItems.removeFirst()
+            Logger.app.info("Outbox: draining \(item.clientMessageID.uuidString.prefix(8)) — \(self.queuedOutboxItems.count) remaining")
 
             // Verify we're still in the same conversation
             guard conversation?.id == item.conversationID else {

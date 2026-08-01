@@ -520,13 +520,15 @@ final class LiveHeraldClient: HeraldClientProtocol {
             let created: Bool?
         }
         do {
-            let body: [String: Any] = ["conversationId": id.uuidString.lowercased()]
-            let jsonData = try JSONSerialization.data(withJSONObject: body)
+            struct EnsureBody: Encodable {
+                let conversationId: String
+            }
+            let body = EnsureBody(conversationId: id.uuidString.lowercased())
             let response: EnsureResponse = try await performAuthorizedRequest { [self] token in
                 try await self.apiClient.post(
                     path: "conversations/ensure",
-                    accessToken: token,
-                    body: jsonData
+                    body: body,
+                    accessToken: token
                 )
             }
             Self.logger.info("ensureConversation: sessionId=\(response.sessionId ?? "pending"), created=\(response.created ?? false)")
