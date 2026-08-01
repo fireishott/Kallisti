@@ -45,8 +45,16 @@ final class HermesTalkCoordinator {
     /// When true, automatically resumes listening after playback drains.
     var autoTurnTaking = true
 
+    /// Build 31: observable microphone power level (0...1, normalized from dBFS).
+    /// Updated at ~10 Hz during `.listening` via a polling Task that reads
+    /// capture.currentPower and normalizes it for UI display.
+    var onPowerUpdate: ((Float) -> Void)?
+
     /// Active barge-in monitoring task.
     private var bargeInTask: Task<Void, Never>?
+
+    /// Build 31: power-level polling task.
+    private var powerPollTask: Task<Void, Never>?
 
     /// Audio route/interruption observers.
     private var routeChangeObserver: NSObjectProtocol?
@@ -126,9 +134,24 @@ final class HermesTalkCoordinator {
             notifyState()
             registerAudioObservers()
 
+            // Build 31: poll capture power at ~10 Hz while listening so the
+            // orb/meter react to real microphone input.
+            powerPollTask = Task { [weak self] in
+                while !Task.isCancelled, let self, self.state == .listening {
+                    // Normalize dBFS to 0...1: -60 dBFS (silence) → 0, 0 dBFS → 1
+                    let db = self.capture.currentPower
+                    let clamped = max(-60, min(0, db))
+                    let normalized = (clamped + 60) / 60
+                    self.onPowerUpdate?(normalized)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+
             // Wait for VAD endpoint
             for await _ in capture.startListeningWithVAD() {
                 guard state == .listening else { break }
+                powerPollTask?.cancel()
+                powerPollTask = nil
                 await stopListeningAndProcess()
                 break
             }

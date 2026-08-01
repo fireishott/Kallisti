@@ -33,6 +33,7 @@ struct ChatInputBar: View {
     var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
     let onStop: () -> Void
+    let onQueueNext: () -> Void   // Build 31: queue a message after the active turn
     let onAttach: () -> Void
     let onSlashCommand: (SlashCommand, String?) -> Void
 
@@ -310,15 +311,37 @@ struct ChatInputBar: View {
     @ViewBuilder
     private var actionButton: some View {
         if isStreaming {
-            Button(action: onStop) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Design.Colors.foreground)
-                    .frame(width: 36, height: 36)
-                    .background(Design.Colors.surface)
-                    .clipShape(Circle())
+            // Build 31: show both Stop and Send during active streaming.
+            // Stop interrupts the current turn.  Send appears only when the
+            // composer has a draft or attachment — tapping it queues the new
+            // message behind the active job (Send Next) instead of silently
+            // cancelling the current work.
+            HStack(spacing: 8) {
+                // Stop / Interrupt
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Design.Colors.foreground)
+                        .frame(width: 36, height: 36)
+                        .background(Design.Colors.surface)
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("Stop generating")
+
+                // Send Next — only when there's a draft
+                if canSend {
+                    Button(action: onQueueNext) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Design.Colors.background)
+                            .frame(width: 36, height: 36)
+                            .background(Design.Brand.accent)
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("Queue message after current reply")
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
-            .accessibilityLabel("Stop generating")
         } else if canSend {
             Button(action: handlePrimaryAction) {
                 Image(systemName: "arrow.up")

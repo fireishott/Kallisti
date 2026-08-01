@@ -115,6 +115,10 @@ extension ResilientHeraldClient {
         try await primary.loadConversation(id: id)
     }
 
+    func ensureConversation(id: UUID) async {
+        await primary.ensureConversation(id: id)
+    }
+
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
         await primary.getJobStatus(jobId)
     }

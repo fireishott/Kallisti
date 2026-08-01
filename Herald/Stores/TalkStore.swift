@@ -32,6 +32,10 @@ final class TalkStore {
     @ObservationIgnored var ttsService: (any TTSServiceProtocol)?
     @ObservationIgnored var ttsSettingsProvider: (@MainActor () -> (enabled: Bool, voice: String, autoSpeak: Bool, autoSpeakDuringStreaming: Bool, appleVoiceIdentifier: String))?
 
+    /// Build 31: observable microphone power level (0...1) from the live capture.
+    /// Updated at ~10 Hz during `.listening`.  Drive the orb/meter from this.
+    var microphoneLevel: Float = 0
+
     /// Hermes-native coordinator. Set via `attachHermesCoordinator()` when available.
     @ObservationIgnored var hermesCoordinator: HermesTalkCoordinator?
 
@@ -76,14 +80,17 @@ final class TalkStore {
         }
         coordinator.onTranscript = { [weak self] item in
             guard let self else { return }
-            // Replace existing item with the same ID (partial updates reuse IDs)
-            // so the transcript array doesn't grow unbounded during streaming.
             if let idx = self.transcriptItems.firstIndex(where: { $0.id == item.id }) {
                 self.transcriptItems[idx] = item
             } else {
                 self.transcriptItems.append(item)
             }
             self.onSessionStateChanged?()
+        }
+        // Build 31: wire microphone power to the observable store so the
+        // orb/meter react to real input instead of showing a static animation.
+        coordinator.onPowerUpdate = { [weak self] level in
+            self?.microphoneLevel = level
         }
     }
 

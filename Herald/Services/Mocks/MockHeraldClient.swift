@@ -163,6 +163,10 @@ extension MockHeraldClient {
         currentConversation ?? DemoData.sampleConversation
     }
 
+    func ensureConversation(id: UUID) async {
+        // Build 31: mock — no server session to create
+    }
+
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
         nil
     }

@@ -28,6 +28,18 @@ final class ChatStore {
     }
     var isLoading = false
     var pendingMessageSentAt: Date?
+    /// Build 31: outbox queue for messages sent while a turn is already active.
+    /// Each item freezes its conversation ID, text, attachments, and client ID
+    /// at enqueue time.  Items are submitted FIFO after each preceding job reaches
+    /// a server terminal state.
+    struct QueuedItem: Identifiable, Sendable {
+        let id = UUID()
+        let conversationID: UUID
+        let text: String
+        let attachments: [PendingAttachment]
+        let clientMessageID: UUID
+    }
+    var queuedOutboxItems: [QueuedItem] = []
     var lastTokenUsage: TokenUsage?
     var lastContextInfo: ContextInfo?
     /// Error context from the most recent `.failed` streaming update.
@@ -835,6 +847,11 @@ final class ChatStore {
                         try? await UNUserNotificationCenter.current().add(request)
                     }
 
+                    // Build 31: drain the outbox queue after the active job
+                    // reaches a terminal state.  Items were enqueued by sending
+                    // while another turn was already streaming.
+                    await drainOutboxQueue()
+
                 case .started(let phase):
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
                     progressContinuation?.yield(())
@@ -1179,6 +1196,47 @@ final class ChatStore {
             cacheCopy.latestUsage = nil
             persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
+        }
+    }
+
+    // MARK: - Outbox Queue (Build 31)
+
+    /// Enqueue a message to be sent after the active turn finishes.
+    /// Called when the user taps Send while a response is already streaming.
+    /// The item freezes its conversation identity at enqueue time — switching
+    /// chats cannot drain an item into the wrong conversation.
+    func queueNextMessage(text: String, attachments: [PendingAttachment]) {
+        guard let conversation else { return }
+        let item = QueuedItem(
+            conversationID: conversation.id,
+            text: text,
+            attachments: attachments,
+            clientMessageID: UUID()
+        )
+        queuedOutboxItems.append(item)
+        Logger.app.info("Outbox: queued message \(item.clientMessageID.uuidString.prefix(8)) — \(queuedOutboxItems.count) pending")
+    }
+
+    /// Remove a queued item by ID.
+    func removeQueuedItem(_ id: UUID) {
+        queuedOutboxItems.removeAll { $0.id == id }
+    }
+
+    /// Drain the outbox queue: submit each item FIFO, waiting for each
+    /// preceding job to reach a server terminal state before starting the next.
+    private func drainOutboxQueue() async {
+        while !queuedOutboxItems.isEmpty {
+            let item = queuedOutboxItems.removeFirst()
+            Logger.app.info("Outbox: draining \(item.clientMessageID.uuidString.prefix(8)) — \(queuedOutboxItems.count) remaining")
+
+            // Verify we're still in the same conversation
+            guard conversation?.id == item.conversationID else {
+                Logger.app.info("Outbox: skipping — conversation changed")
+                continue
+            }
+
+            // Submit with the frozen clientMessageID so retry idempotency works
+            await sendMessage(item.text, attachments: item.attachments, clientMessageID: item.clientMessageID)
         }
     }
 

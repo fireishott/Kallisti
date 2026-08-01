@@ -87,6 +87,16 @@ struct ChatScreen: View {
                     isFocused: $isComposerFocused,
                     onSend: sendMessage,
                     onStop: { chatStore.cancelStreaming() },
+                    onQueueNext: {
+                        // Build 31: enqueue a message to send after the active
+                        // turn finishes.  Freeze the draft now so later edits
+                        // don't change the queued text.
+                        let frozenText = messageText
+                        let frozenAttachments = pendingAttachments
+                        messageText = ""
+                        pendingAttachments = []
+                        chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments)
+                    },
                     onAttach: { showAttachmentPicker = true },
                     onSlashCommand: handleSlashCommand
                 )
@@ -182,12 +192,12 @@ struct ChatScreen: View {
         } message: {
             Text("This will archive the current conversation and start a new session. This cannot be undone.")
         }
+        // Build 31: adaptive attachment picker — the sheet owns its detents
+        // (.medium, .large) and drag indicator internally via the NavigationStack.
         .sheet(isPresented: $showAttachmentPicker) {
             AttachmentPickerSheet { result in
                 handleAttachmentResult(result)
             }
-            .presentationDetents([.height(220)])
-            .presentationDragIndicator(.hidden)
         }
         .sheet(isPresented: $showHeraldHub) {
             HeraldSelectorSheet(initialTab: heraldHubInitialTab)

@@ -49,6 +49,11 @@ protocol HeraldClientProtocol {
     /// Load a specific conversation by session ID.
     func loadConversation(id: UUID) async throws -> Conversation
 
+    /// Build 31: ensure a server conversation exists for the given local UUID.
+    /// Called before the first message so the connector can create a Hermes
+    /// session and bind the mapping before the job runs.
+    func ensureConversation(id: UUID) async
+
     /// Get the authoritative status of a job.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
 

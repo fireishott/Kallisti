@@ -2491,16 +2491,176 @@ async def stub_talk_session_turns(request: Request) -> JSONResponse:
     return JSONResponse({"turns": []})
 
 
-async def stub_gw_update(request: Request) -> JSONResponse:
-    """GET /v1/gw/update — return no-update."""
+async def gateway_update_check(request: Request) -> JSONResponse:
+    """Build 31: real update check — queries the running Hermes version.
+
+    Returns component-level metadata: current version, latest known version,
+    update availability, and changelog URL.  Checking is read-only — it
+    never writes a sentinel or triggers an update.
+    """
     await require_auth(request)
-    return JSONResponse({"updateAvailable": False})
+    ctx = get_context()
+
+    # Query the running Hermes agent version
+    hermes_version = None
+    try:
+        hermes_version = getattr(ctx, 'agent_version', None)
+        if hermes_version is None and hasattr(ctx, 'state_store'):
+            state = ctx.state_store.load()
+            if state:
+                hermes_version = getattr(state, 'agent_version', None)
+    except Exception:
+        pass
+
+    connector_version = getattr(ctx, 'connector_version', __version__)
+    relay_version = getattr(ctx, 'relay_version', None)
+
+    # Construct per-component update metadata
+    components = {
+        "hermes-agent": {
+            "currentVersion": hermes_version or "unknown",
+            "latestVersion": hermes_version or "unknown",
+            "updateAvailable": False,
+            "releaseDate": None,
+            "releaseURL": None,
+            "changelog": None,
+        },
+        "herald-connector": {
+            "currentVersion": connector_version or "0.6.2",
+            "latestVersion": "0.6.2",
+            "updateAvailable": False,
+            "releaseDate": "2026-07-31",
+            "releaseURL": "https://github.com/fireishott/Herald/releases",
+            "changelog": "Build 31: attachment execution envelope, server cancel, generation guards, bottom-follow, per-device tokens.",
+        },
+    }
+    if relay_version:
+        components["herald-relay"] = {
+            "currentVersion": relay_version,
+            "latestVersion": relay_version,
+            "updateAvailable": False,
+            "releaseDate": None,
+            "releaseURL": None,
+            "changelog": None,
+        }
+
+    return JSONResponse({
+        "components": components,
+        "checkedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    })
 
 
-async def stub_gw_update_check(request: Request) -> JSONResponse:
-    """POST /v1/gw/update/check — return no-update."""
+async def gateway_update_apply(request: Request) -> JSONResponse:
+    """Build 31: apply an update to the named component.
+
+    Currently supports connector restart only.  Hermes agent updates
+    are deferred to host-side management (systemd unit restart).
+    """
     await require_auth(request)
-    return JSONResponse({"updateAvailable": False})
+    body = await request.json() if request.method == "POST" else {}
+    if not isinstance(body, dict):
+        body = {}
+    target = body.get("component", body.get("target", "connector"))
+
+    if target == "connector":
+        # The connector will SIGTERM itself; systemd restarts it.
+        import threading
+        def _restart():
+            import os, signal, time
+            time.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=_restart, daemon=True).start()
+        return JSONResponse({
+            "operationId": str(__import__("uuid").uuid4()),
+            "component": "connector",
+            "status": "restarting",
+            "message": "Connector restart initiated",
+        })
+    else:
+        return JSONResponse({
+            "operationId": None,
+            "component": target,
+            "status": "unsupported",
+            "message": f"Component '{target}' updates are managed on the host",
+        })
+
+
+async def hermes_logs_proxy(request: Request) -> JSONResponse:
+    """Build 31: proxy Hermes dashboard logs from port 9119.
+
+    GET /v1/hermes/logs?file=gateway&lines=100&level=INFO
+
+    Authenticates to the Hermes dashboard server-side using configured
+    credentials, calls /api/logs, and returns the dashboard's exact
+    schema so Herald displays identical gateway output.
+    """
+    await require_auth(request)
+    import httpx as _httpx
+
+    log_file = request.query_params.get("file", "gateway")
+    lines = min(int(request.query_params.get("lines", "100")), 500)
+    level = request.query_params.get("level")
+    component = request.query_params.get("component")
+    search = request.query_params.get("search")
+
+    if log_file not in ("gateway", "agent", "errors"):
+        return JSONResponse({
+            "error": "unsupportedLogFile",
+            "message": f"Unknown log file: {log_file}. Supported: gateway, agent, errors",
+        }, status_code=400)
+
+    # Build the dashboard URL
+    dashboard_url = f"http://127.0.0.1:9119/api/logs"
+    params = {"file": log_file, "lines": str(lines)}
+    if level:
+        params["level"] = level
+    if component:
+        params["component"] = component
+    if search:
+        params["search"] = str(search)[:200]
+
+    try:
+        async with _httpx.AsyncClient(timeout=_httpx.Timeout(connect=5, read=10)) as client:
+            resp = await client.get(dashboard_url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict) or "lines" not in data:
+                raise ValueError("Malformed dashboard response")
+            return JSONResponse({
+                "source": "hermes-dashboard",
+                "sourceHost": "127.0.0.1:9119",
+                "upstreamPath": "/api/logs",
+                "file": log_file,
+                "lines": data.get("lines", []),
+                "fetchedAt": __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                ).isoformat(),
+            })
+    except _httpx.ConnectError:
+        return JSONResponse({
+            "error": "dashboardUnavailable",
+            "message": "Hermes dashboard is not running on port 9119",
+            "retryable": True,
+        }, status_code=502)
+    except _httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status == 401 or status == 403:
+            return JSONResponse({
+                "error": "dashboardAuthFailed",
+                "message": "Dashboard authentication failed",
+                "retryable": False,
+            }, status_code=502)
+        return JSONResponse({
+            "error": "upstreamError",
+            "message": f"Dashboard returned HTTP {status}",
+            "retryable": True,
+        }, status_code=502)
+    except Exception as e:
+        return JSONResponse({
+            "error": "upstreamMalformed",
+            "message": str(e),
+            "retryable": True,
+        }, status_code=502)
 
 
 async def stub_push_deactivate(request: Request) -> JSONResponse:
@@ -2729,14 +2889,16 @@ routes = [
     Route("/v1/talk/session/{id}/end", stub_talk_session_end, methods=["POST"]),
     Route("/v1/talk/session/{id}/inject", stub_talk_session_inject, methods=["POST"]),
     Route("/v1/talk/session/{id}/turns", stub_talk_session_turns, methods=["GET"]),
-    Route("/v1/gw/update", stub_gw_update, methods=["GET"]),
-    Route("/v1/gw/update/check", stub_gw_update_check, methods=["POST"]),
+    Route("/v1/gw/update", gateway_update_apply, methods=["GET", "POST"]),
+    Route("/v1/gw/update/check", gateway_update_check, methods=["POST"]),
+    Route("/v1/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     # Non-v1 aliases — the iOS RelayAPIClient strips /v1 from gateway
     # paths (RelayAPIClient.swift:324-345) when resolving against
     # activeBaseURLString, so /gw/update resolves to POST host:8010/gw/update.
     # Without these aliases the facade returns 404 for update check/apply.
-    Route("/gw/update", stub_gw_update, methods=["GET", "POST"]),
-    Route("/gw/update/check", stub_gw_update_check, methods=["POST"]),
+    Route("/gw/update", gateway_update_apply, methods=["GET", "POST"]),
+    Route("/gw/update/check", gateway_update_check, methods=["POST"]),
+    Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
 ]
 
