@@ -14,8 +14,8 @@ import pytest
 from herald_connector.herald_api_executor import HeraldAPIExecutor, StreamEvent
 
 
-class TestRunsReasoningAvailableMapsToReasoningDelta:
-    """D3: /v1/runs reasoning.available → StreamEvent(type='reasoning_delta')."""
+class TestRunsReasoningAvailableHandling:
+    """MiMo preamble must not be rendered as duplicate private reasoning."""
 
     def test_runs_payload_carries_session_id(self):
         """A continued Herald turn must bind the existing Hermes transcript."""
@@ -34,8 +34,8 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
         assert "session_id" not in payload
 
     @pytest.mark.asyncio
-    async def test_reasoning_available_yields_reasoning_delta(self):
-        """reasoning.available event with text → reasoning_delta StreamEvent."""
+    async def test_reasoning_available_is_suppressed(self):
+        """Provider preamble is not duplicated into the thought bubble."""
         executor = HeraldAPIExecutor(
             api_server_url="http://localhost:8642",
             api_server_key="test-key",
@@ -56,9 +56,8 @@ class TestRunsReasoningAvailableMapsToReasoningDelta:
         async for event in executor._parse_runs_sse(iter(sse_lines)):
             events.append(event)
 
-        reasoning_events = [e for e in events if e.type == "reasoning_delta"]
-        assert len(reasoning_events) == 1
-        assert reasoning_events[0].data == "Let me think about this..."
+        assert not [e for e in events if e.type == "reasoning_delta"]
+        assert events[-1].type == "finish"
 
     @pytest.mark.asyncio
     async def test_tool_started_maps_to_tool_started(self):

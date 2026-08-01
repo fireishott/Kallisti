@@ -44,7 +44,13 @@ logger = logging.getLogger("herald.delivery_store")
 # whose DB has a lower user_version than this re-initializes the schema
 # before serving the next request.  Increment with caution — the message
 # is "the on-disk tables are no longer what the running code expects".
-_EXPECTED_SCHEMA_VERSION = 1
+#
+# Build 104 raised this to 2 after the one-binding-per-client-UUID
+# migration: the on-disk `conversation_bindings` rows that the Build 103
+# connector wrote for both the client UUID and the deterministic
+# `_app_uuid(hermes_id)` against the same Hermes session must be
+# collapsed so the binding table matches the new invariant.
+_EXPECTED_SCHEMA_VERSION = 2
 
 # States for message_requests (must match the CHECK constraint verbatim).
 STATES = ("accepted", "running", "terminal", "permanent_failure", "cancelled")
@@ -148,7 +154,10 @@ CREATE TABLE IF NOT EXISTS conversation_bindings (
     account_id TEXT NOT NULL,
     owner_device_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    archived_reason TEXT,
+    archived_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_requests (
@@ -188,6 +197,15 @@ CREATE TABLE IF NOT EXISTS job_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY (job_id, seq)
 );
+"""
+
+# Deliberately separate indexes from ``_SCHEMA``.  A Build 103 database has
+# the table but not the Build 104 ``archived`` columns; creating a partial
+# index over that missing column inside ``executescript(_SCHEMA)`` aborts the
+# whole recovery before the additive migration has a chance to run.
+_INDEXES = """
+CREATE UNIQUE INDEX IF NOT EXISTS ix_conversation_bindings_hermes
+    ON conversation_bindings(hermes_session_id) WHERE archived = 0;
 """
 
 
@@ -325,10 +343,37 @@ class DeliveryStore:
             with self._connect() as conn:
                 # executescript: _SCHEMA holds four CREATE TABLE statements.
                 conn.executescript(_SCHEMA)
+                # Build 104: archived columns are required by the
+                # duplicate-binding migration; add them only if they are
+                # not present (idempotent across reconnects).
+                self._ensure_column(conn, "conversation_bindings", "archived",
+                                    "INTEGER NOT NULL DEFAULT 0")
+                self._ensure_column(conn, "conversation_bindings", "archived_reason",
+                                    "TEXT")
+                self._ensure_column(conn, "conversation_bindings", "archived_at",
+                                    "TEXT")
+                conn.executescript(_INDEXES)
                 # Mark the schema so subsequent opens skip the re-init.
                 conn.execute(f"PRAGMA user_version = {_EXPECTED_SCHEMA_VERSION}")
                 conn.commit()
         self._secure_files()
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection, table: str, column: str, decl: str
+    ) -> None:
+        """Idempotently add *column* to *table* if it is missing.
+
+        SQLite does not support ``ALTER TABLE ... ADD COLUMN IF NOT
+        EXISTS`` on older versions, so this is the next best thing.
+        """
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except sqlite3.DatabaseError:
+            return
+        if any(r["name"] == column for r in rows):
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # ── health probe ──────────────────────────────────────────────────────
 
@@ -372,6 +417,16 @@ class DeliveryStore:
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+
+    def get_binding_for_hermes(self, hermes_session_id: str) -> dict | None:
+        """Return the active binding for a Hermes session id.
+
+        Build 104 helper used by `ensure_conversation` to verify the
+        client UUID it is about to bind does not already own a row for
+        that session under a different alias. Returns the same payload
+        shape as ``get_binding``.
+        """
+        return self.get_binding_by_hermes(hermes_session_id)
 
     @staticmethod
     def _row_to_request(row: sqlite3.Row) -> dict:
@@ -458,14 +513,76 @@ class DeliveryStore:
             finally:
                 conn.close()
 
+    def promote_legacy_alias(
+        self,
+        app_conversation_id: str,
+        hermes_session_id: str,
+        legacy_alias: str,
+        account_id: str,
+        device_id: str,
+    ) -> bool:
+        """Promote the Build 103 internal alias to the real client UUID.
+
+        Only the deterministic legacy alias may be retired. Any other active
+        client UUID is an ownership conflict and this returns ``False``.
+        The historical row is renamed transactionally, along with any request
+        rows that reference it, so the UNIQUE(hermes_session_id) invariant is
+        maintained and old history stays attached to the same conversation.
+        """
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                # The foreign key references the app UUID. SQLite cannot
+                # defer that FK, so briefly disable enforcement while both
+                # parent and children are renamed in this private connection.
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    "SELECT * FROM conversation_bindings "
+                    "WHERE hermes_session_id = ? AND archived = 0",
+                    (hermes_session_id,),
+                ).fetchone()
+                if existing is None or existing["app_conversation_id"] != legacy_alias:
+                    conn.rollback()
+                    return False
+                conn.execute(
+                    "UPDATE message_requests SET conversation_id = ? "
+                    "WHERE conversation_id = ?",
+                    (app_conversation_id, legacy_alias),
+                )
+                conn.execute(
+                    "UPDATE conversation_bindings SET app_conversation_id = ?, "
+                    "account_id = ?, owner_device_id = ?, updated_at = ? "
+                    "WHERE app_conversation_id = ?",
+                    (app_conversation_id, account_id or "", device_id or "", now,
+                     legacy_alias),
+                )
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                try:
+                    conn.execute("PRAGMA foreign_keys = ON")
+                except sqlite3.DatabaseError:
+                    pass
+                conn.close()
+
     def get_binding(self, app_conversation_id: str) -> dict | None:
-        """conversation-binding-v1 payload for the app id, or None."""
+        """conversation-binding-v1 payload for the app id, or None.
+
+        Build 104: rows marked ``archived=1`` by the duplicate-binding
+        migration are skipped — the survivor row is the one callers want.
+        """
         with self._lock:
             conn = self._connect()
             try:
                 row = conn.execute(
                     "SELECT * FROM conversation_bindings "
-                    "WHERE app_conversation_id = ?",
+                    "WHERE app_conversation_id = ? AND archived = 0",
                     (app_conversation_id,),
                 ).fetchone()
                 return self._row_to_binding(row) if row is not None else None
@@ -473,13 +590,17 @@ class DeliveryStore:
                 conn.close()
 
     def get_binding_by_hermes(self, hermes_session_id: str) -> dict | None:
-        """conversation-binding-v1 payload for the Hermes session, or None."""
+        """conversation-binding-v1 payload for the Hermes session, or None.
+
+        Build 104: rows marked ``archived=1`` by the duplicate-binding
+        migration are skipped.
+        """
         with self._lock:
             conn = self._connect()
             try:
                 row = conn.execute(
                     "SELECT * FROM conversation_bindings "
-                    "WHERE hermes_session_id = ?",
+                    "WHERE hermes_session_id = ? AND archived = 0",
                     (hermes_session_id,),
                 ).fetchone()
                 return self._row_to_binding(row) if row is not None else None
@@ -739,6 +860,145 @@ class DeliveryStore:
                 "createdAt": row["created_at"],
             })
         return events
+
+    # ── build 104 migration: collapse duplicate bindings ──────────────────
+
+    def resolve_duplicate_bindings(self, *, evidence_dir: str | Path | None = None) -> dict:
+        """Collapse Build 103 dual-binding rows into a single survivor.
+
+        Build 103 wrote two `conversation_bindings` rows for one Hermes
+        session: one keyed by the client-supplied UUID, one keyed by the
+        deterministic `_app_uuid(hermes_id)`. The UNIQUE
+        `hermes_session_id` constraint made the first INSERT win; the
+        second became a logged `conflict:` and the binding table drifted
+        away from the new invariant.
+
+        The migration:
+
+        1. Snapshots `delivery.sqlite3` (and any `-wal` / `-shm` sidecars)
+           into ``evidence_dir`` (or ``./evidence/pre-b104-<ts>/`` by
+           default) before touching anything.
+        2. For each Hermes session id with more than one row, picks the
+           row whose ``app_conversation_id`` is most-recently referenced
+           by ``message_requests`` (older binding wins on a tie — it is
+           more likely to be the iOS-minted UUID the app still uses).
+        3. Marks the other rows ``archived=1`` with a recorded
+           ``archived_reason`` and ``archived_at``. ``get_binding`` skips
+           archived rows; ``get_binding_for_hermes`` likewise.
+        4. Reports a JSON-friendly summary.
+
+        Idempotent: re-running on an already-migrated DB is a no-op
+        (the only rows in the table are either the unique survivor or
+        archived duplicates from this run).
+        """
+        report: dict[str, Any] = {
+            "schemaVersion": _EXPECTED_SCHEMA_VERSION,
+            "evidenceDir": str(evidence_dir) if evidence_dir else None,
+            "duplicateSessions": 0,
+            "archived": 0,
+            "survivors": 0,
+        }
+        ts = _utcnow_rfc3339()
+        if evidence_dir is None:
+            base = Path(os.getenv(
+                "HERMES_MOBILE_CONNECTOR_HOME"
+            ) or str(Path.home() / ".hermes-mobile")) / "evidence"
+            evidence_dir = base / f"pre-b104-{ts}"
+        evidence_path = Path(evidence_dir)
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        # Snapshot the file before any write so the migration is reversible.
+        snapshot = evidence_path / "delivery.sqlite3.snapshot"
+        try:
+            import shutil
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                src = Path(str(self.db_path) + suffix)
+                if src.exists():
+                    shutil.copy2(src, Path(str(snapshot) + suffix))
+        except OSError as exc:
+            logger.warning(
+                "delivery: snapshot failed (%s) — migration will continue but "
+                "the rollback path is incomplete", exc,
+            )
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                # Detect Hermes sessions with >1 binding row.
+                duplicate_rows = conn.execute(
+                    "SELECT hermes_session_id, app_conversation_id, "
+                    "       created_at, updated_at "
+                    "FROM conversation_bindings "
+                    "WHERE archived = 0 "
+                    "GROUP BY hermes_session_id "
+                    "HAVING COUNT(*) > 1"
+                ).fetchall()
+                # Build 104: every duplicate cluster is collapsed to one row
+                # (the iOS-minted UUID). The deterministic `_app_uuid(hermes_id)`
+                # is tombstoned in the sidecar, not in SQLite, so a survivor
+                # here is whichever row has the most-recent message_requests
+                # reference; tie-breaks fall back to the older created_at.
+                for dup in duplicate_rows:
+                    hermes_id = dup["hermes_session_id"]
+                    rows = conn.execute(
+                        "SELECT app_conversation_id, created_at, updated_at "
+                        "FROM conversation_bindings "
+                        "WHERE hermes_session_id = ? AND archived = 0",
+                        (hermes_id,),
+                    ).fetchall()
+                    # Score: (-max(request_count), created_at) — keep the
+                    # row referenced by the most message_requests; ties go
+                    # to the older created_at.
+                    scored: list[tuple[tuple[int, str, str], str]] = []
+                    for r in rows:
+                        n = conn.execute(
+                            "SELECT COUNT(*) AS n FROM message_requests "
+                            "WHERE conversation_id = ?",
+                            (r["app_conversation_id"],),
+                        ).fetchone()
+                        scored.append(
+                            (
+                                (-int(n["n"]), r["created_at"], r["app_conversation_id"]),
+                                r["app_conversation_id"],
+                            ),
+                        )
+                    scored.sort()
+                    survivor = scored[0][1]
+                    archived_ids = [
+                        cid for _, cid in scored[1:]
+                    ]
+                    for cid in archived_ids:
+                        conn.execute(
+                            "UPDATE conversation_bindings "
+                            "SET archived = 1, "
+                            "    archived_reason = 'duplicate-binding-pre-b104', "
+                            "    archived_at = ?, "
+                            "    updated_at = ? "
+                            "WHERE app_conversation_id = ?",
+                            (ts, ts, cid),
+                        )
+                        report["archived"] += 1
+                    report["duplicateSessions"] += 1
+                    report["survivors"] += 1
+                    logger.warning(
+                        "delivery: collapse duplicate binding for hermes=%s "
+                        "survivor=%s archived=%s",
+                        hermes_id[:24], survivor[:12], archived_ids,
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        try:
+            (evidence_path / "migration_report.json").write_text(
+                json.dumps(report, indent=2, sort_keys=True),
+            )
+        except OSError as exc:
+            logger.warning(
+                "delivery: could not write migration_report.json (%s)", exc,
+            )
+        return report
 
     # ── restart recovery ──────────────────────────────────────────────────
 

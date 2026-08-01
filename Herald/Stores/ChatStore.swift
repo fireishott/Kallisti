@@ -628,37 +628,38 @@ final class ChatStore {
             return
         }
 
-        // Build 31: ensure a server conversation exists for this local UUID
-        // before the first POST.  Previously the client invented a random
-        // UUID, the connector echoed it without creating a real Hermes
-        // session, and the first message landed in a session the app couldn't
-        // reliably address.  ensureConversation is fail-closed: if the server
-        // cannot create or confirm a session, message submission is blocked
-        // with a visible error rather than silently proceeding.
-        if heraldClient.currentConversation?.id != targetID {
-            sendPhase = .creatingConversation
-            let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
-            guard sessionEstablished else {
-                // Session could not be established — fail the user-visible
-                // message rather than submitting to a non-existent session.
-                let error = "Could not reach the Herald host to start a conversation. Check your connection and try again."
-                markOptimisticRowFailed(item, error: error)
-                failOutboxItem(
-                    item,
-                    state: .retryableFailure,
-                    error: error,
-                    retryAfter: backoffInterval(forAttempt: item.attemptCount)
-                )
-                sendPhase = .failed(error)
-                pendingMessageSentAt = nil
-                streamingPhase = .idle
-                Logger.app.error("submitNextEligible blocked: ensureConversation returned no session")
-                return
-            }
-            _ = try? await heraldClient.loadConversation(id: targetID)
-        } else {
-            sendPhase = .checkingHermes
+        // Build 103 WS-A: ALWAYS ensure a server-backed Hermes session exists
+        // before the first POST.  Build 102 conditionally called
+        // ensureConversation only when `currentConversation?.id != targetID`,
+        // but POST /v1/sessions echoes back the local UUID without creating
+        // a real Hermes session — so equality was meaningless, the check
+        // was always skipped, and the first message landed on an unbound
+        // conversation (HTTP 409 `conversation_not_ensured`).
+        //
+        // Identity equality is not proof of server provisioning. The server
+        // decides when a conversation is bound to a real Hermes session;
+        // iOS must always request provisioning and await a typed ready
+        // signal before submitting. ensureConversation is fail-closed.
+        sendPhase = .creatingConversation
+        let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
+        guard sessionEstablished else {
+            // Session could not be established — fail the user-visible
+            // message rather than submitting to a non-existent session.
+            let error = "Could not reach the Herald host to start a conversation. Check your connection and try again."
+            markOptimisticRowFailed(item, error: error)
+            failOutboxItem(
+                item,
+                state: .retryableFailure,
+                error: error,
+                retryAfter: backoffInterval(forAttempt: item.attemptCount)
+            )
+            sendPhase = .failed(error)
+            pendingMessageSentAt = nil
+            streamingPhase = .idle
+            Logger.app.error("submitNextEligible blocked: ensureConversation returned no session")
+            return
         }
+        _ = try? await heraldClient.loadConversation(id: targetID)
 
         item.state = .submitting
         updateOutboxItem(item)

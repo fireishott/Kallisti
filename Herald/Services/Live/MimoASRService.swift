@@ -5,11 +5,19 @@ import os
 final class MimoASRService: SpeechRecognizing {
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "MimoASR")
     private let apiKeyProvider: @MainActor () -> String?
+    private let relayBaseURLProvider: @MainActor () -> URL?
+    private let accessTokenProvider: @MainActor () async -> String?
     private let session: URLSession
     private var currentTask: Task<Void, Never>?
 
-    init(apiKeyProvider: @escaping @MainActor () -> String?) {
+    init(
+        apiKeyProvider: @escaping @MainActor () -> String?,
+        relayBaseURLProvider: @escaping @MainActor () -> URL? = { nil },
+        accessTokenProvider: @escaping @MainActor () async -> String? = { nil },
+    ) {
         self.apiKeyProvider = apiKeyProvider
+        self.relayBaseURLProvider = relayBaseURLProvider
+        self.accessTokenProvider = accessTokenProvider
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         self.session = URLSession(configuration: config)
@@ -19,14 +27,18 @@ final class MimoASRService: SpeechRecognizing {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard let apiKey = self.apiKeyProvider(), !apiKey.isEmpty else {
-                        throw ASRError.noAPIKey
+                    // Build 104: iOS posts to the connector's MiMo proxy
+                    // at /v1/mimo/asr.  The connector owns the Xiaomi
+                    // API key; iOS only needs an authenticated session.
+                    guard let relayBase = self.relayBaseURLProvider() else {
+                        throw ASRError.noRelay
                     }
-
-                    let url = URL(string: "https://api.xiaomimimo.com/v1/audio/transcriptions")!
+                    let url = relayBase.appendingPathComponent("mimo/asr")
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
-                    request.setValue(apiKey, forHTTPHeaderField: "api-key")
+                    if let token = await self.accessTokenProvider() {
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    }
 
                     let boundary = UUID().uuidString
                     request.setValue(
@@ -60,7 +72,7 @@ final class MimoASRService: SpeechRecognizing {
 
                     request.httpBody = body
 
-                    self.logger.info("Transcribing \(utterance.audioData.count, privacy: .public) bytes, language=\(language.rawValue, privacy: .public)")
+                    self.logger.info("Transcribing \(utterance.audioData.count, privacy: .public) bytes via proxy, language=\(language.rawValue, privacy: .public)")
 
                     let (bytes, response) = try await self.session.bytes(for: request)
                     guard let httpResponse = response as? HTTPURLResponse,
@@ -70,10 +82,13 @@ final class MimoASRService: SpeechRecognizing {
                         throw ASRError.httpError(statusCode)
                     }
 
-                    // B38 P1-2: handle three Mimo response shapes:
+                    // B38 P1-2 + Build 104: handle three response shapes:
                     // 1. Newline-delimited JSON: {"type":"delta","text":"..."}
                     // 2. SSE: data: {"type":"delta","text":"..."}
                     // 3. Non-streaming JSON: {"text":"..."}
+                    // The connector also emits a typed {"type":"error",
+                    // "$schema":"mimo-error-v1", ...} envelope on the
+                    // streaming path; surface that as ASRError.proxyError.
                     var sawAnyLine = false
                     for try await line in bytes.lines {
                         guard !Task.isCancelled else { break }
@@ -117,6 +132,11 @@ final class MimoASRService: SpeechRecognizing {
                                 continuation.yield(TranscriptUpdate(text: text, isFinal: true, confidence: nil))
                                 continuation.finish()
                                 return
+                            } else if type == "error" {
+                                // Proxy returned a typed error envelope.
+                                let message = (json["message"] as? String) ?? "MiMo ASR failed."
+                                self.logger.error("ASR proxy error: \(message, privacy: .public)")
+                                throw ASRError.proxyError(message)
                             }
                         } else if let text = json["text"] as? String {
                             // Non-streaming shape inside a line-delimited stream
@@ -151,17 +171,23 @@ final class MimoASRService: SpeechRecognizing {
 
 enum ASRError: Error, LocalizedError {
     case noAPIKey
+    case noRelay
     case httpError(Int)
     case noFinalTranscript
+    case proxyError(String)
 
     var errorDescription: String? {
         switch self {
         case .noAPIKey:
-            "No MiMo API key configured."
+            return "No MiMo API key configured."
+        case .noRelay:
+            return "No relay is configured; add one in Settings before starting Talk."
         case .httpError(let code):
-            "ASR request failed with HTTP \(code)."
+            return "ASR request failed with HTTP \(code)."
         case .noFinalTranscript:
-            "ASR stream ended without a final transcript — the audio may be too short or silent."
+            return "ASR stream ended without a final transcript — the audio may be too short or silent."
+        case .proxyError(let message):
+            return "ASR proxy failed: \(message)"
         }
     }
 }

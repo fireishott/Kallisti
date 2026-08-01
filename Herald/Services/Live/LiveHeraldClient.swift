@@ -622,6 +622,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             let conversationId: String?
             let sessionId: String?
             let created: Bool?
+            let hermesSessionState: String?
         }
         do {
             struct EnsureBody: Encodable {
@@ -637,6 +638,20 @@ final class LiveHeraldClient: HeraldClientProtocol {
             }
             let hasSession = response.sessionId != nil
             Self.logger.info("ensureConversation: sessionId=\(response.sessionId ?? "none"), created=\(response.created ?? false), success=\(hasSession)")
+            if hasSession {
+                // Build 103 WS-A: ensureConversation must update currentConversation
+                // so the identity-equality heuristic (when it exists) reflects
+                // a server-backed binding, and so send/sendStreaming don't fall
+                // back to minting a fresh UUID that the connector has no
+                // binding for. We only know the id here — refresh the full
+                // conversation in a follow-up call (ChatStore already does this).
+                if currentConversation == nil || currentConversation?.id != id {
+                    currentConversation = Conversation(
+                        id: id,
+                        title: currentConversation?.title ?? "New Chat"
+                    )
+                }
+            }
             return hasSession
         } catch {
             Self.logger.error("ensureConversation failed: \(error.localizedDescription) — first message will be blocked")

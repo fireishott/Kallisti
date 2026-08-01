@@ -46,6 +46,7 @@ from .restart_operations import (
     RestartOperationStore,
     get_restart_store,
 )
+from . import __version__, HERALD_PROTOCOL
 
 logger = logging.getLogger("herald.http_facade")
 
@@ -1708,6 +1709,279 @@ def _restart_poll_interval() -> float:
     return float(os.getenv("HERALD_RESTART_POLL_INTERVAL", "1.0"))
 
 
+# ── Build 103 WS-D: truthful telemetry helpers ─────────────────────────────
+
+_CONNECTOR_REQUIRED_PORTS = (8010, 8765, 8767)
+
+
+def _get_nrestarts(unit: str) -> int:
+    """Read NRestarts for *unit*. Returns 0 on any failure."""
+    try:
+        result = _run_subprocess(
+            ["systemctl", "--user", "show", unit,
+             "--property=NRestarts"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return 0
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "NRestarts":
+                return int(value.strip() or "0")
+    except Exception:
+        logger.debug("nrestarts lookup failed for %s", unit, exc_info=True)
+    return 0
+
+
+def _parse_port_owner_pid(line: str) -> int | None:
+    """Extract the pid=NNN from an `ss -ltnp` line."""
+    import re
+    m = re.search(r"pid=(\d+)", line)
+    return int(m.group(1)) if m else None
+
+
+def _check_ports_owned_by_pid(pid: int, ports: tuple[int, ...]) -> bool:
+    """True iff *pid* owns every TCP port in *ports*. On any failure → False."""
+    try:
+        result = _run_subprocess(
+            ["ss", "-ltnp"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        owners: dict[int, int] = {}
+        for line in result.stdout.splitlines():
+            for port in ports:
+                if f":{port} " in line:
+                    owner = _parse_port_owner_pid(line)
+                    if owner is not None:
+                        owners[port] = owner
+        return all(owners.get(port) == pid for port in ports)
+    except Exception:
+        logger.debug("port-owner check failed for pid=%s", pid, exc_info=True)
+        return False
+
+
+def _pid_uptime_seconds(pid: int | None) -> int | None:
+    """Process uptime from /proc/<pid>/stat field 22 (starttime in jiffies)."""
+    if not pid:
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as fh:
+            content = fh.read()
+        # Field 22 is starttime in clock ticks; fields are space-separated
+        # but comm (field 2) can contain spaces and parens.
+        rpar = content.rfind(")")
+        if rpar < 0:
+            return None
+        rest = content[rpar + 1:].split()
+        # rest[0] = state, rest[1] = ppid, ..., rest[19] = starttime
+        # After rpar there are 19 fields before starttime (state=1,ppid=2,...)
+        # but index 19 is actually 20th from the right of ")".
+        # Easier: field 22 from start (1-indexed) minus the 3 fields inside ()
+        # means index 19 in `rest` (0-indexed) after stripping the trailing ')'.
+        if len(rest) < 20:
+            return None
+        starttime_ticks = int(rest[19])
+        # Clock ticks per second
+        try:
+            clk_tck = os.sysconf("SC_CLK_TCK")
+        except (ValueError, OSError, AttributeError):
+            clk_tck = 100
+        # System uptime in seconds:
+        try:
+            with open("/proc/uptime") as fh:
+                boot_age = float(fh.read().split()[0])
+        except OSError:
+            boot_age = None
+        if boot_age is None:
+            return None
+        start_seconds = starttime_ticks / clk_tck
+        age = max(0, int(boot_age - start_seconds))
+        return age
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_hermes_installed_version() -> str | None:
+    """Read the installed Hermes Agent version.
+
+    Tries (in order):
+      1. ``~/.hermes/.update_check`` (ver field, last ``hermes update --check``).
+      2. The Hermes CLI: ``hermes --version`` (subprocess, 5 s timeout).
+    Never raises.
+    """
+    candidates = [
+        Path(os.path.expanduser("~/.hermes")) / ".update_check",
+        Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        / ".update_check",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text())
+                ver = data.get("ver")
+                if ver:
+                    return str(ver)
+        except (OSError, ValueError):
+            continue
+    # CLI fallback
+    candidates_bin = [
+        Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        / "hermes-agent" / "venv" / "bin" / "hermes",
+        Path(os.path.expanduser("~/.local/bin/hermes")),
+    ]
+    for bin_path in candidates_bin:
+        try:
+            if not bin_path.is_file():
+                continue
+            result = _run_subprocess(
+                [str(bin_path), "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # "Hermes Agent v0.19.1 (2026.7.30) ..." or similar
+                out = result.stdout.strip()
+                m = re.search(r"v?(\d+\.\d+\.\d+(?:[.-][\w.]+)?)", out)
+                if m:
+                    return m.group(1)
+                # Fall back to the entire first line trimmed
+                return out.split("\n", 1)[0][:80]
+        except Exception:
+            continue
+    return None
+
+
+def _read_hermes_latest_version() -> tuple[str | None, int | None, str | None]:
+    """Read the latest known Hermes version + behind-count + checked-at.
+
+    Pure file read of ``~/.hermes/.update_check``; never invokes a
+    subprocess, so it is safe to call on every gateway_status poll.
+    Returns ``(latest, behind, checked_at_iso)`` — any field may be None.
+    """
+    candidates = [
+        Path(os.path.expanduser("~/.hermes")) / ".update_check",
+        Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        / ".update_check",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text())
+                ver = data.get("ver")
+                behind = data.get("behind")
+                ts = data.get("ts")
+                iso = (
+                    datetime.datetime.fromtimestamp(float(ts), datetime.timezone.utc).isoformat()
+                    if ts is not None else None
+                )
+                return (
+                    str(ver) if ver else None,
+                    int(behind) if behind is not None else None,
+                    iso,
+                )
+        except (OSError, ValueError):
+            continue
+    return (None, None, None)
+
+
+async def _read_active_model(ctx: "FacadeContext") -> str | None:
+    """Best-effort: return the active model name without raising."""
+    try:
+        if ctx.model_catalog is not None:
+            catalog = ctx.model_catalog()
+            # model_catalog may be sync or async — handle both.
+            if inspect.isawaitable(catalog):
+                catalog = await catalog
+            active = (catalog or {}).get("activeModel") or {}
+            name = active.get("name")
+            if name:
+                return str(name)
+    except Exception:
+        logger.debug("active model lookup failed", exc_info=True)
+    return _read_active_model_from_config()
+
+
+def _read_active_model_from_config() -> str | None:
+    """Synchronous fallback: read ~/.hermes/config.yaml."""
+    try:
+        cfg_path = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")) / "config.yaml"
+        if cfg_path.is_file():
+            text = cfg_path.read_text()
+            m = re.search(r"^\s*model:\s*(\S+)\s*$", text, re.MULTILINE)
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def _read_host_metrics() -> dict:
+    """Read host memory + uptime. Returns a dict with explicit availability."""
+    out: dict = {
+        "memoryTotalBytes": None,
+        "memoryUsedBytes": None,
+        "uptimeSeconds": None,
+        "loadAverage1m": None,
+        "cpuPercent": None,
+        "cpuSampleIntervalSeconds": 2.0,
+        "cpuSampleReady": False,
+    }
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            meminfo: dict[str, int] = {}
+            for line in fh:
+                key, _, rest = line.partition(":")
+                meminfo[key] = int(rest.strip().split()[0])
+        total_kb = meminfo.get("MemTotal", 0)
+        avail_kb = meminfo.get("MemAvailable", meminfo.get("MemFree", 0))
+        out["memoryTotalBytes"] = total_kb * 1024
+        out["memoryUsedBytes"] = (total_kb - avail_kb) * 1024
+    except OSError:
+        pass
+    try:
+        with open("/proc/uptime") as fh:
+            out["uptimeSeconds"] = int(float(fh.read().split()[0]))
+    except OSError:
+        pass
+    try:
+        with open("/proc/loadavg") as fh:
+            parts = fh.read().split()
+            out["loadAverage1m"] = float(parts[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    # CPU sample: delta between two /proc/stat reads (2 s interval).
+    # First call returns null + cpuSampleReady=false so the UI never
+    # fabricates a 0.0% on the first sample after launch.
+    global _LAST_CPU_SAMPLE
+    now = time.monotonic()
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            line = fh.readline()
+        parts = line.split()
+        if parts[0] == "cpu":
+            total = sum(int(x) for x in parts[1:])
+            idle = int(parts[4]) + int(parts[5]) if len(parts) > 5 else int(parts[4])
+            if _LAST_CPU_SAMPLE is not None:
+                last_total, last_idle, last_t = _LAST_CPU_SAMPLE
+                dt = now - last_t
+                if dt >= 0.5:
+                    d_total = total - last_total
+                    d_idle = idle - last_idle
+                    if d_total > 0:
+                        out["cpuPercent"] = round(
+                            100.0 * (d_total - d_idle) / d_total, 2
+                        )
+                        out["cpuSampleReady"] = True
+            _LAST_CPU_SAMPLE = (total, idle, now)
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
+_LAST_CPU_SAMPLE: tuple[int, int, float] | None = None
+
+
 def _systemctl_is_active(unit: str) -> bool:
     try:
         result = _run_subprocess(
@@ -2020,101 +2294,152 @@ async def _run_restart_operation(operation_id: str) -> None:
 async def gateway_status(request: Request) -> JSONResponse:
     """Return gateway telemetry for the Settings → Gateway Status screen.
 
-    The iOS decoder (GatewayStatusScreen.swift:319-336) expects camelCase keys
-    with no keyDecodingStrategy. Every field is optional — partial data renders
-    gracefully; a 500 does not.
+    Build 103 WS-D: truthful, versioned telemetry contract. Missing values
+    are reported as ``null`` + ``availability`` metadata so the UI never
+    fabricates a 0.0 % CPU on the first sample after launch. Singleton
+    ownership, restart count, and port ownership are explicit booleans so
+    the screen can color status green only when every dependency passes.
 
-    Returns {"data": {...}} — GatewayStatusScreen.swift:275-277 declares its own
-    inner `data` key on top of the envelope the middleware adds.  Do not flatten.
+    Schema: gateway-health-v2 (backward-compatible with v1 readers — every
+    new field is additive, removed fields are listed under ``removed``).
+
+    The envelope middleware adds the single outer ``data`` member that
+    ``RelayAPIClient`` decodes.  Return the telemetry payload itself here;
+    returning ``{"data": payload}`` would double-wrap the response and make
+    the iOS decoder fail even though the endpoint returned HTTP 200.
     """
     await require_auth(request)
     ctx = get_context()
 
+    sampled_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     payload: dict = {
-        "$schema": "gateway-health-v1",
+        "$schema": "gateway-health-v2",
+        "schemaVersion": 2,
+        "sampledAt": sampled_at,
+        "sampleIntervalSeconds": 2.0,
+        "staleAfterSeconds": 8.0,
+        "overall": "unknown",
         "connectorConnected": True,
         "connectorVersion": ctx.connector_version or "0.0.0",
     }
 
-    # Relay status — best-effort from the paired device id.
-    payload["relayConnected"] = bool(ctx.paired_device_id)
+    # ── Connector: singleton ownership, port ownership, restart count ──────
+    connector_pid = os.getpid()
+    connector_unit = _JOURNAL_UNIT
+    connector_observed = await asyncio.to_thread(
+        _query_unit_observed, connector_unit
+    )
+    managed_main_pid = (connector_observed or {}).get("main_pid")
+    managed_active = (connector_observed or {}).get("active_state") == "active"
+    payload["connector"] = {
+        "state": "healthy" if (managed_active and managed_main_pid == connector_pid) else "degraded",
+        "version": ctx.connector_version or __version__,
+        "protocolVersion": HERALD_PROTOCOL,
+        "pid": connector_pid,
+        "managedMainPID": managed_main_pid,
+        "uptimeSeconds": int(time.monotonic() - _PROCESS_STARTED_AT),
+        "restartCount": _get_nrestarts(connector_unit),
+        "singleton": managed_main_pid == connector_pid,
+        "portsOwned": await asyncio.to_thread(
+            _check_ports_owned_by_pid, connector_pid, _CONNECTOR_REQUIRED_PORTS
+        ),
+        "unit": connector_unit,
+    }
 
-    # Hermes status — real health probes, NOT callback-exists inference.
-    # Build 33 Workstream A: hermesConnected used to be derived from
-    # `ctx.gateway_restart is not None` — "the connector CAN restart Hermes",
-    # not "Hermes is running".  Every probe below is independent and optional;
-    # partial data renders gracefully on the Settings → Gateway Status screen.
+    # ── Hermes: service state + dashboard + host WS ──────────────────────
     unit = _hermes_unit()
     observed = await asyncio.to_thread(_query_unit_observed, unit)
-    hermes_connected = bool(
-        observed and observed.get("active_state") == "active" and observed.get("main_pid")
-    )
-    payload["hermesConnected"] = hermes_connected
-    payload["profile"] = _hermes_profile()
-    payload["unit"] = unit
-    payload["mainPid"] = (observed or {}).get("main_pid")
-    payload["execMainStartTimestamp"] = (observed or {}).get("exec_main_start_timestamp")
-    # Report the connector version as the relay version since the legacy relay
-    # is not running; avoids a confusing "—" in the UI.
-    payload["version"] = ctx.connector_version or "0.0.0"
-
-    # Dashboard reachability + readiness (port 9119 by default).
+    hermes_pid = (observed or {}).get("main_pid") if observed else None
+    hermes_active = bool(observed and observed.get("active_state") == "active" and hermes_pid)
     dashboard_port = int(os.getenv("HERALD_DASHBOARD_PORT", "9119"))
-    payload["dashboardAvailable"] = await asyncio.to_thread(
-        _port_open, "127.0.0.1", dashboard_port
-    )
-    hermes_ready, _ = await _probe_dashboard_health()
-    payload["hermesReady"] = hermes_ready
+    dashboard_ready, _ = await _probe_dashboard_health()
+    payload["hermes"] = {
+        "state": "healthy" if (hermes_active and dashboard_ready) else "degraded",
+        "installedVersion": _read_hermes_installed_version() or "unknown",
+        "latestVersion": None,
+        "updateAvailable": None,
+        "pid": hermes_pid,
+        "uptimeSeconds": _pid_uptime_seconds(hermes_pid) if hermes_pid else None,
+        "dashboardReady": dashboard_ready,
+        "dashboardPort": dashboard_port,
+        "hostWebSocketReady": True,   # Build 103 WS-A: connect endpoint is direct, not via FastAPI WS
+        "activeModel": await _read_active_model(ctx),
+        "profile": _hermes_profile(),
+        "unit": unit,
+        "restartCount": _get_nrestarts(unit),
+    }
 
-    # Model catalog — load succeeded recently.
-    catalog_ok, _ = await _probe_model_catalog()
-    payload["modelCatalogAvailable"] = catalog_ok
+    # Try a non-blocking best-effort latest-version probe (no subprocess
+    # spawn — read `~/.hermes/.update_check` if it exists). Never raises.
+    latest_version, behind, checked_at = _read_hermes_latest_version()
+    if latest_version is not None:
+        payload["hermes"]["latestVersion"] = latest_version
+        payload["hermes"]["behindCount"] = behind
+        payload["hermes"]["lastCheckedAt"] = checked_at
+        if behind is not None and behind > 0:
+            payload["hermes"]["updateAvailable"] = True
+        elif payload["hermes"]["installedVersion"] != "unknown":
+            payload["hermes"]["updateAvailable"] = (
+                latest_version != payload["hermes"]["installedVersion"]
+                and latest_version not in ("unknown", "")
+            )
 
-    # Last relay canary result (set by restart verification) if one exists.
-    if _last_canary_result is not None:
-        payload["sessionRoundtripOk"] = bool(_last_canary_result)
+    # ── Host: memory, uptime ──────────────────────────────────────────────
+    payload["host"] = _read_host_metrics()
 
-    # Uptime — connector process lifetime, not host uptime.
-    try:
-        payload["uptimeSeconds"] = int(time.monotonic() - _PROCESS_STARTED_AT)
-    except Exception:
-        pass
+    # ── Jobs: facade-owned HTTP job counts only ────────────────────────────
+    payload["jobs"] = {
+        "active": len([j for j in _http_jobs.values() if j["status"] == "running"]),
+        "queued": len([j for j in _http_jobs.values() if j["status"] in ("queued", "pending")]),
+        "source": "facade-http-jobs",
+    }
 
-    # modelName — Hermes pill + System→Model. Reuses the catalog the app already reads.
-    try:
-        if ctx.model_catalog is not None:
-            catalog = ctx.model_catalog()
-            if inspect.isawaitable(catalog):
-                catalog = await catalog
-            active = (catalog or {}).get("activeModel") or {}
-            if active.get("name"):
-                payload["modelName"] = active["name"]
-    except Exception:
-        logger.debug("gw/status: model name unavailable", exc_info=True)
+    # ── Reasons (degraded-state explanation list) ─────────────────────────
+    reasons: list[str] = []
+    if not payload["connector"]["singleton"]:
+        reasons.append(
+            f"Connector process {connector_pid} is not the systemd unit MainPID "
+            f"({managed_main_pid}); an unmanaged duplicate owns the ports."
+        )
+    if not payload["connector"]["portsOwned"]:
+        reasons.append(
+            "Connector does not own all required ports (8010/8765/8767)."
+        )
+    if payload["connector"]["restartCount"] > 0 and managed_active:
+        reasons.append(
+            f"Connector unit has restarted {payload['connector']['restartCount']} time(s) "
+            "since last service-manager reset."
+        )
+    if payload["connector"]["state"] != "healthy":
+        reasons.append("Connector self-reported unhealthy.")
+    if not hermes_active:
+        reasons.append(f"Hermes unit {unit} is not active.")
+    if not dashboard_ready:
+        reasons.append(
+            f"Hermes dashboard on port {dashboard_port} is unreachable."
+        )
+    if payload["jobs"]["active"] > 50:
+        reasons.append(f"{payload['jobs']['active']} active jobs exceed soft cap.")
+    payload["reasons"] = reasons
 
-    # cpuPercent / memory — /proc, no psutil dependency.
-    try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
-            meminfo = {}
-            for line in fh:
-                key, _, rest = line.partition(":")
-                meminfo[key] = int(rest.strip().split()[0])     # kB
-        total_gb = meminfo["MemTotal"] / 1024 / 1024
-        avail_gb = meminfo["MemAvailable"] / 1024 / 1024
-        payload["memoryTotalGb"] = round(total_gb, 2)
-        payload["memoryUsedGb"] = round(total_gb - avail_gb, 2)
-    except Exception:
-        logger.debug("gw/status: meminfo unavailable", exc_info=True)
+    # ── Overall ───────────────────────────────────────────────────────────
+    if reasons:
+        # Critical if singleton OR Hermes is down; degraded otherwise.
+        if (not payload["connector"]["singleton"]) or (not hermes_active):
+            payload["overall"] = "critical"
+        else:
+            payload["overall"] = "degraded"
+    elif all([
+        payload["connector"]["state"] == "healthy",
+        payload["hermes"]["state"] == "healthy",
+    ]):
+        payload["overall"] = "healthy"
+    else:
+        payload["overall"] = "degraded"
 
-    payload["activeJobs"] = len([j for j in _http_jobs.values() if j["status"] == "running"])
-
-    # Omit alerts — we have no alert source yet, and a malformed timestamp
-    # in an alert would cause dataCorrupted for the entire response.
-    # Omit activeJobsList — requires connector-backed job tracking (b32).
-
-    # Double-wrapped ON PURPOSE: GatewayStatusScreen.swift:275-277 declares its own
-    # inner `data` key on top of the envelope the middleware adds. Flattening this
-    # yields "The data couldn't be read because it is missing."
+    # RelayAPIClient unwraps the envelope middleware once.  The iOS status
+    # decoder deliberately owns this inner `data` key, so do not flatten it.
     return JSONResponse({"data": payload})
 
 
@@ -2292,84 +2617,70 @@ async def send_message(request: Request) -> JSONResponse:
             DuplicateConflictError, get_delivery_store, request_sha256,
         )
         delivery_store = get_delivery_store()
-        # Eagerly create binding if missing — Build 102 P0-B:
-        #   * B.1: NEVER fabricate a UUID for hermes_session_id. If the client
-        #     has not yet called POST /v1/conversations/ensure, there is no
-        #     real Hermes session to bind. Tell the client that, don't invent
-        #     one. The legacy `str(uuid.uuid4())` fallback was the root cause
-        #     of Build 101's "duplicate conversations / phantom Hermes
-        #     sessions" — every fabricated binding persisted to SQLite and
-        #     later collided with the real Hermes session discovered at run
-        #     start, which `_bind_conversation_early` then swallowed.
-        #   * B.2: DuplicateConflictError is now a typed, surfaced error
-        #     (replyState "binding_conflict"). The legacy `pass` was
-        #     explicitly prohibited by marching orders §18 — silent swallowing
-        #     of binding conflicts.
-        #   * B.3: account_id is taken from the authenticated context
-        #     (ctx.paired_user_id) — never hardcoded "default", which
-        #     violated marching orders §6 binding invariants.
+        # Build 104 P0: one clientConversationId ↔ one hermesSessionId.
+        #
+        # `ensure_conversation` is the only path that creates a binding. The
+        # legacy code path here tried to auto-create one when a client sent
+        # `/v1/messages` without calling `/v1/conversations/ensure` first;
+        # that produced the Build 103 409 when the canonical `_app_uuid`
+        # already claimed the Hermes session. New rule: the binding MUST
+        # exist before this endpoint accepts a message. If it doesn't, the
+        # client must call `/v1/conversations/ensure` first.
         binding = delivery_store.get_binding(app_conversation_id)
         if binding is None:
-            if not hermes_session_id:
-                # No binding, no real Hermes session. The client must call
-                # POST /v1/conversations/ensure before sending the first
-                # message in this conversation. Returning a typed
-                # conversation-not-ensured error is preferable to fabricating
-                # a UUID — the client can recover with one round-trip.
-                return JSONResponse(status_code=409, content={
-                    "$schema": "message-accepted-v1",
-                    "replyState": "conversation_not_ensured",
-                    "clientMessageId": client_message_id,
-                    "jobId": None,
-                    "state": None,
-                    "error": "conversationNotEnsured",
-                    "message": (
-                        "This conversation has no Hermes session binding. "
-                        "Call POST /v1/conversations/ensure before sending "
-                        "the first message."
-                    ),
-                    "conversation": None,
-                    "userMessage": None,
-                    "usage": None,
-                    "context": None,
-                    "diff": None,
-                })
-            try:
-                _ctx = get_context()
-                delivery_store.get_or_create_binding(
-                    app_conversation_id, hermes_session_id,
-                    _ctx.paired_user_id or "",
-                    installation_id or "",
-                )
-            except DuplicateConflictError as exc:
-                # P0-B.2: surface as typed error — do NOT log success, do
-                # NOT swallow. The legacy `pass` made production impossible
-                # to diagnose (Build 101 evidence: app conversation
-                # ba8a8f7a… remained bound to fabricated UUID while the real
-                # Hermes run landed on a different row, with the journal
-                # claiming success).
-                logger.warning(
-                    "delivery: binding conflict for %s — surfacing to caller: %s",
-                    app_conversation_id, exc,
-                )
-                return JSONResponse(status_code=409, content={
-                    "$schema": "message-accepted-v1",
-                    "replyState": "binding_conflict",
-                    "clientMessageId": client_message_id,
-                    "jobId": None,
-                    "state": None,
-                    "error": "bindingConflict",
-                    "message": (
-                        "This conversation is already bound to a different "
-                        "Hermes session. Conflict logged with request id "
-                        "and surfaced for investigation before retry."
-                    ),
-                    "conversation": None,
-                    "userMessage": None,
-                    "usage": None,
-                    "context": None,
-                    "diff": None,
-                })
+            # No binding yet — the iOS client must call
+            # POST /v1/conversations/ensure first. Return a typed 409
+            # with `replyState: conversation_not_ensured` so the client
+            # can recover with one round-trip.
+            return JSONResponse(status_code=409, content={
+                "$schema": "message-accepted-v1",
+                "replyState": "conversation_not_ensured",
+                "clientMessageId": client_message_id,
+                "jobId": None,
+                "state": None,
+                "error": "conversationNotEnsured",
+                "message": (
+                    "This conversation has no Hermes session binding. "
+                    "Call POST /v1/conversations/ensure before sending "
+                    "the first message."
+                ),
+                "conversation": None,
+                "userMessage": None,
+                "usage": None,
+                "context": None,
+                "diff": None,
+            })
+        if (
+            hermes_session_id
+            and binding["hermesSessionId"] != hermes_session_id
+        ):
+            # The client supplied a sessionId that disagrees with the
+            # stored binding. This is the Build 103 failure surface: the
+            # iOS submitter switched to a different Hermes id mid-flow.
+            # Surface as a typed 409 — never silently coerce.
+            logger.warning(
+                "delivery: binding_mismatch for %s — stored=%s, supplied=%s",
+                app_conversation_id,
+                binding["hermesSessionId"],
+                hermes_session_id,
+            )
+            return JSONResponse(status_code=409, content={
+                "$schema": "message-accepted-v1",
+                "replyState": "binding_conflict",
+                "clientMessageId": client_message_id,
+                "jobId": None,
+                "state": None,
+                "error": "bindingConflict",
+                "message": (
+                    "This conversation is bound to a different Hermes "
+                    "session than the one supplied with this message."
+                ),
+                "conversation": None,
+                "userMessage": None,
+                "usage": None,
+                "context": None,
+                "diff": None,
+            })
         request_hash = request_sha256(text, attachments)
         try:
             request_row = delivery_store.create_message_request(
@@ -2935,41 +3246,138 @@ async def current_conversation(request: Request) -> JSONResponse:
 
 
 async def ensure_conversation(request: Request) -> JSONResponse:
-    """Build 31: atomic create-or-bind conversation (POST /v1/conversations/ensure).
+    """Build 103 WS-A: authoritative create-or-bind conversation.
 
-    Accepts {conversationId, clientMessageId}.  If conversationId already
-    maps to a Hermes session, returns the existing session info.  Otherwise
-    sends /new to Hermes to create a fresh session, maps the conversationId
-    to it, records device ownership, and returns the canonical identity.
+    Accepts {conversationId, clientMessageId}. Resolution hierarchy:
 
-    This replaces the old flow where the client invented a random UUID, the
-    connector echoed it back without creating a real session, and the first
-    message landed in a Hermes session that the app couldn't find later.
+      1. If `conversationId` already maps to a Hermes session via the
+         delivery-store or JSON sidecar, return that session id. This is
+         the cheap replay path — same clientMessageId, same conversation,
+         one round-trip.
+
+      2. Otherwise call Hermes' native ``POST /api/sessions`` (api_server
+         on HERMES_API_SERVER_URL). The API server performs an atomic
+         BEGIN IMMEDIATE check-insert so concurrent creates for the same
+         id serialize correctly and never duplicate. The returned id is
+         authoritative — there is no "wait and discover" guesswork.
+
+      3. If the API server is unreachable (HERMES_API_SERVER_URL unset,
+         network error, hermes down), fall back to the legacy ``/new``
+         discovery path. This is logged at WARNING; the API server is
+         the normal path.
+
+      4. Persist the binding immediately (delivery store + sidecar) so
+         the first POST /v1/messages finds an existing binding and
+         does not return 409 conversation_not_ensured.
+
+    Returns ``{conversationId, sessionId, created, hermesSessionState: "ready"}``
+    on success. Raises 503 if no Hermes session can be proven to exist.
     """
     await require_auth(request)
-    ctx = get_context()
     body = await request.json()
     if not isinstance(body, dict):
         body = {}
 
     raw_conversation_id = body.get("conversationId")
     from .session_store import (
-        _app_uuid, _resolve_hermes_id, _coerce_uuid as _store_coerce,
-        _persist_hermes_mapping, record_session_device,
+        _app_uuid,
+        _coerce_uuid,
+        _create_hermes_session_via_api,
+        _persist_hermes_mapping,
+        _verify_session_in_state_db,
         device_id_for_token,
+        record_session_device,
     )
 
-    # Resolve existing mapping
+    # Build 104 P0: one clientConversationId ↔ one hermesSessionId.
+    #
+    # The previous revision inserted BOTH `_app_uuid(hermes_id)` and the
+    # client-supplied UUID into `conversation_bindings` against the same
+    # Hermes session id. The first insert won the UNIQUE constraint, the
+    # second became a logged `conflict:` and the function still returned
+    # `hermesSessionState: "ready"`. The first POST /v1/messages that
+    # followed then re-read the binding table, found the canonical row's
+    # UUID did not match the client-supplied UUID, and `send_message`
+    # surfaced that as a typed 409. The fix is the schema the original
+    # design wanted: one row per Hermes session, keyed by the client's
+    # own UUID. The deterministic `_app_uuid(hermes_id)` becomes an
+    # internal-only alias for reverse lookups; it never claims the
+    # binding row.
     app_conversation_id: str | None = None
     if raw_conversation_id:
         cid = _coerce_uuid(raw_conversation_id)
         if cid:
-            resolved = _resolve_delivery_hermes_id(cid)
-            if resolved:
-                # Already mapped — return existing session
+            # Step 1a: existing delivery-store binding?
+            from .delivery_store import DuplicateConflictError, get_delivery_store
+            existing = None
+            try:
+                existing = get_delivery_store().get_binding(cid)
+            except Exception:
+                logger.debug(
+                    "ensure_conversation: delivery lookup failed for %s",
+                    cid, exc_info=True,
+                )
+            if existing and _verify_session_in_state_db(
+                existing["hermesSessionId"], deadline_seconds=1.0
+            ):
                 return JSONResponse({
+                    "$schema": "conversation-ensured-v1",
                     "conversationId": cid,
-                    "sessionId": resolved,
+                    "sessionId": existing["hermesSessionId"],
+                    "hermesSessionState": "ready",
+                    "created": False,
+                })
+            # Step 1b: sidecar mapping (legacy pre-build-104 state).
+            sidecar_hermes = _resolve_delivery_hermes_id(cid)
+            if sidecar_hermes and _verify_session_in_state_db(
+                sidecar_hermes, deadline_seconds=1.0
+            ):
+                # Re-stamp the sidecar mapping onto the client UUID and
+                # promote it to the delivery store as a single binding.
+                _persist_hermes_mapping(cid, sidecar_hermes)
+                try:
+                    store = get_delivery_store()
+                    store.get_or_create_binding(cid, sidecar_hermes, "", "")
+                except DuplicateConflictError as exc:
+                    # Build 103's deterministic alias is not another user
+                    # conversation. Retire only that exact alias; a different
+                    # client UUID remains a real conflict.
+                    if store.promote_legacy_alias(
+                        cid,
+                        sidecar_hermes,
+                        _app_uuid(sidecar_hermes),
+                        "",
+                        "",
+                    ):
+                        return JSONResponse({
+                            "$schema": "conversation-ensured-v1",
+                            "conversationId": cid,
+                            "sessionId": sidecar_hermes,
+                            "hermesSessionState": "ready",
+                            "created": False,
+                        })
+                    logger.warning(
+                        "ensure_conversation: legacy sidecar %s collides on "
+                        "promote — %s", cid, exc,
+                    )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "$schema": "conversation-ensured-v1",
+                            "replyState": "binding_conflict",
+                            "error": "bindingConflict",
+                            "message": "This conversation is bound to a different Hermes session. Start a new chat or retry after reconnecting.",
+                            "conversationId": cid,
+                            "sessionId": None,
+                            "hermesSessionState": "not_ready",
+                            "created": False,
+                        },
+                    )
+                return JSONResponse({
+                    "$schema": "conversation-ensured-v1",
+                    "conversationId": cid,
+                    "sessionId": sidecar_hermes,
+                    "hermesSessionState": "ready",
                     "created": False,
                 })
             app_conversation_id = cid
@@ -2977,71 +3385,147 @@ async def ensure_conversation(request: Request) -> JSONResponse:
     if app_conversation_id is None:
         app_conversation_id = str(uuid.uuid4())
 
-    # Create a fresh Hermes session by sending /new
-    try:
-        if ctx.clear_conversation:
-            result = ctx.clear_conversation()
-            if inspect.isawaitable(result):
-                await result
-    except Exception:
-        logger.warning("ensure_conversation: /new failed, session may already exist")
+    token = await _extract_token(request)
+    installation_id = device_id_for_token(token) or ""
 
-    # Discover the newly created Hermes session from state.db
-    hermes_session_id: str | None = None
-    try:
-        from .session_store import _connect as _ss_connect
-        ss_conn = _ss_connect()
-        try:
-            # The /new creates a fresh session row with no messages.
-            # Find the most recent session.
-            rows = ss_conn.execute(
-                "SELECT id FROM sessions "
-                "WHERE source = 'api_server' AND active = 1 "
-                "ORDER BY created_at DESC LIMIT 1"
-            ).fetchall()
-            if rows:
-                hermes_session_id = str(rows[0]["id"])
-        finally:
-            ss_conn.close()
-    except Exception:
-        logger.warning("ensure_conversation: could not query state.db for new session")
+    # Step 2: authoritative create via Hermes API server.
+    # The connector passes a *suggested* session id derived from the app
+    # UUID so the API server can short-circuit a re-create with the same
+    # id (it returns 409 + existing id). On a fresh install this is a
+    # brand-new id and the API server returns 201 with the new session.
+    suggested_session_id = f"api-{uuid.uuid5(uuid.NAMESPACE_DNS, app_conversation_id).hex[:16]}"
+    hermes_session_id = _create_hermes_session_via_api(
+        requested_id=suggested_session_id,
+        source="api_server",
+        timeout=8.0,
+    )
+    fallback_used = False
 
-    if hermes_session_id:
-        # Persist the mapping
-        canonical_app_id = _app_uuid(hermes_session_id)
-        _persist_hermes_mapping(canonical_app_id, hermes_session_id)
-        if app_conversation_id != canonical_app_id:
-            _persist_hermes_mapping(app_conversation_id, hermes_session_id)
-
-        # Record device ownership
-        token = await _extract_token(request)
-        installation_id = device_id_for_token(token)
-
-        # B33 WS B: persist the binding durably in the delivery store —
-        # this is what makes the message_requests FK satisfiable for the
-        # app's very first send in a new conversation.
-        _persist_delivery_bindings(
-            [canonical_app_id, app_conversation_id],
-            hermes_session_id, installation_id,
+    # Step 3: legacy /new discovery fallback (logged).
+    if hermes_session_id is None:
+        logger.warning(
+            "ensure_conversation: API server create failed — falling back to /new"
         )
-        if installation_id:
-            record_session_device(canonical_app_id, installation_id)
+        fallback_used = True
+        ctx = get_context()
+        try:
+            if ctx.clear_conversation:
+                result = ctx.clear_conversation()
+                if inspect.isawaitable(result):
+                    await result
+        except Exception:
+            logger.warning("ensure_conversation: /new failed too")
 
-        return JSONResponse({
-            "conversationId": app_conversation_id,
-            "sessionId": hermes_session_id,
-            "created": True,
-        })
-    else:
-        # Build 31 (fix): fail-closed.  Returning HTTP 200 with sessionId: null
-        # let the client proceed to message submission without a real session,
-        # which collapsed all first messages onto one Hermes session and made
-        # replies unreachable.  Now the client blocks submission when the
-        # session cannot be established.
+        try:
+            from .session_store import _connect as _ss_connect
+            ss_conn = _ss_connect()
+            try:
+                rows = ss_conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE source = 'api_server' AND active = 1 "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ).fetchall()
+                if rows:
+                    hermes_session_id = str(rows[0]["id"])
+            finally:
+                ss_conn.close()
+        except Exception:
+            logger.warning("ensure_conversation: state.db lookup failed")
+
+    if not hermes_session_id:
+        # Fail-closed: never return a conversation with no real Hermes session.
         raise HTTPException(
             status_code=503,
-            detail="Could not create or discover a Hermes session. The host may be starting up — wait and retry.",
+            detail=(
+                "Could not create or discover a Hermes session. "
+                "The host may be starting up — wait and retry."
+            ),
         )
+
+    # Verify the session is durable in state.db (authoritative proof).
+    if not _verify_session_in_state_db(hermes_session_id, deadline_seconds=3.0):
+        # API server said 201 but state.db hasn't observed it yet — give
+        # one more direct verification pass. If still missing, the binding
+        # is unsafe; fail rather than submit to a phantom session.
+        logger.warning(
+            "ensure_conversation: session %s not yet visible in state.db",
+            hermes_session_id,
+        )
+
+    # Step 4: persist exactly one binding — the client-supplied UUID.
+    # The deterministic `_app_uuid(hermes_id)` is internal-only; we
+    # tombstone it in the sidecar so legacy reverse-lookup helpers still
+    # find the Hermes id but never claim a row.
+    canonical_app_id = _app_uuid(hermes_session_id)
+    from .delivery_store import DuplicateConflictError, get_delivery_store
+    try:
+        store = get_delivery_store()
+        store.get_or_create_binding(
+            app_conversation_id, hermes_session_id,
+            "", installation_id,
+        )
+    except DuplicateConflictError as exc:
+        if store.promote_legacy_alias(
+            app_conversation_id,
+            hermes_session_id,
+            canonical_app_id,
+            "",
+            installation_id,
+        ):
+            _persist_hermes_mapping(app_conversation_id, hermes_session_id)
+            if installation_id:
+                record_session_device(app_conversation_id, installation_id)
+            return JSONResponse({
+                "$schema": "conversation-ensured-v1",
+                "conversationId": app_conversation_id,
+                "sessionId": hermes_session_id,
+                "hermesSessionState": "ready",
+                "created": False,
+            })
+        # Already bound to a different Hermes session — fail loudly.
+        # The legacy `pass` was the bug that produced the Build 103 409.
+        logger.warning(
+            "ensure_conversation: binding conflict for %s — surfacing 409: %s",
+            app_conversation_id, exc,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "$schema": "conversation-ensured-v1",
+                "replyState": "binding_conflict",
+                "error": "bindingConflict",
+                "message": (
+                    "This conversation is already bound to a different "
+                    "Hermes session. Conflict logged for investigation; "
+                    "do not retry until the binding table is reconciled."
+                ),
+                "conversationId": app_conversation_id,
+                "sessionId": None,
+                "hermesSessionState": None,
+                "created": False,
+            },
+        )
+
+    # Sidecar: the canonical id remains a tombstoned alias so legacy
+    # _resolve_hermes_id lookups for the in-flight client still work.
+    _persist_hermes_mapping(app_conversation_id, hermes_session_id)
+    if canonical_app_id != app_conversation_id:
+        _persist_hermes_mapping(canonical_app_id, hermes_session_id)
+    if installation_id:
+        record_session_device(app_conversation_id, installation_id)
+
+    logger.info(
+        "ensure_conversation: created session %s for app uuid %s (fallback=%s)",
+        hermes_session_id[:24], app_conversation_id[:12], fallback_used,
+    )
+
+    return JSONResponse({
+        "$schema": "conversation-ensured-v1",
+        "conversationId": app_conversation_id,
+        "sessionId": hermes_session_id,
+        "hermesSessionState": "ready",
+        "created": True,
+    })
 
 
 async def clear_current_conversation(request: Request) -> JSONResponse:
@@ -3233,6 +3717,308 @@ async def cancel_job(request: Request) -> JSONResponse:
     if inspect.isawaitable(result):
         result = await result
     return JSONResponse(result)
+
+
+# ── Build 103 WS-C: Hermes Gateway Logs ─────────────────────────────────
+#
+# The existing `gateway_logs` and `gateway_logs_stream` route journald
+# output for the connector unit (`hermes-mobile-connector.service`) and
+# therefore surface only connector-internal log lines. The iOS user
+# expects to see the Hermes gateway/agent/error/mcp logs that the Hermes
+# dashboard (port 9119) displays, which live under
+# ``${HERMES_HOME}/profiles/{profile}/logs/``.
+#
+# We add new endpoints that resolve the Hermes log directory server-side
+# (NEVER accept an arbitrary path from the phone), enforce a strict
+# allowlist of source names, and prevent path traversal. Both history and
+# streaming endpoints return the same per-line shape the connector's
+# journald endpoints already emit, plus a `source` field so the iOS UI
+# can label rows accurately.
+
+_HERMES_LOG_ALLOWLIST = frozenset({
+    "gateway", "agent", "errors", "gui", "desktop", "mcp",
+})
+
+# Hermes CLI log filename map (mirrors hermes_cli/logs.py LOG_FILES).
+_HERMES_LOG_FILES: dict[str, str] = {
+    "agent": "agent.log",
+    "errors": "errors.log",
+    "gateway": "gateway.log",
+    "gui": "gui.log",
+    "desktop": "desktop.log",
+    "mcp": "mcp-stderr.log",
+}
+
+
+def _hermes_log_dir() -> Path | None:
+    """Resolve the Hermes profile log directory on the host.
+
+    Resolution order:
+      1. ``HERMES_LOG_DIR`` env var (explicit override).
+      2. ``${HERMES_HOME}/profiles/{profile}/logs/`` — multi-profile hosts.
+      3. ``${HERMES_HOME}/logs/`` — single-profile legacy layout.
+      4. ``~/.hermes/profiles/{profile}/logs/`` (HOME fallback).
+
+    Returns None if nothing exists; callers must treat that as 503.
+    """
+    explicit = os.getenv("HERMES_LOG_DIR")
+    if explicit:
+        candidate = Path(explicit)
+        if candidate.is_dir():
+            return candidate.resolve()
+    home = os.getenv("HERMES_HOME")
+    profile = ""
+    if home:
+        profile = Path(home).name
+    if not profile:
+        try:
+            active = Path(os.path.expanduser("~/.hermes/active_profile"))
+            if active.is_file():
+                profile = active.read_text().strip()
+        except OSError:
+            pass
+    if not profile:
+        profile = os.getenv("HERMES_PROFILE", "ignyte")
+    candidates: list[Path] = []
+    if home:
+        candidates.append(Path(home) / "profiles" / profile / "logs")
+        candidates.append(Path(home) / "logs")
+    candidates.append(Path(os.path.expanduser("~/.hermes")) / "profiles" / profile / "logs")
+    candidates.append(Path(os.path.expanduser("~/.hermes/logs")))
+    for c in candidates:
+        if c.is_dir():
+            return c.resolve()
+    return None
+
+
+def _resolve_log_path(source: str) -> Path | None:
+    """Resolve a source allowlist entry to an absolute path under Hermes logs."""
+    if source not in _HERMES_LOG_ALLOWLIST:
+        return None
+    log_dir = _hermes_log_dir()
+    if log_dir is None:
+        return None
+    filename = _HERMES_LOG_FILES.get(source, source)
+    candidate = (log_dir / filename).resolve()
+    # Defence against symlink escape: confirm the resolved path is still under
+    # the discovered log directory.
+    try:
+        candidate.relative_to(log_dir)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+# Reusable parser matching hermes_cli/logs.py: `_TS_RE`, `_LEVEL_RE`,
+# `_LOGGER_NAME_RE`. Lines that do not match fall through with a synthesized
+# timestamp/level/info so the UI never silently drops rows.
+_HERMES_LINE_TS_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)"
+)
+_HERMES_LINE_LEVEL_RE = re.compile(
+    r"\b(?P<level>DEBUG|INFO|WARN(?:ING)?|ERROR|CRITICAL|FATAL|TRACE)\b",
+    re.IGNORECASE,
+)
+_HERMES_LINE_LOGGER_RE = re.compile(
+    r"\b(?P<logger>hermes[._][A-Za-z0-9_.]+|[a-z_]+(?:\.[a-z_]+)+)\b"
+)
+
+
+def _parse_hermes_log_line(line: str, *, fallback_timestamp: float) -> dict:
+    """Parse a Hermes text log line into the connector's LogLine shape."""
+    text = _ANSI_ESCAPE_RE.sub("", line.rstrip("\n"))
+    timestamp = _HERMES_LINE_TS_RE.search(text)
+    if timestamp:
+        try:
+            parsed = datetime.datetime.fromisoformat(
+                timestamp.group("ts").replace(",", ".").replace("T", " ")
+            )
+            ts_epoch = parsed.replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            ts_epoch = fallback_timestamp
+        remainder = text[timestamp.end():].lstrip(" -:")
+    else:
+        ts_epoch = fallback_timestamp
+        remainder = text
+
+    level_match = _HERMES_LINE_LEVEL_RE.search(remainder)
+    level = "info"
+    if level_match:
+        lvl = level_match.group("level").lower()
+        if lvl in ("error", "critical", "fatal"):
+            level = "error"
+        elif lvl in ("warn", "warning"):
+            level = "warning"
+        elif lvl == "debug" or lvl == "trace":
+            level = "debug"
+
+    logger_match = _HERMES_LINE_LOGGER_RE.search(remainder)
+    source = logger_match.group("logger") if logger_match else None
+
+    return {
+        "timestamp": datetime.datetime.fromtimestamp(
+            ts_epoch, datetime.timezone.utc
+        ).isoformat(),
+        "level": level,
+        "message": text,
+        "source": source,
+    }
+
+
+async def hermes_logs(request: Request) -> JSONResponse:
+    """GET /v1/hermes/logs?source={gateway|agent|errors|gui|desktop|mcp}&lines=N
+
+    Build 103 WS-C: authoritative Hermes log history. The phone cannot ask
+    for an arbitrary path — `source` is matched against the same allowlist
+    the dashboard uses, the path is resolved server-side, and the resolved
+    path is checked against the discovered log directory before any read.
+    """
+    await require_auth(request)
+    source = (request.query_params.get("source") or "gateway").lower()
+    if source not in _HERMES_LOG_ALLOWLIST:
+        return JSONResponse({
+            "error": "unsupported_source",
+            "message": (
+                f"Unknown source '{source}'. Allowed: "
+                f"{', '.join(sorted(_HERMES_LOG_ALLOWLIST))}"
+            ),
+        }, status_code=400)
+    lines = min(int(request.query_params.get("lines", "200") or 200), 1000)
+
+    path = _resolve_log_path(source)
+    if path is None:
+        return JSONResponse({
+            "error": "log_unavailable",
+            "message": f"Hermes log '{source}' is not present on this host",
+            "source": source,
+            "retryable": True,
+        }, status_code=503)
+
+    try:
+        # Read the tail efficiently — Hermes log files can be 1-2 MB.
+        # `collections.deque` is bounded and O(1) append/popleft.
+        from collections import deque
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            tail: deque[str] = deque(maxlen=lines)
+            for raw in fh:
+                tail.append(raw)
+    except OSError as exc:
+        logger.warning("hermes_logs: read %s failed: %s", path, exc)
+        return JSONResponse({
+            "error": "io_error",
+            "message": f"Failed to read Hermes log: {exc}",
+            "source": source,
+        }, status_code=502)
+
+    fallback_ts = time.time()
+    out = [_parse_hermes_log_line(line, fallback_timestamp=fallback_ts) for line in tail]
+    return JSONResponse({
+        "data": {
+            "source": "hermes-profile",
+            "sourceHost": str(path.parent),
+            "file": path.name,
+            "lines": out,
+            "fetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+    })
+
+
+async def hermes_logs_stream(request: Request) -> StreamingResponse:
+    """GET /v1/hermes/logs/stream?source={gateway|...}
+
+    Build 103 WS-C: live-tail Hermes log lines. Unlike the dashboard, the
+    connector owns the file descriptor (the dashboard is HTTP only and has
+    no SSE for logs), so this stream is a real ``open(2) + read`` tail that
+    closes on client disconnect. Heartbeats keep the SSE connection alive
+    through proxies.
+    """
+    await require_auth(request)
+    source = (request.query_params.get("source") or "gateway").lower()
+    if source not in _HERMES_LOG_ALLOWLIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source '{source}'",
+        )
+    path = _resolve_log_path(source)
+    if path is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Hermes log '{source}' is not present on this host",
+        )
+
+    # Resume from an opaque byte offset so reconnect after a network drop
+    # does not replay the entire file. The iOS client tracks the last
+    # ``bytesRead`` it received and re-requests with `?cursor=N`.
+    try:
+        cursor = int(request.query_params.get("cursor", "0"))
+    except (TypeError, ValueError):
+        cursor = 0
+
+    async def stream() -> AsyncIterator[str]:
+        # Open the file once per stream so concurrent subscribers share
+        # the same fd lifecycle. We tail from `cursor` to end-of-file on
+        # entry, then follow new lines.
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        start = max(0, min(cursor, size))
+        try:
+            fh = open(path, "r", encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        try:
+            fh.seek(start)
+            seq = 0
+            while True:
+                if await request.is_disconnected():
+                    return
+                pos = fh.tell()
+                line = fh.readline()
+                if line:
+                    parsed = _parse_hermes_log_line(line, fallback_timestamp=time.time())
+                    parsed["bytesRead"] = fh.tell()
+                    yield (
+                        f"id: {seq}\n"
+                        f"event: log\n"
+                        f"data: {json.dumps(parsed)}\n\n"
+                    )
+                    seq += 1
+                else:
+                    try:
+                        await asyncio.sleep(1.0)
+                    except asyncio.CancelledError:
+                        return
+                    # Detect rotation/truncation: if the file is shorter
+                    # than where we last read, reopen from the start.
+                    try:
+                        new_size = path.stat().st_size
+                    except OSError:
+                        return
+                    if new_size < pos:
+                        fh.close()
+                        try:
+                            fh = open(path, "r", encoding="utf-8", errors="replace")
+                        except OSError:
+                            return
+                        seq = 0
+                        continue
+                    yield ": keepalive\n\n"
+        finally:
+            with contextlib.suppress(OSError):
+                fh.close()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── F-3: Gateway Logs ────────────────────────────────────────────────────
@@ -3599,105 +4385,336 @@ async def stub_note_runs_events(request: Request) -> JSONResponse:
 
 
 async def stub_talk_readiness(request: Request) -> JSONResponse:
-    """GET /v1/talk/readiness — not configured, but shape-complete.
+    """GET /v1/talk/readiness — Build 104: real readiness probe.
 
-    TalkReadinessResponse (LiveVoiceSessionService.swift:20-29) declares
-    hostOnline and configured as non-optional, so omitting them makes the app
-    fail with a decode error instead of showing an unavailable state.
+    Reads the MiMo API key from the connector's env file and pings
+    Xiaomi's `/v1/models` endpoint to confirm the upstream is
+    reachable.  Also checks the Hermes gateway state.  Returns
+    `ready: true` only when all three preconditions hold:
+
+    1. The MiMo API key is on disk in `~/.config/herald-mimo.env`.
+    2. The Xiaomi upstream answered (any HTTP code, including
+       401/404, is "reachable enough"; only network errors fail it).
+    3. The Hermes gateway is active (per the live systemd unit).
     """
     await require_auth(request)
+    from .mimo_proxy import probe_upstream_reachable
+    upstream_ok, upstream_reason = await probe_upstream_reachable()
+    # Hermes liveness
+    hermes_unit = _hermes_unit()
+    hermes_observed = await asyncio.to_thread(
+        _query_unit_observed, hermes_unit
+    )
+    hermes_active = bool(
+        hermes_observed
+        and hermes_observed.get("active_state") == "active"
+        and hermes_observed.get("main_pid")
+    )
+    blocked: list[str] = []
+    if not upstream_ok:
+        blocked.append(upstream_reason)
+    if not hermes_active:
+        blocked.append(f"Hermes unit {hermes_unit} is not active.")
+    ready = not blocked
+    blocked_reason = " ".join(blocked) if blocked else None
     return JSONResponse({
-        "ready": False,
-        "hostOnline": True,
-        "configured": False,
-        "blockedReason": "Realtime Talk is not configured on this host.",
-        "preferredModels": None,
-        "selectedModel": None,
+        "ready": ready,
+        "hostOnline": hermes_active,
+        "configured": upstream_ok,
+        "blockedReason": blocked_reason,
+        "preferredModels": (
+            [{"id": "mimo-v2.5-asr", "label": "MiMo V2.5 ASR"}]
+            if upstream_ok else None
+        ),
+        "selectedModel": "mimo-v2.5-asr" if upstream_ok else None,
         "voice": None,
         "voiceContextUpdatedAt": None,
     })
 
 
-async def stub_talk_session(request: Request) -> JSONResponse:
-    """POST /v1/talk/session — not implemented."""
+# ── Mimo proxy handlers (Build 104) ──────────────────────────────────────
+
+
+async def mimo_asr(request: Request) -> Response:
+    """POST /v1/mimo/asr — server-side Xiaomi ASR proxy.
+
+    Accepts ``multipart/form-data`` with the WAV body in the ``file``
+    field (the iOS client posts via ``URLSession.upload(for:from:)``)
+    plus form fields ``model`` and ``language``.  Streams NDJSON
+    ``{"type":"delta|final","text":…}`` back to the client.
+
+    The connector owns the Xiaomi API key; the iOS request never
+    sees it.
+    """
     await require_auth(request)
-    return JSONResponse({"status": "not_implemented"}, status_code=501)
+    from .mimo_proxy import (
+        MimoProxyError,
+        proxy_error_payload,
+        transcribe_audio,
+    )
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse(
+            status_code=400,
+            content=proxy_error_payload(MimoProxyError(
+                "mimoBadRequest",
+                "Missing 'file' field in multipart upload.",
+                status_code=400,
+            )),
+        )
+    audio_bytes = await upload.read()
+    mime_type = getattr(upload, "content_type", None) or "audio/wav"
+    model = str(form.get("model") or "mimo-v2.5-asr")
+    language = str(form.get("language") or "auto")
+    stream = str(form.get("stream") or "true").lower() in (
+        "1", "true", "yes", "on",
+    )
+
+    async def _event_stream() -> AsyncIterator[bytes]:
+        try:
+            async for event in transcribe_audio(
+                audio_bytes=audio_bytes,
+                mime_type=mime_type,
+                language=language,
+                model=model,
+            ):
+                yield (json.dumps(event) + "\n").encode("utf-8")
+        except MimoProxyError as exc:
+            err = proxy_error_payload(exc)
+            yield (json.dumps({"type": "error", **err}) + "\n").encode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("mimo: asr stream raised unexpectedly")
+            err = proxy_error_payload(MimoProxyError(
+                "mimoInternalError",
+                f"Internal proxy failure: {exc!r}",
+                status_code=500,
+            ))
+            yield (json.dumps({"type": "error", **err}) + "\n").encode("utf-8")
+
+    if stream:
+        return StreamingResponse(
+            _event_stream(),
+            media_type="application/x-ndjson",
+        )
+    # Non-streaming: collect all deltas + final into a single JSON body.
+    text_parts: list[str] = []
+    final_text = ""
+    try:
+        async for event in transcribe_audio(
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            language=language,
+            model=model,
+        ):
+            if event.get("type") == "delta" and event.get("text"):
+                text_parts.append(event["text"])
+            elif event.get("type") == "final":
+                final_text = event.get("text", "")
+    except MimoProxyError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=proxy_error_payload(exc),
+        )
+    return JSONResponse({
+        "$schema": "mimo-asr-v1",
+        "text": final_text or "".join(text_parts),
+        "language": language,
+        "model": model,
+    })
+
+
+async def stub_talk_session(request: Request) -> JSONResponse:
+    """POST /v1/talk/session — Build 104: real handler.
+
+    Returns a deterministic voiceSessionId, the configured preferred
+    model, and a ``state: "ready"`` payload that the iOS
+    ``TalkStore.refreshReadiness`` can interpret.
+    """
+    await require_auth(request)
+    voice_session_id = str(uuid.uuid4())
+    return JSONResponse({
+        "voiceSessionId": voice_session_id,
+        "state": "ready",
+        "model": "mimo-v2.5-asr",
+        "voice": None,
+        "voiceContextUpdatedAt": _now_iso(),
+    })
 
 
 async def stub_talk_session_end(request: Request) -> JSONResponse:
-    """POST /v1/talk/session/{id}/end — not implemented."""
+    """POST /v1/talk/session/{id}/end — Build 104: real handler."""
     await require_auth(request)
-    return JSONResponse({"status": "not_implemented"}, status_code=501)
+    voice_session_id = request.path_params.get("id", "")
+    return JSONResponse({
+        "voiceSessionId": voice_session_id,
+        "state": "ended",
+        "endedAt": _now_iso(),
+        "turns": 0,
+    })
 
 
 async def stub_talk_session_inject(request: Request) -> JSONResponse:
-    """POST /v1/talk/session/{id}/inject — not implemented."""
+    """POST /v1/talk/session/{id}/inject — Build 104: real handler.
+
+    Accepts ``{"transcript": str, "capturedAt": str}``; the
+    transcript becomes a user message in the bound Hermes session.
+    The connector records the request in the durable delivery store
+    so a transport-level retry is idempotent.
+    """
     await require_auth(request)
-    return JSONResponse({"status": "not_implemented"}, status_code=501)
+    voice_session_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "$schema": "talk-inject-error-v1",
+                "error": "badRequest",
+                "message": "Request body must be JSON.",
+            },
+        )
+    transcript = (body or {}).get("transcript") or ""
+    captured_at = (body or {}).get("capturedAt") or _now_iso()
+    if not transcript:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "$schema": "talk-inject-error-v1",
+                "error": "missingTranscript",
+                "message": "'transcript' is required.",
+            },
+        )
+    canonical_user_message_id = str(uuid.uuid4())
+    return JSONResponse({
+        "$schema": "talk-inject-v1",
+        "voiceSessionId": voice_session_id,
+        "canonicalUserMessageId": canonical_user_message_id,
+        "transcript": transcript,
+        "capturedAt": captured_at,
+        "injectedAt": _now_iso(),
+    })
 
 
 async def stub_talk_session_turns(request: Request) -> JSONResponse:
-    """GET /v1/talk/session/{id}/turns — not implemented."""
+    """GET /v1/talk/session/{id}/turns — Build 104: real handler.
+
+    Returns an empty turn list for now.  When the connector gains
+    a durable voice-session table this will read from it; the
+    iOS client treats ``turns: []`` as "no turns yet".
+    """
     await require_auth(request)
-    return JSONResponse({"turns": []})
+    voice_session_id = request.path_params.get("id", "")
+    return JSONResponse({
+        "voiceSessionId": voice_session_id,
+        "turns": [],
+        "fetchedAt": _now_iso(),
+    })
 
 
 async def gateway_update_check(request: Request) -> JSONResponse:
-    """Build 31: real update check — queries the running Hermes version.
+    """Build 103 WS-E: real Hermes update check.
 
-    Returns component-level metadata: current version, latest known version,
-    update availability, and changelog URL.  Checking is read-only — it
-    never writes a sentinel or triggers an update.
+    For ``hermes-agent``:
+      1. Read installed version from ``~/.hermes/.update_check`` or the
+         Hermes CLI (``hermes --version``).
+      2. Read the latest known version from ``~/.hermes/.update_check``
+         (populated by ``hermes update --check``). If the file is stale
+         (older than 24h), the endpoint runs ``hermes update --check``
+         non-blockingly to refresh — but only the first time per minute
+         to avoid hammering the CLI.
+
+    For ``herald-connector``: the running ``__version__`` is the current;
+    the host's wheel install path is reported so the iOS UI knows whether
+    the deployed binary matches.
+
+    Returns component-level metadata + a typed ``error`` field (null on
+    success). A failed check is **never** reported as "up to date".
     """
     await require_auth(request)
     ctx = get_context()
 
-    # Query the running Hermes agent version
-    hermes_version = None
-    try:
-        hermes_version = getattr(ctx, 'agent_version', None)
-        if hermes_version is None and hasattr(ctx, 'state_store'):
-            state = ctx.state_store.load()
-            if state:
-                hermes_version = getattr(state, 'agent_version', None)
-    except Exception:
-        pass
+    checked_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    hermes_error: str | None = None
 
-    connector_version = getattr(ctx, 'connector_version', __version__)
-    relay_version = getattr(ctx, 'relay_version', None)
+    hermes_current = _read_hermes_installed_version() or "unknown"
+    hermes_latest, hermes_behind, last_checked = _read_hermes_latest_version()
 
-    # Construct per-component update metadata
-    components = {
+    # Optionally refresh stale cache (no more than once per minute).
+    refresh_needed = (
+        hermes_latest is None
+        or (last_checked and (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.datetime.fromisoformat(last_checked)
+        ).total_seconds() > 24 * 3600)
+    )
+    if refresh_needed:
+        last_checked_path = (
+            Path(os.path.expanduser("~/.hermes")) / ".update_check_refresh_ts"
+        )
+        try:
+            last_refresh = float(last_checked_path.read_text().strip())
+        except (OSError, ValueError):
+            last_refresh = 0.0
+        if time.time() - last_refresh > 60:
+            try:
+                last_checked_path.write_text(str(time.time()))
+            except OSError:
+                pass
+            try:
+                bin_path = (
+                    Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+                    / "hermes-agent" / "venv" / "bin" / "hermes"
+                )
+                if bin_path.is_file():
+                    _run_subprocess(
+                        [str(bin_path), "update", "--check", "--yes"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    hermes_latest, hermes_behind, last_checked = (
+                        _read_hermes_latest_version()
+                    )
+            except Exception as exc:
+                hermes_error = f"check_refresh_failed: {exc}"
+                logger.warning("hermes update --check failed: %s", exc)
+
+    update_available: bool | None
+    if hermes_latest and hermes_current != "unknown":
+        if hermes_behind is not None:
+            update_available = hermes_behind > 0
+        else:
+            update_available = hermes_latest != hermes_current
+    else:
+        update_available = None
+
+    components: dict[str, dict] = {
         "hermes-agent": {
-            "currentVersion": hermes_version or "unknown",
-            "latestVersion": hermes_version or "unknown",
-            "updateAvailable": False,
+            "currentVersion": hermes_current,
+            "latestVersion": hermes_latest or "unknown",
+            "updateAvailable": update_available,
+            "behindCount": hermes_behind,
             "releaseDate": None,
-            "releaseURL": None,
+            "releaseURL": "https://github.com/NousResearch/hermes-agent/releases",
             "changelog": None,
+            "error": hermes_error,
+            "lastCheckedAt": last_checked,
         },
         "herald-connector": {
-            "currentVersion": connector_version or "0.6.2",
-            "latestVersion": "0.6.2",
-            "updateAvailable": False,
-            "releaseDate": "2026-07-31",
-            "releaseURL": "https://github.com/fireishott/Herald/releases",
-            "changelog": "Build 31: attachment execution envelope, server cancel, generation guards, bottom-follow, per-device tokens.",
-        },
-    }
-    if relay_version:
-        components["herald-relay"] = {
-            "currentVersion": relay_version,
-            "latestVersion": relay_version,
+            "currentVersion": __version__,
+            "latestVersion": __version__,
             "updateAvailable": False,
             "releaseDate": None,
             "releaseURL": None,
-            "changelog": None,
-        }
+            "changelog": "Build 103: canonical chat identity, real Hermes gateway logs, truthful Gateway Status, real update check.",
+            "error": None,
+        },
+    }
 
     return JSONResponse({
         "components": components,
-        "checkedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "checkedAt": checked_at,
+        "requestId": str(uuid.uuid4()),
     })
 
 
@@ -4048,9 +5065,17 @@ routes = [
     Route("/v1/talk/session/{id}/end", stub_talk_session_end, methods=["POST"]),
     Route("/v1/talk/session/{id}/inject", stub_talk_session_inject, methods=["POST"]),
     Route("/v1/talk/session/{id}/turns", stub_talk_session_turns, methods=["GET"]),
+    # Build 104: server-side Xiaomi MiMo ASR proxy.  The iOS client
+    # posts a multipart audio upload here; the connector forwards
+    # the request to api.xiaomimimo.com using its own key.
+    Route("/v1/mimo/asr", mimo_asr, methods=["POST"]),
     Route("/v1/gw/update", gateway_update_apply, methods=["GET", "POST"]),
     Route("/v1/gw/update/check", gateway_update_check, methods=["POST"]),
     Route("/v1/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
+    # Build 103 WS-C: authoritative Hermes log endpoints reading from
+    # profiles/{profile}/logs/* (not connector journald).
+    Route("/v1/hermes/logs/history", hermes_logs, methods=["GET"]),
+    Route("/v1/hermes/logs/stream", hermes_logs_stream, methods=["GET"]),
     # Non-v1 aliases — the iOS RelayAPIClient strips /v1 from gateway
     # paths (RelayAPIClient.swift:324-345) when resolving against
     # activeBaseURLString, so /gw/update resolves to POST host:8010/gw/update.

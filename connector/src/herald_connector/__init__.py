@@ -1,5 +1,5 @@
 __all__ = ["__version__", "HERALD_PROTOCOL"]
-__version__ = "0.7.0"
+__version__ = "0.9.1"
 
 # Minimum connector version the app MUST negotiate.  The iOS app sends this
 # protocol version in every POST /v1/messages request; the connector rejects
@@ -29,4 +29,12 @@ HERALD_PROTOCOL = 5
 # 0.7.0 — 2026-08-01 Build 34: per-connection delivery-store schema validation
 #         (the empty-replacement Build 34 incident), deliveryStoreReady health
 #         probe, protocol 5.
-__version__ = "0.7.0"
+# 0.8.0 — 2026-08-01 Build 103 WS-A/C/D/E: canonical chat identity via native
+#         POST /api/sessions; real Hermes gateway logs from
+#         profiles/{profile}/logs/* (path-traversal guarded); truthful live
+#         Gateway Status with port ownership, restart count, and CPU
+#         interval-sampled telemetry; real Hermes update check via
+#         `hermes update --check`; protocol 5 (additive, backward-compatible).
+# 0.9.0 — 2026-08-01 Build 104: repair legacy canonical conversation aliases,
+# proxy MiMo ASR through the authenticated connector, and make Talk readiness
+# reject invalid upstream credentials instead of advertising a false-ready mic.

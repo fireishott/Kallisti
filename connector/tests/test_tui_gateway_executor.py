@@ -50,10 +50,10 @@ async def test_gateway_events_map_to_existing_stream_contract(monkeypatch):
     monkeypatch.setattr(executor, "_connect", connect)
     events = [event async for event in executor.stream_message(latest_user_message="Hi")]
 
-    assert [(event.type, event.data) for event in events[:2]] == [
+    assert [(event.type, event.data) for event in events[:1]] == [
         ("text_delta", "Hello"),
-        ("reasoning_delta", "thinking"),
     ]
+    assert not [event for event in events if event.type == "reasoning_delta"]
     assert events[-1].type == "finish"
     assert events[-1].session_id == "api-1"
     assert ws.closed

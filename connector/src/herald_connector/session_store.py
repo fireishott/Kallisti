@@ -6,6 +6,13 @@ open with mode=ro. Never INSERT/UPDATE/DELETE on sessions or messages.
 The gateway writes to state.db continuously — an insert from the facade
 can fail a live gateway write. Everything in this module is SELECT.
 Pin/archive/delete state lives in a connector-local JSON sidecar.
+
+NOTE (Build 103 WS-A): session *creation* IS permitted via the Hermes
+API server (``POST /api/sessions``) — that endpoint writes to the same
+state.db the gateway reads. Creation goes through Hermes' own atomic
+check-insert path so concurrent creates serialize correctly (see
+``_create_hermes_session_via_api``). Once the session exists, this
+module's read-only invariant holds.
 """
 
 from __future__ import annotations
@@ -177,6 +184,122 @@ def _app_uuid(hermes_id: str) -> str:
     no schema change, no write to state.db.
     """
     return str(uuid.uuid5(_APP_NAMESPACE, str(hermes_id)))
+
+
+def _create_hermes_session_via_api(
+    requested_id: str | None = None,
+    *,
+    title: str | None = None,
+    source: str = "api_server",
+    timeout: float = 5.0,
+) -> str | None:
+    """Create a real Hermes session by calling the Hermes API server.
+
+    Build 103 WS-A: replaces the ``/new`` + ``state.db SELECT most-recent``
+    round-trip with an authoritative atomic create. The Hermes API server's
+    ``POST /api/sessions`` (gateway/platforms/api_server.py:3051) does the
+    existence-check + insert in a single ``BEGIN IMMEDIATE`` so concurrent
+    creates for the same id serialize. The endpoint writes to the same
+    state.db the gateway reads, so the canonical session_id is observable
+    by ``_find_session_by_recent_message`` immediately on return.
+
+    Returns the created Hermes session id, or *None* if the API server was
+    unreachable, returned a non-2xx status, or the caller requested an id
+    that already exists (in which case the existing session id is returned).
+    Never raises.
+    """
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    base_url = os.getenv("HERMES_API_SERVER_URL", "http://localhost:8642")
+    api_key = os.getenv("HERMES_API_SERVER_KEY", "")
+    url = base_url.rstrip("/") + "/api/sessions"
+    payload: dict[str, Any] = {"source": source}
+    if requested_id:
+        payload["id"] = requested_id
+    if title:
+        payload["title"] = title
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}" if api_key else "",
+        },
+    )
+    deadline = _time.monotonic() + timeout
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        # 409 means the session already exists (api_server returns this on
+        # duplicate). Read the body for the existing session id.
+        if exc.code == 409:
+            try:
+                err_body = json.loads(exc.read())
+            except Exception:
+                err_body = {}
+            existing = err_body.get("session", {}).get("id") or err_body.get("id")
+            if existing:
+                logger.info("create_session_via_api: %s already exists", existing)
+                return str(existing)
+        logger.warning(
+            "create_session_via_api: HTTP %s — %s", exc.code, exc.reason
+        )
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "create_session_via_api: unreachable (%s) — falling back", exc
+        )
+        return None
+    except Exception:
+        logger.exception("create_session_via_api: unexpected error")
+        return None
+    if status not in (200, 201):
+        logger.warning("create_session_via_api: status=%s", status)
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    session = body.get("session") or body
+    sid = session.get("id")
+    if not sid:
+        return None
+    return str(sid)
+
+
+def _verify_session_in_state_db(hermes_id: str, *, deadline_seconds: float = 4.0) -> bool:
+    """Poll state.db until *hermes_id* appears in the sessions table.
+
+    Build 103 WS-A: the API server commits the row before returning 201, but
+    a read-only ``?mode=ro`` connection opened before the commit will miss
+    it until the WAL has been checkpointed. A short poll is enough to
+    observe the new row from a fresh connection without blocking the API
+    server's writer.
+    """
+    import time as _time
+    deadline = _time.monotonic() + deadline_seconds
+    while _time.monotonic() < deadline:
+        try:
+            conn = _connect()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (hermes_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is not None:
+                return True
+        except sqlite3.Error:
+            return False
+        _time.sleep(0.05)
+    return False
 
 
 def _coerce_uuid(value: Any) -> str | None:

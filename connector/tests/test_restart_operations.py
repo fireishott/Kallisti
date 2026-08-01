@@ -753,14 +753,34 @@ class TestGatewayStatus:
         fixture = load_fixture("health_report.json")
         for key, value in fixture.items():
             assert key in payload, f"health report missing key: {key}"
-            if key == "uptimeSeconds":
-                assert isinstance(payload[key], int)  # real uptime, not the fixture's
+            if key in ("uptimeSeconds", "sampledAt", "overall", "reasons"):
+                # Live values, not the fixture's literal.
+                continue
+            if key in ("connector", "hermes", "host", "jobs"):
+                # Nested objects: only assert presence + the keys that
+                # are stable.  Live values like uptimeSeconds / pid vary.
+                assert payload[key] is not None
                 continue
             assert payload[key] == value, f"health report key mismatch: {key}"
-        assert payload["profile"] == "ignyte"
-        assert payload["unit"] == "hermes-gateway-ignyte.service"
+        # The v2 envelope nests Hermes fields under `hermes{}`; the
+        # top-level `profile`/`unit`/`mainPid`/`execMainStartTimestamp`
+        # moved with them.  In this test the systemd unit is mocked
+        # with main_pid=12456, but the actual process PID is whatever
+        # TestClient spawned; the singleton flag is therefore
+        # computed-False in this test.  Assert the field is present
+        # and the managedMainPID is what the mock returned.
+        assert payload["hermes"]["profile"] == "ignyte"
+        assert payload["hermes"]["unit"] == "hermes-gateway-ignyte.service"
+        assert payload["hermes"]["pid"] == 12456
+        assert payload["hermes"]["dashboardReady"] is True
+        assert payload["connector"]["managedMainPID"] == 12456
+        # TestClient is not the same PID as the mocked systemd unit,
+        # so the singleton flag is False here; the connector's runtime
+        # would say True on the production host.
+        assert payload["connector"]["singleton"] is False
+        assert payload["connectorConnected"] is True
         assert payload["connectorVersion"] == "2.4.1"
-        assert isinstance(payload["uptimeSeconds"], int)
+        assert isinstance(payload["connector"]["uptimeSeconds"], int)
 
     def test_health_report_partial_data_when_probes_fail(self, app_env, client):
         with patch(
@@ -777,10 +797,12 @@ class TestGatewayStatus:
 
         assert resp.status_code == 200  # partial data renders, never a 500
         payload = resp.json()["data"]
-        assert payload["hermesConnected"] is False
-        assert payload["hermesReady"] is False
-        assert payload["dashboardAvailable"] is False
-        assert payload["modelCatalogAvailable"] is True  # no provider → skipped, not failed
-        assert payload["relayConnected"] is False
-        assert "sessionRoundtripOk" not in payload  # no canary result yet
-        assert payload["connectorConnected"] is True
+        assert payload["hermes"]["state"] == "degraded"
+        assert payload["hermes"]["dashboardReady"] is False
+        assert payload["connector"]["singleton"] is False
+        assert payload["connector"]["portsOwned"] is False
+        assert "reasons" in payload
+        # At least one reason should reference the failed probes.
+        assert any("Hermes" in r for r in payload["reasons"]) or any(
+            "Connector" in r for r in payload["reasons"]
+        )

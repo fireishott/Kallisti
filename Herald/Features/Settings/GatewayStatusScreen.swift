@@ -30,15 +30,12 @@ struct GatewayStatusScreen: View {
                         // System stats
                         systemStatsSection(t)
 
-                        // Active jobs
-                        let jobs = t.jobs
-                        if !jobs.isEmpty {
-                            jobsSection(jobs)
+                        if t.jobs.active > 0 || t.jobs.queued > 0 {
+                            jobsSection(t.jobs)
                         }
 
-                        // Alerts
-                        if let alerts = t.alerts, !alerts.isEmpty {
-                            alertsSection(alerts)
+                        if !t.reasons.isEmpty {
+                            reasonsSection(t.reasons)
                         }
                     }
                     .padding(.horizontal, Design.Spacing.md)
@@ -81,18 +78,18 @@ struct GatewayStatusScreen: View {
         HStack(spacing: Design.Spacing.sm) {
             statusCard(
                 label: "Relay",
-                isOnline: t.relayConnected ?? true,
-                detail: "v\(t.version ?? "?") · \(formatUptime(t.uptimeSeconds ?? 0))"
+                isOnline: t.connector.state == "healthy",
+                detail: "v\(t.connector.version) · \(formatUptime(t.connector.uptimeSeconds))"
             )
             statusCard(
                 label: "Connector",
-                isOnline: t.connectorConnected ?? false,
-                detail: t.connectorVersion ?? "—"
+                isOnline: t.connectorConnected && t.connector.singleton && t.connector.portsOwned,
+                detail: t.connector.version
             )
             statusCard(
                 label: "Hermes",
-                isOnline: t.hermesConnected ?? false,
-                detail: t.modelName ?? "—"
+                isOnline: t.hermes.state == "healthy",
+                detail: t.hermes.activeModel ?? t.hermes.installedVersion
             )
         }
     }
@@ -121,16 +118,18 @@ struct GatewayStatusScreen: View {
     private func systemStatsSection(_ t: GatewayTelemetry) -> some View {
         SettingsSectionView(title: "System") {
             VStack(spacing: 0) {
-                statRow(label: "CPU", value: String(format: "%.1f%%", t.cpuPercent ?? 0))
+                statRow(label: "CPU", value: t.host.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "Sampling…")
                 sectionDivider
-                statRow(label: "Memory", value: "\(String(format: "%.1f", t.memoryUsedGb ?? 0)) / \(String(format: "%.1f", t.memoryTotalGb ?? 0)) GB")
+                statRow(label: "Memory", value: memoryDescription(t.host))
                 sectionDivider
-                statRow(label: "Uptime", value: formatUptime(t.uptimeSeconds ?? 0))
+                statRow(label: "Uptime", value: t.host.uptimeSeconds.map(formatUptime) ?? "Unavailable")
                 sectionDivider
-                statRow(label: "Active Jobs", value: "\(t.jobCount)")
+                statRow(label: "Active Jobs", value: "\(t.jobs.active)")
                 sectionDivider
-                statRow(label: "Version", value: t.version ?? "—")
-                if let model = t.modelName {
+                statRow(label: "Connector", value: t.connector.version)
+                sectionDivider
+                statRow(label: "Hermes", value: t.hermes.installedVersion)
+                if let model = t.hermes.activeModel {
                     sectionDivider
                     statRow(label: "Model", value: model)
                 }
@@ -153,61 +152,36 @@ struct GatewayStatusScreen: View {
 
     // MARK: - Jobs
 
-    private func jobsSection(_ jobs: [GatewayJobInfo]) -> some View {
-        SettingsSectionView(title: "Active Jobs (\(jobs.count))") {
+    private func jobsSection(_ jobs: GatewayTelemetry.Jobs) -> some View {
+        SettingsSectionView(title: "Jobs") {
             VStack(spacing: 0) {
-                ForEach(jobs.indices, id: \.self) { i in
-                    let job = jobs[i]
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(job.id.prefix(8))
-                                .font(.caption.monospaced())
-                                .foregroundStyle(Design.Colors.foreground)
-                            if let model = job.model {
-                                Text(model)
-                                    .font(.caption2)
-                                    .foregroundStyle(Design.Colors.secondaryForeground)
-                            }
-                        }
-                        Spacer()
-                        Text(job.status.capitalized)
-                            .font(Design.Typography.caption)
-                            .foregroundStyle(job.status == "running" ? Design.Colors.success : Design.Colors.secondaryForeground)
-                    }
-                    .frame(minHeight: Design.Size.minTapTarget)
-
-                    if i < jobs.count - 1 {
-                        sectionDivider
-                    }
-                }
+                statRow(label: "Active", value: "\(jobs.active)")
+                sectionDivider
+                statRow(label: "Queued", value: "\(jobs.queued)")
             }
         }
     }
 
     // MARK: - Alerts
 
-    private func alertsSection(_ alerts: [GatewayAlert]) -> some View {
-        SettingsSectionView(title: "Alerts (\(alerts.count))") {
+    private func reasonsSection(_ reasons: [String]) -> some View {
+        SettingsSectionView(title: "Host Warnings") {
             VStack(spacing: 0) {
-                ForEach(alerts.indices, id: \.self) { i in
-                    let alert = alerts[i]
+                ForEach(reasons.indices, id: \.self) { i in
                     HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: alert.severity == "critical" ? "xmark.octagon" : "exclamationmark.triangle")
+                        Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 12))
-                            .foregroundStyle(alert.severity == "critical" ? Design.Colors.danger : Design.Colors.warning)
+                            .foregroundStyle(Design.Colors.warning)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(alert.message)
+                            Text(reasons[i])
                                 .font(Design.Typography.caption)
                                 .foregroundStyle(Design.Colors.foreground)
-                            Text(alert.timestamp, style: .relative)
-                                .font(.caption2)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
                         }
                     }
                     .frame(minHeight: Design.Size.minTapTarget)
 
-                    if i < alerts.count - 1 {
+                    if i < reasons.count - 1 {
                         sectionDivider
                     }
                 }
@@ -280,15 +254,15 @@ struct GatewayStatusScreen: View {
 
             // Update shared state for Control Center
             GatewayState.shared.update(
-                connected: response.data.relayConnected ?? true,
-                activeJobs: response.data.jobCount,
-                model: response.data.modelName,
-                version: response.data.version,
-                uptimeSeconds: response.data.uptimeSeconds,
-                cpuPercent: response.data.cpuPercent,
-                memoryUsedGb: response.data.memoryUsedGb,
-                memoryTotalGb: response.data.memoryTotalGb,
-                alertCount: response.data.alerts?.count
+                connected: response.data.overall == "healthy",
+                activeJobs: response.data.jobs.active,
+                model: response.data.hermes.activeModel,
+                version: response.data.connector.version,
+                uptimeSeconds: response.data.host.uptimeSeconds,
+                cpuPercent: response.data.host.cpuPercent,
+                memoryUsedGb: response.data.host.memoryUsedBytes.map { Double($0) / 1_073_741_824 },
+                memoryTotalGb: response.data.host.memoryTotalBytes.map { Double($0) / 1_073_741_824 },
+                alertCount: response.data.reasons.count
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -312,37 +286,47 @@ struct GatewayStatusScreen: View {
         }
         return "\(hours)h \(minutes)m"
     }
+
+    private func memoryDescription(_ host: GatewayTelemetry.Host) -> String {
+        guard let used = host.memoryUsedBytes, let total = host.memoryTotalBytes else {
+            return "Unavailable"
+        }
+        return String(format: "%.1f / %.1f GB", Double(used) / 1_073_741_824, Double(total) / 1_073_741_824)
+    }
 }
 
 // MARK: - Models
 
 struct GatewayTelemetry: Decodable {
-    let relayConnected: Bool?
-    let connectorConnected: Bool?
-    let hermesConnected: Bool?
-    let version: String?
-    let connectorVersion: String?
-    let uptimeSeconds: Int?
-    let activeJobs: Int?
-    let modelName: String?
-    let cpuPercent: Double?
-    let memoryUsedGb: Double?
-    let memoryTotalGb: Double?
-    let activeJobsList: [GatewayJobInfo]?
-    let alerts: [GatewayAlert]?
+    struct Connector: Decodable {
+        let state: String
+        let version: String
+        let uptimeSeconds: Int
+        let singleton: Bool
+        let portsOwned: Bool
+    }
+    struct Hermes: Decodable {
+        let state: String
+        let installedVersion: String
+        let activeModel: String?
+    }
+    struct Host: Decodable {
+        let cpuPercent: Double?
+        let cpuSampleReady: Bool
+        let memoryTotalBytes: Int64?
+        let memoryUsedBytes: Int64?
+        let uptimeSeconds: Int?
+    }
+    struct Jobs: Decodable {
+        let active: Int
+        let queued: Int
+    }
 
-    var jobs: [GatewayJobInfo] { activeJobsList ?? [] }
-    var jobCount: Int { activeJobs ?? activeJobsList?.count ?? 0 }
-}
-
-struct GatewayJobInfo: Decodable {
-    let id: String
-    let status: String
-    let model: String?
-}
-
-struct GatewayAlert: Decodable {
-    let message: String
-    let severity: String
-    let timestamp: Date
+    let overall: String
+    let connectorConnected: Bool
+    let connector: Connector
+    let hermes: Hermes
+    let host: Host
+    let jobs: Jobs
+    let reasons: [String]
 }

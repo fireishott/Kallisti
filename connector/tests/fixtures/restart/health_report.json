@@ -1,16 +1,53 @@
 {
-  "$schema": "gateway-health-v1",
-  "relayConnected": true,
+  "$schema": "gateway-health-v2",
+  "schemaVersion": 2,
+  "sampledAt": "2026-07-31T19:30:10Z",
+  "sampleIntervalSeconds": 2.0,
+  "staleAfterSeconds": 8.0,
+  "overall": "healthy",
   "connectorConnected": true,
-  "hermesConnected": true,
-  "hermesReady": true,
-  "dashboardAvailable": true,
-  "modelCatalogAvailable": true,
-  "sessionRoundtripOk": true,
-  "profile": "ignyte",
-  "unit": "hermes-gateway-ignyte.service",
-  "mainPid": 12456,
-  "execMainStartTimestamp": "2026-07-31T19:30:10Z",
   "connectorVersion": "2.4.1",
-  "uptimeSeconds": 3600
+  "connector": {
+    "state": "healthy",
+    "version": "2.4.1",
+    "protocolVersion": 5,
+    "pid": 12456,
+    "managedMainPID": 12456,
+    "uptimeSeconds": 3600,
+    "restartCount": 0,
+    "singleton": true,
+    "portsOwned": true,
+    "unit": "hermes-mobile-connector.service"
+  },
+  "hermes": {
+    "state": "healthy",
+    "installedVersion": "0.19.1",
+    "latestVersion": "0.19.1",
+    "updateAvailable": false,
+    "pid": 12456,
+    "uptimeSeconds": 3600,
+    "dashboardReady": true,
+    "dashboardPort": 9119,
+    "hostWebSocketReady": true,
+    "activeModel": "mimo-v2.5",
+    "profile": "ignyte",
+    "unit": "hermes-gateway-ignyte.service",
+    "restartCount": 0,
+    "behindCount": 0
+  },
+  "host": {
+    "memoryTotalBytes": 32784490496,
+    "memoryUsedBytes": 27208273920,
+    "uptimeSeconds": 2635951,
+    "loadAverage1m": 1.39,
+    "cpuPercent": 2.91,
+    "cpuSampleIntervalSeconds": 2.0,
+    "cpuSampleReady": true
+  },
+  "jobs": {
+    "active": 0,
+    "queued": 0,
+    "source": "facade-http-jobs"
+  },
+  "reasons": []
 }

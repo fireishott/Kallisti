@@ -441,16 +441,61 @@ final class AppContainer {
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
-                // P1-3: gate Talk on server-side readiness.  The realtime
-                // Talk backend is a B38 project; until then the readiness
-                // provider is left nil so only local preconditions
-                // (coordinator + API key) gate the session.
-                // When B38 lands, wire this to call GET /v1/talk/readiness.
+                // Build 104: gate Talk on server-side readiness AND
+                // proxy the ASR through the connector's /v1/mimo/asr
+                // (the connector owns the Xiaomi key; iOS no longer
+                // calls api.xiaomimimo.com directly).
+                ts.talkReadinessProvider = { [sessionStore] in
+                    let base = settingsStore.settings.relayConfiguration.activeBaseURLString
+                        ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                    guard let base, URL(string: base) != nil else {
+                        return (ready: false, blockedReason: "No relay configured.")
+                    }
+                    let token = await sessionStore.currentAccessToken()
+                    let client = RelayAPIClient { base }
+                    struct Readiness: Decodable {
+                        let ready: Bool
+                        let hostOnline: Bool?
+                        let configured: Bool?
+                        let blockedReason: String?
+                        let selectedModel: String?
+                    }
+                    struct Response: Decodable { let data: Readiness }
+                    do {
+                        let resp: Response = try await client.get(
+                            path: "talk/readiness", accessToken: token
+                        )
+                        return (
+                            ready: resp.data.ready,
+                            blockedReason: resp.data.blockedReason
+                                ?? (resp.data.ready ? nil : "Realtime Talk is not ready on the host.")
+                        )
+                    } catch {
+                        return (
+                            ready: false,
+                            blockedReason: "Talk readiness check failed: \(error.localizedDescription)"
+                        )
+                    }
+                }
 
                 // Wire the full Talk pipeline when not in UI-test mock mode
                 if !usesMockPairingService {
                     let capture = TalkAudioCapture()
-                    let asr = MimoASRService(apiKeyProvider: { apiKeyHolder.get() })
+                    let asr = MimoASRService(
+                        apiKeyProvider: { apiKeyHolder.get() },
+                        relayBaseURLProvider: {
+                            guard let baseURLString =
+                                settingsStore.settings.relayConfiguration.activeBaseURLString
+                                ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
+                            else {
+                                return nil
+                            }
+                            return URL(string: baseURLString)
+                        },
+                        accessTokenProvider: { [sessionStore] in
+                            await sessionStore.currentAccessToken()
+                        },
+                    )
                     let playback = PCMPlaybackQueue()
                     let turnClient = TalkTurnClient(heraldClient: heraldClient)
                     let conversationId = UUID()
