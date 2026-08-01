@@ -9,8 +9,39 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let conversation: RelayConversation
     }
 
+    /// Build 34 Workstream K: the server-side reply-state machine replaces the
+    /// old `replyState != "pending"` heuristic.  The connector returns one of:
+    ///
+    ///   * `.pending`     — job accepted, stream/poll for completion
+    ///   * `.complete`    — synchronous terminal response, render `message`
+    ///   * `.duplicate`   — a prior request with this clientMessageId was
+    ///                       already accepted; `existingState` + `jobId` carry
+    ///                       the durable identity.  Reattach to the same job;
+    ///                       NEVER render a synthetic "Herald did not return
+    ///                       a message" row.
+    ///   * `.conflict`    — same clientMessageId with different content;
+    ///                       permanent typed error.
+    ///   * `.error`       — terminal failure with a typed category.
+    enum ReplyState: String, Decodable {
+        case pending
+        case complete
+        case duplicate
+        case conflict
+        case error
+    }
+
+    /// Build 34 Workstream K: typed existing job state returned alongside a
+    /// `.duplicate` acknowledgement.
+    enum ExistingJobState: String, Decodable {
+        case accepted
+        case running
+        case terminal
+    }
+
     private struct MessageResponse: Decodable {
-        let replyState: String
+        let replyState: ReplyState
+        let existingState: ExistingJobState?
+        let errorCategory: String?
         let conversation: RelayConversation
         let userMessage: RelayMessage?
         let message: RelayMessage?
@@ -20,14 +51,20 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let diff: CodeDiff?
 
         enum CodingKeys: String, CodingKey {
-            case replyState, conversation, userMessage, message
+            case replyState, existingState, errorCategory
+            case conversation, userMessage, message
             case jobId, usage, context, diff
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            // replyState defaults to "complete" if missing (non-pending = sync path)
-            replyState = (try? container.decode(String.self, forKey: .replyState)) ?? "complete"
+            // replyState is required and typed.  Treat a missing or unknown
+            // value as `.complete` for backward compatibility with very old
+            // connectors, but `.duplicate`/`.conflict` MUST be parseable
+            // here or the bug recurs.
+            replyState = (try? container.decode(ReplyState.self, forKey: .replyState)) ?? .complete
+            existingState = try? container.decodeIfPresent(ExistingJobState.self, forKey: .existingState) ?? nil
+            errorCategory = try? container.decodeIfPresent(String.self, forKey: .errorCategory) ?? nil
             // conversation is required — without it we can't maintain state
             conversation = try container.decode(RelayConversation.self, forKey: .conversation)
             // All other fields are optional and resilient to decode failures
@@ -146,12 +183,17 @@ final class LiveHeraldClient: HeraldClientProtocol {
     }
 
     private struct MessageCreateBody: Encodable {
-        let heraldProtocol: Int = 4           // Build 31: attachment envelope, durable idempotency, per-device tokens
+        let heraldProtocol: Int = 5           // Build 34: schema validation, health probe, protocol 5
         let conversationId: UUID?
         let text: String
         let clientMessageId: UUID
         let attachments: [AttachmentPayload]?
         let reasoningEffort: String?
+        /// Build 31 (fix): retry continuation context.  When present, the connector
+        /// prepends this to the Hermes input so the model resumes from the cut-off
+        /// point, but stores only `cleanText` (the original user prompt) in the
+        /// canonical user message.  Never displayed in transcripts or notifications.
+        let continuationContext: String?
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -195,12 +237,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
         connectionStatus = .disconnected
     }
 
-    func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+    func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
         do {
             let body = try self.makeCreateBody(
                 text: message,
                 attachments: attachments,
-                clientMessageID: clientMessageID
+                clientMessageID: clientMessageID,
+                continuationContext: continuationContext
             )
             let response: MessageResponse = try await performAuthorizedRequest { [self] token in
                 try await self.apiClient.post(
@@ -221,7 +264,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             }
 
             // Build 28: If job is pending, poll until complete
-            if response.replyState == "pending", let jobId = response.jobId {
+            if response.replyState == .pending, let jobId = response.jobId {
                 return await pollForJobCompletion(jobId: jobId)
             }
 
@@ -274,7 +317,51 @@ final class LiveHeraldClient: HeraldClientProtocol {
         return Message(sender: .system, content: "Request timed out.", status: .failed)
     }
 
-    func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+    /// Build 34 Workstream K: handle the `.complete` reply state — a true
+    /// synchronous terminal response.  The connector returned a final
+    /// assistant message in the same POST; we render it once with the
+    /// standard defense-in-depth reasoning strip.
+    private func handleCompleteReply(
+        _ response: MessageResponse,
+        continuation: AsyncStream<StreamingUpdate>.Continuation,
+        content: String
+    ) {
+        let mappedMsg: Message
+        if let msg = response.message {
+            mappedMsg = self.mapMessage(msg)
+        } else if let userMsg = response.userMessage {
+            // Defensive: a `.complete` response that lacks a `message` is
+            // unusual but should not produce the old "Herald did not return
+            // a message" synthetic row.  Render the user message as a
+            // sent receipt instead — the connector will surface the real
+            // terminal assistant row through the conversation fetch.
+            mappedMsg = self.mapMessage(userMsg)
+        } else {
+            mappedMsg = Message(sender: .user, content: content, status: .sent)
+        }
+
+        // Emit a synthetic messageSent so the Live Activity starts.
+        // (The assistant row is already terminal so no streaming state
+        // needs to track it — but Live Activity / haptic come from
+        // messageSent.)
+        let syntheticJobID = response.jobId ?? UUID()
+        continuation.yield(.messageSent(jobID: syntheticJobID))
+
+        // Sanitize any residual reasoning blocks (defense in depth).
+        let fullText = mappedMsg.content
+        let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
+
+        var finalMsg = mappedMsg
+        if !reasoning.isEmpty {
+            finalMsg.reasoning = reasoning
+            finalMsg.reasoningDuration = 0
+        }
+        finalMsg.content = visibleText
+        continuation.yield(.finished(finalMsg, response.usage, response.diff, response.context))
+        continuation.finish()
+    }
+
+    func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             Task { @MainActor [weak self] in
                 guard let self else {
@@ -287,7 +374,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     let body = try self.makeCreateBody(
                         text: content,
                         attachments: attachments,
-                        clientMessageID: clientMessageID
+                        clientMessageID: clientMessageID,
+                        continuationContext: continuationContext
                     )
                     let response: MessageResponse = try await self.performAuthorizedRequest { [self] token in
                         try await self.apiClient.post(
@@ -316,40 +404,52 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     }
                     self.connectionStatus = .connected
 
-                    Self.logger.info("POST /messages replyState: \(response.replyState)")
+                    Self.logger.info("POST /messages replyState: \(response.replyState.rawValue) existingState: \(response.existingState?.rawValue ?? "nil") jobId: \(response.jobId?.uuidString ?? "nil")")
 
-                    // Build 28: Synchronous reply — emit the complete message
-                    // once without client-side word splitting. The relay already
-                    // sanitized reasoning; client-side splitThinkingBlocks is
-                    // a safety net only.
-                    if response.replyState != "pending" {
-                        let mappedMsg: Message
-                        if let msg = response.message {
-                            mappedMsg = self.mapMessage(msg)
+                    // Build 34 Workstream K: tagged state machine, NOT a
+                    // `replyState != "pending"` heuristic.  The old check
+                    // emitted a synthetic "Herald did not return a message"
+                    // row for the .duplicate case (10:22→10:31 incident)
+                    // because the duplicate-running response has no `message`.
+                    switch response.replyState {
+                    case .pending:
+                        break // fall through to jobId / poll path below
+                    case .complete:
+                        self.handleCompleteReply(response, continuation: continuation, content: content)
+                        return
+                    case .duplicate:
+                        // The connector reuses the durable request by
+                        // clientMessageId.  Reattach to the existing job;
+                        // never allocate a synthetic user row, thinking row,
+                        // haptic, notification, or "Herald did not return
+                        // a message" control row.
+                        if let jobId = response.jobId {
+                            Self.logger.info("Reattaching to duplicate job \(jobId.uuidString.prefix(8)) (existingState=\(response.existingState?.rawValue ?? "nil"))")
+                            continuation.yield(.messageSent(jobID: jobId))
+                            // Continue to the poll/stream path below so the
+                            // assistant placeholder ties to the original job.
+                            // We deliberately do NOT yield .finished here —
+                            // the original job will deliver its own terminal
+                            // event through the SSE/poll/foreground channel.
                         } else {
-                            continuation.yield(.finished(
-                                Message(sender: .system, content: "Herald did not return a message.", status: .failed),
-                                nil, nil, nil
-                            ))
-                            continuation.finish()
-                            return
+                            // Duplicate without a jobId: query the durable
+                            // request status to recover the server lease,
+                            // then resume.  Until we can recover the job,
+                            // hold the optimistic user row open — do not
+                            // emit a terminal synthetic message.
+                            Self.logger.warning("Duplicate ack with no jobId — waiting for durable request status to surface a jobId")
                         }
-
-                        // Emit a synthetic messageSent so the Live Activity starts
-                        let syntheticJobID = UUID()
-                        continuation.yield(.messageSent(jobID: syntheticJobID))
-
-                        // Sanitize any residual reasoning blocks (defense in depth)
-                        let fullText = mappedMsg.content
-                        let (reasoning, visibleText) = Self.splitThinkingBlocks(fullText)
-
-                        var finalMsg = mappedMsg
-                        if !reasoning.isEmpty {
-                            finalMsg.reasoning = reasoning
-                            finalMsg.reasoningDuration = 0
-                        }
-                        finalMsg.content = visibleText
-                        continuation.yield(.finished(finalMsg, response.usage, response.diff, response.context))
+                        // Fall through to the post-pending path that begins
+                        // a stream/poll on whatever jobId we have.
+                        // (No return.)
+                    case .conflict:
+                        let category = response.errorCategory ?? "request_conflict"
+                        continuation.yield(.failed("Same message id was reused with different content (\(category)). Please send a new message."))
+                        continuation.finish()
+                        return
+                    case .error:
+                        let category = response.errorCategory ?? "server_error"
+                        continuation.yield(.failed("Server error: \(category). Please try again."))
                         continuation.finish()
                         return
                     }
@@ -513,7 +613,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
     /// Without this, the first message's conversationId is a random UUID with
     /// no server session behind it, and the connector falls through to its
     /// process-wide singleton.
-    func ensureConversation(id: UUID) async {
+    ///
+    /// - Returns: `true` if the server session was created or already existed.
+    ///   `false` means the session could not be established — the caller must
+    ///   not proceed with message submission.
+    func ensureConversation(id: UUID) async -> Bool {
         struct EnsureResponse: Decodable {
             let conversationId: String?
             let sessionId: String?
@@ -531,9 +635,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     accessToken: token
                 )
             }
-            Self.logger.info("ensureConversation: sessionId=\(response.sessionId ?? "pending"), created=\(response.created ?? false)")
+            let hasSession = response.sessionId != nil
+            Self.logger.info("ensureConversation: sessionId=\(response.sessionId ?? "none"), created=\(response.created ?? false), success=\(hasSession)")
+            return hasSession
         } catch {
-            Self.logger.warning("ensureConversation failed: \(error.localizedDescription) — session will be created on first message")
+            Self.logger.error("ensureConversation failed: \(error.localizedDescription) — first message will be blocked")
+            return false
         }
     }
 
@@ -595,7 +702,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
     private func makeCreateBody(
         text: String,
         attachments: [PendingAttachment],
-        clientMessageID: UUID
+        clientMessageID: UUID,
+        continuationContext: String? = nil
     ) throws -> MessageCreateBody {
         let payloads: [AttachmentPayload]? = attachments.isEmpty ? nil : attachments.map { att in
             AttachmentPayload(
@@ -624,7 +732,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             text: text,
             clientMessageId: clientMessageID,
             attachments: payloads,
-            reasoningEffort: effort?.rawValue
+            reasoningEffort: effort?.rawValue,
+            continuationContext: continuationContext
         )
         try validateRequestBodySize(for: body)
         return body
@@ -845,6 +954,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
     }
 
     private func failureMessage(for error: Error) -> String {
+        // Build 32: protocol mismatch gets a clean compatibility message.
+        // The raw JSON dict must never appear in the transcript.
+        if let clientError = error as? RelayAPIClient.ClientError,
+           let mismatch = clientError.protocolMismatchInfo {
+            return "Connector update required — this build needs protocol \(mismatch.required) but the host is running protocol \(mismatch.client). Update the Herald connector on your host to continue."
+        }
+
         let rawError: String
         if let clientError = error as? RelayAPIClient.ClientError {
             rawError = clientError.errorDescription ?? error.localizedDescription
@@ -1124,7 +1240,8 @@ extension LiveHeraldClient {
             text: text,
             clientMessageId: clientMessageID,
             attachments: nil,
-            reasoningEffort: effort?.rawValue
+            reasoningEffort: effort?.rawValue,
+            continuationContext: nil
         )
         struct MessageResponse: Decodable {
             let message: RelayMessage?
