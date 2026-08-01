@@ -38,8 +38,8 @@ logger = logging.getLogger("herald.mimo_proxy")
 # Xiaomi's published MiMo V2.5 base URL. Override via env for tests.
 DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com"
 
-# Where the key is read from. The file is mode 0600; the connector
-# service runs as the user that owns it.
+# Optional fallback for headless clients. Paired iOS devices supply their
+# Keychain-held key per request; this file is never required for them.
 DEFAULT_MIMO_ENV_PATH = ".config/herald-mimo.env"
 
 # Streaming chunk target size for NDJSON output. Apple apps expect
@@ -255,17 +255,18 @@ async def transcribe_audio(
     mime_type: str = "audio/wav",
     language: str = "auto",
     model: str = "mimo-v2.5-asr",
+    request_api_key: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream NDJSON ASR events for the supplied audio.
 
     The iOS client is the canonical consumer.  Tests may
     iterate the result directly.
     """
-    api_key = _load_mimo_api_key()
+    api_key = request_api_key or _load_mimo_api_key()
     if not api_key:
         raise MimoProxyError(
             "mimoNotConfigured",
-            "MiMo API key is not configured on the connector host.",
+            "MiMo API key is not configured on this device or connector host.",
             status_code=503,
         )
     if len(audio_bytes) < _MIN_WAV_BYTES:
@@ -308,15 +309,17 @@ async def transcribe_audio(
     )
 
 
-async def probe_upstream_reachable() -> tuple[bool, str]:
+async def probe_upstream_reachable(
+    request_api_key: str | None = None,
+) -> tuple[bool, str]:
     """Return ``(ok, reason)`` for the readiness probe.
 
     Called by ``/v1/talk/readiness``.  Cheap: one HEAD request with
     a 5 s timeout.  Never raises.
     """
-    api_key = _load_mimo_api_key()
+    api_key = request_api_key or _load_mimo_api_key()
     if not api_key:
-        return False, "MiMo API key not configured on the connector host."
+        return False, "MiMo API key not configured on this device or connector host."
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.request(

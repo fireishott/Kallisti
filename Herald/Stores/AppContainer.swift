@@ -441,10 +441,9 @@ final class AppContainer {
                 ts.ttsService = tts
                 ts.ttsSettingsProvider = { let s = settingsStore.settings; return (enabled: s.ttsEnabled, voice: s.ttsVoice, autoSpeak: s.ttsAutoSpeak, autoSpeakDuringStreaming: s.ttsAutoSpeakDuringStreaming, appleVoiceIdentifier: s.ttsAppleVoiceIdentifier) }
                 ts.apiKeyHolder = apiKeyHolder
-                // Build 104: gate Talk on server-side readiness AND
-                // proxy the ASR through the connector's /v1/mimo/asr
-                // (the connector owns the Xiaomi key; iOS no longer
-                // calls api.xiaomimimo.com directly).
+                // Gate Talk on connector-side readiness. The MiMo key remains
+                // in this device's Keychain and is supplied only in the
+                // authenticated readiness/ASR request.
                 ts.talkReadinessProvider = { [sessionStore] in
                     let base = settingsStore.settings.relayConfiguration.activeBaseURLString
                         ?? activePairingStore?.pairedRelayConfiguration?.baseURLString
@@ -452,7 +451,12 @@ final class AppContainer {
                         return (ready: false, blockedReason: "No relay configured.")
                     }
                     let token = await sessionStore.currentAccessToken()
-                    let client = RelayAPIClient { base }
+                    guard let apiKey = apiKeyHolder.get(), !apiKey.isEmpty else {
+                        return (ready: false, blockedReason: "Mimo API key required — add it in Settings → Voice")
+                    }
+                    guard let url = URL(string: base)?.appendingPathComponent("talk/readiness") else {
+                        return (ready: false, blockedReason: "Invalid relay URL.")
+                    }
                     struct Readiness: Decodable {
                         let ready: Bool
                         let hostOnline: Bool?
@@ -460,11 +464,18 @@ final class AppContainer {
                         let blockedReason: String?
                         let selectedModel: String?
                     }
-                    struct Response: Decodable { let data: Readiness }
                     do {
-                        let resp: Response = try await client.get(
-                            path: "talk/readiness", accessToken: token
-                        )
+                        var request = URLRequest(url: url)
+                        request.httpMethod = "GET"
+                        request.setValue("Bearer \(token ?? "")", forHTTPHeaderField: "Authorization")
+                        request.setValue(apiKey, forHTTPHeaderField: "X-Herald-MiMo-API-Key")
+                        let (data, response) = try await URLSession.shared.data(for: request)
+                        guard let http = response as? HTTPURLResponse,
+                              (200..<300).contains(http.statusCode) else {
+                            return (ready: false, blockedReason: "Talk readiness request failed.")
+                        }
+                        struct Response: Decodable { let data: Readiness }
+                        let resp = try JSONDecoder().decode(Response.self, from: data)
                         return (
                             ready: resp.data.ready,
                             blockedReason: resp.data.blockedReason

@@ -4387,19 +4387,21 @@ async def stub_note_runs_events(request: Request) -> JSONResponse:
 async def stub_talk_readiness(request: Request) -> JSONResponse:
     """GET /v1/talk/readiness — Build 104: real readiness probe.
 
-    Reads the MiMo API key from the connector's env file and pings
-    Xiaomi's `/v1/models` endpoint to confirm the upstream is
-    reachable.  Also checks the Hermes gateway state.  Returns
+    Uses the paired phone's Keychain-held MiMo key when supplied in the
+    authenticated request header (with an optional host-key fallback) and
+    pings Xiaomi's `/v1/models` endpoint. Also checks Hermes liveness. Returns
     `ready: true` only when all three preconditions hold:
 
-    1. The MiMo API key is on disk in `~/.config/herald-mimo.env`.
+    1. A MiMo API key is supplied by the authenticated device or configured
+       for a headless connector client.
     2. The Xiaomi upstream answered (any HTTP code, including
        401/404, is "reachable enough"; only network errors fail it).
     3. The Hermes gateway is active (per the live systemd unit).
     """
     await require_auth(request)
     from .mimo_proxy import probe_upstream_reachable
-    upstream_ok, upstream_reason = await probe_upstream_reachable()
+    request_api_key = request.headers.get("X-Herald-MiMo-API-Key", "").strip() or None
+    upstream_ok, upstream_reason = await probe_upstream_reachable(request_api_key)
     # Hermes liveness
     hermes_unit = _hermes_unit()
     hermes_observed = await asyncio.to_thread(
@@ -4443,8 +4445,8 @@ async def mimo_asr(request: Request) -> Response:
     plus form fields ``model`` and ``language``.  Streams NDJSON
     ``{"type":"delta|final","text":…}`` back to the client.
 
-    The connector owns the Xiaomi API key; the iOS request never
-    sees it.
+    The paired iOS device supplies its Keychain-held Xiaomi key in an
+    authenticated request header. It is used only for this upstream call.
     """
     await require_auth(request)
     from .mimo_proxy import (
@@ -4470,6 +4472,7 @@ async def mimo_asr(request: Request) -> Response:
     stream = str(form.get("stream") or "true").lower() in (
         "1", "true", "yes", "on",
     )
+    request_api_key = request.headers.get("X-Herald-MiMo-API-Key", "").strip() or None
 
     async def _event_stream() -> AsyncIterator[bytes]:
         try:
@@ -4478,6 +4481,7 @@ async def mimo_asr(request: Request) -> Response:
                 mime_type=mime_type,
                 language=language,
                 model=model,
+                request_api_key=request_api_key,
             ):
                 yield (json.dumps(event) + "\n").encode("utf-8")
         except MimoProxyError as exc:
@@ -4506,6 +4510,7 @@ async def mimo_asr(request: Request) -> Response:
             mime_type=mime_type,
             language=language,
             model=model,
+            request_api_key=request_api_key,
         ):
             if event.get("type") == "delta" and event.get("text"):
                 text_parts.append(event["text"])

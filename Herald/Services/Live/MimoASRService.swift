@@ -27,11 +27,14 @@ final class MimoASRService: SpeechRecognizing {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    // Build 104: iOS posts to the connector's MiMo proxy
-                    // at /v1/mimo/asr.  The connector owns the Xiaomi
-                    // API key; iOS only needs an authenticated session.
+                    // The MiMo key remains in this device's Keychain. It is
+                    // sent only in the authenticated proxy request and is
+                    // never persisted or logged by the connector.
                     guard let relayBase = self.relayBaseURLProvider() else {
                         throw ASRError.noRelay
+                    }
+                    guard let apiKey = self.apiKeyProvider(), !apiKey.isEmpty else {
+                        throw ASRError.noAPIKey
                     }
                     let url = relayBase.appendingPathComponent("mimo/asr")
                     var request = URLRequest(url: url)
@@ -39,6 +42,7 @@ final class MimoASRService: SpeechRecognizing {
                     if let token = await self.accessTokenProvider() {
                         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                     }
+                    request.setValue(apiKey, forHTTPHeaderField: "X-Herald-MiMo-API-Key")
 
                     let boundary = UUID().uuidString
                     request.setValue(
