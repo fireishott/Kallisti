@@ -12,6 +12,7 @@ struct GatewayLogsScreen: View {
     @State private var errorMessage: String?
     @State private var isLoading = true
     @State private var selectedLevel: String = "info"
+    @State private var selectedSource: String = "hermes-gateway"
     @State private var isLiveStreaming = false
     @State private var streamTask: Task<Void, Never>?
     @State private var searchText = ""
@@ -19,6 +20,8 @@ struct GatewayLogsScreen: View {
     @State private var streamConnectionError: String?
 
     private let levels = ["debug", "info", "warning", "error"]
+    // Build 107: source picker for selecting which logs to view
+    private let sources = [("connector", "Connector"), ("hermes-gateway", "Hermes Gateway"), ("hermes-agent", "Hermes Agent")]
 
     private var filteredLogs: [LogLine] {
         if searchText.isEmpty { return logLines }
@@ -32,6 +35,9 @@ struct GatewayLogsScreen: View {
             VStack(spacing: 0) {
                 // Level filter
                 levelPicker
+
+                // Build 107: Source filter for selecting which logs to view
+                sourcePicker
 
                 if isLoading && logLines.isEmpty {
                     Spacer()
@@ -109,6 +115,34 @@ struct GatewayLogsScreen: View {
         .background(Design.Colors.background)
     }
 
+    // MARK: - Source Picker
+
+    // Build 107: source picker for selecting which logs to view
+    private var sourcePicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(sources, id: \.0) { source, label in
+                    Button {
+                        selectedSource = source
+                        Task { await fetchLogs() }
+                    } label: {
+                        Text(label)
+                            .font(Design.Typography.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(selectedSource == source ? .white : Design.Colors.secondaryForeground)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(selectedSource == source ? Design.Brand.primary : Design.Colors.surface)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, Design.Spacing.sm)
+        }
+        .background(Design.Colors.background)
+    }
+
     // MARK: - Log List
 
     private var logList: some View {
@@ -173,8 +207,9 @@ struct GatewayLogsScreen: View {
                 }
                 let data: Data
             }
+            // Build 107: include source parameter to select which logs to fetch
             let response: Response = try await client.get(
-                path: "gw/logs?lines=200&level=\(selectedLevel)",
+                path: "gw/logs?lines=200&level=\(selectedLevel)&source=\(selectedSource)",
                 accessToken: token
             )
             logLines = response.data.lines
@@ -222,8 +257,9 @@ struct GatewayLogsScreen: View {
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 
+            // Build 107: include source parameter to select which logs to stream
             let stream = client.streamEvents(
-                path: "gw/logs/stream?level=\(selectedLevel)",
+                path: "gw/logs/stream?level=\(selectedLevel)&source=\(selectedSource)",
                 accessToken: token,
                 lastEventID: nil
             )

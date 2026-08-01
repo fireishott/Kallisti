@@ -4036,18 +4036,39 @@ async def hermes_logs_stream(request: Request) -> StreamingResponse:
 
 
 async def gateway_logs(request: Request) -> JSONResponse:
-    """Recent connector logs from journald.
+    """Recent logs from journald.
 
     Returns {"data": {"lines": [...]}} — GatewayLogsScreen.swift:170-175 declares
     its own inner `data` key on top of the envelope. Do not flatten.
+
+    Build 107: added `source` parameter to select which logs to fetch:
+    - "connector" (default): connector unit logs
+    - "hermes-gateway": Hermes gateway unit logs
+    - "hermes-agent": Hermes agent unit logs
+
+    Source validation prevents path traversal and only allows known units.
     """
     await require_auth(request)
     lines = min(int(request.query_params.get("lines", "200") or 200), 1000)
     level = (request.query_params.get("level") or "info").lower()
     priority = _JOURNAL_PRIORITY.get(level, "6")
+    source = (request.query_params.get("source") or "connector").lower()
+
+    # Build 107: validate source to prevent traversal and only allow known units
+    _ALLOWED_LOG_SOURCES = {
+        "connector": _JOURNAL_UNIT,
+        "hermes-gateway": f"hermes-gateway-{_hermes_profile()}.service",
+        "hermes-agent": f"hermes-agent-{_hermes_profile()}.service",
+    }
+    if source not in _ALLOWED_LOG_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log source: {source}. Allowed: {', '.join(_ALLOWED_LOG_SOURCES.keys())}"
+        )
+    journal_unit = _ALLOWED_LOG_SOURCES[source]
 
     proc = await asyncio.create_subprocess_exec(
-        "journalctl", "--user", "-u", _JOURNAL_UNIT,
+        "journalctl", "--user", "-u", journal_unit,
         "-n", str(lines), "-p", priority, "-o", "json", "--no-pager",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
@@ -4068,14 +4089,31 @@ async def gateway_logs(request: Request) -> JSONResponse:
 
 async def gateway_logs_stream(request: Request) -> StreamingResponse:
     """Live tail. SSE `data:` is decoded by a BARE JSONDecoder on the app side
-    (GatewayLogsScreen.swift:236), so timestamps go out as numbers, not strings."""
+    (GatewayLogsScreen.swift:236), so timestamps go out as numbers, not strings.
+
+    Build 107: added `source` parameter to select which logs to stream.
+    """
     await require_auth(request)
     level = (request.query_params.get("level") or "info").lower()
     priority = _JOURNAL_PRIORITY.get(level, "6")
+    source = (request.query_params.get("source") or "connector").lower()
+
+    # Build 107: validate source to prevent traversal and only allow known units
+    _ALLOWED_LOG_SOURCES = {
+        "connector": _JOURNAL_UNIT,
+        "hermes-gateway": f"hermes-gateway-{_hermes_profile()}.service",
+        "hermes-agent": f"hermes-agent-{_hermes_profile()}.service",
+    }
+    if source not in _ALLOWED_LOG_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log source: {source}. Allowed: {', '.join(_ALLOWED_LOG_SOURCES.keys())}"
+        )
+    journal_unit = _ALLOWED_LOG_SOURCES[source]
 
     async def stream() -> AsyncIterator[str]:
         proc = await asyncio.create_subprocess_exec(
-            "journalctl", "--user", "-u", _JOURNAL_UNIT,
+            "journalctl", "--user", "-u", journal_unit,
             "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
