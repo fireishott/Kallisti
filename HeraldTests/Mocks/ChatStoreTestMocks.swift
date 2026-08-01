@@ -10,11 +10,14 @@ final class MockHeraldClient: HeraldClientProtocol {
 
     func connect() async {}
     func disconnect() async {}
-    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
         Message(sender: .user, content: message)
     }
-    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
         AsyncStream { $0.finish() }
+    }
+    func ensureConversation(id: UUID) async -> Bool {
+        true
     }
     func loadConversation() async -> Conversation { Conversation(id: UUID(), title: "") }
     func clearConversation() async throws -> Conversation { Conversation(id: UUID(), title: "") }

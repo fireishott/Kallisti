@@ -37,16 +37,16 @@ final class ResilientHeraldClient: HeraldClientProtocol {
         await fallback.disconnect()
     }
 
-    func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
-        let response = await primary.send(message: message, attachments: attachments, clientMessageID: clientMessageID)
+    func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+        let response = await primary.send(message: message, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
         if allowsFallback() && response.status == .failed {
-            return await fallback.send(message: message, attachments: attachments, clientMessageID: clientMessageID)
+            return await fallback.send(message: message, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
         }
         return response
     }
 
-    func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
-        primary.sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID)
+    func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+        primary.sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
     }
 
     func loadConversation() async -> Conversation {
@@ -115,7 +115,7 @@ extension ResilientHeraldClient {
         try await primary.loadConversation(id: id)
     }
 
-    func ensureConversation(id: UUID) async {
+    func ensureConversation(id: UUID) async -> Bool {
         await primary.ensureConversation(id: id)
     }
 

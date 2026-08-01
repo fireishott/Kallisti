@@ -461,6 +461,10 @@ class HeraldConnector:
         self._job_heartbeat_tasks: dict[str, asyncio.Task] = {}
         self._job_source_seq: dict[str, int] = {}
         self._fastapi_host_ws_connected: bool = False
+        # Build 33 Workstream A: pending restart-canary replies (token, future).
+        # Resolved from _handle_relay_outbound when the agent's reply echoes
+        # the canary token; those replies are never pushed to the phone.
+        self._canary_waiters: list[tuple[str, asyncio.Future]] = []
 
     @property
     def sensor_store(self) -> SensorStore:
@@ -778,6 +782,41 @@ class HeraldConnector:
         state = self.refresh_voice_context(state=state)
         self.apply_runtime_environment(state)
 
+        # Build 33 Workstream A: any restart operation left non-terminal by a
+        # previous connector process (self-restart, crash, hard stop) is stale —
+        # the process died before verification could complete.  The operation
+        # rows are durable in SQLite, so we can mark them failed and surface
+        # the reason to the app instead of leaving a phantom "restarting" state.
+        try:
+            from .restart_operations import get_restart_store
+            stale_count = get_restart_store().reconcile_stale_operations()
+            if stale_count:
+                logger.warning(
+                    "restart: marked %d stale operation(s) failed at startup",
+                    stale_count,
+                )
+        except Exception:
+            logger.exception("restart: startup reconciliation failed (non-fatal)")
+
+        # Build 33 Workstream B: migrate legacy JSON-sidecar conversation
+        # bindings (session_meta.json ``_hermes_id`` entries) into the SQLite
+        # delivery store, then mark any job the previous connector process
+        # left 'running' as permanent_failure (the process died mid-turn).
+        # Non-fatal: on failure the facade degrades to the in-memory hot
+        # cache and the sidecar.
+        try:
+            from .delivery_store import get_delivery_store
+            delivery_store = get_delivery_store()
+            migrated = delivery_store.migrate_bindings_from_sidecar()
+            if migrated:
+                logger.info(
+                    "delivery: migrated %d conversation binding(s) from session_meta.json",
+                    migrated,
+                )
+            delivery_store.reconcile_stale_jobs()
+        except Exception:
+            logger.exception("delivery: startup migration failed (non-fatal)")
+
         try:
             mcp_mode = os.getenv("HERALD_MCP_MODE", "remote").strip().lower()
             if mcp_mode == "stdio":
@@ -816,6 +855,13 @@ class HeraldConnector:
             facade_ctx.profile_catalog = self._rpc_profiles_list
             facade_ctx.profile_switch = self._rpc_profile_set
             facade_ctx.gateway_restart = self._rpc_gateway_restart
+            # Build 33 Workstream A: durable restart operations + relay canary.
+            # The facade's new /v1/gw/restart flow uses the store directly (not
+            # the JSON-RPC bridge); session_canary drives the post-restart
+            # authenticated round-trip probe through the native relay.
+            from .restart_operations import get_restart_store
+            facade_ctx.restart_store = get_restart_store()
+            facade_ctx.session_canary = self._run_session_canary
             facade_ctx.connector_version = self._detect_connector_version()
             facade_ctx.agent_version = self._hermes_agent_version
             facade_ctx.message_handler = self._handle_http_message
@@ -1998,15 +2044,62 @@ class HeraldConnector:
         """Handle an outbound action from the gateway (agent response → deliver to iOS via APNs)."""
         logger.info("Outbound action received: requestId=%s, type=%s", request_id, action.get("type"))
         action_type = action.get("type", "send")
+        text = action.get("text", "")
+        # Build 33 Workstream A: resolve pending restart-canary waiters first.
+        # A canary reply satisfies the probe future and MUST NOT become a push
+        # notification to the user's phone.
+        consumed_canary = False
+        if text:
+            for token, future in list(self._canary_waiters):
+                if token in text:
+                    consumed_canary = True
+                    if not future.done():
+                        future.set_result((True, "ok"))
         if action_type == "send":
-            text = action.get("text", "")
-            await self._send_push_for_job(
-                request_id,
-                text,
-                category=action.get("category"),
-                conversation_id=action.get("conversationId"),
-            )
+            if not consumed_canary:
+                await self._send_push_for_job(
+                    request_id,
+                    text,
+                    category=action.get("category"),
+                    conversation_id=action.get("conversationId"),
+                )
         return {"success": True}
+
+    async def _run_session_canary(self, timeout: float = 45.0) -> tuple[bool, str]:
+        """Authenticated session canary through the native relay.
+
+        Sends a probe turn (unique canary token) and waits for the agent's
+        reply, which arrives as an outbound 'send' action echoing the token.
+        Used by restart verification (Build 33 Workstream A) to prove the
+        restarted gateway can take a real turn end-to-end.  The reply is
+        consumed in _handle_relay_outbound and never pushed to the phone.
+        """
+        relay = getattr(self, "_relay_server", None)
+        if relay is None or not relay.is_gateway_connected:
+            return False, "relay gateway not connected after restart"
+        token = f"canary-{uuid.uuid4().hex[:10]}"
+        future: asyncio.Future[tuple[bool, str]] = asyncio.get_running_loop().create_future()
+        self._canary_waiters.append((token, future))
+        try:
+            from .relay_server import build_message_event
+
+            state = self.state_store.load()
+            event = build_message_event(
+                f"Connectivity probe: reply with exactly {token}",
+                device_installation_id=state.user_id or state.host_id or "herald-canary",
+            )
+            await relay.send_inbound_event(event)
+            ok, detail = await asyncio.wait_for(future, timeout=timeout)
+            return bool(ok), str(detail)
+        except asyncio.TimeoutError:
+            return False, f"no agent reply within {int(timeout)}s"
+        except Exception:
+            logger.debug("session canary failed", exc_info=True)
+            return False, "canary send failed"
+        finally:
+            self._canary_waiters = [
+                (t, f) for t, f in self._canary_waiters if f is not future
+            ]
 
     async def _rpc_push_register(self, params: dict) -> dict:
         """Persist the mobile APNs token without ever logging its value."""
@@ -2224,7 +2317,7 @@ class HeraldConnector:
             time.sleep(0.5)
             os.kill(os.getpid(), signal.SIGTERM)
         threading.Thread(target=_delayed_exit, daemon=True).start()
-        return {"restarting": True, "message": "Connector restart scheduled"}
+        return {"restarting": True, "target": "connector", "message": "Connector restart scheduled"}
 
     async def _rpc_gateway_restart(self, target: str) -> dict:
         """Dispatch a gateway restart to the right internal handler."""
@@ -2233,7 +2326,7 @@ class HeraldConnector:
         elif target == "hermes":
             return self._rpc_hermes_restart()
         else:
-            return {"restarting": False, "error": f"Unknown target: {target}"}
+            return {"restarting": False, "target": target, "error": f"Unknown target: {target}"}
 
     def _rpc_hermes_restart(self) -> dict:
         """Restart this profile's Hermes agent gateway via systemctl (Linux).
@@ -2252,7 +2345,7 @@ class HeraldConnector:
         import subprocess
 
         if platform.system() != "Linux":
-            return {"restarting": False, "error": "Hermes restart only supported on Linux"}
+            return {"restarting": False, "target": "hermes", "error": "Hermes restart only supported on Linux"}
 
         unit = os.getenv("HERMES_AGENT_UNIT")
         if not unit:
@@ -2266,18 +2359,19 @@ class HeraldConnector:
             )
             if result.returncode == 0:
                 logger.info("hermes.restart: restarted %s", unit)
-                return {"restarting": True, "message": "Restart requested"}
+                return {"restarting": True, "target": "hermes", "message": "Restart requested"}
 
             detail = (result.stderr or "").strip() or f"systemctl exited {result.returncode}"
             logger.warning("hermes.restart: systemctl restart %s failed: %s", unit, detail)
             return {
                 "restarting": False,
+                "target": "hermes",
                 "error": f"systemctl restart {unit}: {detail}. "
                          f"Set HERMES_AGENT_UNIT if the unit name is different.",
             }
         except Exception as exc:
             logger.warning("hermes.restart: error: %s", exc)
-            return {"restarting": False, "error": str(exc)}
+            return {"restarting": False, "target": "hermes", "error": str(exc)}
 
     def _rpc_talk_prewarm(self) -> dict:
         state = self.refresh_voice_context()

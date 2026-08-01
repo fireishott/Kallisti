@@ -20,6 +20,7 @@ struct SettingsScreen: View {
     @State private var showSafari = false
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.herald.session")
     @Environment(ThemeManager.self) private var themeManager
+    @Environment(GatewayControlService.self) private var gatewayControl
 
     var body: some View {
         ZStack {
@@ -70,6 +71,32 @@ struct SettingsScreen: View {
         .sheet(isPresented: $showSafari) {
             if let url = safariURL {
                 SafariView(url: url)
+            }
+        }
+        // Build 33: restart confirmation. Shown only from the
+        // .awaitingConfirmation state; Cancel is a pure state reset with
+        // zero network calls.
+        .alert(
+            "Restart Hermes Agent?",
+            isPresented: restartConfirmationBinding,
+            presenting: awaitingPreflight
+        ) { preflight in
+            Button("Cancel", role: .cancel) { cancelHermesRestart() }
+            Button("Restart Hermes", role: .destructive) {
+                Task { await confirmHermesRestart(preflight: preflight) }
+            }
+        } message: { preflight in
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Profile: \(preflight.profile)")
+                Text("Service unit: \(preflight.unit)")
+                if preflight.activeRequestCount > 0 {
+                    Text("Hermes is handling \(preflight.activeRequestCount) active request\(preflight.activeRequestCount == 1 ? "" : "s"). Restarting will interrupt them.")
+                }
+                Text("Active chat, voice, tool activity, and streams will be interrupted.")
+                if let notice = stalePreflightNotice {
+                    Text(notice)
+                        .foregroundStyle(Design.Colors.warning)
+                }
             }
         }
     }
@@ -156,6 +183,22 @@ struct SettingsScreen: View {
     @State private var updateAgentResult: String?
     @State private var isCheckingForUpdate = false
     @State private var isUpdatingAgent = false
+
+    // Build 33: restart-safe Hermes agent restart state machine.
+    // Restart Hermes Agent → preflight → confirmation → idempotent submit →
+    // poll → healthy/failed. The service itself is app-scoped, so an
+    // in-flight restart keeps polling even if Settings is dismissed.
+    private enum RestartUIState {
+        case idle
+        case loadingPreflight
+        case awaitingConfirmation(preflight: RestartPreflight)
+        case inProgress(operation: RestartOperation)
+        case healthy(operation: RestartOperation)
+        case failed(operation: RestartOperation)
+    }
+
+    @State private var restartState: RestartUIState = .idle
+    @State private var stalePreflightNotice: String?
 
     // MARK: - Environment
 
@@ -313,18 +356,21 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Restart gateway (relay container)
-                gatewayRestartButton(label: "Restart Relay", target: "relay")
-
-                sectionDivider
-
-                // Restart connector
+                // Restart connector — legacy flow. The facade only allowlists
+                // `hermes|connector`, so there is deliberately NO "Restart
+                // Relay" row: the relay is embedded in the connector.
                 gatewayRestartButton(label: "Restart Connector", target: "connector")
 
                 sectionDivider
 
-                // Restart Hermes agent
-                gatewayRestartButton(label: "Restart Hermes Agent", target: "hermes")
+                // Restart Hermes agent — Build 33 flow: preflight →
+                // confirmation → idempotent submit → poll → healthy/failed.
+                hermesRestartRow
+
+                if isHermesRestartActive {
+                    sectionDivider
+                    restartStatusArea
+                }
 
                 sectionDivider
 
@@ -514,54 +560,404 @@ struct SettingsScreen: View {
         .disabled(isRestartingGW)
     }
 
+    /// Legacy restart path — used only for the connector target. The
+    /// pre-Build-33-style call (no Idempotency-Key) is still supported by the
+    /// connector, and `RestartResponse` remains the backward-compat decoder.
+    /// The Hermes agent restart uses the new preflight/confirm/operation flow
+    /// below instead.
     private func restartGateway(target: String) async {
         isRestartingGW = true
         gwRestartTarget = target
         gwRestartResult = nil
 
-        // Use a 15-second timeout so the user doesn't wait forever when
-        // the relay's connector RPC hangs (known issue with hermes.restart).
-        let result = await withTimeout(seconds: 15) {
-            do {
+        do {
+            try await withTimeout(seconds: 15) {
                 let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
                     ?? pairingStore.pairedRelayConfiguration?.baseURLString
                 guard let relayBase else {
                     gwRestartResult = "No relay configured."
-                    isRestartingGW = false
                     return
                 }
                 let token = await sessionStore.currentAccessToken()
                 let client = RelayAPIClient { relayBase }
 
                 struct RestartRequest: Encodable { let target: String }
-                struct RestartResponse: Decodable {
-                    let restarting: Bool
-                    let target: String
-                    let message: String?
-                    let error: String?
-                }
 
                 let body = RestartRequest(target: target)
                 let response: RestartResponse = try await client.postGateway(
                     path: "gw/restart",
                     body: body,
-                    accessToken: token
+                    accessToken: token ?? ""
                 )
                 gwRestartResult = response.restarting
                     ? "\(target) restarting…"
                     : "Failed: \(response.error ?? response.message ?? "no reason returned")"
-            } catch {
-                gwRestartResult = "Error: \(error.localizedDescription)"
             }
-        }
-
-        if result == .timedOut {
-            gwRestartResult = "Request timed out — check the host"
+        } catch {
+            gwRestartResult = error is TimeoutError
+                ? "Request timed out — check the host"
+                : "Error: \(error.localizedDescription)"
         }
 
         isRestartingGW = false
         try? await Task.sleep(for: .seconds(3))
         gwRestartResult = nil
+    }
+
+    // MARK: - Hermes Restart Flow (Build 33)
+
+    /// True while the restart has a visible status card.
+    private var isHermesRestartActive: Bool {
+        switch restartState {
+        case .inProgress, .healthy, .failed: return true
+        case .idle, .loadingPreflight, .awaitingConfirmation: return false
+        }
+    }
+
+    /// True while the Hermes row must be inert (a restart is loading or
+    /// running). The confirmation state keeps the row tappable so the user
+    /// can re-initiate if they cancelled the alert.
+    private var isHermesRestartBusy: Bool {
+        switch restartState {
+        case .loadingPreflight, .inProgress: return true
+        case .idle, .awaitingConfirmation, .healthy, .failed: return false
+        }
+    }
+
+    private var hermesRestartRow: some View {
+        Button {
+            Task { await beginHermesRestart() }
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                restartRowIcon
+
+                Text(restartRowLabel)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(
+                        isHermesRestartBusy
+                            ? Design.Colors.secondaryForeground
+                            : Design.Colors.foreground
+                    )
+
+                Spacer()
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isHermesRestartBusy)
+        .accessibilityIdentifier("settings.restartHermes")
+    }
+
+    @ViewBuilder
+    private var restartRowIcon: some View {
+        switch restartState {
+        case .idle, .awaitingConfirmation:
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 14))
+                .foregroundStyle(.orange)
+                .frame(width: 20, alignment: .center)
+        case .loadingPreflight, .inProgress:
+            ProgressView()
+                .controlSize(.small)
+                .tint(.orange)
+        case .healthy:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(Design.Colors.success)
+                .frame(width: 20, alignment: .center)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(Design.Colors.danger)
+                .frame(width: 20, alignment: .center)
+        }
+    }
+
+    private var restartRowLabel: String {
+        switch restartState {
+        case .idle, .awaitingConfirmation, .healthy, .failed:
+            return "Restart Hermes Agent"
+        case .loadingPreflight:
+            return "Loading…"
+        case .inProgress:
+            return "Restarting…"
+        }
+    }
+
+    /// Status card under the Hermes row while a restart is active.
+    @ViewBuilder
+    private var restartStatusArea: some View {
+        switch restartState {
+        case .inProgress:
+            restartProgressCard
+        case .healthy:
+            restartHealthyCard
+        case .failed(let operation):
+            restartFailedCard(operation)
+        case .idle, .loadingPreflight, .awaitingConfirmation:
+            EmptyView()
+        }
+    }
+
+    /// Live phase + check progress. Reads the service's currentOperation so
+    /// every poll tick re-renders through @Observable.
+    private var restartProgressCard: some View {
+        let operation = gatewayControl.currentOperation
+        return VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            HStack(spacing: Design.Spacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.orange)
+                Text(phaseDisplayLabel(operation?.phase))
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                Spacer()
+            }
+
+            if let checks = operation?.checks, !checks.isEmpty {
+                ForEach(checks) { check in
+                    HStack(spacing: Design.Spacing.xs) {
+                        Image(systemName: check.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(check.passed ? Design.Colors.success : Design.Colors.danger)
+                        Text(check.name)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text(check.detail)
+                            .font(Design.Typography.caption2)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(Design.Spacing.md)
+        .background(Design.Colors.backgroundRaised, in: RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+    }
+
+    private func phaseDisplayLabel(_ phase: RestartPhase?) -> String {
+        switch phase {
+        case .accepted: return "Queued…"
+        case .stopping: return "Stopping Hermes…"
+        case .starting: return "Starting Hermes…"
+        case .verifying: return "Verifying Hermes…"
+        case .healthy: return "Hermes is ready"
+        case .failed: return "Restart failed"
+        case nil: return "Restarting…"
+        }
+    }
+
+    private var restartHealthyCard: some View {
+        HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(Design.Colors.success)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Hermes is ready")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                Text("Conversation, models, and logs reloaded.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            Spacer()
+        }
+        .padding(Design.Spacing.md)
+        .background(Design.Colors.backgroundRaised, in: RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+    }
+
+    /// Typed failure card — stage, recovery action, journal excerpt. Never
+    /// raw `DecodingError` text or Python dicts: client-side failures are
+    /// folded into `RestartErrorDetail` by `RestartOperation.localFailure`.
+    private func restartFailedCard(_ operation: RestartOperation) -> some View {
+        let detail = operation.error
+        return VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Design.Colors.danger)
+                Text("Restart failed")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                Spacer()
+                Button("Dismiss") {
+                    gatewayControl.reset()
+                    restartState = .idle
+                    stalePreflightNotice = nil
+                }
+                .font(Design.Typography.caption)
+            }
+
+            if let detail {
+                Text("Stage: \(detail.stage)")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                if let excerpt = detail.journalExcerpt, !excerpt.isEmpty {
+                    Text(excerpt)
+                        .font(Design.Typography.caption2)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .lineLimit(2)
+                }
+                if let action = detail.action, !action.isEmpty {
+                    Text(action)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if detail?.retryable != false {
+                Button("Try Again") {
+                    Task { await beginHermesRestart() }
+                }
+                .font(Design.Typography.caption.weight(.semibold))
+            }
+        }
+        .padding(Design.Spacing.md)
+        .background(Design.Colors.backgroundRaised, in: RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+    }
+
+    /// Step 1: fetch preflight, then present the confirmation dialog.
+    private func beginHermesRestart() async {
+        stalePreflightNotice = nil
+        restartState = .loadingPreflight
+        do {
+            let preflight = try await withTimeout(seconds: 15) {
+                try await gatewayControl.fetchPreflight(target: "hermes")
+            }
+            guard preflight.canRestart else {
+                restartState = .failed(operation: RestartOperation.localFailure(
+                    stage: "preflight",
+                    unit: preflight.unit,
+                    action: preflight.blocker
+                        ?? "The gateway is not ready to restart right now. Check the host status."
+                ))
+                return
+            }
+            restartState = .awaitingConfirmation(preflight: preflight)
+        } catch {
+            restartState = .failed(operation: RestartOperation.localFailure(
+                stage: "preflight",
+                action: Self.describeRestartError(error)
+            ))
+        }
+    }
+
+    /// Step 2 (destructive alert button): submit the idempotent restart, then
+    /// suspend the chat and poll until terminal.
+    private func confirmHermesRestart(preflight: RestartPreflight) async {
+        // Move off .awaitingConfirmation immediately so the alert's automatic
+        // dismiss cannot be misread as a user cancel (the binding reset below
+        // only fires while still in the confirmation state).
+        restartState = .loadingPreflight
+
+        let operation: RestartOperation
+        do {
+            operation = try await withTimeout(seconds: 15) {
+                try await gatewayControl.submitRestart(target: "hermes", preflight: preflight)
+            }
+        } catch GatewayControlError.stalePreflight {
+            // The gateway state moved since preflight — re-fetch and require
+            // re-confirmation instead of restarting blind. The notice is set
+            // AFTER beginHermesRestart (which clears it) so the new
+            // confirmation dialog carries it.
+            await beginHermesRestart()
+            stalePreflightNotice = "The gateway state changed since you confirmed. Review and confirm again."
+            return
+        } catch {
+            restartState = .failed(operation: RestartOperation.localFailure(
+                stage: "restart",
+                unit: preflight.unit,
+                action: Self.describeRestartError(error)
+            ))
+            return
+        }
+
+        restartState = .inProgress(operation: operation)
+        chatStore.beginRestartSuspension()
+
+        do {
+            let terminal = try await gatewayControl.pollUntilTerminal(operation: operation)
+            restartState = terminal.phase == .healthy
+                ? .healthy(operation: terminal)
+                : .failed(operation: terminal)
+            if terminal.phase == .healthy {
+                await recoverAfterRestart()
+            } else {
+                // Gateway came back but verification failed — sends are safe
+                // to re-enable so the user can retry through the UI.
+                await chatStore.resumeAfterRestart()
+            }
+        } catch {
+            restartState = .failed(operation: RestartOperation.localFailure(
+                stage: "verifying",
+                unit: operation.unit,
+                action: Self.describeRestartError(error)
+            ))
+            await chatStore.resumeAfterRestart()
+        }
+    }
+
+    /// Step 3: post-restart recovery when the operation reports healthy.
+    /// Re-enables send (drains visibly-queued messages), reloads the current
+    /// conversation, reconciles running jobs via the polling safety net,
+    /// reloads models, and refreshes host state.
+    private func recoverAfterRestart() async {
+        await chatStore.resumeAfterRestart()
+        await chatStore.reloadConversationAfterRestart()
+        await modelStore.loadModels(force: true)
+        await hostStore.refresh()
+        chatStore.appendLog(level: .info, "Hermes gateway restart verified healthy — state reloaded")
+
+        // Auto-clear the ready card after a moment.
+        try? await Task.sleep(for: .seconds(4))
+        if case .healthy = restartState { restartState = .idle }
+    }
+
+    /// Cancel from the confirmation dialog — zero network calls.
+    private func cancelHermesRestart() {
+        restartState = .idle
+        stalePreflightNotice = nil
+    }
+
+    private static func describeRestartError(_ error: Error) -> String {
+        if error is TimeoutError {
+            return "The gateway did not respond in time. Check that the connector is reachable, then try again."
+        }
+        if let clientError = error as? RelayAPIClient.ClientError {
+            return clientError.errorDescription
+                ?? "The gateway request failed. Try again."
+        }
+        if error is DecodingError {
+            // Never surface DecodingError text or raw server payloads.
+            return "The gateway returned an unexpected response. Try again, or check the connector version."
+        }
+        return error.localizedDescription
+    }
+
+    /// Preflight to show in the confirmation alert, if any.
+    private var awaitingPreflight: RestartPreflight? {
+        if case .awaitingConfirmation(let preflight) = restartState {
+            return preflight
+        }
+        return nil
+    }
+
+    private var restartConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { awaitingPreflight != nil },
+            set: { presented in
+                guard !presented else { return }
+                // Only a dismissal while STILL in the confirmation state is a
+                // user cancel. If the destructive button already moved the
+                // state machine (submit in flight), let it run.
+                if case .awaitingConfirmation = restartState {
+                    cancelHermesRestart()
+                }
+            }
+        )
     }
 
     // MARK: - Infrastructure
@@ -1663,30 +2059,28 @@ struct SettingsScreen: View {
 
     // MARK: - Timeout Helper
 
-    private enum TimeoutResult {
-        case completed
-        case timedOut
-    }
-
-    /// Run `body` with a deadline. Returns `.timedOut` if the deadline fires
-    /// before `body` completes. The inner task is cancelled on timeout.
+    /// Run `operation` with a hard deadline. A true race: whichever task
+    /// finishes first wins, the loser is cancelled, and a timeout throws
+    /// `TimeoutError` instead of hanging on `bodyTask.value` forever (the old
+    /// helper awaited the body unconditionally, so its timeout never fired
+    /// while a relay RPC hung).
     @MainActor
-    private func withTimeout(seconds: TimeInterval, body: @escaping @MainActor () async -> Void) async -> TimeoutResult {
-        let bodyTask = Task { @MainActor in
-            await body()
-            return TimeoutResult.completed
-        }
-        let timeoutTask = Task {
-            try? await Task.sleep(for: .seconds(seconds))
-            return TimeoutResult.timedOut
-        }
-        return await withTaskCancellationHandler {
-            let result = await bodyTask.value
-            timeoutTask.cancel()
+    private func withTimeout<T: Sendable>(
+        seconds: Double,
+        operation: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw TimeoutError()
+            }
+            guard let result = try await group.next() else {
+                group.cancelAll()
+                throw TimeoutError()
+            }
+            group.cancelAll()
             return result
-        } onCancel: {
-            bodyTask.cancel()
-            timeoutTask.cancel()
         }
     }
 

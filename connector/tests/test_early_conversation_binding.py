@@ -31,7 +31,13 @@ CONV_ID = "d542e200-b786-4dda-8913-65edacb32f5e"
 
 @pytest.fixture
 def live_db(tmp_path, monkeypatch):
-    """state.db with the user turn already written, as at run start."""
+    """state.db with the user turn already written, as at run start.
+
+    B33 WS B: _bind_conversation_early also mirrors the binding into the
+    SQLite delivery store, so its home directory must be env-isolated or
+    the tests would write to the real host store.
+    """
+    monkeypatch.setenv("HERMES_MOBILE_CONNECTOR_HOME", str(tmp_path))
     db = tmp_path / "state.db"
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row

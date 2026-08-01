@@ -110,3 +110,51 @@ def test_terminal_event_includes_message_when_present():
     assert terminal["data"]["message"] is not None
     assert terminal["data"]["message"]["attachments"] is not None
     assert terminal["data"]["message"]["attachments"][0]["thumbnailData"] == "AA=="
+
+
+# ── Build 31: attachment message identity ─────────────────────────────
+
+
+def test_relay_message_and_attachment_store_share_message_id():
+    """Build 31 (fix): the terminal relay message id must match the
+    deterministic UUID used as the attachment-store key.
+
+    Before the fix, _run_http_job called _relay_message without a
+    message_id (random UUID), then persisted attachments under the
+    deterministic Hermes-row UUID — so the live thumbnail rendered
+    (base64 in the event), but the full-resolution fetch 404'd.
+
+    The contract: the same canonical assistant message UUID must be used
+    in the terminal SSE event, history reconciliation, and blob-store key.
+    """
+    canonical_id = "00000000-0000-0000-0000-000000000001"
+    msg = http_facade._relay_message(
+        "herald", "text with image",
+        attachments=[{"type": "image", "filename": "a.png",
+                      "mimeType": "image/png", "data": "AA=="}],
+        message_id=canonical_id,
+    )
+    assert msg["id"] == canonical_id
+    # The terminal done event carries this message — iOS reads msg["id"]
+    # and uses it for GET /v1/messages/{id}/attachments/{index}.
+    terminal = {
+        "type": "done",
+        "data": {
+            "jobId": "test-job",
+            "status": "completed",
+            "text": "text with image",
+            "message": msg,
+        },
+    }
+    assert terminal["data"]["message"]["id"] == canonical_id
+
+
+def test_relay_message_without_explicit_id_still_gets_one():
+    """When no message_id is supplied (e.g. no Hermes session bound),
+    _relay_message assigns a random UUID — backward compatible."""
+    msg = http_facade._relay_message("herald", "text")
+    assert "id" in msg
+    assert msg["id"]  # non-empty
+    # Must be a valid UUID string
+    import uuid
+    uuid.UUID(msg["id"])  # does not raise

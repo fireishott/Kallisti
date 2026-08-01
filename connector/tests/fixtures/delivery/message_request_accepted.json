@@ -1,0 +1,15 @@
+{
+  "$schema": "message-request-v1",
+  "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+  "conversationId": "660e8400-e29b-41d4-a716-446655440001",
+  "installationId": "abc123def",
+  "requestSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "cleanText": "What is the weather?",
+  "state": "accepted",
+  "jobId": "770e8400-e29b-41d4-a716-446655440002",
+  "canonicalUserMessageId": null,
+  "terminalMessageId": null,
+  "errorCategory": null,
+  "createdAt": "2026-07-31T20:00:00Z",
+  "updatedAt": "2026-07-31T20:00:00Z"
+}

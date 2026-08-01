@@ -68,6 +68,10 @@ final class AppContainer {
     let dashboardLogService: DashboardLogService
     let themeManager: ThemeManager
     let hostStatusStream: HostStatusStreamService
+    /// Build 33: restart-safe Hermes gateway control (preflight → confirm →
+    /// idempotent submit → poll). App-scoped so an in-flight restart survives
+    /// the Settings screen being dismissed mid-poll.
+    let gatewayControl: GatewayControlService
     private let apiClient: RelayAPIClient?
     private let notificationService: (any NotificationServiceProtocol)?
     private let pushRegistrationCoordinator: PushRegistrationCoordinator?
@@ -113,7 +117,8 @@ final class AppContainer {
         notificationService: (any NotificationServiceProtocol)? = nil,
         pushRegistrationCoordinator: PushRegistrationCoordinator? = nil,
         secureStore: (any SecureStoreProtocol)? = nil,
-        hostStatusStream: HostStatusStreamService? = nil
+        hostStatusStream: HostStatusStreamService? = nil,
+        gatewayControl: GatewayControlService? = nil
     ) {
         self.sessionStore = sessionStore
         self.pairingStore = pairingStore
@@ -167,6 +172,10 @@ final class AppContainer {
         self.pushRegistrationCoordinator = pushRegistrationCoordinator
         self.secureStore = secureStore
         self.hostStatusStream = hostStatusStream ?? HostStatusStreamService(
+            apiClient: apiClient ?? RelayAPIClient { "" },
+            accessTokenProvider: { await sessionStore.currentAccessToken() }
+        )
+        self.gatewayControl = gatewayControl ?? GatewayControlService(
             apiClient: apiClient ?? RelayAPIClient { "" },
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
@@ -781,6 +790,11 @@ final class AppContainer {
             await chatStore.recoverStalledStream()
         }
 
+        // Build 33 WSB: reconcile the durable outbox on every foreground —
+        // accepted jobs are settled against the relay, expired retry backoffs
+        // and queued items for the current conversation are resubmitted.
+        await chatStore.recoverOutbox()
+
         // Start real-time host status stream while foregrounded
         await hostStatusStream.start()
     }
@@ -851,6 +865,7 @@ final class AppContainer {
         modelStore.reset()
         profileStore.reset()
         skillsStore.reset()
+        gatewayControl.reset()
         cronStore.reset()
         await initialize()
 
@@ -1225,6 +1240,7 @@ final class AppContainer {
         modelStore.reset()
         profileStore.reset()
         skillsStore.reset()
+        gatewayControl.reset()
         cronStore.reset()
         hostStore.reset()
         lastKnownHostOnline = false

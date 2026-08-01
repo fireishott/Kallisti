@@ -11,6 +11,7 @@ enum StreamingPhase: Sendable {
     case streaming          // Receiving text/reasoning/tool deltas
     case reconnecting       // Transport dropped — cursor-based resume in progress
     case stalled            // Watchdog is about to fire — showing "Waiting…"
+    case restarting         // Build 33: a Hermes gateway restart is in flight
 }
 
 @MainActor
@@ -28,18 +29,31 @@ final class ChatStore {
     }
     var isLoading = false
     var pendingMessageSentAt: Date?
-    /// Build 31: outbox queue for messages sent while a turn is already active.
-    /// Each item freezes its conversation ID, text, attachments, and client ID
-    /// at enqueue time.  Items are submitted FIFO after each preceding job reaches
-    /// a server terminal state.
-    struct QueuedItem: Identifiable, Sendable {
-        let id = UUID()
-        let conversationID: UUID
-        let text: String
-        let attachments: [PendingAttachment]
-        let clientMessageID: UUID
-    }
-    var queuedOutboxItems: [QueuedItem] = []
+    /// Build 33 WSB: durable outbox — in-memory mirror of the on-disk manifest
+    /// (Application Support/Herald/Outbox/outbox.json). Items survive
+    /// conversation switches and force-quit; they are submitted FIFO per
+    /// conversation, one at a time, by `submitNextEligible`.
+    private(set) var outboxItems: [ChatOutboxRecord] = []
+    /// Full send lifecycle phase for the active outbox job, parallel to
+    /// `streamingPhase`. Owned by the immutable (conversationID,
+    /// clientMessageID, attemptID) tuple so a stale phase from a superseded
+    /// attempt can never clobber the active banner.
+    private(set) var sendPhase: MessageSendPhase = .idle
+    private(set) var sendPhaseOwner: SendPhaseOwner?
+    /// Re-entrancy guard, per-conversation. submitNextEligible acquires a
+    /// `SubmitLease` for the conversation before any network call; later FIFO
+    /// items in the SAME conversation no-op at the guard until the active
+    /// attempt releases, but other conversations may submit independently.
+    /// Replaces the legacy global `submitInFlight: Bool` whose only valid
+    /// invariant was "one outbox submit at a time across the whole app" —
+    /// which violated "other conversations may submit independently if
+    /// supported" (Build 102 marching orders §5).
+    private var activeLeases: [UUID: SubmitLease] = [:]
+    /// Monotonic FIFO counter persisted in the manifest.
+    private var outboxNextSequence = 0
+    /// Defaults to Application Support; tests inject a scratch directory so
+    /// outbox state never leaks between test runs.
+    private let outboxStore: OutboxManifestStore
     var lastTokenUsage: TokenUsage?
     var lastContextInfo: ContextInfo?
     /// Error context from the most recent `.failed` streaming update.
@@ -48,11 +62,25 @@ final class ChatStore {
     /// Live log entries for the iPad inspector panel's Logs tab.
     var logEntries: [LogEntry] = []
     /// Streaming phase for UI indicators (e.g. "Sending…", "Waiting…", "Streaming…").
-    /// Updated by `runStreamingAttempt` as the job progresses through the SSE pipeline.
+    /// Updated by `runStreamingAttemptLegacy` as the job progresses through the SSE pipeline.
     var streamingPhase: StreamingPhase = .idle
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
+    /// Build 31 (fix): monotonically-incrementing generation token.  Every new
+    /// streaming attempt captures this value; every callback in the consumer task
+    /// checks it before mutating global state.  A retry or cancel bumps it, so
+    /// stale events from a superseded attempt cannot overwrite the active
+    /// banner, placeholder, transcript, or counters.  Prior code had no such
+    /// guard — a late `.reconnecting` from the old stream coordinator would set
+    /// `streamingPhase = .reconnecting` while a retry/replacement was active.
+    private var activeAttemptID: UUID = UUID()
+    /// Relay-assigned job ID for the active streaming attempt. Updated by the
+    /// consumer when `.messageSent` arrives; read by the watchdog when it
+    /// returns `.stalled(jobID)` so the polling fallback reattaches to the
+    /// same Hermes run instead of minting a second one. Reset at the start
+    /// of every attempt; nil between attempts.
+    private var acceptedJobID: UUID?
     private var activeStreams: [UUID: UUID] = [:]  // jobId → placeholderId
     var streamingMessageID: UUID? {
         activeStreams.values.first
@@ -60,7 +88,7 @@ final class ChatStore {
 
     /// After `messageSent`, if no real progress (text/reasoning delta, tool
     /// activity, or finish) arrives within this window, the job is treated as
-    /// silently stalled/dropped — see `runStreamingAttempt`.
+    /// silently stalled/dropped — see `runStreamingAttemptLegacy`.
     /// Mutable so tests can set it to milliseconds.
     ///
     /// Set to 60s — large models can take 30-45s to load/prefill before the
@@ -123,7 +151,19 @@ final class ChatStore {
     private var conversationGeneration: UInt64 = 0
 
     var isStreaming: Bool { streamingMessageID != nil }
-    var connectionStatus: ConnectionStatus { heraldClient.connectionStatus }
+
+    /// Build 33: set while a Hermes gateway restart is in flight. Sends are
+    /// queued visibly instead of being submitted to a dying gateway, streams
+    /// are suspended, and the status indicator reports the restart.
+    private(set) var restartInProgress = false
+
+    /// Connection status, overridden by an in-flight gateway restart: the
+    /// underlying transport's status is meaningless while the gateway is
+    /// being replaced, and the UI must say so instead of flapping.
+    var connectionStatus: ConnectionStatus {
+        if restartInProgress { return .restarting }
+        return heraldClient.connectionStatus
+    }
 
     func updateConnectionStatus(_ status: ConnectionStatus) {
         heraldClient.connectionStatus = status
@@ -168,15 +208,27 @@ final class ChatStore {
     /// Maximum number of log entries to keep in memory and on disk.
     private static let maxLogEntries = 500
 
-    init(heraldClient: any HeraldClientProtocol, persistence: any AppPersistenceStoreProtocol) {
+    init(
+        heraldClient: any HeraldClientProtocol,
+        persistence: any AppPersistenceStoreProtocol,
+        outboxBaseDirectory: URL? = nil
+    ) {
         self.heraldClient = heraldClient
         self.persistence = persistence
+        self.outboxStore = outboxBaseDirectory.map { OutboxManifestStore(baseDirectory: $0) }
+            ?? OutboxManifestStore()
         // Restore persisted logs so the Logs tab isn't empty on launch.
         if let persisted = persistence.loadLogEntries(), !persisted.isEmpty {
             logEntries = persisted
         } else {
             logEntries = [LogEntry(level: .info, message: "Herald started — waiting for activity")]
         }
+        // Restore the durable outbox manifest. Items are NOT submitted here —
+        // recovery runs from ChatScreen appear / app foreground
+        // (`recoverOutbox`), where the current conversation is known.
+        let manifest = outboxStore.load()
+        outboxItems = manifest.items
+        outboxNextSequence = manifest.nextSequence
     }
 
     func loadConversationIfNeeded() async {
@@ -292,42 +344,312 @@ final class ChatStore {
         persistence.saveConversationCache(cacheCopy)
     }
 
-    func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async {
-        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedContent.isEmpty || !attachments.isEmpty else { return }
-        guard hasPendingDuplicateMessage(trimmedContent, attachments: attachments) == false else { return }
+    /// Full send pipeline: phase 1 (durable enqueue) followed by phase 2
+    /// (submit the next eligible outbox item). Kept as the single entry point
+    /// so callers (ChatScreen, retryMessage, tests) get the whole lifecycle.
+    func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil, continuationContext: String? = nil) async {
+        guard let record = enqueueMessage(
+            content,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            continuationContext: continuationContext
+        ) else { return }
+        await submitNextEligible(for: record.conversationID)
+    }
 
-        let clientMessageID = clientMessageID ?? UUID()
+    // MARK: - Durable Outbox — Phase 1 (enqueue)
+
+    /// Phase 1 of the two-phase send. Validates, stages attachment bytes,
+    /// creates the durable outbox record, and appends the optimistic user row
+    /// IMMEDIATELY — before any network call — so the user sees visible state
+    /// during the send. Persists the outbox manifest AND the conversation
+    /// cache before returning.
+    ///
+    /// The composer must only be cleared after this returns non-nil: the
+    /// outbox now owns the text, so a force-quit at any later point cannot
+    /// lose the message.
+    ///
+    /// During a Hermes gateway restart this still enqueues durably (state
+    /// `.queued`) and appends the optimistic row plus the explanatory system
+    /// message — `submitNextEligible` no-ops until `resumeAfterRestart()`.
+    @discardableResult
+    func enqueueMessage(
+        _ content: String,
+        attachments: [PendingAttachment] = [],
+        clientMessageID: UUID? = nil,
+        continuationContext: String? = nil
+    ) -> ChatOutboxRecord? {
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty || !attachments.isEmpty else { return nil }
+        guard hasPendingDuplicateMessage(trimmedContent, attachments: attachments) == false else { return nil }
+        guard attachments.count <= PendingAttachment.maxAttachmentsPerMessage else {
+            appendLog(level: .warn, "Message rejected — \(attachments.count) attachments exceeds the limit")
+            return nil
+        }
+
+        sendPhase = .preparing
+        let conversationID = conversation?.id ?? UUID()
+        if conversation == nil {
+            conversation = Conversation(id: conversationID, title: "New Chat")
+        }
+        persistence.currentSessionId = conversationID
+
+        let clientID = clientMessageID ?? UUID()
         let displayContent = trimmedContent.isEmpty && !attachments.isEmpty
             ? "[\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")]"
             : trimmedContent
         let optimistic = Message(
-            id: clientMessageID,
-            clientMessageID: clientMessageID,
+            id: clientID,
+            clientMessageID: clientID,
             sender: .user,
             content: displayContent,
             status: .sending,
             attachments: attachments.map { MessageAttachment(from: $0) }
         )
-        if conversation == nil {
-            conversation = Conversation(title: "New Chat")
-        }
-        // Build 31: ensure a server conversation exists for this local UUID
-        // before the first POST.  Previously the client invented a random UUID,
-        // the connector echoed it without creating a real Hermes session, and
-        // the first message landed in a session the app couldn't reliably
-        // address.  ensureConversation creates and maps a Hermes session
-        // server-side so the job has a canonical identity from the start.
-        if let conversation {
-            persistence.currentSessionId = conversation.id
-            if heraldClient.currentConversation?.id != conversation.id {
-                await heraldClient.ensureConversation(id: conversation.id)
-                _ = try? await heraldClient.loadConversation(id: conversation.id)
+
+        // Stage attachment bytes (conversation-scoped staging directory).
+        var staged: [OutboxAttachmentRef] = []
+        for attachment in attachments {
+            guard let ref = outboxStore.stageAttachment(
+                conversationID: conversationID,
+                pending: attachment,
+                stableID: UUID()
+            ) else {
+                // Staging failed — remove what we already wrote and reject the
+                // enqueue; a record with missing bytes could never submit.
+                let partial = ChatOutboxRecord(
+                    schemaVersion: OutboxManifestStore.schemaVersion,
+                    clientMessageID: clientID,
+                    conversationID: conversationID,
+                    createdAt: .now,
+                    sequence: 0,
+                    cleanText: trimmedContent,
+                    continuationContext: continuationContext,
+                    attachmentRefs: staged,
+                    state: .queued,
+                    jobID: nil,
+                    canonicalUserMessageID: nil,
+                    terminalMessageID: nil,
+                    attemptCount: 0,
+                    nextAttemptAt: nil,
+                    lastError: nil
+                )
+                outboxStore.removeStagedAttachments(for: partial)
+                sendPhase = .failed("Could not stage attachment data")
+                appendLog(level: .error, "Attachment staging failed — message not enqueued")
+                return nil
             }
+            staged.append(ref)
         }
+
+        // A retry reuses the original clientMessageID (relay idempotency).
+        // Supersede any previous record with the same ID — exactly one outbox
+        // record may own a clientMessageID at a time, or the state-transition
+        // lookups (messageSent/terminal/failure) would hit the stale one.
+        if let existingIdx = outboxItems.firstIndex(where: { $0.clientMessageID == clientID }) {
+            outboxStore.removeStagedAttachments(for: outboxItems[existingIdx])
+            outboxItems.remove(at: existingIdx)
+        }
+
+        outboxNextSequence += 1
+        let record = ChatOutboxRecord(
+            schemaVersion: OutboxManifestStore.schemaVersion,
+            clientMessageID: clientID,
+            conversationID: conversationID,
+            createdAt: .now,
+            sequence: outboxNextSequence,
+            cleanText: trimmedContent,
+            continuationContext: continuationContext,
+            attachmentRefs: staged,
+            state: .queued,
+            jobID: nil,
+            canonicalUserMessageID: clientID,
+            terminalMessageID: nil,
+            attemptCount: 0,
+            nextAttemptAt: nil,
+            lastError: nil
+        )
+        outboxItems.append(record)
+        persistOutbox()
+
+        // Append the optimistic row and persist the conversation cache.
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp
         pendingMessageSentAt = optimistic.timestamp
+        cacheModifiedConversation()
+
+        sendPhase = .queued
+        sendPhaseOwner = SendPhaseOwner(
+            conversationID: conversationID,
+            clientMessageID: clientID,
+            attemptID: UUID()
+        )
+
+        // Build 33: during a gateway restart the gateway is down or being
+        // replaced. The message is durably queued and explained; the submit
+        // phase no-ops until resumeAfterRestart() drains the outbox.
+        if restartInProgress {
+            if !conversationHasRestartNotice() {
+                conversation?.messages.append(Message(
+                    sender: .system,
+                    content: "Hermes is restarting — your message will be sent when it is back online.",
+                    status: .delivered
+                ))
+                cacheModifiedConversation()
+            }
+            appendLog(level: .warn, "Message queued — Hermes gateway restart in progress")
+        }
+        onConversationChanged?()
+        return record
+    }
+
+    /// True when the transcript already carries the restart notice — the
+    /// notice is appended once per restart, not once per queued message.
+    private func conversationHasRestartNotice() -> Bool {
+        conversation?.messages.contains(where: {
+            $0.sender == .system
+                && $0.content.contains("your message will be sent when it is back online")
+        }) == true
+    }
+
+    // MARK: - Durable Outbox — Phase 2 (submit)
+
+    /// Phase 2 of the two-phase send. Submits the next `.queued` outbox item
+    /// for `conversationID` (defaults to the current conversation) using a
+    /// compare-and-set lease:
+    ///
+    ///    .queued → .materializing → (ensureConversation) → .submitting →
+    ///    .accepted (jobID) → .terminal (canonical IDs)
+    ///
+    /// Failures land in `.retryableFailure` (exponential backoff) or
+    /// `.permanentFailure`. FIFO is enforced per conversation: exactly one
+    /// item is in flight at a time — the terminal handler of the active job
+    /// chains the next one.
+    ///
+    /// No-ops during a gateway restart and while another outbox job or
+    /// stream is in flight (the item stays `.queued` and visibly pending).
+    func submitNextEligible(for conversationID: UUID? = nil) async {
+        let targetID = conversationID ?? conversation?.id
+        guard let targetID else { return }
+
+        // Restart suspension: the gateway is down or being replaced. Items
+        // stay durably queued; resumeAfterRestart() drains them.
+        guard !restartInProgress else {
+            sendPhase = .queued
+            return
+        }
+        // One in-flight outbox job PER CONVERSATION — the rest wait in
+        // .queued and are chained after the active job reaches a terminal
+        // state. Different conversations are independent (test 8 of the
+        // Build 102 marching orders). The `isStreaming` check is implicit:
+        // a streaming attempt holds a lease for its conversation, and the
+        // lease acquisition below is the single guard.
+        guard activeLeases[targetID] == nil else { return }
+
+        // Retryable failures whose backoff elapsed are promoted back to
+        // .queued so the chain can attempt them again — visible attempt
+        // ownership without waiting for the next foreground.
+        let now = Date.now
+        var promoted = false
+        for idx in outboxItems.indices
+            where outboxItems[idx].conversationID == targetID
+                && outboxItems[idx].state == .retryableFailure {
+            guard let nextAttemptAt = outboxItems[idx].nextAttemptAt,
+                  nextAttemptAt <= now else { continue }
+            outboxItems[idx].state = .queued
+            promoted = true
+        }
+        if promoted {
+            persistOutbox()
+        }
+        guard let index = outboxItems.firstIndex(where: {
+            $0.conversationID == targetID && $0.state == .queued
+        }) else { return }
+
+        // Per-conversation lease replaces the legacy global `submitInFlight`
+        // bool. Different conversations submit independently (Build 102
+        // marching orders §5 test 8); FIFO is strict inside each.
+        // The defer below is identity-checked so stale callbacks from older
+        // tasks cannot clobber a newer lease. The lease is also released
+        // manually before the recursive FIFO call so the next item in this
+        // conversation can re-acquire — `defer` only fires when this
+        // function returns, after the recursion completes.
+        var item = outboxItems[index]
+        item.state = .materializing
+        item.attemptCount += 1
+        item.nextAttemptAt = nil
+        outboxItems[index] = item
+        persistOutbox()
+
+        let lease = SubmitLease(
+            conversationID: targetID,
+            clientMessageID: item.clientMessageID,
+            attemptID: UUID(),
+            acquiredAt: .now
+        )
+        activeLeases[targetID] = lease
+        defer {
+            if activeLeases[targetID] == lease {
+                activeLeases[targetID] = nil
+                Self.logger.info("lease released conv=\(targetID.uuidString.prefix(8)) client=\(item.clientMessageID.uuidString.prefix(8))")
+            }
+            pruneTerminalOutboxRecords()
+        }
+
+        sendPhaseOwner = SendPhaseOwner(
+            conversationID: targetID,
+            clientMessageID: item.clientMessageID,
+            attemptID: lease.attemptID
+        )
+
+        // Rebuild staged attachments from disk.
+        let attachments: [PendingAttachment] = item.attachmentRefs.compactMap { ref in
+            outboxStore.pendingAttachment(for: ref, conversationID: targetID)
+        }
+        guard attachments.count == item.attachmentRefs.count else {
+            // Staged bytes are gone — never fabricate empty attachments.
+            // Surface a visible failure with manual retry.
+            let error = "Attachment data was missing when the message was submitted"
+            markOptimisticRowFailed(item, error: error)
+            failOutboxItem(item, state: .permanentFailure, error: error)
+            sendPhase = .failed(error)
+            return
+        }
+
+        // Build 31: ensure a server conversation exists for this local UUID
+        // before the first POST.  Previously the client invented a random
+        // UUID, the connector echoed it without creating a real Hermes
+        // session, and the first message landed in a session the app couldn't
+        // reliably address.  ensureConversation is fail-closed: if the server
+        // cannot create or confirm a session, message submission is blocked
+        // with a visible error rather than silently proceeding.
+        if heraldClient.currentConversation?.id != targetID {
+            sendPhase = .creatingConversation
+            let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
+            guard sessionEstablished else {
+                // Session could not be established — fail the user-visible
+                // message rather than submitting to a non-existent session.
+                let error = "Could not reach the Herald host to start a conversation. Check your connection and try again."
+                markOptimisticRowFailed(item, error: error)
+                failOutboxItem(
+                    item,
+                    state: .retryableFailure,
+                    error: error,
+                    retryAfter: backoffInterval(forAttempt: item.attemptCount)
+                )
+                sendPhase = .failed(error)
+                pendingMessageSentAt = nil
+                streamingPhase = .idle
+                Logger.app.error("submitNextEligible blocked: ensureConversation returned no session")
+                return
+            }
+            _ = try? await heraldClient.loadConversation(id: targetID)
+        } else {
+            sendPhase = .checkingHermes
+        }
+
+        item.state = .submitting
+        updateOutboxItem(item)
 
         if useStreaming {
             // Append a placeholder Herald message for streaming content
@@ -345,18 +667,27 @@ final class ChatStore {
             restartPendingPollingIfNeeded()
 
             await runAttemptLoop(
-                content: trimmedContent,
+                content: item.cleanText,
                 attachments: attachments,
-                clientMessageID: clientMessageID,
-                placeholderID: placeholderID
+                clientMessageID: item.clientMessageID,
+                placeholderID: placeholderID,
+                continuationContext: item.continuationContext
             )
+
+            // The attempt loop ended without a terminal stream event (stall,
+            // transport drop). Settle an accepted-but-unresolved job against
+            // the relay so the outbox reaches a terminal state before the
+            // next item drains.
+            await settleAcceptedOutboxJob(clientMessageID: item.clientMessageID)
         } else {
+            sendPhase = .submitting
             let response = await heraldClient.send(
-                message: trimmedContent,
+                message: item.cleanText,
                 attachments: attachments,
-                clientMessageID: clientMessageID
+                clientMessageID: item.clientMessageID,
+                continuationContext: item.continuationContext
             )
-            if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+            if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
                 conversation?.messages[idx].status = .delivered
             }
             conversation?.messages.append(response)
@@ -369,6 +700,36 @@ final class ChatStore {
                 lastTokenUsage = latestUsage
             }
             await autoTitleIfNeeded()
+
+            if response.status == .failed {
+                // The client could not deliver the message (oversized payload,
+                // transport rejection, relay error). Show the failed state on
+                // the optimistic row and classify: size/format rejections are
+                // permanent (the user must change the input); transport and
+                // relay failures are retryable with backoff.
+                let error = response.content.isEmpty ? "Herald rejected the message" : response.content
+                if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
+                    conversation?.messages[idx].status = .failed
+                }
+                if Self.isPermanentSendFailure(error) {
+                    failOutboxItem(item, state: .permanentFailure, error: error)
+                } else {
+                    failOutboxItem(
+                        item,
+                        state: .retryableFailure,
+                        error: error,
+                        retryAfter: backoffInterval(forAttempt: item.attemptCount)
+                    )
+                }
+                sendPhase = .failed(error)
+            } else {
+                terminalizeOutboxItem(
+                    item,
+                    canonicalUserMessageID: item.clientMessageID,
+                    terminalMessageID: response.id
+                )
+                sendPhase = .completed
+            }
         }
 
         if !hasPendingMessages {
@@ -384,6 +745,273 @@ final class ChatStore {
             persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
+
+        // FIFO chain: after this job is no longer in flight (terminal success,
+        // permanent/retryable failure, cancelled), drain the next queued item
+        // for this conversation. A failed item never blocks the items behind it.
+        // Release the lease BEFORE the recursive call so it can re-acquire
+        // for the next item; the defer would not fire until this function
+        // returns, which is after the recursion completes.
+        if activeLeases[targetID] == lease {
+            activeLeases[targetID] = nil
+        }
+        if let current = outboxItems.first(where: { $0.clientMessageID == item.clientMessageID }),
+           !current.isInFlight {
+            sendPhaseOwner = nil
+            await submitNextEligible(for: targetID)
+        }
+    }
+
+    /// Cancel every in-flight outbox item (leased/submitted/accepted) —
+    /// user intent (stop button, archive) means never auto-resubmit. Queued
+    /// items are untouched.
+    private func cancelInFlightOutboxItems() {
+        var changed = false
+        for idx in outboxItems.indices where outboxItems[idx].isInFlight {
+            let item = outboxItems[idx]
+            failOutboxItem(item, state: .cancelled, error: "Cancelled by user")
+            if let messageIdx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
+                conversation?.messages[messageIdx].status = .failed
+            }
+            changed = true
+        }
+        if changed {
+            appendLog(level: .info, "Outbox: in-flight messages cancelled")
+        }
+    }
+
+    /// Mark the optimistic user row for `item` as failed and append a visible
+    /// system error — used when submission could not even start.
+    private func markOptimisticRowFailed(_ item: ChatOutboxRecord, error: String) {
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
+            conversation?.messages[idx].status = .failed
+        }
+        conversation?.messages.append(Message(
+            sender: .system,
+            content: error,
+            status: .failed
+        ))
+        cacheModifiedConversation()
+        onConversationChanged?()
+    }
+
+    /// Outbox state → .terminal with canonical identity, persisted.
+    private func terminalizeOutboxItem(
+        _ item: ChatOutboxRecord,
+        canonicalUserMessageID: UUID,
+        terminalMessageID: UUID?
+    ) {
+        guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) else { return }
+        var updated = outboxItems[idx]
+        updated.state = .terminal
+        updated.canonicalUserMessageID = updated.canonicalUserMessageID ?? canonicalUserMessageID
+        updated.terminalMessageID = terminalMessageID
+        updated.lastError = nil
+        updated.nextAttemptAt = nil
+        outboxItems[idx] = updated
+        persistOutbox()
+        outboxStore.removeStagedAttachments(for: updated)
+    }
+
+    /// Outbox state → retryable/permanent failure, persisted. When
+    /// `retryAfter` is nil the item is manual-retry-only (no auto-resubmit).
+    private func failOutboxItem(
+        _ item: ChatOutboxRecord,
+        state: OutboxItemState,
+        error: String,
+        retryAfter: TimeInterval? = nil
+    ) {
+        guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) else { return }
+        var updated = outboxItems[idx]
+        updated.state = state
+        updated.lastError = error
+        updated.attemptCount = max(updated.attemptCount, item.attemptCount)
+        if let retryAfter {
+            updated.nextAttemptAt = .now.addingTimeInterval(retryAfter)
+        } else {
+            updated.nextAttemptAt = nil
+        }
+        outboxItems[idx] = updated
+        persistOutbox()
+        if state == .permanentFailure || state == .cancelled {
+            outboxStore.removeStagedAttachments(for: updated)
+        }
+    }
+
+    /// Exponential backoff for a retryable failure: 5s, 10s, 20s, … capped at
+    /// 60s. Deliberately modest — the relay is usually healthy again quickly.
+    private func backoffInterval(forAttempt attemptCount: Int) -> TimeInterval {
+        min(60, 5 * pow(2.0, Double(max(attemptCount - 1, 0))))
+    }
+
+    /// Heuristic for send failures that retrying can never fix — payload
+    /// rejections (oversized attachments, unsupported types). Everything else
+    /// (transport, relay, upstream) is treated as retryable.
+    static func isPermanentSendFailure(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        return lower.contains("too large")
+            || lower.contains("larger than")
+            || lower.contains("exceeds the limit")
+            || lower.contains("exceeds the size")
+            || lower.contains("unsupported")
+            || lower.contains("not supported")
+    }
+
+    /// Query the relay for the authoritative status of an accepted outbox job
+    /// and settle the record to a terminal state. No-op when the record is
+    /// not `.accepted`, or when the relay cannot identify the job (it is then
+    /// left for `recoverOutbox` on the next foreground — never auto-resubmit).
+    private func settleAcceptedOutboxJob(clientMessageID: UUID) async {
+        guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
+              outboxItems[idx].state == .accepted,
+              let jobID = outboxItems[idx].jobID
+        else { return }
+        let item = outboxItems[idx]
+        guard let status = await heraldClient.getJobStatus(jobID) else { return }
+        switch status.status {
+        case "completed", "delivered", "succeeded", "success":
+            var updated = item
+            updated.state = .terminal
+            updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
+            updated.lastError = nil
+            updated.nextAttemptAt = nil
+            outboxItems[idx] = updated
+            persistOutbox()
+            outboxStore.removeStagedAttachments(for: updated)
+            sendPhase = .completed
+        case "failed":
+            let error = status.error ?? status.errorCategory ?? "Herald reported the job failed"
+            failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
+            sendPhase = .failed(error)
+        case "cancelled":
+            var updated = item
+            updated.state = .cancelled
+            updated.lastError = status.error
+            outboxItems[idx] = updated
+            persistOutbox()
+        default:
+            // Still running — leave .accepted; the poll loop and the next
+            // recovery pass reconcile it.
+            break
+        }
+    }
+
+    /// Persist the in-memory outbox to the manifest (atomic write).
+    private func persistOutbox() {
+        let manifest = ChatOutboxManifest(
+            schemaVersion: OutboxManifestStore.schemaVersion,
+            items: outboxItems,
+            nextSequence: outboxNextSequence
+        )
+        outboxStore.save(manifest)
+    }
+
+    private func updateOutboxItem(_ item: ChatOutboxRecord) {
+        guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) else { return }
+        outboxItems[idx] = item
+        persistOutbox()
+    }
+
+    /// Prune terminal records older than 24h — the transcript already owns
+    /// their content, and their staged bytes are gone.
+    private func pruneTerminalOutboxRecords() {
+        let cutoff = Date.now.addingTimeInterval(-24 * 60 * 60)
+        let before = outboxItems.count
+        outboxItems.removeAll { $0.isTerminal && $0.createdAt < cutoff }
+        if outboxItems.count != before {
+            persistOutbox()
+        }
+    }
+
+    // MARK: - Durable Outbox — Recovery (Build 33 WSB §4)
+
+    /// Reconcile the durable outbox on launch/foreground (called from
+    /// ChatScreen appear and app-did-become-active):
+    ///
+    /// - `.accepted` items with a jobID → query the relay for the
+    ///   authoritative job status (terminal, failed, cancelled, still running).
+    /// - `.retryableFailure` items whose backoff elapsed → re-queue.
+    /// - Stale `.materializing`/`.submitting` leases (process died mid-submit)
+    ///   → re-queue; resubmission is idempotent via the frozen clientMessageID.
+    /// - `.queued` items for the current conversation → submit.
+    ///
+    /// Items in ambiguous/corrupted states are NEVER auto-resubmitted — they
+    /// surface as visible failures with manual retry controls.
+    func recoverOutbox() async {
+        guard !restartInProgress else { return }
+        // Offline — settling accepted jobs or resubmitting would only fail
+        // (and a failed job-status probe must never be mistaken for a job the
+        // relay lost). Defer the whole pass until the transport is connected.
+        guard heraldClient.connectionStatus == .connected
+                || heraldClient.connectionStatus == .degraded else { return }
+
+        // 1. Accepted jobs: settle against the relay.
+        let accepted = outboxItems.filter { $0.state == .accepted && $0.jobID != nil }
+        for item in accepted {
+            guard let jobID = item.jobID else { continue }
+            guard let status = await heraldClient.getJobStatus(jobID) else {
+                // The relay cannot identify the job (unknown or unreachable).
+                // Do NOT resubmit — the original job may still be running and
+                // resubmission could duplicate it. Surface as a manual-only
+                // retryable failure.
+                failOutboxItem(
+                    item,
+                    state: .retryableFailure,
+                    error: "The relay could not report this message's status after relaunch. Check the conversation and retry if needed."
+                )
+                continue
+            }
+            switch status.status {
+            case "completed", "delivered", "succeeded", "success":
+                var updated = item
+                updated.state = .terminal
+                updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
+                updated.lastError = nil
+                updated.nextAttemptAt = nil
+                if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) {
+                    outboxItems[idx] = updated
+                }
+                persistOutbox()
+                outboxStore.removeStagedAttachments(for: updated)
+            case "failed":
+                let error = status.error ?? status.errorCategory ?? "Herald reported the job failed while the app was away"
+                failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
+            case "cancelled":
+                failOutboxItem(item, state: .cancelled, error: status.error ?? "Cancelled")
+            default:
+                // Still running — leave .accepted; the poll loop reconciles it
+                // once the conversation loads.
+                break
+            }
+        }
+
+        // 2. Expired retryable backoffs and stale leases (process died
+        // mid-submit) → back to .queued for the resubmit pass below.
+        let now = Date.now
+        var requeued = false
+        for idx in outboxItems.indices {
+            let state = outboxItems[idx].state
+            if state == .queued { continue }
+            if state == .retryableFailure,
+               let nextAttemptAt = outboxItems[idx].nextAttemptAt,
+               nextAttemptAt <= now {
+                outboxItems[idx].state = .queued
+                requeued = true
+            } else if state == .materializing || state == .submitting {
+                // A crashed submit left a lease behind. Re-leasing is safe:
+                // resubmission carries the same clientMessageID and the relay
+                // dedupes by it.
+                outboxItems[idx].state = .queued
+                outboxItems[idx].nextAttemptAt = nil
+                requeued = true
+            }
+        }
+        if requeued {
+            persistOutbox()
+        }
+
+        // 3. Submit queued items for the current conversation (FIFO chain).
+        await submitNextEligible()
     }
 
     /// Drives a single streaming attempt for an outgoing message.
@@ -400,18 +1028,25 @@ final class ChatStore {
         content: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
-        placeholderID: UUID
+        placeholderID: UUID,
+        continuationContext: String? = nil
     ) async {
         let jobAcceptedAt = Date.now
-        let stalled = await runStreamingAttempt(
+        let terminal = await runStreamingAttempt(
             content: content,
             attachments: attachments,
             clientMessageID: clientMessageID,
-            placeholderID: placeholderID
+            placeholderID: placeholderID,
+            continuationContext: continuationContext
         )
 
-        // If the stream completed normally (including explicit .failed), done.
-        guard stalled else { return }
+        // If the stream completed normally (including explicit .failed),
+        // .cancelled, or any other typed terminal, done — the consumer or
+        // the legacy internal watchdog has already applied the outbox and
+        // UI mutations for these cases. Only .stalled(jobID) needs the
+        // polling fallback below; the job is still alive on the relay
+        // and may resolve via a later refresh or explicit GET.
+        guard case .stalled = terminal else { return }
 
         // — Stream stalled — start parallel polling —
         streamingPhase = .stalled
@@ -443,8 +1078,22 @@ final class ChatStore {
                 if let idx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                     conversation?.messages[idx].status = .sending  // user message is retryable
                 }
+                // Durable outbox: absolute deadline exceeded — the job is
+                // unresolvable from the client's perspective. Mark retryable
+                // with backoff; recovery or manual retry resubmits.
+                if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                    let item = outboxItems[idx]
+                    failOutboxItem(
+                        item,
+                        state: .retryableFailure,
+                        error: "Job exceeded the absolute deadline",
+                        retryAfter: backoffInterval(forAttempt: item.attemptCount)
+                    )
+                }
                 activeStreams.removeAll()
                 streamingPhase = .idle
+                sendPhase = .failed(failureMessage(for: "timeout"))
+                sendPhaseOwner = nil
                 chatLiveActivity.endActivity()
                 pendingMessageSentAt = nil
                 return
@@ -495,13 +1144,20 @@ final class ChatStore {
     /// `.messageSent` (the relay merely accepting the job) does NOT count as
     /// progress, since that's precisely the point where the observed bug drops
     /// the job with zero further activity.
-    private func runStreamingAttempt(
+    private func runStreamingAttemptLegacy(
         content: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
-        placeholderID: UUID
+        placeholderID: UUID,
+        continuationContext: String? = nil
     ) async -> Bool {
-        let stream = heraldClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID)
+        // Build 31 (fix): capture the attempt generation so every event handler
+        // below can discard stale callbacks from a superseded attempt.  Retry
+        // and cancel bump activeAttemptID, instantly invalidating all in-flight
+        // events from the old stream coordinator.
+        let attemptID = activeAttemptID
+
+        let stream = heraldClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
@@ -523,6 +1179,14 @@ final class ChatStore {
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
+                    self.sendPhase = .waitingForHermes
+                    // Durable outbox: job accepted — record the jobID so
+                    // relaunch recovery can settle the job via the relay.
+                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        self.outboxItems[idx].state = .accepted
+                        self.outboxItems[idx].jobID = jobID
+                        self.persistOutbox()
+                    }
                     self.activeStreams[jobID] = placeholderID
                     // Correlate the placeholder with its server-assigned job
                     // identity so the conversation refresh merge can match
@@ -560,6 +1224,7 @@ final class ChatStore {
                     self.streamingProgressAt = .now
                     progressContinuation?.yield(())
                     self.streamingPhase = .streaming
+                    self.sendPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
                     // If this delta opens an inline <think>/<thinking> block and
@@ -586,6 +1251,7 @@ final class ChatStore {
                     self.streamingProgressAt = .now
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
+                    self.sendPhase = .streaming
                     if reasoningStartedAt == nil { reasoningStartedAt = .now }
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
@@ -640,6 +1306,7 @@ final class ChatStore {
                     break
 
                 case .finished(let finalMessage, let usage, let diff, let context):
+                    guard self.activeAttemptID == attemptID else { break }
                     progressContinuation?.yield(())
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingReasoning(placeholderID: placeholderID)
@@ -797,6 +1464,21 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
+                    // Durable outbox: the job reached a server terminal state —
+                    // record the canonical identities and release the phase.
+                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        var record = self.outboxItems[idx]
+                        record.state = .terminal
+                        record.terminalMessageID = finalMessage.id
+                        record.canonicalUserMessageID = record.canonicalUserMessageID ?? clientMessageID
+                        record.lastError = nil
+                        record.nextAttemptAt = nil
+                        self.outboxItems[idx] = record
+                        self.persistOutbox()
+                        self.outboxStore.removeStagedAttachments(for: record)
+                    }
+                    self.sendPhase = .completed
+                    self.sendPhaseOwner = nil
                     // Build 30: bump the conversation generation so any in-flight
                     // poll/refresh captures are discarded.  This ensures a stale
                     // server snapshot that arrived after terminal commit cannot
@@ -847,11 +1529,11 @@ final class ChatStore {
                         try? await UNUserNotificationCenter.current().add(request)
                     }
 
-                    // Build 31: drain the outbox queue after the active job
-                    // reaches a terminal state.  Items were enqueued by sending
-                    // while another turn was already streaming.
-                    await drainOutboxQueue()
-
+                    // Build 33 WSB: the FIFO chain lives in submitNextEligible —
+                    // when this attempt returns, its tail submits the next
+                    // queued item for the conversation. (Calling it here would
+                    // no-op anyway: submitInFlight is true for the whole
+                    // attempt, and the chain runs once it is released.)
                 case .started(let phase):
                     self.appendLog(level: .info, "Job started — phase: \(phase)")
                     progressContinuation?.yield(())
@@ -871,13 +1553,19 @@ final class ChatStore {
                     self.appendLog(level: .debug, "Job heartbeat — phase: \(phase)")
 
                 case .reconnecting:
+                    // Build 31 (fix): discard stale callbacks from a superseded
+                    // attempt.  A retry/replacement bumps activeAttemptID, so the
+                    // old stream coordinator's reconnect event cannot overwrite
+                    // the new attempt's banner or placeholder.
+                    guard self.activeAttemptID == attemptID else { break }
                     self.appendLog(level: .warn, "Stream reconnecting...")
                     self.streamingPhase = .reconnecting
+                    self.sendPhase = .restoringStream
                     // Reconnection attempts are transport recovery, not model
                     // progress. Do not reset the watchdog.
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        conv.messages[idx].toolActivity = "Reconnecting..."
+                        conv.messages[idx].toolActivity = "Restoring response stream…"
                         self.conversation = conv
                     }
                     // Start polling immediately as a parallel recovery path.
@@ -888,6 +1576,7 @@ final class ChatStore {
                     self.restartPendingPollingIfNeeded()
 
                 case .cancelled:
+                    guard self.activeAttemptID == attemptID else { break }
                     self.appendLog(level: .info, "Job cancelled")
                     progressContinuation?.yield(())
                     self.flushPendingReasoning(placeholderID: placeholderID)
@@ -903,6 +1592,16 @@ final class ChatStore {
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
+                    // Durable outbox: user cancelled — the item is never
+                    // auto-resubmitted; a manual retry re-enqueues fresh.
+                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        self.outboxItems[idx].state = .cancelled
+                        self.outboxItems[idx].lastError = "Cancelled by user"
+                        self.persistOutbox()
+                        self.outboxStore.removeStagedAttachments(for: self.outboxItems[idx])
+                    }
+                    self.sendPhase = .idle
+                    self.sendPhaseOwner = nil
                     // Build 23: cancellation must NOT mark the outgoing user
                     // message as delivered.  The green check is a final-delivery
                     // signal tied to a credible terminal result.
@@ -912,6 +1611,7 @@ final class ChatStore {
                     await self.autoTitleIfNeeded()
 
                 case .failed(let errorMessage, let category, let action):
+                    guard self.activeAttemptID == attemptID else { break }
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
                     // out the timeout, and handle it exactly as before.
@@ -955,13 +1655,33 @@ final class ChatStore {
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.chatLiveActivity.endActivity()
                     self.streamingPhase = .idle
+                    // Durable outbox: an explicit failure before acceptance is a
+                    // retryable failure with backoff; a failure AFTER acceptance
+                    // leaves the job with the relay — the polling fallback below
+                    // (or a later recovery pass) resolves it.
+                    if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        if acceptedJobID == nil {
+                            let item = self.outboxItems[idx]
+                            self.failOutboxItem(
+                                item,
+                                state: .retryableFailure,
+                                error: guidance,
+                                retryAfter: self.backoffInterval(forAttempt: item.attemptCount)
+                            )
+                        } else {
+                            self.outboxItems[idx].lastError = errorMessage
+                            self.persistOutbox()
+                        }
+                    }
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
                     }
                     if acceptedJobID != nil {
                         needsPollingFallback = true
+                        self.sendPhase = .restoringStream
                     } else {
                         self.pendingMessageSentAt = nil
+                        self.sendPhase = .failed(guidance)
                     }
                     await self.autoTitleIfNeeded()
                 }
@@ -1037,6 +1757,96 @@ final class ChatStore {
         return false
     }
 
+    // MARK: - Structured concurrency race (Build 102 P0-A)
+
+    /// Sibling watchdog that races the stream consumer in `withTaskGroup`.
+    /// Returns a typed terminal result; the consumer is cancelled when this
+    /// returns `.stalled(jobID)` or `.cancelledByUser`.
+    ///
+    /// Build 102 marching orders §5: replaces the legacy polling loop
+    /// (`while !consumerTask.isCancelled` + 5s sleep) with structured
+    /// completion. A normally-completed consumer wins the race immediately;
+    /// the legacy code conflated normal completion with stall because the
+    /// consumer task was never `isCancelled` after a clean `.finished`.
+    private func attemptWatchdog(attemptID: UUID, startedAt: Date) async -> StreamTerminal {
+        while !Task.isCancelled {
+            if activeAttemptID != attemptID { return .cancelledByUser }
+
+            try? await Task.sleep(for: .seconds(5))
+            if Task.isCancelled { return .cancelledByUser }
+            if activeAttemptID != attemptID { return .cancelledByUser }
+
+            let wallElapsed = Date.now.timeIntervalSince(startedAt)
+            let wallDeadline = Self.absoluteJobDeadline / .seconds(1)
+            if wallElapsed >= wallDeadline {
+                let jobID = self.acceptedJobID ?? UUID()
+                Self.logger.warning(
+                    "attemptWatchdog: absolute deadline exceeded (\(Int(wallElapsed))s) — returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
+                )
+                return .stalled(jobID: jobID)
+            }
+
+            let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
+            if elapsed > Self.watchdogTimeout {
+                let jobID = self.acceptedJobID ?? UUID()
+                Self.logger.warning(
+                    "attemptWatchdog: no progress for \(Int(elapsed.components.seconds))s — returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
+                )
+                return .stalled(jobID: jobID)
+            }
+        }
+        return .cancelledByUser
+    }
+
+    /// Structured-concurrency wrapper that races the legacy consumer against
+    /// `attemptWatchdog`. The first terminal wins; the other branch is
+    /// cancelled. Replaces the legacy call site in `runAttemptLoop`.
+    ///
+    /// Known limitation (Build 102 follow-up): the inner legacy function
+    /// still has its own internal polling loop. If the consumer finishes
+    /// normally (Bool=false), this returns `.completed`; if the inner
+    /// polling detects a stall (Bool=true), this returns `.stalled`. The
+    /// outer watchdog fires only when the inner one is slower than it —
+    /// in practice this means the outer watchdog rarely wins, but it
+    /// bounds wall-clock latency to ~watchdogTimeout for the failure
+    /// detection path. A future revision should migrate the consumer to
+    /// its own typed terminal and drop the inner polling loop entirely.
+    private func runStreamingAttempt(
+        content: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        placeholderID: UUID,
+        continuationContext: String? = nil
+    ) async -> StreamTerminal {
+        let attemptID = activeAttemptID
+        let startedAt = Date.now
+        self.acceptedJobID = nil
+
+        return await withTaskGroup(of: StreamTerminal?.self, returning: StreamTerminal.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return StreamTerminal.cancelledByUser }
+                let stalled = await self.runStreamingAttemptLegacy(
+                    content: content,
+                    attachments: attachments,
+                    clientMessageID: clientMessageID,
+                    placeholderID: placeholderID,
+                    continuationContext: continuationContext
+                )
+                return stalled
+                    ? .stalled(jobID: self.acceptedJobID ?? UUID())
+                    : .completed
+            }
+            group.addTask { [weak self] in
+                await self?.attemptWatchdog(attemptID: attemptID, startedAt: startedAt)
+            }
+
+            let first = await group.next() ?? .cancelledByUser
+            group.cancelAll()
+            _ = await group.next()  // drain cancelled task
+            return first ?? .cancelledByUser
+        }
+    }
+
     /// The user-facing failure copy, using the active profile name when
     /// available and falling back to "Herald".
     func failureMessage(for category: String? = nil) -> String {
@@ -1055,11 +1865,29 @@ final class ChatStore {
         }
     }
 
+    /// Build 33: reload the ACTIVE conversation after a gateway restart.
+    /// Resolves by the on-screen conversation's id so a connector-global
+    /// "current" session (which may be a different thread on multi-device
+    /// setups) can never clobber the thread the user has open.
+    func reloadConversationAfterRestart() async {
+        if let activeID = conversation?.id {
+            await loadConversation(id: activeID)
+        } else {
+            await loadConversation()
+        }
+    }
+
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil
         activeStreams.removeAll()
         chatLiveActivity.endActivity()
+        // Durable outbox: in-flight items belong to the conversation being
+        // archived — cancel them; queued items for OTHER conversations are
+        // preserved (they resubmit when that conversation becomes current).
+        cancelInFlightOutboxItems()
+        sendPhase = .idle
+        sendPhaseOwner = nil
         // Zero out context immediately so the UI resets to 0% before the
         // server round-trip — prevents the ring lingering at 100% if the
         // server returns a fresh conversation that still carries stale usage.
@@ -1142,6 +1970,93 @@ final class ChatStore {
         }
     }
 
+    // MARK: - Gateway restart suspension (Build 33)
+
+    /// Called when a Hermes gateway restart is confirmed and in progress.
+    /// The gateway is about to go down, so no stream or poll can complete:
+    /// invalidate every in-flight stream/poll, settle placeholders as
+    /// interrupted, and flip the UI into the restarting state. New sends are
+    /// queued visibly by `sendMessage` while suspended.
+    func beginRestartSuspension() {
+        guard !restartInProgress else { return }
+        restartInProgress = true
+
+        streamingTask?.cancel()
+        streamingTask = nil
+        // Invalidate stale callbacks from the cancelled stream coordinator.
+        activeAttemptID = UUID()
+        pollingTask?.cancel()
+        pollingTask = nil
+        chatLiveActivity.endActivity()
+        ttsService?.stop()
+        streamingPhase = .restarting
+
+        // Durable outbox: any in-flight job is dead once the gateway is
+        // replaced — return the leases to .queued so resumeAfterRestart()
+        // re-submits them. Resubmission is idempotent via the frozen
+        // clientMessageID (the relay dedupes by it).
+        var requeued = false
+        for idx in outboxItems.indices where outboxItems[idx].isInFlight {
+            outboxItems[idx].state = .queued
+            outboxItems[idx].nextAttemptAt = nil
+            requeued = true
+        }
+        if requeued {
+            persistOutbox()
+            appendLog(level: .warn, "Outbox: \(outboxItems.filter { $0.state == .queued }.count) message(s) requeued for after-restart submit")
+        }
+        sendPhase = .queued
+        sendPhaseOwner = nil
+
+        // Settle every streaming placeholder as interrupted before clearing
+        // ownership — otherwise the placeholder renders a forever-animating
+        // bubble with no live stream behind it.
+        let placeholders = Array(activeStreams.values)
+        activeStreams.removeAll()
+        for placeholderID in placeholders {
+            flushPendingReasoning(placeholderID: placeholderID)
+            flushPendingDeltas(placeholderID: placeholderID)
+            if var conv = conversation,
+               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                conv.messages[idx].isStreaming = false
+                conv.messages[idx].status = .interrupted
+                for i in conv.messages[idx].toolActivities.indices {
+                    conv.messages[idx].toolActivities[i].isActive = false
+                }
+                conversation = conv
+            }
+        }
+        pendingMessageSentAt = nil
+
+        appendLog(level: .warn, "Hermes gateway restart — streaming and polling suspended")
+        if let conversation {
+            persistence.saveConversationCache(conversation)
+            onConversationChanged?()
+        }
+    }
+
+    /// Called when the restart reaches a terminal state (healthy or failed).
+    /// Re-enables sends, drains the visibly-queued outbox, and restarts the
+    /// polling safety net so in-flight job state reconciles against the fresh
+    /// gateway. Conversation/model reloads are orchestrated by the caller
+    /// (SettingsScreen.recoverAfterRestart).
+    func resumeAfterRestart() async {
+        restartInProgress = false
+        streamingPhase = .idle
+        appendLog(level: .info, "Hermes gateway restart settled — sending resumed")
+
+        // Drain the durable outbox: submit queued items for the current
+        // conversation FIFO. Items for other conversations stay durably
+        // queued and submit when that conversation becomes current.
+        await submitNextEligible()
+        restartPendingPollingIfNeeded()
+
+        if let conversation {
+            persistence.saveConversationCache(conversation)
+            onConversationChanged?()
+        }
+    }
+
     func cancelStreaming() {
         // Build 31: cancel the server-side job before tearing down local state.
         // Previously this only did local teardown — the server job kept running
@@ -1164,9 +2079,16 @@ final class ChatStore {
 
         streamingTask?.cancel()
         streamingTask = nil
+        // Invalidate stale callbacks from the cancelled stream coordinator.
+        activeAttemptID = UUID()
         chatLiveActivity.endActivity()
         ttsService?.stop()
         streamingPhase = .idle  // D3: A cancelled stream is not reconnecting
+        // Durable outbox: any in-flight item is cancelled by user intent —
+        // never auto-resubmitted.
+        cancelInFlightOutboxItems()
+        sendPhase = .idle
+        sendPhaseOwner = nil
 
         // Flush any buffered deltas onto the placeholder before finalizing.
         if let sid = streamingMessageID {
@@ -1199,45 +2121,44 @@ final class ChatStore {
         }
     }
 
-    // MARK: - Outbox Queue (Build 31)
+    // MARK: - Outbox Queue (Build 31 → Build 33 WSB durable)
 
     /// Enqueue a message to be sent after the active turn finishes.
-    /// Called when the user taps Send while a response is already streaming.
-    /// The item freezes its conversation identity at enqueue time — switching
-    /// chats cannot drain an item into the wrong conversation.
-    func queueNextMessage(text: String, attachments: [PendingAttachment]) {
-        guard let conversation else { return }
-        let item = QueuedItem(
-            conversationID: conversation.id,
-            text: text,
-            attachments: attachments,
-            clientMessageID: UUID()
-        )
-        queuedOutboxItems.append(item)
-        Logger.app.info("Outbox: queued message \(item.clientMessageID.uuidString.prefix(8)) — \(self.queuedOutboxItems.count) pending")
+    /// Called when the user taps the queue button while a response is already
+    /// streaming. Durable: the item goes into the on-disk outbox manifest and
+    /// survives force-quit. Returns the record, or nil when the message was
+    /// rejected (empty/duplicate) — the caller should then keep the draft.
+    @discardableResult
+    func queueNextMessage(text: String, attachments: [PendingAttachment]) -> ChatOutboxRecord? {
+        enqueueMessage(text, attachments: attachments)
     }
 
-    /// Remove a queued item by ID.
+    /// Remove a queued item by ID. Items that are in flight (leased/submitted)
+    /// are cancelled instead — never silently dropped mid-job.
     func removeQueuedItem(_ id: UUID) {
-        queuedOutboxItems.removeAll { $0.id == id }
+        if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == id }) {
+            let item = outboxItems[idx]
+            if item.isInFlight {
+                failOutboxItem(item, state: .cancelled, error: "Removed by user")
+                if let messageIdx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
+                    conversation?.messages[messageIdx].status = .failed
+                }
+            } else {
+                outboxItems.remove(at: idx)
+                persistOutbox()
+                outboxStore.removeStagedAttachments(for: item)
+            }
+            onConversationChanged?()
+        }
     }
 
-    /// Drain the outbox queue: submit each item FIFO, waiting for each
-    /// preceding job to reach a server terminal state before starting the next.
-    private func drainOutboxQueue() async {
-        while !self.queuedOutboxItems.isEmpty {
-            let item = self.queuedOutboxItems.removeFirst()
-            Logger.app.info("Outbox: draining \(item.clientMessageID.uuidString.prefix(8)) — \(self.queuedOutboxItems.count) remaining")
-
-            // Verify we're still in the same conversation
-            guard conversation?.id == item.conversationID else {
-                Logger.app.info("Outbox: skipping — conversation changed")
-                continue
-            }
-
-            // Submit with the frozen clientMessageID so retry idempotency works
-            await sendMessage(item.text, attachments: item.attachments, clientMessageID: item.clientMessageID)
-        }
+    /// Count of queued-but-not-yet-submitted items for the current
+    /// conversation — drives the "N queued" composer hint.
+    var queuedCountForCurrentConversation: Int {
+        guard let conversationID = conversation?.id else { return 0 }
+        return outboxItems.filter {
+            $0.conversationID == conversationID && $0.state == .queued
+        }.count
     }
 
     /// `streamingPhase` is UI-only state that outlives the transport it describes.
@@ -1245,7 +2166,20 @@ final class ChatStore {
     /// be reconciled against `isStreaming` on every foreground — otherwise a
     /// "Reconnecting…" banner latches until relaunch (B4/D3).
     func reconcileStreamingPhase() {
+        // Build 33: a gateway restart keeps the restarting phase even though
+        // no stream is in flight — the transport is gone ON PURPOSE.
+        if restartInProgress { return }
         if !isStreaming { streamingPhase = .idle }
+        // Build 33 WSB: the send phase must also reflect the outbox reality —
+        // backgrounding kills the SSE task without a terminal event, so a
+        // latched .submitting/.streaming phase needs settling. Queued items
+        // keep .queued; recovery resubmits them.
+        let hasInFlight = outboxItems.contains { $0.isInFlight }
+        let hasQueued = outboxItems.contains { $0.state == .queued }
+        if !hasInFlight {
+            sendPhase = hasQueued ? .queued : .idle
+            sendPhaseOwner = nil
+        }
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID, duration: TimeInterval) async {
@@ -1358,25 +2292,56 @@ final class ChatStore {
 
         guard let sourceMessage else { return }
         let attachments = sourceMessage.attachments.compactMap(PendingAttachment.restore)
-        var content = normalizedRetryContent(for: sourceMessage)
+        let content = normalizedRetryContent(for: sourceMessage)
         guard !content.isEmpty || !attachments.isEmpty else { return }
 
-        // If the failed message was an assistant response that had partial
-        // content (truncated/incomplete), prepend a continuation hint so the
-        // agent knows to pick up where it left off rather than restarting.
         if message.sender != .user && !message.content.isEmpty {
-            // Only remove the failed assistant message — keep the user message.
-            conversation?.messages.removeAll { $0.id == message.id }
-            let tail = String(message.content.suffix(120))
-            content = "[Your previous response was cut off. It ended with: \"\(tail)\". Continue from where you stopped.]\n\n\(content)"
-        } else {
-            // Failed user message or empty assistant response — remove and resend fresh.
-            conversation?.messages.removeAll { $0.id == message.id }
-        }
+            // Build 31 (fix): cancel the original streaming task and server-side
+            // job so stale callbacks from the superseded attempt cannot mutate
+            // the new placeholder, reconnecting banner, or transcript.
+            streamingTask?.cancel()
+            streamingTask = nil
+            // Bump the attempt generation so every in-flight event from the
+            // old stream coordinator is discarded — the guard check at each
+            // case in the consumer loop rejects events with a stale attemptID.
+            activeAttemptID = UUID()
 
-        // Always use a fresh clientMessageID so the relay processes this as a
-        // new message rather than deduplicating against the failed attempt.
-        await sendMessage(content, attachments: attachments, clientMessageID: UUID())
+            // Cancel the server-side job for the failed/incomplete response.
+            // This is best-effort — a fast terminal reply may have already
+            // persisted; the reduce path will reconcile that idempotently.
+            if let originalJobID = activeStreams.first(where: { $0.value == message.id })?.key {
+                Task {
+                    do {
+                        try await heraldClient.cancelJob(jobID: originalJobID)
+                        Logger.app.info("Retry: cancelled original job \(originalJobID.uuidString.prefix(8))")
+                    } catch {
+                        Logger.app.warning("Retry: server cancel failed for \(originalJobID.uuidString.prefix(8)): \(error.localizedDescription)")
+                    }
+                    activeStreams.removeValue(forKey: originalJobID)
+                }
+            }
+
+            // Only remove the failed assistant placeholder — keep the user message.
+            conversation?.messages.removeAll { $0.id == message.id }
+
+            // Build 31 (fix): continuation context is transport metadata.
+            // The tail snippet helps Hermes resume, but must never appear as
+            // canonical user content in the transcript, copy/share, TTS, or
+            // notifications.  Prior code prepended it directly to the user
+            // text, which was persisted and displayed as a visible bubble.
+            let tail = String(message.content.suffix(120))
+            let continuationContext = "The previous response was cut off. It ended with: \"\(tail)\". Continue from where you stopped."
+            await sendMessage(
+                content,
+                attachments: attachments,
+                clientMessageID: sourceMessage.clientMessageID,
+                continuationContext: continuationContext
+            )
+        } else {
+            // Failed user message or empty assistant response — remove and resend.
+            conversation?.messages.removeAll { $0.id == message.id }
+            await sendMessage(content, attachments: attachments, clientMessageID: UUID())
+        }
     }
 
     func setPollingEnabled(_ isEnabled: Bool) {
@@ -1418,7 +2383,21 @@ final class ChatStore {
         pollingTask = nil
         streamingTask?.cancel()
         streamingTask = nil
+        activeAttemptID = UUID()  // invalidate all in-flight stream callbacks
         activeStreams.removeAll()
+        restartInProgress = false  // Build 33: don't carry suspension across sessions
+        // Build 33 WSB: reload the durable outbox from disk — a profile
+        // switch must not carry stale in-memory records (or a phantom
+        // sendPhase) into the new session.
+        let manifest = outboxStore.load()
+        outboxItems = manifest.items
+        outboxNextSequence = manifest.nextSequence
+        sendPhase = .idle
+        sendPhaseOwner = nil
+        // Drop every per-conversation lease — a fresh session has no in-flight
+        // attempts. The durable outbox on disk is reloaded above and its
+        // queued items will be re-leased as needed by the next submitNextEligible.
+        activeLeases.removeAll()
         // Preserve log entries across resets — they're diagnostic history,
         // not session state. Append a marker so the user can see where
         // one session ended and another began.
@@ -1863,6 +2842,20 @@ final class ChatStore {
                 message.jobID.map { "\($0.uuidString)|\(message.sender)" }
             }
         )
+        // Build 102 P0-C: clientMessageID is the AUTHORITATIVE identity for
+        // a user row — it travels from the outbox primary key through every
+        // connector response. session_store._message_to_dict returns it on
+        // every user message (http_facade.py user rows). Keyed by sender so
+        // an assistant row carrying the same clientMessageID is a different
+        // identity and never collides. Identity-by-clientMessageID is checked
+        // BEFORE fingerprint fallback per marching orders §7 reconciliation
+        // hierarchy: (1) canonical id, (2) clientMessageID+sender,
+        // (3) jobID+sender, (4) content fingerprint (legacy only).
+        let refreshedClientMessageKeys = Set(
+            refreshedConversation.messages.compactMap { message in
+                message.clientMessageID.map { "\($0.uuidString)|\(message.sender)" }
+            }
+        )
         // Fingerprint → the refreshed indices carrying it, oldest first.  The
         // set is what the dedupe checks; the map is what makes a deduped local
         // message *anchorable* (see the claim loop below).
@@ -1932,6 +2925,31 @@ final class ChatStore {
         for message in localConversation.messages {
             if segmentedLocalIDs.contains(message.id) { continue }
             if refreshedIDs.contains(message.id) { continue }
+            // Build 102 P0-C: clientMessageID is the AUTHORITATIVE identity for
+            // a user row. When the refreshed conversation carries a server
+            // twin with the same clientMessageID+sender, the local optimistic
+            // row is COLLASED onto it (per marching orders §7 step 6) — the
+            // server's canonical message id takes over, and the local row's
+            // attachment metadata is preserved by the post-merge attachment
+            // logic below.  This is checked BEFORE the jobID+sender path so
+            // a user prompt is matched to its server twin even when the
+            // server's jobID lookup is stale or missing.
+            if let clientMsgID = message.clientMessageID,
+               refreshedClientMessageKeys.contains("\(clientMsgID.uuidString)|\(message.sender)") {
+                // Find the matching refreshed index — there must be exactly
+                // one (the server twin), claim it, and record the mapping.
+                if let twinIdx = refreshedConversation.messages.firstIndex(where: {
+                    $0.clientMessageID == clientMsgID && $0.sender == message.sender
+                }) {
+                    if !claimedRefreshedIndices.contains(twinIdx) {
+                        claimedRefreshedIndices.insert(twinIdx)
+                        localToRefreshedIndex[message.id] = twinIdx
+                        continue
+                    }
+                    // Twin already claimed by a sibling local row (e.g.
+                    // another optimistic copy). Fall through to localOnly.
+                }
+            }
             // The server assigns its own message ids; jobID and content are the
             // only cross-identity handles we have, and matching on them keeps
             // the same answer from appearing twice.

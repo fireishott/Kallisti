@@ -97,6 +97,8 @@ struct HeraldLiveActivity: Widget {
                     if let tool = context.state.toolName {
                         Text(tool)
                             .font(.system(.caption2, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                             .foregroundStyle(HeraldBrand.accent.opacity(0.8))
                     }
                 }
@@ -142,14 +144,21 @@ struct HeraldLiveActivity: Widget {
                     .tracking(1.2)
                     .foregroundStyle(.secondary)
 
+                // Build 32: status and detail are sanitized by LiveActivityService
+                // to a small enum.  Line limits are defense-in-depth — even if a
+                // future code path writes raw text, it can never expand the card.
                 Text(context.state.status)
                     .font(.subheadline)
                     .italic()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .foregroundStyle(.primary)
 
                 if let tool = context.state.toolName {
                     Text(tool)
                         .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                         .foregroundStyle(HeraldBrand.accent)
                 }
             }
@@ -170,6 +179,7 @@ struct HeraldLiveActivity: Widget {
             }
         }
         .padding()
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func formatDuration(_ seconds: Int) -> String {

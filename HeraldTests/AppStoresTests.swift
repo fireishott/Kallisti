@@ -207,13 +207,13 @@ struct AppStoresTests {
 
         func disconnect() async {}
 
-        func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+        func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
             sendCallCount += 1
             lastClientMessageID = clientMessageID
             return nextResponse
         }
 
-        func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+        func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
             AsyncStream { continuation in
                 Task { @MainActor in
                     sendCallCount += 1
@@ -250,6 +250,8 @@ struct AppStoresTests {
         func createSession(title: String) async throws -> SessionSummary {
             SessionSummary(id: UUID(), title: title)
         }
+
+        func ensureConversation(id: UUID) async -> Bool { true }
 
         func deleteSession(id: UUID) async throws {}
 
@@ -477,11 +479,11 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 let jobID = UUID()
                 let finalMessageID = UUID()
                 currentConversation = Conversation(
@@ -543,6 +545,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -578,11 +581,11 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.finish()
@@ -605,6 +608,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -643,11 +647,11 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -673,6 +677,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -713,11 +718,11 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
                     title: "Herald",
                     messages: [
@@ -758,6 +763,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -983,13 +989,13 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 lastMessage = message
                 lastAttachments = attachments
                 return Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 lastMessage = message
                 lastAttachments = attachments
                 return AsyncStream { continuation in
@@ -1016,6 +1022,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -1063,11 +1070,11 @@ struct AppStoresTests {
             func connect() async {}
             func disconnect() async {}
 
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "unused", status: .delivered)
             }
 
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 currentConversation = Conversation(
                     title: "Herald",
                     messages: [
@@ -1114,6 +1121,7 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2770,10 +2778,10 @@ struct NotificationReplyTests {
 
             func connect() async {}
             func disconnect() async {}
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -2788,6 +2796,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2842,10 +2851,10 @@ struct NotificationReplyTests {
 
             func connect() async {}
             func disconnect() async {}
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -2860,6 +2869,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2913,10 +2923,10 @@ struct NotificationReplyTests {
 
             func connect() async {}
             func disconnect() async {}
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -2931,6 +2941,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2986,10 +2997,10 @@ struct NotificationReplyTests {
 
             func connect() async {}
             func disconnect() async {}
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -3004,6 +3015,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -3054,10 +3066,10 @@ struct NotificationReplyTests {
 
             func connect() async {}
             func disconnect() async {}
-            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message {
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
-            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
                 AsyncStream { continuation in
                     Task { @MainActor in
                         continuation.yield(.messageSent(jobID: UUID()))
@@ -3072,6 +3084,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }

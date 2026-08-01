@@ -185,6 +185,19 @@ final class RelayAPIClient {
         let error: ErrorPayload
     }
 
+    /// Build 32: protocol mismatch detail returned by the connector (HTTP 426).
+    /// FastAPI wraps the dict-style detail in {"detail": {...}} — the inner
+    /// dict carries the structured fields so the UI can render a typed
+    /// compatibility card instead of raw JSON.
+    private struct ProtocolMismatchBody: Decodable {
+        struct Detail: Decodable {
+            let requiredProtocol: Int
+            let clientProtocol: Int?
+            let message: String?
+        }
+        let detail: Detail
+    }
+
     private struct FastAPIErrorEnvelope: Decodable {
         let detail: String
 
@@ -212,6 +225,10 @@ final class RelayAPIClient {
         case invalidURL(String)
         case requestFailed(String)
         case serverError(code: String, message: String, requestId: String?, status: Int)
+        /// Build 32: protocol version mismatch — the app requires a connector
+        /// update.  Carries structured fields so the UI can render a typed
+        /// compatibility card instead of a raw JSON dictionary.
+        case protocolMismatch(requiredProtocol: Int, clientProtocol: Int, message: String)
 
         var errorDescription: String? {
             switch self {
@@ -225,7 +242,17 @@ final class RelayAPIClient {
                 var desc = "[\(code)] \(message)"
                 if let requestId { desc += " (request: \(requestId))" }
                 return desc
+            case .protocolMismatch(let requiredProtocol, let clientProtocol, let message):
+                return message
             }
+        }
+
+        /// Structured protocol mismatch info, or nil for other error kinds.
+        var protocolMismatchInfo: (required: Int, client: Int, message: String)? {
+            if case let .protocolMismatch(required, client, message) = self {
+                return (required, client, message)
+            }
+            return nil
         }
     }
 
@@ -499,46 +526,200 @@ final class RelayAPIClient {
         }
 
         guard (200 ..< 300).contains(httpResponse.statusCode) else {
-            let status = httpResponse.statusCode
-
-            if status == 401 {
-                if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
-                    throw ClientError.unauthorized(envelope.error.message)
-                }
-                if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
-                    throw ClientError.unauthorized(envelope.detail)
-                }
-                throw ClientError.unauthorized(plainTextReason(from: data) ?? "Unauthorized")
-            }
-
-            if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
-                throw ClientError.serverError(
-                    code: envelope.error.code,
-                    message: envelope.error.message,
-                    requestId: envelope.error.requestId,
-                    status: status
-                )
-            }
-
-            if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
-                throw ClientError.requestFailed(envelope.detail)
-            }
-
-            let hint: String
-            switch status {
-            case 502:
-                hint = "Relay gateway error (502) — the relay cannot reach the connector backend. Check that the connector is running on the host."
-            case 503:
-                hint = "Relay temporarily unavailable (503) — the service may be restarting. Retry in a moment."
-            case 504:
-                hint = "Relay gateway timeout (504) — the connector did not respond in time. The host may be overloaded."
-            default:
-                hint = "Relay request failed with status \(status)."
-            }
-            throw ClientError.requestFailed(plainTextReason(from: data) ?? hint)
+            throw Self.decodeClientError(data: data, status: httpResponse.statusCode, decoder: decoder)
         }
 
         return try decoder.decode(Envelope<T>.self, from: data).data
+    }
+
+    /// Builds the typed `ClientError` for a non-2xx response, shared by the
+    /// envelope-decoding request path and the gateway-control path.
+    private static func decodeClientError(data: Data, status: Int, decoder: JSONDecoder) -> ClientError {
+        if status == 401 {
+            if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
+                return .unauthorized(envelope.error.message)
+            }
+            if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
+                return .unauthorized(envelope.detail)
+            }
+            return .unauthorized(plainTextReason(from: data) ?? "Unauthorized")
+        }
+
+        // Build 32: detect protocol version mismatch (HTTP 426).
+        // The connector returns structured fields so the UI can render a
+        // typed "Connector update required" card instead of raw JSON.
+        if status == 426 {
+            if let mismatch = try? decoder.decode(ProtocolMismatchBody.self, from: data) {
+                return .protocolMismatch(
+                    requiredProtocol: mismatch.detail.requiredProtocol,
+                    clientProtocol: mismatch.detail.clientProtocol ?? 0,
+                    message: mismatch.detail.message ?? "This Herald build requires a connector update."
+                )
+            }
+            // Fallback: still show a clean message, not raw JSON
+            return .protocolMismatch(
+                requiredProtocol: 0, clientProtocol: 0,
+                message: "This Herald build requires a connector update. Please update the Herald connector to continue."
+            )
+        }
+
+        if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
+            return .serverError(
+                code: envelope.error.code,
+                message: envelope.error.message,
+                requestId: envelope.error.requestId,
+                status: status
+            )
+        }
+
+        if let envelope = try? decoder.decode(FastAPIErrorEnvelope.self, from: data) {
+            return .requestFailed(envelope.detail)
+        }
+
+        let hint: String
+        switch status {
+        case 502:
+            hint = "Relay gateway error (502) — the relay cannot reach the connector backend. Check that the connector is running on the host."
+        case 503:
+            hint = "Relay temporarily unavailable (503) — the service may be restarting. Retry in a moment."
+        case 504:
+            hint = "Relay gateway timeout (504) — the connector did not respond in time. The host may be overloaded."
+        default:
+            hint = "Relay request failed with status \(status)."
+        }
+        return .requestFailed(plainTextReason(from: data) ?? hint)
+    }
+
+    // MARK: - Gateway control-plane requests (Build 33 restart flow)
+
+    /// GET a gateway-control endpoint, decoding the payload raw-first with the
+    /// relay envelope (`{"data": …}`) as fallback. The connector's envelope
+    /// middleware passes JSON bodies containing an `error` key through
+    /// un-enveloped — restart-operation bodies always carry one (null while
+    /// healthy) so they arrive raw; preflight and health bodies are enveloped.
+    func getGatewayControl<T: Decodable>(
+        path: String,
+        accessToken: String? = nil
+    ) async throws -> T {
+        let request = try makeGatewayRequest(path: path, method: "GET", accessToken: accessToken, body: nil)
+        return try await sendGatewayControl(request)
+    }
+
+    /// Outcome of a `POST /gw/restart` call.
+    enum GatewayRestartResult: Sendable {
+        /// Build 33 connector: an operation with phase/checks that can be
+        /// polled via `GET /gw/restart/{operationId}`.
+        case operation(RestartOperation)
+        /// Pre-Build-33 connector: legacy `{restarting: …}` shape, no
+        /// operation tracking. Verification falls back to `GET /gw/health`.
+        case legacy(RestartResponse)
+    }
+
+    /// POST `/gw/restart` with an optional `Idempotency-Key` header.
+    ///
+    /// Decodes, in order: the new raw operation shape (fixture
+    /// `operation_accepted.json`), the enveloped operation shape, the legacy
+    /// `RestartResponse` shape (raw or enveloped) — the pre-Build-33 connector
+    /// still accepts old-style calls without an Idempotency-Key, and its
+    /// `{restarting: …}` answer must not crash the new flow.
+    ///
+    /// A 409 conflict whose body is an existing operation (fixture
+    /// `conflict_in_progress.json`) is returned as `.operation` — a restart is
+    /// already in progress and the caller should join and poll it. A 409 with
+    /// the standard error envelope means the confirmed preflight is stale and
+    /// surfaces as `ClientError.serverError(…, status: 409)`.
+    func postGatewayRestart(
+        body: RestartSubmission,
+        accessToken: String?,
+        idempotencyKey: String?
+    ) async throws -> GatewayRestartResult {
+        let requestBody = try encoder.encode(body)
+        var request = try makeGatewayRequest(
+            path: "gw/restart",
+            method: "POST",
+            accessToken: accessToken,
+            body: requestBody
+        )
+        if let idempotencyKey, !idempotencyKey.isEmpty {
+            request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClientError.requestFailed("Relay returned an invalid response.")
+        }
+        let status = httpResponse.statusCode
+
+        if (200 ..< 300).contains(status) {
+            if let operation = try? decoder.decode(RestartOperation.self, from: data) {
+                return .operation(operation)
+            }
+            if let enveloped = try? decoder.decode(Envelope<RestartOperation>.self, from: data) {
+                return .operation(enveloped.data)
+            }
+            // Legacy shape: the old connector returns `{restarting: Bool, …}`.
+            if let legacy = try? decoder.decode(RestartResponse.self, from: data) {
+                return .legacy(legacy)
+            }
+            if let enveloped = try? decoder.decode(Envelope<RestartResponse>.self, from: data) {
+                return .legacy(enveloped.data)
+            }
+            throw ClientError.requestFailed("Unrecognized restart response from the gateway.")
+        }
+
+        if status == 409 {
+            // Restart already in progress — the connector returns the existing
+            // operation body (it carries an `error` key, so the middleware
+            // passes it through un-enveloped).
+            if let operation = try? decoder.decode(RestartOperation.self, from: data) {
+                return .operation(operation)
+            }
+        }
+
+        throw Self.decodeClientError(data: data, status: status, decoder: decoder)
+    }
+
+    /// Sends a gateway-control request and decodes the body with
+    /// `decodeGatewayPayload` (envelope-aware; see `getGatewayControl`).
+    private func sendGatewayControl<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClientError.requestFailed("Relay returned an invalid response.")
+        }
+        let status = httpResponse.statusCode
+
+        if (200 ..< 300).contains(status) {
+            return try Self.decodeGatewayPayload(data, as: T.self, decoder: decoder)
+        }
+
+        if status == 409 {
+            // A 409 restart conflict carries the existing operation body raw
+            // (operation dicts pass the middleware un-enveloped).
+            if let existing = try? Self.decodeGatewayPayload(data, as: T.self, decoder: decoder) {
+                return existing
+            }
+        }
+
+        throw Self.decodeClientError(data: data, status: status, decoder: decoder)
+    }
+
+    /// Decodes a gateway-control payload: enveloped (`{"data": …}`) when the
+    /// body carries a top-level `data` key, raw otherwise. The connector's
+    /// middleware wraps every JSON body except payloads containing an `error`
+    /// key (restart-operation dicts) — so top-level `data` presence is the
+    /// reliable discriminator. A raw-first `try?` heuristic is NOT safe here:
+    /// all-optional DTOs (GatewayHealth) would decode the envelope vacuously,
+    /// returning nil-everywhere objects and silently dropping the real data.
+    private static func decodeGatewayPayload<T: Decodable>(
+        _ data: Data,
+        as type: T.Type,
+        decoder: JSONDecoder
+    ) throws -> T {
+        if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           dict["data"] != nil {
+            return try decoder.decode(Envelope<T>.self, from: data).data
+        }
+        return try decoder.decode(T.self, from: data)
     }
 }
 

@@ -1,0 +1,16 @@
+{
+  "$schema": "gateway-health-v1",
+  "relayConnected": true,
+  "connectorConnected": true,
+  "hermesConnected": true,
+  "hermesReady": true,
+  "dashboardAvailable": true,
+  "modelCatalogAvailable": true,
+  "sessionRoundtripOk": true,
+  "profile": "ignyte",
+  "unit": "hermes-gateway-ignyte.service",
+  "mainPid": 12456,
+  "execMainStartTimestamp": "2026-07-31T19:30:10Z",
+  "connectorVersion": "2.4.1",
+  "uptimeSeconds": 3600
+}

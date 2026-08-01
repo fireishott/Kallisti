@@ -1,12 +1,38 @@
 import ActivityKit
 import Foundation
 
+/// Privacy-safe lock-screen phases.  Never carry raw tool names, commands,
+/// paths, prompts, or model output — only the generic categories below.
+/// These are the ONLY values allowed in HeraldActivityAttributes.ContentState.
+enum LiveActivityPhase: String, Sendable {
+    case thinking = "Thinking\u{2026}"           // model loading / reasoning
+    case usingTools = "Using tools\u{2026}"      // tool execution in progress
+    case responding = "Responding\u{2026}"       // streaming text reply
+    case waitingForHost = "Waiting for host\u{2026}"
+    case needsAttention = "Needs attention"      // error / cancellation
+    case done = "Done"
+
+    /// Safe secondary detail line — nil for most phases.
+    var detail: String? {
+        switch self {
+        case .thinking:     return nil
+        case .usingTools:   return nil
+        case .responding:   return nil
+        case .waitingForHost: return nil
+        case .needsAttention: return "Tap to open Herald"
+        case .done:         return nil
+        }
+    }
+}
+
 /// Manages Herald Live Activities on the Lock Screen and Dynamic Island.
 @MainActor
 @Observable
 final class LiveActivityService {
     private var currentActivity: Activity<HeraldActivityAttributes>?
     private var startedAt: Date?
+    /// Current lock-screen phase — only these values enter ActivityKit state.
+    private var lockScreenPhase: LiveActivityPhase = .thinking
 
     var isAvailable: Bool {
         ActivityAuthorizationInfo().areActivitiesEnabled
@@ -16,12 +42,12 @@ final class LiveActivityService {
 
     func startVoiceSession() {
         guard isAvailable else { return }
+        lockScreenPhase = .thinking  // voice starts in thinking/model-loading
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = makeContentState(
-            status: "Listening", toolName: nil, elapsedSeconds: 0, startDate: now, sessionType: "voice",
-            emoji: emojiForPhase("listening", sessionType: "voice")
+            phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "voice"
         )
         if currentActivity != nil {
             startedAt = now
@@ -42,10 +68,10 @@ final class LiveActivityService {
     }
 
     func updateVoiceState(_ status: String, toolName: String? = nil) {
+        lockScreenPhase = sanitizedPhase(for: status)
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
-            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "voice",
-            emoji: emojiForPhase(status, sessionType: "voice")
+            phase: lockScreenPhase, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "voice"
         )
         updateActivity(with: state)
     }
@@ -54,12 +80,12 @@ final class LiveActivityService {
 
     func startThinking() {
         guard isAvailable else { return }
+        lockScreenPhase = .thinking
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = makeContentState(
-            status: "Thinking", startDate: now, sessionType: "chat",
-            emoji: emojiForPhase("thinking", sessionType: "chat")
+            phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "chat"
         )
         if currentActivity != nil {
             startedAt = now
@@ -81,24 +107,28 @@ final class LiveActivityService {
 
     func updatePhase(_ status: String) {
         guard currentActivity != nil else { return }
+        lockScreenPhase = sanitizedPhase(for: status)
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
-            status: status, toolName: nil, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat",
-            emoji: emojiForPhase(status, sessionType: "chat")
+            phase: lockScreenPhase, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat"
         )
         updateActivity(with: state)
     }
 
     // MARK: - Chat / Tool Calls
 
+    /// Build 32 (fix): tool names are NEVER passed to ActivityKit.
+    /// Raw tool identifiers ("hermes_delegate", "Check for API keys...") are
+    /// lock-screen unsafe.  The live activity shows only the generic
+    /// "Using tools…" phase — details stay inside the unlocked app.
     func startToolCall(toolName: String) {
         guard isAvailable else { return }
+        lockScreenPhase = .usingTools
         let now = Date.now
         adoptExistingActivityIfNeeded()
         let attributes = HeraldActivityAttributes(agentName: "Herald")
         let state = makeContentState(
-            status: "Working...", toolName: toolName, elapsedSeconds: 0, startDate: now, sessionType: "tool",
-            emoji: emojiForPhase("working", sessionType: "tool")
+            phase: .usingTools, elapsedSeconds: 0, startDate: now, sessionType: "tool"
         )
         if currentActivity != nil {
             startedAt = now
@@ -119,10 +149,10 @@ final class LiveActivityService {
     }
 
     func updateToolProgress(_ status: String, toolName: String? = nil) {
+        lockScreenPhase = .usingTools
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
-            status: status, toolName: toolName, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool",
-            emoji: emojiForPhase(status, sessionType: "tool")
+            phase: .usingTools, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool"
         )
         updateActivity(with: state)
     }
@@ -131,13 +161,18 @@ final class LiveActivityService {
 
     func endActivity() {
         startedAt = nil
+        lockScreenPhase = .done
         guard currentActivity != nil else { return }
         currentActivity = nil
 
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
-                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
-                emoji: "\u{2705}"  // ✅ checkmark
+                status: LiveActivityPhase.done.rawValue,
+                toolName: nil,
+                elapsedSeconds: 0,
+                startDate: nil,
+                sessionType: "chat",
+                emoji: "\u{2705}"
             ),
             staleDate: nil
         )
@@ -206,7 +241,11 @@ final class LiveActivityService {
     static func endAllActivities() {
         let finalContent = ActivityContent(
             state: HeraldActivityAttributes.ContentState(
-                status: "Done", toolName: nil, elapsedSeconds: 0, startDate: nil, sessionType: "voice",
+                status: LiveActivityPhase.done.rawValue,
+                toolName: nil,
+                elapsedSeconds: 0,
+                startDate: nil,
+                sessionType: "chat",
                 emoji: "\u{2705}"
             ),
             staleDate: nil
@@ -218,34 +257,69 @@ final class LiveActivityService {
         }
     }
 
-    /// Build a ContentState enriched with current gateway telemetry from the
-    /// shared App Group store. All parameters except status have sensible defaults.
+    /// Build a privacy-safe ContentState.  Only the sanitized phase label and
+    /// safe metadata enter ActivityKit state — raw tool names, commands, paths,
+    /// and model output are NEVER exposed on the lock screen.
     private func makeContentState(
-        status: String,
-        toolName: String? = nil,
+        phase: LiveActivityPhase,
         elapsedSeconds: Int = 0,
         startDate: Date? = nil,
-        sessionType: String = "chat",
-        emoji: String? = nil
+        sessionType: String = "chat"
     ) -> HeraldActivityAttributes.ContentState {
-        let gw = GatewayState.shared
         return HeraldActivityAttributes.ContentState(
-            status: status,
-            toolName: toolName,
+            status: phase.rawValue,
+            toolName: phase.detail,
             elapsedSeconds: elapsedSeconds,
             startDate: startDate,
             sessionType: sessionType,
-            emoji: emoji,
-            gatewayConnected: gw.isConnected,
-            activeQueries: gw.activeJobs,
-            modelName: gw.model,
-            version: gw.version,
-            cpuPercent: gw.cpuPercent,
-            memoryUsedGb: gw.memoryUsedGb,
-            memoryTotalGb: gw.memoryTotalGb,
-            uptimeHours: Double(gw.uptimeSeconds) / 3600.0,
-            alertCount: gw.alertCount
+            emoji: emojiFor(phase),
+            gatewayConnected: false,
+            activeQueries: 0,
+            modelName: nil,
+            version: nil,
+            cpuPercent: 0.0,
+            memoryUsedGb: 0.0,
+            memoryTotalGb: 0.0,
+            uptimeHours: 0.0,
+            alertCount: 0
         )
+    }
+
+    /// Map an arbitrary internal status string to a privacy-safe lock-screen phase.
+    /// Never passes raw tool names, commands, or model output to ActivityKit.
+    private func sanitizedPhase(for status: String) -> LiveActivityPhase {
+        let lower = status.lowercased()
+        if lower.contains("think") || lower.contains("reason") || lower.contains("loading") {
+            return .thinking
+        }
+        if lower.contains("tool") || lower.contains("execut") || lower.contains("working")
+            || lower.contains("check") || lower.contains("search") || lower.contains("call") {
+            return .usingTools
+        }
+        if lower.contains("respond") || lower.contains("stream") || lower.contains("answer")
+            || lower.contains("generat") {
+            return .responding
+        }
+        if lower.contains("wait") || lower.contains("reconnect") || lower.contains("stall") {
+            return .waitingForHost
+        }
+        if lower.contains("fail") || lower.contains("error") || lower.contains("cancel")
+            || lower.contains("interrupt") {
+            return .needsAttention
+        }
+        // Default: responding (most common positive phase)
+        return .responding
+    }
+
+    private func emojiFor(_ phase: LiveActivityPhase) -> String {
+        switch phase {
+        case .thinking:       return "\u{1F9E0}"  // 🧠 brain
+        case .usingTools:     return "\u{26A1}"    // ⚡ lightning
+        case .responding:     return "\u{1F4AC}"   // 💬 speech bubble
+        case .waitingForHost: return "\u{23F3}"    // ⏳ hourglass
+        case .needsAttention: return "\u{26A0}\u{FE0F}"  // ⚠️ warning
+        case .done:           return "\u{2705}"    // ✅ checkmark
+        }
     }
 
     private func adoptExistingActivityIfNeeded() {
@@ -253,22 +327,6 @@ final class LiveActivityService {
         if let activity = Activity<HeraldActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
             currentActivity = activity
             startedAt = activity.content.state.startDate
-        }
-    }
-
-    private func emojiForPhase(_ phase: String, sessionType: String) -> String {
-        switch phase.lowercased() {
-        case "thinking", "reasoning": return "\u{1F9E0}"    // brain
-        case "responding", "streaming": return "\u{1F4AC}"  // speech bubble
-        case "working", "executing": return "\u{26A1}"      // lightning
-        case "listening": return "\u{1F3A4}"                // microphone
-        case "searching": return "\u{1F50D}"                // magnifying glass
-        default:
-            switch sessionType {
-            case "voice": return "\u{1F3A4}"
-            case "tool":  return "\u{1F527}"
-            default:      return "\u{1F4AC}"
-            }
         }
     }
 }

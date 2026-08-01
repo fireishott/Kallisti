@@ -241,6 +241,9 @@ final class SessionListStore {
                 chatStore.lastTokenUsage = latestUsage
             }
             chatStore.onConversationChanged?()
+            // Build 33 WSB: queued outbox items are preserved across switches;
+            // switching back to a conversation submits its queued items.
+            await chatStore.submitNextEligible(for: conversation.id)
         } catch {
             errorMessage = error.localizedDescription
         }

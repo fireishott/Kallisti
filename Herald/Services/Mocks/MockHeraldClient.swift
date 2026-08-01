@@ -18,7 +18,7 @@ final class MockHeraldClient: HeraldClientProtocol {
         connectionStatus = .disconnected
     }
 
-    func send(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) async -> Message {
+    func send(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
         let userMessage = Message(
             clientMessageID: clientMessageID,
             sender: .user,
@@ -44,7 +44,7 @@ final class MockHeraldClient: HeraldClientProtocol {
         return heraldMessage
     }
 
-    func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
+    func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             Task { @MainActor [weak self] in
                 guard let self else {
@@ -163,8 +163,9 @@ extension MockHeraldClient {
         currentConversation ?? DemoData.sampleConversation
     }
 
-    func ensureConversation(id: UUID) async {
+    func ensureConversation(id: UUID) async -> Bool {
         // Build 31: mock — no server session to create
+        return true
     }
 
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {

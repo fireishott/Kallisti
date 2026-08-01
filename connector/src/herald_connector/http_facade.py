@@ -24,6 +24,10 @@ import socket
 import tempfile
 import threading
 import time
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover — Python 3.8 fallback
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 import uuid
 from pathlib import Path
 from subprocess import run as _run_subprocess
@@ -409,14 +413,34 @@ def _bind_conversation_early(job: dict, text: str, job_started_at: float,
     # B33 WS B: mirror the binding into the SQLite delivery store so the
     # durable store converges even when the binding is discovered before
     # the `done` event.  Best-effort — see _persist_delivery_bindings.
-    _persist_delivery_bindings(
+    # Build 102 P0-B.2: surface the result. If the mirror fails (Duplicate
+    # ConflictError), we still consider the binding set in the sidecar; the
+    # caller logs the outcome based on the *sidecar* state, not on the
+    # mirror succeeding.
+    mirrored = _persist_delivery_bindings(
         [conv_id or canonical, canonical], hermes_sid,
         job.get("installationId"),
     )
-    logger.info(
-        "Bound conversation %s → session %s at run start",
-        conv_id or canonical, hermes_sid,
-    )
+    # Build 102 P0-B.2: only emit the "Bound conversation …" success log
+    # AFTER the authoritative SQLite row exists for the expected
+    # conversation. The legacy code logged success unconditionally, which
+    # the production evidence showed lied when a conflict was silently
+    # swallowed in _persist_delivery_bindings.
+    from .delivery_store import get_delivery_store
+    authoritative = get_delivery_store().get_binding(conv_id or canonical)
+    if authoritative and authoritative.get("hermesSessionId") == hermes_sid:
+        logger.info(
+            "Bound conversation %s → session %s at run start",
+            conv_id or canonical, hermes_sid,
+        )
+    else:
+        logger.warning(
+            "Bound conversation %s → session %s at run start — but SQLite "
+            "row does not match expected hermesSessionId (mirror=%s). "
+            "Conflict is logged for investigation; do not retry until the "
+            "binding table is reconciled.",
+            conv_id or canonical, hermes_sid, mirrored,
+        )
     return True
 
 
@@ -444,16 +468,23 @@ def _resolve_delivery_hermes_id(app_id: str) -> str | None:
 def _persist_delivery_bindings(
     app_uuids: list[str] | tuple[str, ...], hermes_sid: str,
     device_id: str | None,
-) -> None:
+) -> dict[str, str]:
     """Mirror app-conversation → Hermes-session bindings into the SQLite
     delivery store (B33 WS B).
 
-    Best-effort and never fatal: a conflict (e.g. a draft alias whose
-    Hermes session is already bound to its canonical UUID — the table's
-    hermes_session_id is UNIQUE) is debug-logged and left to the sidecar.
+    Returns a map of app_id → mirror outcome ("ok" | "conflict:<reason>" |
+    "skipped:<reason>") so callers can decide whether to log success or
+    surface a typed conflict. Build 102 P0-B.2: the legacy implementation
+    debug-logged DuplicateConflictError and continued, which violated the
+    marching-orders prohibition on silently ignoring binding conflicts.
+
+    Best-effort in the sense that a single bad app_id never aborts the
+    whole mirror, but every per-id outcome is returned and the caller is
+    expected to verify the authoritative row before claiming success.
     """
+    outcomes: dict[str, str] = {}
     if not hermes_sid:
-        return
+        return outcomes
     try:
         from .delivery_store import DuplicateConflictError, get_delivery_store
         store = get_delivery_store()
@@ -468,14 +499,22 @@ def _persist_delivery_bindings(
                 store.get_or_create_binding(
                     app_id, hermes_sid, account_id, device_id or ""
                 )
+                outcomes[app_id] = "ok"
             except DuplicateConflictError as exc:
-                logger.debug(
-                    "delivery: binding skipped for %s: %s", app_id, exc
+                # Build 102 P0-B.2: log at WARNING (not DEBUG), include
+                # the conflict reason, and let the caller decide what to
+                # do. _bind_conversation_early re-reads the authoritative
+                # row and refuses to log success if the mirror conflicted.
+                logger.warning(
+                    "delivery: binding conflict for %s → %s: %s",
+                    app_id, hermes_sid, exc,
                 )
+                outcomes[app_id] = f"conflict:{exc}"
     except Exception:
         logger.warning(
             "delivery: binding persistence failed (non-fatal)", exc_info=True
         )
+    return outcomes
 
 
 # ── Inbound attachment staging (Build 28) ──────────────────────────────────
@@ -593,6 +632,45 @@ def _stage_inbound_attachments(
     return staging_dir, "\n".join(lines), staged_meta
 
 
+# Build 102 P1: authoritative temporal context (marching orders §9).
+# Returns an empty string if the system zone is unavailable; callers
+# must handle the empty case (text goes through unchanged).
+_TEMPORAL_TIMEZONE = os.getenv("HERALD_TEMPORAL_TIMEZONE", "America/Los_Angeles")
+
+
+def _build_temporal_context() -> str:
+    """Prepend authoritative current-time context to user text for Hermes.
+
+    The block is sent to the handler only — it is NOT stored as the
+    canonical user message (cleanText) and is NOT shown in the iOS
+    bubble. Generated from the host's synchronized clock at acceptance
+    time so the model answers "what time is it?" without inferring from
+    stale transcript.
+    """
+    try:
+        tz = ZoneInfo(_TEMPORAL_TIMEZONE)
+    except Exception:
+        logger.debug("temporal context: unknown timezone %s", _TEMPORAL_TIMEZONE)
+        return ""
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        local = now_utc.astimezone(tz)
+    except Exception:
+        local = now_utc
+    weekday = local.strftime("%A")
+    month_day_year = local.strftime("%B %-d, %Y")
+    hour_min_ampm = local.strftime("%-I:%M %p")
+    tz_label = local.strftime("%Z") or _TEMPORAL_TIMEZONE
+    utc_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        "[System context — current local time]\n"
+        f"Today is {weekday}, {month_day_year} at {hour_min_ampm} {tz_label}. "
+        f"UTC: {utc_str}. "
+        "Use this for any temporal claims; do not infer time from "
+        "transcript or earlier turns.\n\n"
+    )
+
+
 async def _run_http_job(job_id: str, handler, text, history, session_id,
                         attachments, reasoning_effort,
                         continuation_context: str | None = None) -> None:
@@ -610,6 +688,16 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     # explicitly because "the generator ended" and "the turn completed" are
     # different facts, and conflating them reported dead turns as delivered.
     ended_reconnecting = False
+
+    # Build 102 P1: authoritative temporal context for the model.
+    # Generated at acceptance time from the server's synchronized clock so
+    # the model answers "what's the current time/date?" correctly without
+    # inferring from stale transcript. The block is prepended to
+    # `text_with_attachments` (which goes to the Hermes handler) but is
+    # NEVER stored as cleanText — the iOS bubble shows only the original
+    # `text`. Per marching orders §9, do not ask the model to infer time
+    # from transcript; do not rewrite or fake the user's message.
+    temporal_context = _build_temporal_context()
 
     def _publish(event: dict) -> None:
         job["events"].append(event)
@@ -658,8 +746,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 # Prepend it to the Hermes input so the model resumes from the
                 # cut-off point, but never include it in `text` / `cleanText` —
                 # those are canonical user content stored and displayed verbatim.
+                # Build 102 P1: temporal context goes BEFORE continuationContext
+                # so the model sees the current time before any resume metadata.
+                if temporal_context:
+                    text_with_attachments = f"{temporal_context}{text}"
+                else:
+                    text_with_attachments = text
                 if continuation_context:
-                    text_with_attachments = f"[{continuation_context}]\n\n{text}"
+                    text_with_attachments = f"[{continuation_context}]\n\n{text_with_attachments}"
                 if attachment_context:
                     text_with_attachments = f"{text_with_attachments}\n\n{attachment_context}"
                 async for event in handler(
@@ -2198,18 +2292,84 @@ async def send_message(request: Request) -> JSONResponse:
             DuplicateConflictError, get_delivery_store, request_sha256,
         )
         delivery_store = get_delivery_store()
-        # Eagerly create binding if missing — the Hermes session will be resolved
-        # when the job runs. Without this, a concurrent first-send from two devices
-        # can both skip durable tracking and get separate jobs.
+        # Eagerly create binding if missing — Build 102 P0-B:
+        #   * B.1: NEVER fabricate a UUID for hermes_session_id. If the client
+        #     has not yet called POST /v1/conversations/ensure, there is no
+        #     real Hermes session to bind. Tell the client that, don't invent
+        #     one. The legacy `str(uuid.uuid4())` fallback was the root cause
+        #     of Build 101's "duplicate conversations / phantom Hermes
+        #     sessions" — every fabricated binding persisted to SQLite and
+        #     later collided with the real Hermes session discovered at run
+        #     start, which `_bind_conversation_early` then swallowed.
+        #   * B.2: DuplicateConflictError is now a typed, surfaced error
+        #     (replyState "binding_conflict"). The legacy `pass` was
+        #     explicitly prohibited by marching orders §18 — silent swallowing
+        #     of binding conflicts.
+        #   * B.3: account_id is taken from the authenticated context
+        #     (ctx.paired_user_id) — never hardcoded "default", which
+        #     violated marching orders §6 binding invariants.
         binding = delivery_store.get_binding(app_conversation_id)
         if binding is None:
-            hermes_sid = hermes_session_id or str(uuid.uuid4())
+            if not hermes_session_id:
+                # No binding, no real Hermes session. The client must call
+                # POST /v1/conversations/ensure before sending the first
+                # message in this conversation. Returning a typed
+                # conversation-not-ensured error is preferable to fabricating
+                # a UUID — the client can recover with one round-trip.
+                return JSONResponse(status_code=409, content={
+                    "$schema": "message-accepted-v1",
+                    "replyState": "conversation_not_ensured",
+                    "clientMessageId": client_message_id,
+                    "jobId": None,
+                    "state": None,
+                    "error": "conversationNotEnsured",
+                    "message": (
+                        "This conversation has no Hermes session binding. "
+                        "Call POST /v1/conversations/ensure before sending "
+                        "the first message."
+                    ),
+                    "conversation": None,
+                    "userMessage": None,
+                    "usage": None,
+                    "context": None,
+                    "diff": None,
+                })
             try:
+                _ctx = get_context()
                 delivery_store.get_or_create_binding(
-                    app_conversation_id, hermes_sid, "default", installation_id,
+                    app_conversation_id, hermes_session_id,
+                    _ctx.paired_user_id or "",
+                    installation_id or "",
                 )
-            except DuplicateConflictError:
-                pass  # race; another device created it first
+            except DuplicateConflictError as exc:
+                # P0-B.2: surface as typed error — do NOT log success, do
+                # NOT swallow. The legacy `pass` made production impossible
+                # to diagnose (Build 101 evidence: app conversation
+                # ba8a8f7a… remained bound to fabricated UUID while the real
+                # Hermes run landed on a different row, with the journal
+                # claiming success).
+                logger.warning(
+                    "delivery: binding conflict for %s — surfacing to caller: %s",
+                    app_conversation_id, exc,
+                )
+                return JSONResponse(status_code=409, content={
+                    "$schema": "message-accepted-v1",
+                    "replyState": "binding_conflict",
+                    "clientMessageId": client_message_id,
+                    "jobId": None,
+                    "state": None,
+                    "error": "bindingConflict",
+                    "message": (
+                        "This conversation is already bound to a different "
+                        "Hermes session. Conflict logged with request id "
+                        "and surfaced for investigation before retry."
+                    ),
+                    "conversation": None,
+                    "userMessage": None,
+                    "usage": None,
+                    "context": None,
+                    "diff": None,
+                })
         request_hash = request_sha256(text, attachments)
         try:
             request_row = delivery_store.create_message_request(

@@ -7,6 +7,7 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
     case reconnecting      // Was connected, now re-establishing
     case degraded          // Connected but some services unavailable
     case error             // Legacy: connection error (maps to disconnected)
+    case restarting        // Build 33: Hermes gateway restart in progress
 
     var displayLabel: String {
         switch self {
@@ -16,6 +17,7 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
         case .reconnecting: "Reconnecting..."
         case .degraded: "Degraded"
         case .error: "Error"
+        case .restarting: "Restarting…"
         }
     }
 
@@ -27,6 +29,7 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
         case .reconnecting: "arrow.triangle.2.circlepath"
         case .degraded: "exclamationmark.triangle.fill"
         case .error: "exclamationmark.circle.fill"
+        case .restarting: "arrow.triangle.2.circlepath"
         }
     }
 
@@ -38,6 +41,7 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
         case .reconnecting: .yellow
         case .degraded: .orange
         case .error: .red
+        case .restarting: .orange
         }
     }
 
@@ -45,7 +49,7 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
     var dotColor: Color {
         switch self {
         case .connected: .green
-        case .connecting, .reconnecting: .yellow
+        case .connecting, .reconnecting, .restarting: .yellow
         case .degraded: .orange
         case .disconnected, .error: .gray
         }

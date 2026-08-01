@@ -22,7 +22,8 @@ final class TalkTurnClient {
                 let stream = self.heraldClient.sendStreaming(
                     message: text,
                     attachments: [],
-                    clientMessageID: clientMessageId
+                    clientMessageID: clientMessageId,
+                    continuationContext: nil
                 )
 
                 var canonicalText = ""

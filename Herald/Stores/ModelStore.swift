@@ -103,15 +103,12 @@ final class ModelStore {
             if let serverActive = response.activeModel {
                 activeModel = serverActive
             }
-            // When the server omits activeModel but we have no local
-            // value yet, synthesise from the catalog's first entry.
-            if activeModel == nil, let first = models.first {
-                activeModel = ActiveModel(
-                    name: first.name,
-                    provider: first.provider,
-                    contextWindow: first.contextWindow
-                )
-            }
+            // Build 33: never synthesise activeModel from models.first.
+            // The first catalog entry may not be the actual active model,
+            // and a nil activeModel correctly surfaces "Model unavailable"
+            // rather than silently showing the wrong model.
+            // Only an explicit authoritative unconfigured state from the
+            // server may clear a previously confirmed active model.
             lastLoadedAt = .now
         } catch {
             errorMessage = error.localizedDescription

@@ -220,6 +220,7 @@ struct HeraldApp: App {
                 .environment(container.notesStore)
                 .environment(container.attachmentService)
                 .environment(container.dashboardLogService)
+                .environment(container.gatewayControl)
                 .task { await container.initialize() }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {

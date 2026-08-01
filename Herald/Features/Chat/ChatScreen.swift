@@ -79,6 +79,11 @@ struct ChatScreen: View {
                 if chatStore.isStreaming, chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
                     streamingPhaseBanner
                 }
+                // Build 33: a gateway restart supersedes transport banners —
+                // the stream was suspended on purpose, so explain why.
+                if chatStore.restartInProgress {
+                    restartBanner
+                }
                 messageList
                 ChatInputBar(
                     text: $messageText,
@@ -91,11 +96,19 @@ struct ChatScreen: View {
                         // Build 31: enqueue a message to send after the active
                         // turn finishes.  Freeze the draft now so later edits
                         // don't change the queued text.
+                        // Build 33 WSB: the queue is durable — the outbox owns
+                        // the text before the composer is cleared, and the
+                        // submit phase runs immediately (it no-ops while a job
+                        // is active and the FIFO chain picks the item up after).
                         let frozenText = messageText
                         let frozenAttachments = pendingAttachments
-                        messageText = ""
-                        pendingAttachments = []
-                        chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments)
+                        let conversationID = chatStore.conversation?.id
+                        Task {
+                            guard chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments) != nil else { return }
+                            messageText = ""
+                            pendingAttachments = []
+                            await chatStore.submitNextEligible(for: conversationID)
+                        }
                     },
                     onAttach: { showAttachmentPicker = true },
                     onSlashCommand: handleSlashCommand
@@ -115,6 +128,10 @@ struct ChatScreen: View {
             // the composer after the host reconnects or changes profile.
             await profileStore.loadProfiles(force: true)
             await modelStore.loadModels()
+            // Build 33 WSB: reconcile the durable outbox — settle accepted
+            // jobs against the relay, resubmit items whose backoff elapsed,
+            // and submit queued items for this conversation.
+            await chatStore.recoverOutbox()
             // Scroll to most recent messages after loading
             try? await Task.sleep(for: .milliseconds(150))
             scrollToBottom()
@@ -520,9 +537,14 @@ struct ChatScreen: View {
                                 .controlSize(.mini)
                         }
                     } else if modelStore.isError {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                            Text("Model unavailable")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
                     } else {
                         Text("No model")
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -907,6 +929,25 @@ struct ChatScreen: View {
         .background(Design.Colors.warning.opacity(0.08))
     }
 
+    /// Build 33: shown while a Hermes gateway restart is in flight. Sends are
+    /// queued visibly (the composer still accepts input; ChatStore enqueues it
+    /// with an explanatory system message) and the status dot reads
+    /// "Restarting…".
+    private var restartBanner: some View {
+        HStack(spacing: 4) {
+            ProgressView()
+                .scaleEffect(0.6)
+                .tint(Design.Colors.warning)
+            Text("Hermes is restarting — your message will send when it's back.")
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.warning)
+            Spacer()
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, 4)
+        .background(Design.Colors.warning.opacity(0.08))
+    }
+
     // D4: contextWarningBanner removed — was driven by fabricated percentage.
 
     private var connectionBannerIcon: String {
@@ -992,8 +1033,13 @@ struct ChatScreen: View {
             return
         }
 
-        messageText = ""
-        pendingAttachments = []
+        // Build 33 WSB: two-phase send. Freeze the draft now; the composer is
+        // cleared only after Phase 1 (durable enqueue) returns — from that
+        // point the on-disk outbox owns the text, so a force-quit at any
+        // later moment cannot lose it.
+        let clientMessageID = UUID()
+        let conversationID = chatStore.conversation?.id
+
         isComposerFocused = false
 
         if settingsStore.settings.hapticFeedbackEnabled {
@@ -1003,9 +1049,30 @@ struct ChatScreen: View {
         Task {
             if content.hasPrefix("/") && attachments.isEmpty {
                 await dispatchTypedSlashCommand(content)
-            } else {
-                await chatStore.sendMessage(content, attachments: attachments)
+                return
             }
+
+            // Phase 1: durable enqueue (synchronous in practice — no network).
+            // The optimistic user row appears in the transcript immediately;
+            // the outbox manifest is persisted before this returns.
+            let record = await chatStore.enqueueMessage(
+                content,
+                attachments: attachments,
+                clientMessageID: clientMessageID
+            )
+            guard record != nil else {
+                // Rejected (empty/duplicate/over-limit) — keep the draft so
+                // the user can see why nothing was sent.
+                return
+            }
+
+            // Now safe to clear — the outbox has it.
+            messageText = ""
+            pendingAttachments = []
+
+            // Phase 2: submit (async; may queue behind an active job and
+            // chain through the FIFO outbox).
+            await chatStore.submitNextEligible(for: conversationID)
         }
     }
 

@@ -12,8 +12,8 @@ protocol HeraldClientProtocol {
     var currentConversation: Conversation? { get }
     func connect() async
     func disconnect() async
-    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID) async -> Message
-    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID) -> AsyncStream<StreamingUpdate>
+    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) async -> Message
+    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) -> AsyncStream<StreamingUpdate>
     func loadConversation() async -> Conversation
     func clearConversation() async throws -> Conversation
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation
@@ -52,7 +52,8 @@ protocol HeraldClientProtocol {
     /// Build 31: ensure a server conversation exists for the given local UUID.
     /// Called before the first message so the connector can create a Hermes
     /// session and bind the mapping before the job runs.
-    func ensureConversation(id: UUID) async
+    /// - Returns: `true` if the server session was created or already existed.
+    func ensureConversation(id: UUID) async -> Bool
 
     /// Get the authoritative status of a job.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
