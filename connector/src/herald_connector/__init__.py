@@ -21,7 +21,9 @@ HERALD_PROTOCOL = 4
 # 0.5.5 — 2026-07-31 Build 27: fix live reasoning.available duplication at SSE
 #         source; fix attachment DTO key (thumbnailData); preserve messageID and
 #         remoteIndex through mergeAttachments.
-# 0.6.0 — 2026-07-31 Build 28: inbound attachment staging and /v1/runs delivery;
-#         single-owner transcript reducer; user+device session isolation;
-#         authoritative model state; typed thought channel.
-__version__ = "0.6.1"
+# 0.6.1 — 2026-07-31 Build 30: talk-and-ux-fixes, maintenance controls,
+#         transcript reducer and device isolation, protocol 3.
+# 0.6.2 — 2026-07-31 Build 31: attachment execution envelope (structured
+#         /v1/runs attachments + clean-text overrides), per-device tokens,
+#         server-acknowledged job cancellation, protocol 4.
+__version__ = "0.6.2"
