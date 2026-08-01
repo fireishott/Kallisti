@@ -579,6 +579,12 @@ struct SettingsScreen: View {
                     return
                 }
                 let token = await sessionStore.currentAccessToken()
+                // Build 107: check for nil/empty token before making the request.
+                // Passing an empty string causes a 401 error from the connector.
+                guard let token, !token.isEmpty else {
+                    gwRestartResult = "Not authenticated — please pair your device first."
+                    return
+                }
                 let client = RelayAPIClient { relayBase }
 
                 struct RestartRequest: Encodable { let target: String }
@@ -587,7 +593,7 @@ struct SettingsScreen: View {
                 let response: RestartResponse = try await client.postGateway(
                     path: "gw/restart",
                     body: body,
-                    accessToken: token ?? ""
+                    accessToken: token
                 )
                 gwRestartResult = response.restarting
                     ? "\(target) restarting…"

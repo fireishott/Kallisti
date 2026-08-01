@@ -252,6 +252,13 @@ final class GatewayControlService {
 
     func fetchPreflight(target: String) async throws -> RestartPreflight {
         let token = await accessTokenProvider()
+        // Build 107: check for nil/empty token before making the request.
+        // Passing nil causes an unauthenticated request which returns 401.
+        guard let token, !token.isEmpty else {
+            throw GatewayControlError.restartRejected(
+                message: "Not authenticated — please pair your device first."
+            )
+        }
         return try await apiClient.getGatewayControl(
             path: "gw/restart/preflight?target=\(target)",
             accessToken: token
@@ -262,6 +269,12 @@ final class GatewayControlService {
 
     func submitRestart(target: String, preflight: RestartPreflight) async throws -> RestartOperation {
         let token = await accessTokenProvider()
+        // Build 107: check for nil/empty token before making the request.
+        guard let token, !token.isEmpty else {
+            throw GatewayControlError.restartRejected(
+                message: "Not authenticated — please pair your device first."
+            )
+        }
         let result: RelayAPIClient.GatewayRestartResult
         do {
             result = try await apiClient.postGatewayRestart(
