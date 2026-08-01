@@ -432,7 +432,13 @@ final class ChatStore {
                     terminalMessageID: nil,
                     attemptCount: 0,
                     nextAttemptAt: nil,
-                    lastError: nil
+                    lastError: nil,
+                    installationId: nil,
+                    deviceId: nil,
+                    hermesSessionId: nil,
+                    requestId: nil,
+                    attemptID: nil,
+                    updatedAt: .now
                 )
                 outboxStore.removeStagedAttachments(for: partial)
                 sendPhase = .failed("Could not stage attachment data")
@@ -467,7 +473,13 @@ final class ChatStore {
             terminalMessageID: nil,
             attemptCount: 0,
             nextAttemptAt: nil,
-            lastError: nil
+            lastError: nil,
+            installationId: nil,
+            deviceId: nil,
+            hermesSessionId: nil,
+            requestId: nil,
+            attemptID: nil,
+            updatedAt: .now
         )
         outboxItems.append(record)
         persistOutbox()
@@ -1822,29 +1834,25 @@ final class ChatStore {
         let startedAt = Date.now
         self.acceptedJobID = nil
 
-        return await withTaskGroup(of: StreamTerminal?.self, returning: StreamTerminal.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { return StreamTerminal.cancelledByUser }
-                let stalled = await self.runStreamingAttemptLegacy(
-                    content: content,
-                    attachments: attachments,
-                    clientMessageID: clientMessageID,
-                    placeholderID: placeholderID,
-                    continuationContext: continuationContext
-                )
-                return stalled
-                    ? .stalled(jobID: self.acceptedJobID ?? UUID())
-                    : .completed
-            }
-            group.addTask { [weak self] in
-                await self?.attemptWatchdog(attemptID: attemptID, startedAt: startedAt)
-            }
-
-            let first = await group.next() ?? .cancelledByUser
-            group.cancelAll()
-            _ = await group.next()  // drain cancelled task
-            return first ?? .cancelledByUser
-        }
+        // Translates the legacy consumer's Bool (stalled) into a typed
+        // StreamTerminal. The full withTaskGroup race against attemptWatchdog
+        // is deferred — the legacy internal polling loop already provides a
+        // watchdog, and Swift's region-based isolation checker in Xcode 26
+        // currently rejects @MainActor + [weak self] capture-list patterns
+        // in withTaskGroup child closures. The lease work (P0-A.1) and the
+        // typed terminal (P0-A.2 plumbing) are in place; the structured-
+        // concurrency race is a follow-up once the compiler limitation
+        // resolves.
+        let stalled = await runStreamingAttemptLegacy(
+            content: content,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            placeholderID: placeholderID,
+            continuationContext: continuationContext
+        )
+        return stalled
+            ? .stalled(jobID: acceptedJobID ?? UUID())
+            : .completed
     }
 
     /// The user-facing failure copy, using the active profile name when
