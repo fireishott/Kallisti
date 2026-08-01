@@ -507,6 +507,34 @@ final class LiveHeraldClient: HeraldClientProtocol {
         }
     }
 
+    /// Build 31: ensure a server conversation exists for the given local UUID.
+    /// Called before the first message in a new conversation so the connector
+    /// can create a Hermes session and bind the mapping before the job runs.
+    /// Without this, the first message's conversationId is a random UUID with
+    /// no server session behind it, and the connector falls through to its
+    /// process-wide singleton.
+    func ensureConversation(id: UUID) async {
+        struct EnsureResponse: Decodable {
+            let conversationId: String?
+            let sessionId: String?
+            let created: Bool?
+        }
+        do {
+            let body: [String: Any] = ["conversationId": id.uuidString.lowercased()]
+            let jsonData = try JSONSerialization.data(withJSONObject: body)
+            let response: EnsureResponse = try await performAuthorizedRequest { [self] token in
+                try await self.apiClient.post(
+                    path: "conversations/ensure",
+                    accessToken: token,
+                    body: jsonData
+                )
+            }
+            Self.logger.info("ensureConversation: sessionId=\(response.sessionId ?? "pending"), created=\(response.created ?? false)")
+        } catch {
+            Self.logger.warning("ensureConversation failed: \(error.localizedDescription) — session will be created on first message")
+        }
+    }
+
     func loadConversation() async -> Conversation {
         do {
             let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
@@ -577,8 +605,20 @@ final class LiveHeraldClient: HeraldClientProtocol {
             )
         }
         let effort = reasoningEffortProvider?()
+        // Build 31: never send with a nil conversationId — that path
+        // forced the connector to fall through to the process-wide
+        // singleton, collapsing all device conversations onto one
+        // Hermes session.  If currentConversation isn't set yet, use
+        // a fresh UUID that the connector will bind on its side.
+        let resolvedConversationId: UUID
+        if let id = currentConversation?.id {
+            resolvedConversationId = id
+        } else {
+            resolvedConversationId = UUID()
+            Logger.app.info("makeCreateBody: currentConversation nil, using fresh UUID \(resolvedConversationId.uuidString.prefix(8))")
+        }
         let body = MessageCreateBody(
-            conversationId: currentConversation?.id,
+            conversationId: resolvedConversationId,
             text: text,
             clientMessageId: clientMessageID,
             attachments: payloads,

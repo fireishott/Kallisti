@@ -1279,14 +1279,16 @@ async def send_message(request: Request) -> JSONResponse:
         app_conversation_id = _app_uuid(hermes_session_id)
 
     if app_conversation_id is None:
-        # B38 P0-2: _stable_conversation_id() is now the fourth-choice
-        # fallback only.  Log a warning so this can never regress silently.
-        logger.warning(
-            "_stable_conversation_id fallback used — no conversationId, "
-            "no sessionId, no sidecar mapping. body=%s",
-            {k: v for k, v in body.items() if k != "history"}
+        # Build 31: never fall through to the process-wide singleton.
+        # Every send that arrives without a conversation identity gets a
+        # dedicated session UUID.  The _stable_conversation_id collapse
+        # was the cross-device collision path — two devices sending
+        # concurrently under nil conversationId shared one Hermes session.
+        app_conversation_id = str(uuid.uuid4())
+        logger.info(
+            "No conversationId supplied — minting new session %s",
+            app_conversation_id[:12],
         )
-        app_conversation_id = _stable_conversation_id()
 
     job_id = str(uuid.uuid4())
     # Build 30: echo attachment metadata in the user acknowledgement so the
@@ -1826,6 +1828,107 @@ async def current_conversation(request: Request) -> JSONResponse:
         "latestUsage": None,
         "latestContext": None,
     }})
+
+
+async def ensure_conversation(request: Request) -> JSONResponse:
+    """Build 31: atomic create-or-bind conversation (POST /v1/conversations/ensure).
+
+    Accepts {conversationId, clientMessageId}.  If conversationId already
+    maps to a Hermes session, returns the existing session info.  Otherwise
+    sends /new to Hermes to create a fresh session, maps the conversationId
+    to it, records device ownership, and returns the canonical identity.
+
+    This replaces the old flow where the client invented a random UUID, the
+    connector echoed it back without creating a real session, and the first
+    message landed in a Hermes session that the app couldn't find later.
+    """
+    await require_auth(request)
+    ctx = get_context()
+    body = await request.json()
+    if not isinstance(body, dict):
+        body = {}
+
+    raw_conversation_id = body.get("conversationId")
+    from .session_store import (
+        _app_uuid, _resolve_hermes_id, _coerce_uuid as _store_coerce,
+        _persist_hermes_mapping, record_session_device,
+        device_id_for_token,
+    )
+
+    # Resolve existing mapping
+    app_conversation_id: str | None = None
+    if raw_conversation_id:
+        cid = _coerce_uuid(raw_conversation_id)
+        if cid:
+            resolved = _resolve_hermes_id(cid)
+            if resolved:
+                # Already mapped — return existing session
+                return JSONResponse({
+                    "conversationId": cid,
+                    "sessionId": resolved,
+                    "created": False,
+                })
+            app_conversation_id = cid
+
+    if app_conversation_id is None:
+        app_conversation_id = str(uuid.uuid4())
+
+    # Create a fresh Hermes session by sending /new
+    try:
+        if ctx.clear_conversation:
+            result = ctx.clear_conversation()
+            if inspect.isawaitable(result):
+                await result
+    except Exception:
+        logger.warning("ensure_conversation: /new failed, session may already exist")
+
+    # Discover the newly created Hermes session from state.db
+    hermes_session_id: str | None = None
+    try:
+        from .session_store import _connect as _ss_connect
+        ss_conn = _ss_connect()
+        try:
+            # The /new creates a fresh session row with no messages.
+            # Find the most recent session.
+            rows = ss_conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE source = 'api_server' AND active = 1 "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchall()
+            if rows:
+                hermes_session_id = str(rows[0]["id"])
+        finally:
+            ss_conn.close()
+    except Exception:
+        logger.warning("ensure_conversation: could not query state.db for new session")
+
+    if hermes_session_id:
+        # Persist the mapping
+        canonical_app_id = _app_uuid(hermes_session_id)
+        _persist_hermes_mapping(canonical_app_id, hermes_session_id)
+        if app_conversation_id != canonical_app_id:
+            _persist_hermes_mapping(app_conversation_id, hermes_session_id)
+
+        # Record device ownership
+        token = await _extract_token(request)
+        installation_id = device_id_for_token(token)
+        if installation_id:
+            record_session_device(canonical_app_id, installation_id)
+
+        return JSONResponse({
+            "conversationId": app_conversation_id,
+            "sessionId": hermes_session_id,
+            "created": True,
+        })
+    else:
+        # Could not discover the session.  Return the app UUID;
+        # the first job execution will create and bind it.
+        return JSONResponse({
+            "conversationId": app_conversation_id,
+            "sessionId": None,
+            "created": False,
+            "message": "Session will be created on first message",
+        })
 
 
 async def clear_current_conversation(request: Request) -> JSONResponse:
@@ -2606,6 +2709,7 @@ routes = [
     # P0-4: chat critical path
     Route("/v1/conversations/current", current_conversation, methods=["GET"]),
     Route("/v1/conversations/current/clear", clear_current_conversation, methods=["POST"]),
+    Route("/v1/conversations/ensure", ensure_conversation, methods=["POST"]),  # Build 31
     Route("/v1/jobs/{id}", job_status, methods=["GET"]),
     Route("/v1/jobs/{id}/events", job_events, methods=["GET"]),
     Route("/v1/jobs/{id}/cancel", cancel_job, methods=["POST"]),

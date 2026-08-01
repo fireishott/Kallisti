@@ -300,12 +300,16 @@ final class ChatStore {
         if conversation == nil {
             conversation = Conversation(title: "New Chat")
         }
-        // Establish a stable, device-local conversation identity before the
-        // first POST. Without this the connector falls back to its process-wide
-        // singleton and iPhone/iPad messages land in whichever chat spoke last.
+        // Build 31: ensure a server conversation exists for this local UUID
+        // before the first POST.  Previously the client invented a random UUID,
+        // the connector echoed it without creating a real Hermes session, and
+        // the first message landed in a session the app couldn't reliably
+        // address.  ensureConversation creates and maps a Hermes session
+        // server-side so the job has a canonical identity from the start.
         if let conversation {
             persistence.currentSessionId = conversation.id
             if heraldClient.currentConversation?.id != conversation.id {
+                await heraldClient.ensureConversation(id: conversation.id)
                 _ = try? await heraldClient.loadConversation(id: conversation.id)
             }
         }
