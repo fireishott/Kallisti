@@ -39,8 +39,12 @@ struct ChatScreen: View {
     // away from the bottom, not on every drag gesture. Uses onScrollGeometryChange
     // (iOS 18+) to detect proximity to the content bottom.
     @State private var isNearBottom = true
+    // Build 31: show Jump to Latest whenever the user is scrolled away from
+    // the bottom, independently of the old 3s drag timer window.  The previous
+    // condition (isUserScrolling && !isNearBottom) hid the arrow after the
+    // timer expired even though the user was still reading history.
     private var showScrollArrow: Bool {
-        isUserScrolling && !isNearBottom
+        !isNearBottom
     }
 
     var body: some View {
@@ -129,18 +133,11 @@ struct ChatScreen: View {
             lastKnownContentLength = streamingContentLength
             scrollToBottom()
         }
-        // Timer-based fallback: when @Observable property changes don't reliably
-        // trigger onChange (e.g. the view's body doesn't directly read the
-        // observed property), poll at 300ms intervals during active streaming.
-        .onReceive(Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()) { _ in
-            guard chatStore.streamingMessageID != nil else { return }
-            guard !isUserScrolling else { return }
-            let currentLength = streamingContentLength
-            if currentLength != lastKnownContentLength {
-                lastKnownContentLength = currentLength
-                scrollToBottom()
-            }
-        }
+        // Build 31: the 300ms polling timer was removed.  The content-length
+        // onChange observer above is sufficient for text-streaming scroll; late
+        // tool cards, image layout, and thought disclosure invalidate geometry
+        // naturally through SwiftUI's layout cycle, and the debounced
+        // scrollToBottom coalesces them into one post-layout scroll.
         .onChange(of: chatStore.pendingMessageSentAt) {
             // User sent a message — resume auto-scroll.
             // Removed the guard !isComposerFocused: this suppressed the
@@ -781,6 +778,14 @@ struct ChatScreen: View {
                         )
                         .transition(.opacity)
                     }
+
+                    // Build 31: stable bottom sentinel.  Every scrollTo targets
+                    // this fixed anchor instead of a mutable message UUID — a
+                    // message row that gets removed (delete/retry/placeholder settle)
+                    // would turn scrollTo into a silent no-op with no recovery.
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
                 }
                 .padding(.vertical, Design.Spacing.md)
             }
@@ -790,15 +795,13 @@ struct ChatScreen: View {
                 isComposerFocused = false
             }
             .simultaneousGesture(
+                // Build 31: user-initiated drag pauses auto-follow.  The
+                // geometry handler below resets isUserScrolling when the user
+                // manually scrolls back to the bottom or taps Jump to Latest.
+                // No timer — the pause lasts until the user explicitly returns.
                 DragGesture(minimumDistance: 16)
                     .onChanged { _ in
                         isUserScrolling = true
-                        userScrollTimer?.invalidate()
-                        userScrollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
-                            Task { @MainActor in
-                                isUserScrolling = false
-                            }
-                        }
                     }
             )
             .onAppear { scrollProxy = proxy }
@@ -1231,24 +1234,14 @@ struct ChatScreen: View {
     }
 
     private func scrollToBottom() {
-        // During streaming, target the streaming placeholder specifically
-        // so the ScrollView tracks the growing message rather than the
-        // last message in the array (which may be a completed message).
-        let targetID: String
-        if let streamingID = chatStore.streamingMessageID {
-            targetID = streamingID.uuidString
-        } else if let lastID = chatStore.conversation?.messages.last?.id {
-            targetID = lastID.uuidString
-        } else {
-            return
-        }
-        let targetUUID = UUID(uuidString: targetID) ?? chatStore.conversation?.messages.last?.id
-        guard let targetUUID else { return }
-
+        // Build 31: always target the stable "bottom" sentinel, never a
+        // mutable message UUID.  If a message row is removed (delete, retry
+        // truncation, placeholder settle), a message-id scrollTo silently
+        // no-ops with no recovery path.  The sentinel is always present.
+        //
         // During streaming, debounce scroll requests — multiple onChange
-        // handlers (message count, streamingContentLength, streamingMessageID)
-        // can fire in the same run loop. A single debounce Task coalesces them
-        // into one scroll per ~100ms.
+        // handlers can fire in the same run loop.  A single debounce Task
+        // coalesces them into one scroll per ~100ms.
         if chatStore.isStreaming {
             guard !isUserScrolling else { return }
             autoScrollTask?.cancel()
@@ -1256,13 +1249,16 @@ struct ChatScreen: View {
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
                 guard !Task.isCancelled, !isUserScrolling else { return }
                 withAnimation(Design.Motion.standard) {
-                    scrollProxy?.scrollTo(targetUUID, anchor: .bottom)
+                    scrollProxy?.scrollTo("bottom", anchor: .bottom)
                 }
             }
             return
         }
+        // Non-streaming: respect user scroll position.  Don't yank a user
+        // who is reading history just because a poll merge changed the count.
+        guard !isUserScrolling else { return }
         withAnimation(Design.Motion.standard) {
-            scrollProxy?.scrollTo(targetUUID, anchor: .bottom)
+            scrollProxy?.scrollTo("bottom", anchor: .bottom)
         }
     }
 

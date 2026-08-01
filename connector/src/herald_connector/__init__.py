@@ -1,4 +1,5 @@
 __all__ = ["__version__", "HERALD_PROTOCOL"]
+__version__ = "0.6.2"
 
 # Minimum connector version the app MUST negotiate.  The iOS app sends this
 # protocol version in every POST /v1/messages request; the connector rejects
@@ -6,7 +7,7 @@ __all__ = ["__version__", "HERALD_PROTOCOL"]
 # contract.  Bump only when a clean-break protocol change requires coordinated
 # app + connector deployment.
 
-HERALD_PROTOCOL = 3
+HERALD_PROTOCOL = 4
 
 # Single source of truth for the connector version.  Surfaced to the app as
 # `connectorVersion` (client.py:_detect_connector_version → the host payload)

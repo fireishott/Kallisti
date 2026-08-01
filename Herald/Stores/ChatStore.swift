@@ -201,10 +201,30 @@ final class ChatStore {
     func loadConversation() async {
         isLoading = true
         defer { isLoading = false }
+        // Build 31: capture generation before the await.  If a terminal row is
+        // committed during the fetch (by .finished's merge), the generation bump
+        // tells us the pre-await snapshot is stale.  Discard the result and let
+        // the poll loop (which does check generation) pick up the authoritative
+        // state on its next cycle.
+        let capturedGeneration = conversationGeneration
+        // Snapshot the current conversation BEFORE the async gap — the merge
+        // uses this to preserve local-only rows that the server payload lacks.
+        // If .finished commits a terminal row while we're waiting, that row
+        // is in the live `conversation` but not in this snapshot.  The
+        // generation check below catches that case.
         let cachedConversation = conversation ?? persistence.loadConversationCache()
+        let refreshed = await heraldClient.loadConversation()
+        // Discard if the generation changed while we were fetching — a
+        // terminal completion, another load, or a session switch invalidated
+        // our pre-await snapshot.
+        guard conversationGeneration == capturedGeneration else {
+            Logger.app.info("loadConversation: discarded (generation \(capturedGeneration) → \(conversationGeneration))")
+            restartPendingPollingIfNeeded()
+            return
+        }
         conversation = mergeConversationMetadata(
             from: cachedConversation,
-            into: await heraldClient.loadConversation()
+            into: refreshed
         )
         autoTitleAttempted = false
         if let latestUsage = conversation?.latestUsage {
@@ -1102,6 +1122,25 @@ final class ChatStore {
     }
 
     func cancelStreaming() {
+        // Build 31: cancel the server-side job before tearing down local state.
+        // Previously this only did local teardown — the server job kept running
+        // to completion, and its output landed in the conversation on the next
+        // poll, appearing as a duplicate or ghost reply.
+        let jobIDs = Array(activeStreams.keys)
+        if !jobIDs.isEmpty {
+            let client = heraldClient
+            Task {
+                for jobID in jobIDs {
+                    do {
+                        try await client.cancelJob(jobID: jobID)
+                        Logger.app.info("CancelStreaming: server job \(jobID.uuidString.prefix(8)) cancelled")
+                    } catch {
+                        Logger.app.warning("CancelStreaming: server cancel failed for \(jobID.uuidString.prefix(8)): \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
         streamingTask?.cancel()
         streamingTask = nil
         chatLiveActivity.endActivity()
@@ -1119,7 +1158,7 @@ final class ChatStore {
            var conv = conversation,
            let idx = conv.messages.firstIndex(where: { $0.id == sid }) {
             conv.messages[idx].isStreaming = false
-            conv.messages[idx].status = .delivered
+            conv.messages[idx].status = .interrupted  // Build 31: not delivered — interrupted
             for i in conv.messages[idx].toolActivities.indices {
                 conv.messages[idx].toolActivities[i].isActive = false
             }

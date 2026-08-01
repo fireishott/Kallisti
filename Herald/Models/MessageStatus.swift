@@ -5,6 +5,7 @@ enum MessageStatus: String, Codable, Hashable, Sendable {
     case sent
     case delivered
     case failed
+    case interrupted   // Build 31: user stopped the turn before completion
 
     var displayIcon: String {
         switch self {
@@ -12,6 +13,7 @@ enum MessageStatus: String, Codable, Hashable, Sendable {
         case .sent: "checkmark"
         case .delivered: "checkmark.circle.fill"
         case .failed: "exclamationmark.circle.fill"
+        case .interrupted: "stop.circle.fill"
         }
     }
 
@@ -21,6 +23,7 @@ enum MessageStatus: String, Codable, Hashable, Sendable {
         case .sent: .secondary
         case .delivered: .green
         case .failed: .red
+        case .interrupted: .orange
         }
     }
 }

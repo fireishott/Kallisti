@@ -497,11 +497,20 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
             for i, a in enumerate(stored)
         ]
 
+    # Build 31: check for a clean-text override recorded at job completion.
+    # When the /v1/runs `input` carries an attachment staging context block,
+    # Hermes writes that augmented text into state.db as the user turn.
+    # The override stores the original clean user text and clientMessageId
+    # so the iOS client never sees host staging paths or checksums.
+    override = get_message_override(msg_id)
+    clean_text = override.get("cleanText") if override else None
+    client_msg_id = override.get("clientMessageId") if override else None
+
     return {
         "id": msg_id,
-        "clientMessageId": None,
+        "clientMessageId": client_msg_id,
         "role": role,
-        "text": row["content"],
+        "text": clean_text if clean_text is not None else row["content"],
         "timestamp": _epoch_to_iso(row["timestamp"]),
         # User rows are neutral ("sent") — only a credible terminal
         # completion (visible text, reasoning, or attachments) can
@@ -546,6 +555,70 @@ def _save_attachments(data: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     tmp.rename(_attachments_path())
+
+
+# ── Message override store (Build 31) ────────────────────────────────────────
+# When Hermes executes a /v1/runs turn with staged attachment context appended
+# to the input, it writes the augmented text (including /tmp paths) into
+# state.db as the user turn.  This sidecar stores the original clean user text
+# and clientMessageId per user-message-id so _message_to_dict can return the
+# canonical content instead of the execution envelope.
+
+
+def _message_overrides_path() -> Path:
+    connector_home = os.getenv(
+        "HERMES_MOBILE_CONNECTOR_HOME"
+    ) or str(Path.home() / ".hermes-mobile")
+    return Path(connector_home) / "message_overrides.json"
+
+
+def _load_message_overrides() -> dict:
+    """Read the message override store. Never raises."""
+    try:
+        with open(_message_overrides_path()) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+        return {}
+
+
+def _save_message_overrides(data: dict) -> None:
+    """Atomically write the message override store."""
+    _message_overrides_path().parent.mkdir(parents=True, exist_ok=True)
+    tmp = _message_overrides_path().with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp.rename(_message_overrides_path())
+
+
+def record_message_override(
+    message_id: str, *, clean_text: str, client_message_id: str | None = None
+) -> None:
+    """Record the clean canonical text and clientMessageId for a user message.
+
+    Called after job completion when the Hermes-written state.db row contains
+    the augmented execution text (staging paths, checksums) rather than the
+    original user message.
+    """
+    data = _load_message_overrides()
+    entry: dict = {"cleanText": clean_text}
+    if client_message_id:
+        entry["clientMessageId"] = client_message_id
+    data[message_id] = entry
+    # Prune entries older than 30 days so the file doesn't grow unbounded.
+    now = __import__("time").time()
+    cutoff = now - 30 * 86400
+    for mid in list(data):
+        ts = data[mid].get("_recordedAt", 0)
+        if ts and ts < cutoff:
+            del data[mid]
+    entry["_recordedAt"] = now
+    _save_message_overrides(data)
+
+
+def get_message_override(message_id: str) -> dict | None:
+    """Return the clean-text override for *message_id*, or None."""
+    data = _load_message_overrides()
+    return data.get(message_id)
 
 
 # Maximum attachment size in bytes (25 MB).

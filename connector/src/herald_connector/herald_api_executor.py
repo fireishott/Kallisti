@@ -799,6 +799,7 @@ class HeraldAPIExecutor:
         latest_user_message: str,
         session_id: str | None,
         conversation_history: list[HeraldConversationMessage] | None = None,
+        attachments: list[dict] | None = None,
     ) -> dict:
         """Build the documented `/v1/runs` request body.
 
@@ -808,6 +809,11 @@ class HeraldAPIExecutor:
         conversation_history, when provided, is the prior conversation
         context that Hermes does not load from its own database — the
         caller must supply it so continuation runs see full context.
+
+        Build 31: attachments are serialized as a structured manifest
+        alongside `input` so Hermes receives machine-readable attachment
+        metadata (type, filename, MIME, staged path, checksum) without it
+        polluting the canonical user text that gets written to state.db.
         """
         payload: dict = {
             "model": "hermes-agent",
@@ -821,6 +827,18 @@ class HeraldAPIExecutor:
                 {"role": m.role, "content": m.text}
                 for m in conversation_history
                 if m.text.strip()
+            ]
+        if attachments:
+            payload["attachments"] = [
+                {
+                    "type": a.get("type", "file"),
+                    "filename": a.get("filename", ""),
+                    "mime_type": a.get("mimeType", "application/octet-stream"),
+                    "staged_path": a.get("stagedPath"),
+                    "sha256": a.get("sha256"),
+                    "size_bytes": a.get("sizeBytes"),
+                }
+                for a in attachments
             ]
         return payload
 
@@ -854,6 +872,7 @@ class HeraldAPIExecutor:
             latest_user_message=latest_user_message,
             session_id=session_id,
             conversation_history=history,
+            attachments=attachments,
         )
         # `/v1/runs` does not use the chat-completions continuity header.
         # It binds an existing Hermes transcript only from this JSON field.

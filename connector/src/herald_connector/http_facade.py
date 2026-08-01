@@ -404,12 +404,14 @@ _STAGING_ROOT = Path(tempfile.gettempdir()) / "herald-inbound-attachments"
 
 def _stage_inbound_attachments(
     job_id: str, attachments: list[dict] | None
-) -> tuple[Path | None, str]:
+) -> tuple[Path | None, str, list[dict]]:
     """Decode and stage inbound attachment bytes to a per-job temp directory.
 
-    Returns (staging_dir, context_block).  context_block is a machine-
-    readable text block that references the staged files so Hermes'
-    /v1/runs text input can consume them.  The staging directory is
+    Returns (staging_dir, context_block, staged_meta).  context_block is a
+    machine-readable text block that references the staged files so Hermes'
+    /v1/runs text input can consume them.  staged_meta is a list of
+    structured attachment dicts (type, filename, mimeType, stagedPath,
+    sha256, sizeBytes) for the /v1/runs payload.  The staging directory is
     cleaned up by the caller when the job finishes.
     """
     import base64
@@ -417,7 +419,7 @@ def _stage_inbound_attachments(
     import shutil
 
     if not attachments:
-        return None, ""
+        return None, "", []
 
     if len(attachments) > _MAX_INBOUND_ATTACHMENT_COUNT:
         logger.warning(
@@ -434,6 +436,7 @@ def _stage_inbound_attachments(
         "relevant to the request.",
         "",
     ]
+    staged_meta: list[dict] = []
     total_bytes = 0
 
     for index, att in enumerate(attachments, start=1):
@@ -466,6 +469,15 @@ def _stage_inbound_attachments(
         file_path.write_bytes(payload)
         checksum = hashlib.sha256(payload).hexdigest()[:16]
 
+        staged_meta.append({
+            "type": "image" if mime_type.startswith("image/") else "file",
+            "filename": safe_name,
+            "mimeType": mime_type,
+            "stagedPath": str(file_path),
+            "sha256": checksum,
+            "sizeBytes": len(payload),
+        })
+
         if mime_type.startswith("image/"):
             lines.append(
                 f"- Image: `{file_path}` ({safe_name}, {mime_type}, "
@@ -493,9 +505,9 @@ def _stage_inbound_attachments(
 
     if not lines[2:]:  # no attachments successfully staged
         shutil.rmtree(staging_dir, ignore_errors=True)
-        return None, ""
+        return None, "", []
 
-    return staging_dir, "\n".join(lines)
+    return staging_dir, "\n".join(lines), staged_meta
 
 
 async def _run_http_job(job_id: str, handler, text, history, session_id,
@@ -554,7 +566,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 # the user text so Hermes can access the files.  The
                 # /v1/runs API accepts a single string `input` — it does
                 # not support inline data-URLs or multipart content blocks.
-                staged_dir, attachment_context = _stage_inbound_attachments(
+                staged_dir, attachment_context, staged_meta = _stage_inbound_attachments(
                     job_id, attachments
                 )
                 text_with_attachments = text
@@ -562,7 +574,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     text_with_attachments = f"{text}\n\n{attachment_context}"
                 async for event in handler(
                     text_with_attachments, history, session_id,
-                    attachments, reasoning_effort
+                    staged_meta or attachments, reasoning_effort
                 ):
                     etype = event.get("type", "progress")
                     data = event.get("data", {}) or {}
@@ -819,6 +831,47 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         "Failed to record message→job mapping for job %s", job_id,
                         exc_info=True,
                     )
+                # Build 31: record a clean-text override for the user message
+                # so _message_to_dict returns the original text instead of the
+                # Hermes-written augmented content (which carries staging paths
+                # and checksums from the attachment context block appended by
+                # _stage_inbound_attachments).
+                clean_text = job.get("cleanText")
+                client_msg_id = job.get("clientMessageId")
+                if clean_text and hermes_sid:
+                    try:
+                        from .session_store import (
+                            _connect as _ss_connect2,
+                            _deterministic_uuid,
+                            record_message_override,
+                        )
+                        ss_conn2 = _ss_connect2()
+                        try:
+                            # Find the user message row that Hermes just wrote
+                            # for this turn — the one closest to job_started_at
+                            user_rows = ss_conn2.execute(
+                                "SELECT id FROM messages "
+                                "WHERE session_id = ? AND role = 'user' "
+                                "  AND timestamp >= ? AND active = 1 "
+                                "ORDER BY timestamp ASC LIMIT 1",
+                                (hermes_sid, job_started_at),
+                            ).fetchall()
+                            if user_rows:
+                                user_msg_id = _deterministic_uuid(
+                                    "msg", user_rows[0]["id"]
+                                )
+                                record_message_override(
+                                    user_msg_id,
+                                    clean_text=clean_text,
+                                    client_message_id=client_msg_id,
+                                )
+                        finally:
+                            ss_conn2.close()
+                    except Exception:
+                        logger.warning(
+                            "Failed to record clean-text override for job %s",
+                            job_id, exc_info=True,
+                        )
         terminal = {
             "type": "done",
             "data": {
@@ -1265,6 +1318,8 @@ async def send_message(request: Request) -> JSONResponse:
         "status": "running",
         "conversationId": app_conversation_id,
         "installationId": installation_id,
+        "clientMessageId": client_message_id,
+        "cleanText": text,           # Build 31: original text without staging context
         "message": None,
         "error": None,
         "errorCategory": None,
@@ -1472,20 +1527,31 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
         raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
 
     # First redeem — build the response, mark, and persist.
-    token = ctx.connector_credential or ctx.paired_device_id or "herald-connector"
-    _default_validator.add_token(token)
+    import secrets as _sec
+    # Build 31: generate a per-device token instead of reusing the
+    # shared connector credential.  The old code gave every device the
+    # same token, which made record_pairing_device overwrite the previous
+    # device's identity — all devices resolved to whichever device paired
+    # most recently.  A unique per-device token makes allDevices filtering
+    # actually correct.
+    device_token = f"hd_{_sec.token_urlsafe(24)}"
+    _default_validator.add_token(device_token)
+    # Also keep the shared credential valid so older builds / other paths
+    # still work.  New builds use the per-device token.
+    shared_token = ctx.connector_credential or ctx.paired_device_id or "herald-connector"
+    _default_validator.add_token(shared_token)
     # Build 28: record token→device so allDevices filtering can
     # resolve the requesting device identity from the auth token.
     if installation_id:
         from .session_store import record_pairing_device
-        record_pairing_device(token, installation_id)
+        record_pairing_device(device_token, installation_id)
     import uuid as _uuid
     payload = {
         "user": {"id": ctx.paired_user_id or str(_uuid.uuid4()), "displayName": "Herald User"},
         "deviceId": str(_uuid.uuid4()),
         "deviceRegistered": True,
         "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
-        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+        "auth": {"accessToken": device_token, "refreshToken": device_token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
     }
     stored["redeemed_at"] = _time.time()
     stored["installation_id"] = installation_id
@@ -1540,14 +1606,26 @@ async def register_device(request: Request) -> JSONResponse:
     ctx = get_context()
     body = await request.json()
     dev = body.get("device", {})
-    logger.info("Device registered: %s", dev.get("deviceName", "?")[:30])
-    import time as _time3, uuid as _uuid4
-    token = ctx.connector_credential or str(_uuid4.uuid4())
+    installation_id = str(dev.get("installationId") or "").strip()[:255]
+    logger.info("Device registered: %s, installation: %s",
+                dev.get("deviceName", "?")[:30], installation_id[:12])
+    import time as _time3, uuid as _uuid4, secrets as _sec
+    # Build 31: generate a per-device token so each device has a distinct
+    # identity for allDevices scoping.  Previously this used the shared
+    # connector credential, making all devices appear as one.
+    device_token = f"hd_{_sec.token_urlsafe(24)}"
+    _default_validator.add_token(device_token)
+    # Also keep the shared credential valid for older builds.
+    shared_token = ctx.connector_credential or str(_uuid4.uuid4())
+    _default_validator.add_token(shared_token)
+    if installation_id:
+        from .session_store import record_pairing_device
+        record_pairing_device(device_token, installation_id)
     return JSONResponse({
         "deviceId": str(_uuid4.uuid4()),
         "deviceRegistered": True,
         "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
-        "auth": {"accessToken": token, "refreshToken": token, "expiresAt": _time3.time() + 86400},
+        "auth": {"accessToken": device_token, "refreshToken": device_token, "expiresAt": _time3.time() + 86400},
     })
 
 

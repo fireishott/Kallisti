@@ -518,8 +518,15 @@ final class AppContainer {
         container.inboxStore.onOpenConversation = { [weak container] (convId: UUID) in
             guard let container else { return }
             Task { @MainActor in
+                // Build 31: merge instead of raw assignment so local-only rows
+                // (optimistic sends, in-flight placeholders) survive the server
+                // snapshot.  Raw assignment would delete any message that hasn't
+                // yet been acknowledged.
                 if let conv = try? await container.chatStore.heraldClient.loadConversation(id: convId) {
-                    container.chatStore.conversation = conv
+                    container.chatStore.conversation = container.chatStore.mergeConversationMetadata(
+                        from: container.chatStore.conversation,
+                        into: conv
+                    )
                     container.chatStore.lastTokenUsage = conv.latestUsage
                 }
                 container.router.selectedTab = .chat
@@ -732,7 +739,11 @@ final class AppContainer {
 
         do {
             let conversation = try await chatStore.heraldClient.loadConversation(id: conversationID)
-            chatStore.conversation = conversation
+            // Build 31: merge instead of raw assignment so local-only rows survive.
+            chatStore.conversation = chatStore.mergeConversationMetadata(
+                from: chatStore.conversation,
+                into: conversation
+            )
             Logger.app.info("Notification route: loaded conversation \(conversationID.uuidString.prefix(8))")
         } catch {
             Logger.app.warning("Notification route: failed to load conversation \(conversationID.uuidString.prefix(8)): \(error.localizedDescription)")
