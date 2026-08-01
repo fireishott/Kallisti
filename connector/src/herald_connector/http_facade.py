@@ -847,7 +847,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                                     "state.db",
                                     hermes_sid, job_id, actual_sid,
                                 )
-                        hermes_sid = actual_sid or hermes_sid
+                        # Build 107: use session_id parameter as fallback when
+                        # session lookups fail. The temporal context prepended
+                        # to the handler input means the user text in state.db
+                        # doesn't match the original clean text, so lookups
+                        # by text content fail. The session_id from the caller
+                        # (resolved from the conversation binding) is the
+                        # correct fallback.
+                        hermes_sid = actual_sid or hermes_sid or session_id
                         if hermes_sid:
                             from .session_store import _app_uuid, _persist_hermes_mapping
                             # Record the canonical mapping: app_uuid → hermes_id
@@ -1032,47 +1039,51 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 attachments=media_attachments or None,
                 message_id=assistant_message_id,
             )
-            # Build 31: record a clean-text override for the user message
-            # so _message_to_dict returns the original text instead of the
-            # Hermes-written augmented content (which carries staging paths
-            # and checksums from the attachment context block appended by
-            # _stage_inbound_attachments).
-            clean_text = job.get("cleanText")
-            client_msg_id = job.get("clientMessageId")
-            if clean_text and hermes_sid:
+
+        # Build 31: record a clean-text override for the user message
+        # so _message_to_dict returns the original text instead of the
+        # Hermes-written augmented content (which carries staging paths
+        # and checksums from the attachment context block appended by
+        # _stage_inbound_attachments).  Moved outside the "completed"
+        # block so overrides are recorded for all terminal states
+        # (failed, cancelled) — the user should see clean text regardless
+        # of job outcome.
+        clean_text = job.get("cleanText")
+        client_msg_id = job.get("clientMessageId")
+        if clean_text and hermes_sid:
+            try:
+                from .session_store import (
+                    _connect as _ss_connect2,
+                    _deterministic_uuid,
+                    record_message_override,
+                )
+                ss_conn2 = _ss_connect2()
                 try:
-                    from .session_store import (
-                        _connect as _ss_connect2,
-                        _deterministic_uuid,
-                        record_message_override,
-                    )
-                    ss_conn2 = _ss_connect2()
-                    try:
-                        # Find the user message row that Hermes just wrote
-                        # for this turn — the one closest to job_started_at
-                        user_rows = ss_conn2.execute(
-                            "SELECT id FROM messages "
-                            "WHERE session_id = ? AND role = 'user' "
-                            "  AND timestamp >= ? AND active = 1 "
-                            "ORDER BY timestamp ASC LIMIT 1",
-                            (hermes_sid, job_started_at),
-                        ).fetchall()
-                        if user_rows:
-                            user_msg_id = _deterministic_uuid(
-                                "msg", user_rows[0]["id"]
-                            )
-                            record_message_override(
-                                user_msg_id,
-                                clean_text=clean_text,
-                                client_message_id=client_msg_id,
-                            )
-                    finally:
-                        ss_conn2.close()
-                except Exception:
-                    logger.warning(
-                        "Failed to record clean-text override for job %s",
-                        job_id, exc_info=True,
-                    )
+                    # Find the user message row that Hermes just wrote
+                    # for this turn — the one closest to job_started_at
+                    user_rows = ss_conn2.execute(
+                        "SELECT id FROM messages "
+                        "WHERE session_id = ? AND role = 'user' "
+                        "  AND timestamp >= ? AND active = 1 "
+                        "ORDER BY timestamp ASC LIMIT 1",
+                        (hermes_sid, job_started_at),
+                    ).fetchall()
+                    if user_rows:
+                        user_msg_id = _deterministic_uuid(
+                            "msg", user_rows[0]["id"]
+                        )
+                        record_message_override(
+                            user_msg_id,
+                            clean_text=clean_text,
+                            client_message_id=client_msg_id,
+                        )
+                finally:
+                    ss_conn2.close()
+            except Exception:
+                logger.warning(
+                    "Failed to record clean-text override for job %s",
+                    job_id, exc_info=True,
+                )
 
         # B33 WS B: mirror the terminal state into the delivery store so the
         # request lifecycle is durable across connector restarts.  Never

@@ -230,7 +230,8 @@ struct OutboxDurableTests {
             terminalMessageID: nil,
             attemptCount: 1,
             nextAttemptAt: nil,
-            lastError: nil
+            lastError: nil,
+            updatedAt: .now
         )
         OutboxManifestStore(baseDirectory: scratch).save(
             ChatOutboxManifest(schemaVersion: OutboxManifestStore.schemaVersion, items: [record], nextSequence: 2)
@@ -271,7 +272,8 @@ struct OutboxDurableTests {
                 terminalMessageID: nil,
                 attemptCount: 1,
                 nextAttemptAt: nil,
-                lastError: nil
+                lastError: nil,
+                updatedAt: .now
             )
         }
 

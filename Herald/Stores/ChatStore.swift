@@ -1121,11 +1121,46 @@ final class ChatStore {
             // Check if the placeholder was resolved by a late SSE event or polling
             if let msg = conversation?.messages.first(where: { $0.id == placeholderID }) {
                 if msg.status == .delivered || msg.status == .failed {
+                    // Build 107: update outbox item state when placeholder is
+                    // resolved by polling.  Without this, the outbox item stays
+                    // in .accepted state and the FIFO chain never drains the
+                    // next queued message — the user has to relaunch the app.
+                    if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        let item = outboxItems[idx]
+                        if item.state == .accepted {
+                            if msg.status == .delivered {
+                                terminalizeOutboxItem(
+                                    item,
+                                    canonicalUserMessageID: clientMessageID,
+                                    terminalMessageID: msg.id
+                                )
+                            } else {
+                                failOutboxItem(
+                                    item,
+                                    state: .retryableFailure,
+                                    error: "Job failed during polling",
+                                    retryAfter: backoffInterval(forAttempt: item.attemptCount)
+                                )
+                            }
+                        }
+                    }
                     streamingPhase = .idle
                     chatLiveActivity.endActivity()
                     return
                 }
                 if (!msg.content.isEmpty || !msg.reasoning.isEmpty) && msg.status != .sending {
+                    // Build 107: same as above — resolve outbox item when
+                    // content appears via polling.
+                    if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
+                        let item = outboxItems[idx]
+                        if item.state == .accepted {
+                            terminalizeOutboxItem(
+                                item,
+                                canonicalUserMessageID: clientMessageID,
+                                terminalMessageID: msg.id
+                            )
+                        }
+                    }
                     streamingPhase = .idle
                     chatLiveActivity.endActivity()
                     return

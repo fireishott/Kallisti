@@ -573,6 +573,14 @@ def session_messages(
               -- session the app resolved to.
               AND content NOT LIKE '[Your previous response was cut off%'
               AND content NOT LIKE '[IMPORTANT: The user has invoked the%'
+              -- Build 107: filter out temporal context prefix that the connector
+              -- prepends to user text for Hermes.  This is execution-only
+              -- metadata and should never appear as a user message in the
+              -- conversation.  The override mechanism records the clean text,
+              -- but this filter is defence-in-depth for cases where the
+              -- override was not recorded (e.g., connector restart between
+              -- job completion and override recording).
+              AND content NOT LIKE '[System context — current local time]%'
             ORDER BY timestamp ASC
             LIMIT ?
             """,
