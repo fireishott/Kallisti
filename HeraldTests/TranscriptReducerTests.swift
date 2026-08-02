@@ -119,18 +119,17 @@ struct TranscriptReducerIdentityTests {
         let reducer = TranscriptReducer()
         _ = try await reducer.reduce(.activateConversation(conversation, epoch))
 
-        // First, inject a snapshot with a canonical row (no clientMessageID match needed)
+        // First, inject a snapshot with a canonical row via canonicalMessages
         let canonicalID = CanonicalMessageID("can-1")!
-        let existingRenderID = TranscriptRenderID()
-        let existingRow = TranscriptRow(renderID: existingRenderID, canonicalMessageID: canonicalID,
-            clientMessageID: nil, jobID: nil, canonicalSequence: CanonicalSequence(rawValue: 1),
-            messageRevision: MessageRevision(rawValue: 1), conversationRevisionSeen: ConversationRevision(rawValue: 1),
-            retryGeneration: 0, localOrdinal: LocalOrdinal(rawValue: 1), kind: .user,
-            lifecycle: .accepted, displayContent: "Server content",
-            reasoning: nil, toolActivity: nil, attachments: [], createdAt: Date(), lastUpdatedAt: Date())
         _ = try await reducer.reduce(.snapshotReceived(
             TranscriptSnapshot(conversationID: conversation, revision: ConversationRevision(rawValue: 1),
-                               rows: [existingRow]), epoch))
+                               canonicalMessages: [
+                                   CanonicalMessage(canonicalMessageID: canonicalID,
+                                       clientMessageID: nil, jobID: nil,
+                                       sequence: CanonicalSequence(rawValue: 1),
+                                       messageRevision: MessageRevision(rawValue: 1),
+                                       kind: .user, displayContent: "Server content", deleted: false)
+                               ]), epoch))
 
         // Now send an acceptance with a DIFFERENT clientMessageID but same canonicalMessageID
         let differentClientID = ClientMessageID("server-generated-client-id")!
@@ -144,7 +143,7 @@ struct TranscriptReducerIdentityTests {
 
         let projection = await reducer.projection(for: conversation)
         #expect(projection.orderedVisibleRows.count == 1)
-        #expect(projection.orderedVisibleRows[0].renderID == existingRenderID)
+        #expect(projection.orderedVisibleRows[0].canonicalMessageID == canonicalID)
         #expect(projection.orderedVisibleRows[0].displayContent == "Updated content")
     }
 
@@ -199,16 +198,16 @@ struct TranscriptReducerIdentityTests {
         _ = try await reducer.reduce(.activateConversation(conversation, epoch))
 
         let canonicalID = CanonicalMessageID("can-1")!
-        let renderID = TranscriptRenderID()
-        let row = TranscriptRow(renderID: renderID, canonicalMessageID: canonicalID,
-            clientMessageID: nil, jobID: JobID("job-1"), canonicalSequence: CanonicalSequence(rawValue: 1),
-            messageRevision: MessageRevision(rawValue: 1), conversationRevisionSeen: ConversationRevision(rawValue: 1),
-            retryGeneration: 0, localOrdinal: LocalOrdinal(rawValue: 1), kind: .assistant,
-            lifecycle: .streaming, displayContent: "Partial",
-            reasoning: nil, toolActivity: nil, attachments: [], createdAt: Date(), lastUpdatedAt: Date())
+        let jobID = JobID("job-1")!
         _ = try await reducer.reduce(.snapshotReceived(
             TranscriptSnapshot(conversationID: conversation, revision: ConversationRevision(rawValue: 1),
-                               rows: [row]), epoch))
+                               canonicalMessages: [
+                                   CanonicalMessage(canonicalMessageID: canonicalID,
+                                       clientMessageID: nil, jobID: jobID,
+                                       sequence: CanonicalSequence(rawValue: 1),
+                                       messageRevision: MessageRevision(rawValue: 1),
+                                       kind: .assistant, displayContent: "Partial", deleted: false)
+                               ]), epoch))
 
         // Live terminal event with same canonicalMessageID
         _ = try await reducer.reduce(.messageTerminal(

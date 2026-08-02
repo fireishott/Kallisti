@@ -156,11 +156,13 @@ actor TranscriptReducer {
         switch (from, to) {
         // User submission lifecycle
         case (.optimistic, .submitting): return true
+        case (.optimistic, .accepted): return true
         case (.submitting, .accepted): return true
         case (.submitting, .rejected): return true
         case (.submitting, .failed): return true
 
-        // Active lifecycle
+        // Active lifecycle (idempotent accepted for job binding upgrades)
+        case (.accepted, .accepted): return true
         case (.accepted, .streaming): return true
         case (.accepted, .complete): return true
         case (.accepted, .failed): return true
@@ -191,7 +193,9 @@ actor TranscriptReducer {
     func reduce(_ event: Event) throws -> TranscriptProjection {
         switch event {
         case let .activateConversation(id, epoch):
-            try requireEpoch(epoch)
+            // activateConversation is the epoch-setting event. It must accept any epoch
+            // because the caller (ConversationTaskScope.navigateTo) increments the epoch
+            // before calling this. The epoch check applies to all subsequent events.
             state.activeConversationID = id
             state.navigationEpoch = epoch
             state.conversationRevision = .zero
@@ -280,12 +284,18 @@ actor TranscriptReducer {
                 record("illegal_transition", "Cannot transition from \(row.lifecycle) to accepted")
                 break
             }
-            row.lifecycle = .accepted
-            row.displayContent = acceptance.displayContent
-            row.messageRevision = acceptance.revision
-            row.canonicalSequence = acceptance.sequence
-            row.lastUpdatedAt = Date()
-            replace(row: row, canonicalID: acceptance.canonicalMessageID)
+            let updatedRow = TranscriptRow(renderID: row.renderID,
+                canonicalMessageID: acceptance.canonicalMessageID,
+                clientMessageID: row.clientMessageID ?? acceptance.clientMessageID,
+                jobID: row.jobID, canonicalSequence: acceptance.sequence,
+                messageRevision: acceptance.revision,
+                conversationRevisionSeen: acceptance.conversationRevision,
+                retryGeneration: row.retryGeneration, localOrdinal: row.localOrdinal,
+                kind: row.kind, lifecycle: .accepted,
+                displayContent: acceptance.displayContent,
+                reasoning: row.reasoning, toolActivity: row.toolActivity,
+                attachments: row.attachments, createdAt: row.createdAt, lastUpdatedAt: Date())
+            replace(row: updatedRow)
             state.conversationRevision = max(state.conversationRevision, acceptance.conversationRevision)
 
         // MARK: User submission retrying (optimistic->submitting, or rejected/cancelled->submitting)

@@ -5,6 +5,7 @@ options:
   bundleIdPrefix: net.fihonline
   deploymentTarget:
     iOS: "18.0"
+    watchOS: "11.0"
   xcodeVersion: "26.3"
   defaultConfig: Debug
   generateEmptyDirectories: true
@@ -16,6 +17,7 @@ settings:
     SWIFT_VERSION: "6.2"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    WATCHOS_DEPLOYMENT_TARGET: "11.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     INFOPLIST_KEY_UILaunchScreen_Generation: true
     INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -31,6 +33,7 @@ schemes:
         Herald: all
         HeraldWidgets: all
         HeraldIntents: all
+        HeraldControls: all
     run:
       config: Debug
     test:
@@ -39,6 +42,26 @@ schemes:
         - name: HeraldTests
           parallelizable: true
         - name: HeraldUITests
+          parallelizable: true
+        - name: HeraldControlsTests
+          parallelizable: true
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  HeraldWatch:
+    build:
+      targets:
+        HeraldWatch: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: HeraldWatchTests
           parallelizable: true
     profile:
       config: Release
@@ -61,17 +84,26 @@ targets:
         aps-environment: production
         com.apple.security.application-groups:
           - group.net.fihonline.herald
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
     sources:
       - path: Herald
         excludes:
           - "**/.DS_Store"
+          # Build 108: exclude Watch WIP files until Task 10 finishes them.
+          # These reference types defined in the Watch target that are not
+          # yet integrated into the iOS build.
+          - "Services/Live/PhoneWatchConnectivityCoordinator.swift"
+          - "Services/Live/WatchActionBridge.swift"
       - path: HeraldWidgets/HeraldAppState.swift
       - path: HeraldWidgets/GatewayState.swift
       - path: HeraldWidgets/HeraldActivityAttributes.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     resources:
       - path: Herald/Resources
         optional: true
     dependencies:
+      - target: HeraldSupport
       - target: HeraldWidgets
       - target: HeraldNotificationService
       - target: HeraldIntents
@@ -86,6 +118,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Herald
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
@@ -152,6 +185,8 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.herald
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
     info:
       path: HeraldWidgets/Info.plist
       properties:
@@ -167,24 +202,30 @@ targets:
         MARKETING_VERSION: "2.4.1"
         CURRENT_PROJECT_VERSION: "108"
         SWIFT_VERSION: "6.2"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
       configs:
         Release:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
+    dependencies:
+      - target: HeraldSupport
 
   HeraldNotificationService:
     type: app-extension
     platform: iOS
     sources:
       - path: HeraldNotificationService
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     entitlements:
       path: HeraldNotificationService/HeraldNotificationService.entitlements
       properties:
         aps-environment: development
         com.apple.security.application-groups:
           - group.net.fihonline.herald
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
     info:
       path: HeraldNotificationService/Info.plist
       properties:
@@ -204,9 +245,12 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
+    dependencies:
+      - target: HeraldSupport
 
   HeraldIntents:
     type: app-extension
@@ -219,6 +263,8 @@ targets:
         com.apple.developer.siri: true
         com.apple.security.application-groups:
           - group.net.fihonline.herald
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
     info:
       path: HeraldIntents/Info.plist
       properties:
@@ -228,11 +274,12 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.intents-service
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).IntentHandler"
-          IntentsSupported:
-            - INSendMessageIntent
-            - INSearchForMessagesIntent
-            - INSetMessageAttributeIntent
-          IntentsRestrictedWhileLocked: []
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INSendMessageIntent
+              - INSearchForMessagesIntent
+              - INSetMessageAttributeIntent
+            IntentsRestrictedWhileLocked: []
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
@@ -242,10 +289,13 @@ targets:
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
       configs:
         Release:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
+    dependencies:
+      - target: HeraldSupport
 
   HeraldControls:
     type: app-extension
@@ -253,6 +303,13 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: HeraldControls
+    entitlements:
+      path: HeraldControls/HeraldControls.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.net.fihonline.herald
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
     settings:
       base:
         INFOPLIST_FILE: HeraldControls/Info.plist
@@ -264,11 +321,95 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
-      - target: HeraldWidgets
+      - target: HeraldSupport
+
+  HeraldSupport:
+    type: library.static
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: HeraldSupport
+    settings:
+      base:
+        PRODUCT_NAME: HeraldSupport
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.support
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 58U7UPFS53
+        APPLICATION_EXTENSION_API_ONLY: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        BUILD_LIBRARY_FOR_DISTRIBUTION: NO
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
+
+  HeraldWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - path: HeraldWatch
+      - path: Herald/Services/Protocols/NotificationCategories.swift
+    entitlements:
+      path: HeraldWatch/HeraldWatch.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.net.fihonline.herald
+    info:
+      path: HeraldWatch/Info.plist
+      properties:
+        CFBundleDisplayName: HeraldWatch
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: net.fihonline.herald
+        WKWatchOnly: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.watchkitapp
+        PRODUCT_NAME: HeraldWatch
+        MARKETING_VERSION: "2.4.1"
+        CURRENT_PROJECT_VERSION: "108"
+        SWIFT_VERSION: "6.2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 58U7UPFS53
+        TARGETED_DEVICE_FAMILY: "4"
+        SUPPORTED_PLATFORMS: "watchsimulator watchos"
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
+
+  HeraldWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - path: HeraldWatchTests
+      - path: HeraldWatch/WatchNotificationPayload.swift
+      - path: HeraldWatch/WatchConnectivityCoordinator.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.watchkitapp.tests
+        PRODUCT_NAME: HeraldWatchTests
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "4"
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HeraldWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 
   HeraldTests:
     type: bundle.unit-test
@@ -284,6 +425,7 @@ targets:
         TEST_TARGET_NAME: Herald
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
   HeraldUITests:
     type: bundle.ui-testing
@@ -298,3 +440,21 @@ targets:
         PRODUCT_NAME: HeraldUITests
         TEST_TARGET_NAME: Herald
         GENERATE_INFOPLIST_FILE: true
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+
+  HeraldControlsTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: HeraldControlsTests
+    dependencies:
+      - target: HeraldSupport
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.controlstests
+        PRODUCT_NAME: HeraldControlsTests
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: true
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
