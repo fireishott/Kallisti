@@ -941,18 +941,38 @@ class DeliveryStore:
         ``job_events`` so a reconnect replay or a connector restart
         observes the same seq numbers the original attempt emitted.
 
+        The allocation is atomic: a placeholder row is inserted in the
+        same transaction as the seq read, so two concurrent callers
+        cannot receive the same seq.  ``append_job_event`` replaces the
+        placeholder with the real event JSON.
+
         Returns the next seq (always >= 1).
         """
         with self._lock:
             conn = self._connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     "SELECT COALESCE(MAX(seq), 0) AS next_seq "
                     "FROM job_events WHERE job_id = ?",
                     (job_id,),
                 ).fetchone()
                 next_seq = int(row["next_seq"]) + 1 if row else 1
+                # Insert a placeholder so a concurrent allocate cannot
+                # receive the same seq.  append_job_event replaces this
+                # row with the real event JSON.
+                conn.execute(
+                    "INSERT OR IGNORE INTO job_events "
+                    "(job_id, seq, event_json, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (job_id, next_seq, '{"_placeholder":true}',
+                     _utcnow_rfc3339()),
+                )
+                conn.commit()
                 return next_seq
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
 
@@ -1076,16 +1096,31 @@ class DeliveryStore:
             finally:
                 conn.close()
 
-    def get_canonical_message(self, canonical_message_id: str) -> dict | None:
-        """Get a canonical message by its ID."""
+    def get_canonical_message(
+        self, canonical_message_id: str, *, conversation_id: str | None = None,
+    ) -> dict | None:
+        """Get a canonical message by its ID, optionally scoped to a conversation.
+
+        When ``conversation_id`` is provided, the lookup is rejected if the
+        message belongs to a different conversation — returning ``None``
+        rather than leaking cross-conversation identity.
+        """
         with self._lock:
             conn = self._connect()
             try:
-                row = conn.execute(
-                    "SELECT * FROM conversation_messages "
-                    "WHERE canonical_message_id = ?",
-                    (canonical_message_id,),
-                ).fetchone()
+                if conversation_id:
+                    row = conn.execute(
+                        "SELECT * FROM conversation_messages "
+                        "WHERE canonical_message_id = ? "
+                        "AND conversation_id = ?",
+                        (canonical_message_id, conversation_id),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM conversation_messages "
+                        "WHERE canonical_message_id = ?",
+                        (canonical_message_id,),
+                    ).fetchone()
                 if row is None:
                     return None
                 return {
@@ -1447,10 +1482,13 @@ class DeliveryStore:
                         model_input_content, now, now,
                     ),
                 )
-                # Insert request idempotency record
+                # Insert request idempotency record.  INSERT OR IGNORE
+                # so a pre-existing request (e.g. from an earlier
+                # create_message_request call) does not fail the
+                # transaction — the existing row is left untouched.
                 request_sha = request_sha256(display_content, None)
                 conn.execute(
-                    "INSERT INTO message_requests "
+                    "INSERT OR IGNORE INTO message_requests "
                     "(client_message_id, conversation_id, owner_device_id, "
                     " request_sha256, clean_text, state, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",

@@ -1075,6 +1075,17 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 timestamp=_now_iso(),
                 payload=payload_dict,
             )
+            # Phase 3A v3: validate the typed payload against the
+            # per-event Pydantic subclass.  parse_event() only
+            # validates the envelope fields; it never inspects payload
+            # keys.  A RunCompletedEvent whose payload is missing `text`
+            # and `usage` must fail before publication.
+            from .stream_contract import EVENT_TYPE_TO_MODEL as _EVT_MODEL
+            _model_cls = _EVT_MODEL.get(event_type)
+            if _model_cls is not None:
+                _model_cls.model_validate({
+                    **envelope, "payload": payload_dict,
+                })
         except Exception:
             # Phase 3A v2 correction: malformed producer events fail
             # before publication.  We log loudly and skip rather than
@@ -1518,43 +1529,14 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         # ``{type:"done", ...}`` shape is never emitted on the wire
         # downstream — subscribers all observe the v3 envelope.
         _publish(terminal)
-        # Maintain backward compatibility with iOS JobStreamCoordinator
-        # which still pattern-matches on ``event.type == "done"`` while
-        # it migrates to the v3 terminal types.  We append a sentinel
-        # entry that carries no payload but preserves the legacy event
-        # name for the poll/SSE coordinator.
-        try:
-            from .stream_contract import build_envelope as _build_legacy_done
-            conv_id = job.get("conversationId")
-            if conv_id is not None:
-                legacy_done = _build_legacy_done(
-                    job_id=job_id,
-                    conversation_id=conv_id,
-                    attempt=int(job.get("attempt", 1) or 1),
-                    seq=get_delivery_store().allocate_job_seq(
-                        job_id=job_id,
-                        conversation_id=conv_id,
-                        attempt=int(job.get("attempt", 1) or 1),
-                    ),
-                    conversation_revision=(
-                        get_delivery_store().get_conversation_revision(conv_id)
-                        if conv_id else 0
-                    ),
-                    event_type="done",
-                    timestamp=_now_iso(),
-                    payload={
-                        "jobId": job_id,
-                        "status": job["status"],
-                        "text": accumulated,
-                    },
-                )
-                job["events"].append(legacy_done)
-                # Don't re-emit to subscribers — they already saw the
-                # v3 envelope; the legacy entry only lives in the
-                # replay buffer for iOS coordinators that still match
-                # on the old event name.
-        except Exception:
-            logger.debug("legacy done sentinel skipped (non-fatal)")
+        # Phase 3A v3 correction: the legacy ``{type:"done" ...}``
+        # envelope is NEVER appended to ``job["events"]``.  The SSE
+        # replay buffer at GET /v1/jobs/{id}/events replays the full
+        # ``backlog`` on connect, so a ``done`` frame would reach iOS
+        # subscribers — violating the hard rule "no second legacy event
+        # dictionary may be constructed downstream".  The v3 terminal
+        # types (run.completed / run.failed / run.cancelled) are the
+        # sole terminal signal on the wire.
         for queue in list(job["subscribers"]):
             queue.put_nowait(None)                # sentinel: close the SSE stream
         job["updatedAt"] = time.time()
@@ -3022,9 +3004,6 @@ async def send_message(request: Request) -> JSONResponse:
             for a in attachments
             if isinstance(a, dict) and (a.get("thumbnailData") or a.get("data"))
         ] or None
-    user_message = _relay_message("user", text, client_message_id=client_message_id,
-                                  delivery_status="sent", attachments=ack_attachments,
-                                  app_conversation_id=app_conversation_id)
 
     # Build 28: resolve the requesting device identity from the auth token
     # so the session can be attributed to a device for allDevices scoping.
@@ -3048,7 +3027,7 @@ async def send_message(request: Request) -> JSONResponse:
         logger.exception("session_title lookup failed for %s", app_conversation_id)
         conversation_title = "Herald"
 
-    # ── Build 33 Workstream B: durable delivery store ────────────────────
+    # ── Build 33/108 Workstream B: durable delivery store ─────────────────
     # POST /v1/messages is idempotent on clientMessageId: a transport-level
     # retry of the same send (same id + same content hash) is answered with
     # the existing job (replyState "duplicate"); the same id carrying
@@ -3063,6 +3042,7 @@ async def send_message(request: Request) -> JSONResponse:
     # (LiveHeraldClient.swift:527); sends that arrive for an unbound
     # conversation (legacy nil-conversationId path) proceed untracked rather
     # than 500.
+    canonical_user = None  # Phase 3A: set by create_user_message_atomically
     if hermes_session_id:
         _persist_delivery_bindings(
             [app_conversation_id], hermes_session_id, installation_id
@@ -3073,20 +3053,8 @@ async def send_message(request: Request) -> JSONResponse:
         )
         delivery_store = get_delivery_store()
         # Build 104 P0: one clientConversationId ↔ one hermesSessionId.
-        #
-        # `ensure_conversation` is the only path that creates a binding. The
-        # legacy code path here tried to auto-create one when a client sent
-        # `/v1/messages` without calling `/v1/conversations/ensure` first;
-        # that produced the Build 103 409 when the canonical `_app_uuid`
-        # already claimed the Hermes session. New rule: the binding MUST
-        # exist before this endpoint accepts a message. If it doesn't, the
-        # client must call `/v1/conversations/ensure` first.
         binding = delivery_store.get_binding(app_conversation_id)
         if binding is None:
-            # No binding yet — the iOS client must call
-            # POST /v1/conversations/ensure first. Return a typed 409
-            # with `replyState: conversation_not_ensured` so the client
-            # can recover with one round-trip.
             return JSONResponse(status_code=409, content={
                 "$schema": "message-accepted-v1",
                 "replyState": "conversation_not_ensured",
@@ -3109,10 +3077,6 @@ async def send_message(request: Request) -> JSONResponse:
             hermes_session_id
             and binding["hermesSessionId"] != hermes_session_id
         ):
-            # The client supplied a sessionId that disagrees with the
-            # stored binding. This is the Build 103 failure surface: the
-            # iOS submitter switched to a different Hermes id mid-flow.
-            # Surface as a typed 409 — never silently coerce.
             logger.warning(
                 "delivery: binding_mismatch for %s — stored=%s, supplied=%s",
                 app_conversation_id,
@@ -3136,65 +3100,136 @@ async def send_message(request: Request) -> JSONResponse:
                 "context": None,
                 "diff": None,
             })
-        request_hash = request_sha256(display_text, attachments)
-        try:
-            request_row = delivery_store.create_message_request(
-                client_message_id, app_conversation_id, installation_id,
-                display_text, request_hash,
-            )
-        except DuplicateConflictError:
-            logger.warning(
-                "Message %s rejected: clientMessageId already used with "
-                "different content",
-                client_message_id,
-            )
-            return JSONResponse(status_code=409, content={
-                "$schema": "message-accepted-v1",
-                "replyState": "conflict",
-                "clientMessageId": client_message_id,
-                "jobId": None,
-                "state": None,
-                "error": "sameClientIdDifferentHash",
-                "message": (
-                    "This clientMessageId was already submitted with "
-                    "different content."
-                ),
-                "conversation": None,
-                "userMessage": None,
-                "usage": None,
-                "context": None,
-                "diff": None,
-            })
-        if request_row["state"] in ("running", "terminal"):
-            logger.info(
-                "Message %s is a duplicate (state=%s, job=%s) — "
-                "returning the existing job without resubmitting",
-                client_message_id, request_row["state"], request_row["jobId"],
-            )
-            return JSONResponse({
-                "$schema": "message-accepted-v1",
-                "replyState": "duplicate",
-                "clientMessageId": client_message_id,
-                "jobId": request_row["jobId"],
-                "state": "accepted",
-                "existingState": request_row["state"],
-                "conversation": _conversation_envelope_canonical(
-                    app_conversation_id,
-                    fallback_title=conversation_title,
-                    fallback_updated_at=_now_iso(),
-                    messages=[],
-                ),
-                "userMessage": None,
-                "message": None,
-                "usage": None,
-                "context": None,
-                "diff": None,
-            })
-        # accepted / cancelled / permanent_failure: run it.  The last two
-        # are retries — accept_message_request moves them back to running.
-        delivery_store.accept_message_request(client_message_id, job_id)
+        # Phase 3A: materialise the canonical user row in the same
+        # transaction as the user ack.  This replaces the separate
+        # create_message_request + _relay_message projection so the
+        # user ack and the post-snapshot view describe the same facts
+        # (same canonicalMessageId, sequence, revision).
+        #
+        # Duplicate / conflict detection: check the existing request
+        # BEFORE the atomic create so pre-existing message_requests
+        # (from earlier sends or retries) are handled correctly.
+        existing_req = delivery_store.get_message_request(client_message_id)
+        if existing_req is not None:
+            # Conflict: same clientMessageId but different content.
+            if existing_req.get("requestSha256"):
+                new_sha = request_sha256(display_text, attachments)
+                if new_sha != existing_req["requestSha256"]:
+                    logger.warning(
+                        "Message %s rejected: clientMessageId already "
+                        "used with different content",
+                        client_message_id,
+                    )
+                    return JSONResponse(status_code=409, content={
+                        "$schema": "message-accepted-v1",
+                        "replyState": "conflict",
+                        "clientMessageId": client_message_id,
+                        "jobId": None,
+                        "state": None,
+                        "error": "sameClientIdDifferentHash",
+                        "message": (
+                            "This clientMessageId was already submitted "
+                            "with different content."
+                        ),
+                        "conversation": None,
+                        "userMessage": None,
+                        "usage": None,
+                        "context": None,
+                        "diff": None,
+                    })
+            # Duplicate: same content, request already in progress or
+            # terminal — return the existing job without resubmitting.
+            if existing_req["state"] in ("running", "terminal"):
+                logger.info(
+                    "Message %s is a duplicate (state=%s, job=%s) — "
+                    "returning the existing job without resubmitting",
+                    client_message_id, existing_req["state"],
+                    existing_req["jobId"],
+                )
+                return JSONResponse({
+                    "$schema": "message-accepted-v1",
+                    "replyState": "duplicate",
+                    "clientMessageId": client_message_id,
+                    "jobId": existing_req["jobId"],
+                    "state": "accepted",
+                    "existingState": existing_req["state"],
+                    "conversation": _conversation_envelope_canonical(
+                        app_conversation_id,
+                        fallback_title=conversation_title,
+                        fallback_updated_at=_now_iso(),
+                        messages=[],
+                    ),
+                    "userMessage": None,
+                    "message": None,
+                    "usage": None,
+                    "context": None,
+                    "diff": None,
+                })
+            # For cancelled/permanent_failure: proceed with retry.
+        # Materialise the canonical user row atomically.  For new
+        # messages this creates both the canonical row and the request;
+        # for retries (cancelled/permanent_failure) it creates the
+        # canonical row and the INSERT OR IGNORE leaves the existing
+        # request untouched.
+        canonical_user = delivery_store.create_user_message_atomically(
+            app_conversation_id,
+            client_message_id,
+            display_text,
+            display_text,
+            model_input_content=model_input,
+            device_id=installation_id,
+        )
+        if canonical_user.get("duplicate"):
+            # The canonical message already exists (retry path where
+            # the canonical row was created but the request is still
+            # in a terminal state).
+            request_row = delivery_store.get_message_request(client_message_id)
+            if request_row and request_row["state"] in ("running", "terminal"):
+                return JSONResponse({
+                    "$schema": "message-accepted-v1",
+                    "replyState": "duplicate",
+                    "clientMessageId": client_message_id,
+                    "jobId": request_row["jobId"],
+                    "state": "accepted",
+                    "existingState": request_row["state"],
+                    "conversation": _conversation_envelope_canonical(
+                        app_conversation_id,
+                        fallback_title=conversation_title,
+                        fallback_updated_at=_now_iso(),
+                        messages=[],
+                    ),
+                    "userMessage": None,
+                    "message": None,
+                    "usage": None,
+                    "context": None,
+                    "diff": None,
+                })
+            # For cancelled/permanent_failure: proceed with retry.
+        else:
+            # New message — accept the request so it transitions to running.
+            delivery_store.accept_message_request(client_message_id, job_id)
     else:
         logger.warning("POST /v1/messages without clientMessageId — untracked")
+
+    # Phase 3A: build user_message from the canonical row when available.
+    # This ensures the user ack carries the same canonicalMessageId,
+    # sequence, and revision that the snapshot endpoint will surface.
+    user_message = _relay_message(
+        "user", text,
+        client_message_id=client_message_id,
+        delivery_status="sent",
+        attachments=ack_attachments,
+        app_conversation_id=app_conversation_id,
+        message_id=(
+            canonical_user["canonicalMessageId"] if canonical_user else None
+        ),
+    )
+    if canonical_user:
+        user_message["canonicalMessageId"] = canonical_user["canonicalMessageId"]
+        user_message["sequence"] = canonical_user["sequence"]
+        user_message["revision"] = canonical_user["revision"]
+        user_message["conversationRevision"] = canonical_user["revision"]
+        user_message["displayContent"] = canonical_user["displayContent"]
 
     _http_jobs[job_id] = {
         "jobId": job_id,
@@ -4344,14 +4379,34 @@ async def job_events(request: Request) -> StreamingResponse:
         raise HTTPException(status_code=503, detail="Job event streaming not available")
 
     async def event_stream() -> AsyncIterator[str]:
+        # Phase 3A v3: route legacy relay WS events through build_envelope
+        # so the SSE data: line is always the strict v3 envelope — the same
+        # shape the iOS decoder expects, regardless of whether the event
+        # originated from _http_jobs or the legacy ctx.job_events path.
+        from .stream_contract import build_envelope as _fallback_build
         seq = 0
         try:
             async for event in ctx.job_events(job_id):
                 if await request.is_disconnected():
                     break
                 event_type = event.get("type", "progress")
-                sse_data = json.dumps(event.get("data", event))
-                yield f"id: {seq}\nevent: {event_type}\ndata: {sse_data}\n\n"
+                payload = event.get("data") or {}
+                if isinstance(payload, dict) and payload.get("contractVersion") is not None:
+                    # Already shaped as a v3 envelope — pass through.
+                    envelope = payload
+                else:
+                    envelope = _fallback_build(
+                        job_id=job_id,
+                        conversation_id=payload.get("conversationId", ""),
+                        attempt=1,
+                        seq=seq + 1,
+                        conversation_revision=payload.get("conversationRevision", 0),
+                        event_type=event_type,
+                        timestamp=payload.get("timestamp", _now_iso()),
+                        payload={k: v for k, v in payload.items()
+                                 if k not in ("conversationId", "conversationRevision", "timestamp")},
+                    )
+                yield _format_sse_frame(envelope, seq)
                 seq += 1
         except asyncio.CancelledError:
             pass

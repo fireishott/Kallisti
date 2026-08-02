@@ -48,14 +48,13 @@ class _EnvelopeBase(BaseModel):
     The 9 envelope fields are the iOS decoder's hard contract.  Do not
     add fields here without a paired iOS change; do not remove any.
 
-    Phase 3A v2 correction: ``extra`` is still ``allow`` during the
-    rollout window so legacy v2 frames that pre-date the iOS paired
-    decoder do not fail validation.  Unknown fields are tolerated but
-    logged at WARNING so the operator sees them; once iOS is paired
-    this flips to ``"forbid"`` (see the brief §3 — "after iOS paired").
+    Phase 3A v3 correction: ``extra`` is ``"forbid"`` — the iOS paired
+    decoder (StreamContractV3Tests.swift) is complete, so unknown
+    fields are a contract violation that must fail validation
+    immediately.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     contractVersion: int = CONTRACT_VERSION
     jobId: str

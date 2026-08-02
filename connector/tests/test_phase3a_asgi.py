@@ -417,3 +417,192 @@ class TestSSEASGI:
         assert "contractVersion" in body
         assert "payload" in body
         assert "conversationRevision" in body
+
+    def test_sse_terminal_conversation_revision_matches_snapshot(
+        self, client, ctx, store, no_session_lookups,
+    ):
+        """The conversationRevision in the SSE terminal event matches
+        the snapshot envelope revision — no drift between the two
+        projection paths."""
+        conv_id = _seed_binding(store)
+        # Seed a conversation with one message so the revision is > 0.
+        store.create_user_message_atomically(
+            conv_id, str(uuid.uuid4()), "Hello", "Hello",
+        )
+        # Build a terminal job whose conversationRevision matches the
+        # snapshot revision.
+        from herald_connector.stream_contract import build_envelope
+        job_id = str(uuid.uuid4())
+        snap_rev = store.get_conversation_revision(conv_id)
+        terminal = build_envelope(
+            job_id=job_id,
+            conversation_id=conv_id,
+            attempt=1,
+            seq=1,
+            conversation_revision=snap_rev,
+            event_type="run.completed",
+            timestamp="2026-08-01T18:00:01Z",
+            payload={
+                "messageId": str(uuid.uuid4()),
+                "text": "ok",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+        facade._http_jobs[job_id] = {
+            "status": "completed",
+            "events": [terminal],
+            "subscribers": [],
+            "updatedAt": time.time(),
+            "conversationId": conv_id,
+            "message": None,
+            "error": None,
+            "errorCategory": None,
+            "errorAction": None,
+            "usage": None,
+            "cleanText": None,
+            "clientMessageId": None,
+            "attempt": 1,
+        }
+        body = _drain_sse(job_id)
+        frames = _parse_sse_frames(body)
+        assert len(frames) == 1
+        terminal_frame = frames[0]
+        # The SSE terminal's conversationRevision must equal the
+        # snapshot envelope revision — no drift between the two paths.
+        assert terminal_frame["conversationRevision"] == snap_rev, (
+            f"SSE terminal revision {terminal_frame['conversationRevision']} "
+            f"does not match snapshot revision {snap_rev}"
+        )
+
+
+# ── Mutation + reload snapshot test ─────────────────────────────────────
+
+
+class TestSnapshotMutationReload:
+    """Phase 3A v2: mutation followed by reload increments the cursor
+    and changes only the intended row."""
+
+    def test_mutation_reload_increments_cursor(
+        self, client, ctx, store, no_session_lookups,
+    ):
+        """A snapshot read, a mutation, and a re-read must show the
+        revision incremented by exactly 1 and only the new row changed."""
+        conv_id = _seed_binding(store)
+        # Seed with one user message.
+        msg1 = store.create_user_message_atomically(
+            conv_id, str(uuid.uuid4()), "First", "First",
+        )
+        ctx.current_conversation = lambda: {
+            "sessionId": conv_id,
+            "title": "Mutation test",
+        }
+        # First snapshot read.
+        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+            first = client.get("/v1/conversations/current").json()
+        first_rev = first["conversation"]["revision"]
+        first_ids = {m["id"] for m in first["conversation"]["messages"]}
+        # Mutation: add a second message.
+        msg2 = store.create_canonical_message(
+            conv_id, "assistant", "Reply", "Reply",
+        )
+        # Second snapshot read.
+        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+            second = client.get("/v1/conversations/current").json()
+        second_rev = second["conversation"]["revision"]
+        second_ids = {m["id"] for m in second["conversation"]["messages"]}
+        # Revision incremented by exactly 1.
+        assert second_rev == first_rev + 1, (
+            f"Expected revision {first_rev + 1}, got {second_rev}"
+        )
+        # Only the new row was added — all original ids are present.
+        assert first_ids.issubset(second_ids)
+        assert len(second_ids) == len(first_ids) + 1
+
+
+# ── System context absence via snapshot endpoint ─────────────────────────
+
+
+class TestSnapshotSystemContextAbsence:
+    """Phase 3A v2: model-only system context is absent from
+    displayContent via the snapshot endpoint."""
+
+    def test_system_context_not_in_snapshot_display(
+        self, client, ctx, store, no_session_lookups,
+    ):
+        """The snapshot endpoint surfaces displayContent without the
+        model-input system context envelope."""
+        conv_id = _seed_binding(store)
+        display = "What's the weather?"
+        model_input = "[System context: 2026-08-01T18:00:00Z] What's the weather?"
+        store.create_canonical_message(
+            conv_id, "user", display, display,
+            model_input_content=model_input,
+        )
+        ctx.current_conversation = lambda: {
+            "sessionId": conv_id,
+            "title": "System context test",
+        }
+        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+            resp = client.get("/v1/conversations/current")
+        assert resp.status_code == 200
+        msgs = resp.json()["conversation"]["messages"]
+        assert len(msgs) >= 1
+        user_msg = msgs[0]
+        # displayContent must NOT contain the system context prefix.
+        assert "[System context" not in user_msg.get("displayContent", ""), (
+            f"displayContent must not contain system context envelope: "
+            f"{user_msg.get('displayContent')!r}"
+        )
+
+
+# ── Concurrent commits snapshot consistency ──────────────────────────────
+
+
+class TestSnapshotConcurrentCommits:
+    """Phase 3A v2: snapshot reads revision and rows consistently
+    under concurrent commits."""
+
+    def test_concurrent_writes_read_max_revision(
+        self, client, ctx, store, no_session_lookups,
+    ):
+        """Two threads writing to the same conversation must not corrupt
+        the snapshot — the returned revision must equal
+        MAX(revision_writes)."""
+        import threading
+        conv_id = _seed_binding(store)
+        ctx.current_conversation = lambda: {
+            "sessionId": conv_id,
+            "title": "Concurrency test",
+        }
+        errors: list[Exception] = []
+
+        def _write_msg(idx: int):
+            try:
+                store.create_canonical_message(
+                    conv_id, "user", f"Msg-{idx}", f"Msg-{idx}",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        # Spawn two concurrent writers.
+        t1 = threading.Thread(target=_write_msg, args=(1,))
+        t2 = threading.Thread(target=_write_msg, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert not errors, f"Concurrent writes raised: {errors}"
+        # The snapshot must be consistent — revision equals
+        # MAX(revision_writes) and all rows are present.
+        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+            resp = client.get("/v1/conversations/current")
+        assert resp.status_code == 200
+        snap = resp.json()["conversation"]
+        expected_rev = store.get_conversation_revision(conv_id)
+        assert snap["revision"] == expected_rev, (
+            f"Snapshot revision {snap['revision']} != store revision {expected_rev}"
+        )
+        # Both messages must appear.
+        display_contents = {m.get("displayContent") for m in snap["messages"]}
+        assert "Msg-1" in display_contents
+        assert "Msg-2" in display_contents

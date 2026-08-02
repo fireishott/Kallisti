@@ -238,6 +238,39 @@ class TestMessageLookup:
         assert store.get_message_by_client_id(conv_id, "unknown") is None
         assert store.get_message_by_job_id(conv_id, "unknown") is None
 
+    def test_canonical_message_lookup_rejected_across_conversation(
+        self, store, bound_conversation
+    ):
+        """A canonical id bound to conversation A must return None when
+        looked up from conversation B — cross-conversation identity leak
+        is rejected."""
+        conv_a = bound_conversation["appConversationId"]
+        # Create a second conversation binding.
+        conv_b_app = str(uuid.uuid4())
+        conv_b_hermes = f"api-{uuid.uuid4().hex[:16]}"
+        store.get_or_create_binding(
+            conv_b_app, conv_b_hermes, "acc-002", "device-2",
+        )
+        # Create a canonical message in conversation A.
+        msg = store.create_canonical_message(
+            conv_a, "user", "Hello from A", "Hello from A",
+        )
+        canonical_id = msg["canonicalMessageId"]
+        # Scoped lookup from conversation A: should succeed.
+        found_a = store.get_canonical_message(
+            canonical_id, conversation_id=conv_a,
+        )
+        assert found_a is not None
+        assert found_a["canonicalMessageId"] == canonical_id
+        # Scoped lookup from conversation B: must return None.
+        found_b = store.get_canonical_message(
+            canonical_id, conversation_id=conv_b_app,
+        )
+        assert found_b is None, (
+            f"Cross-conversation lookup must return None, "
+            f"got {found_b!r}"
+        )
+
 
 class TestMessageStateUpdates:
     """Tests for updating message state."""
