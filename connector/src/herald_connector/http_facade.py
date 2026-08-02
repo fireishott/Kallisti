@@ -38,7 +38,7 @@ from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import Route
 
 from .restart_operations import (
     NON_TERMINAL_PHASES,
@@ -5743,21 +5743,6 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
-# ── JSON-RPC WebSocket endpoint ─────────────────────────────────────────
-
-
-async def json_rpc_ws_endpoint(websocket) -> None:
-    """JSON-RPC 2.0 WebSocket endpoint at /api/ws.
-
-    Provides the same protocol as the Hermes Desktop gateway for iOS
-    clients that want Desktop-parity communication.
-    """
-    from .json_rpc_ws import JsonRpcWsHandler
-
-    handler = JsonRpcWsHandler()
-    await handler.handle(websocket)
-
-
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -5875,9 +5860,6 @@ routes = [
     Route("/gw/update/check", gateway_update_check, methods=["POST"]),
     Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
-    # Build 108: JSON-RPC 2.0 WebSocket endpoint for Desktop-parity protocol.
-    # iOS connects here instead of using REST/SSE for chat.
-    WebSocketRoute("/api/ws", json_rpc_ws_endpoint),
 ]
 
 app = Starlette(
