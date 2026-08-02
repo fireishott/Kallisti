@@ -74,9 +74,10 @@ struct StreamContractV3Tests {
     func conversationRevisionPresent(filename: String) throws {
         let events = try loadFixture(named: filename)
         for event in events {
+            let rev = event.conversationRevision
             #expect(
-                event.conversationRevision >= 1,
-                "conversationRevision must be >= 1, got \(event.conversationRevision) for \(event.type)"
+                rev != nil && rev! >= 1,
+                "conversationRevision must be >= 1, got \(String(describing: rev)) for \(event.type)"
             )
         }
     }
