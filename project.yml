@@ -121,7 +121,6 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
     info:
       path: Herald/Resources/Info.plist
       properties:
@@ -208,7 +207,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
       - target: HeraldSupport
 
@@ -248,7 +246,6 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
       - target: HeraldSupport
 
@@ -293,7 +290,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
       - target: HeraldSupport
 
@@ -325,7 +321,6 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
       - target: HeraldSupport
 
@@ -350,7 +345,6 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
 
   HeraldWatch:
     type: application
@@ -388,7 +382,6 @@ targets:
         WATCHOS_DEPLOYMENT_TARGET: "11.0"
       configs:
         Release:
-          CODE_SIGN_IDENTITY: "iPhone Distribution"
 
   HeraldWatchTests:
     type: bundle.unit-test
