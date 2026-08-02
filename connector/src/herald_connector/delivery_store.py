@@ -50,7 +50,10 @@ logger = logging.getLogger("herald.delivery_store")
 # connector wrote for both the client UUID and the deterministic
 # `_app_uuid(hermes_id)` against the same Hermes session must be
 # collapsed so the binding table matches the new invariant.
-_EXPECTED_SCHEMA_VERSION = 2
+#
+# Build 108 raised this to 3: added `conversation_messages` ledger table
+# and `revision` column to `conversation_bindings` for canonical wire contract.
+_EXPECTED_SCHEMA_VERSION = 3
 
 # States for message_requests (must match the CHECK constraint verbatim).
 STATES = ("accepted", "running", "terminal", "permanent_failure", "cancelled")
@@ -157,7 +160,8 @@ CREATE TABLE IF NOT EXISTS conversation_bindings (
     updated_at TEXT NOT NULL,
     archived INTEGER NOT NULL DEFAULT 0,
     archived_reason TEXT,
-    archived_at TEXT
+    archived_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS message_requests (
@@ -197,6 +201,24 @@ CREATE TABLE IF NOT EXISTS job_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY (job_id, seq)
 );
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    canonical_message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversation_bindings(app_conversation_id),
+    sequence INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool', 'reasoning')),
+    client_message_id TEXT,
+    job_id TEXT,
+    hermes_message_id TEXT,
+    content TEXT NOT NULL,
+    display_content TEXT NOT NULL,
+    model_input_content TEXT,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'running', 'terminal', 'failed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(conversation_id, sequence)
+);
 """
 
 # Deliberately separate indexes from ``_SCHEMA``.  A Build 103 database has
@@ -206,6 +228,16 @@ CREATE TABLE IF NOT EXISTS job_events (
 _INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS ix_conversation_bindings_hermes
     ON conversation_bindings(hermes_session_id) WHERE archived = 0;
+
+CREATE INDEX IF NOT EXISTS ix_conversation_messages_conversation
+    ON conversation_messages(conversation_id, sequence);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ix_conversation_messages_client_message
+    ON conversation_messages(conversation_id, client_message_id)
+    WHERE client_message_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_conversation_messages_job
+    ON conversation_messages(job_id) WHERE job_id IS NOT NULL;
 """
 
 
@@ -341,7 +373,7 @@ class DeliveryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             with self._connect() as conn:
-                # executescript: _SCHEMA holds four CREATE TABLE statements.
+                # executescript: _SCHEMA holds five CREATE TABLE statements.
                 conn.executescript(_SCHEMA)
                 # Build 104: archived columns are required by the
                 # duplicate-binding migration; add them only if they are
@@ -352,6 +384,9 @@ class DeliveryStore:
                                     "TEXT")
                 self._ensure_column(conn, "conversation_bindings", "archived_at",
                                     "TEXT")
+                # Build 108: revision column for canonical wire contract.
+                self._ensure_column(conn, "conversation_bindings", "revision",
+                                    "INTEGER NOT NULL DEFAULT 0")
                 conn.executescript(_INDEXES)
                 # Mark the schema so subsequent opens skip the re-init.
                 conn.execute(f"PRAGMA user_version = {_EXPECTED_SCHEMA_VERSION}")
@@ -860,6 +895,576 @@ class DeliveryStore:
                 "createdAt": row["created_at"],
             })
         return events
+
+    # ── canonical message ledger (Build 108) ─────────────────────────────
+
+    def _get_next_sequence(self, conn: sqlite3.Connection, conversation_id: str) -> int:
+        """Get the next sequence number for a conversation."""
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq "
+            "FROM conversation_messages WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        return int(row["next_seq"]) if row else 1
+
+    def _increment_conversation_revision(
+        self, conn: sqlite3.Connection, conversation_id: str
+    ) -> int:
+        """Increment conversation revision and return new value."""
+        conn.execute(
+            "UPDATE conversation_bindings SET revision = revision + 1, "
+            "updated_at = ? WHERE app_conversation_id = ?",
+            (_utcnow_rfc3339(), conversation_id),
+        )
+        row = conn.execute(
+            "SELECT revision FROM conversation_bindings "
+            "WHERE app_conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        return int(row["revision"]) if row else 0
+
+    def create_canonical_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        display_content: str,
+        *,
+        client_message_id: str | None = None,
+        job_id: str | None = None,
+        hermes_message_id: str | None = None,
+        model_input_content: str | None = None,
+        state: str = "pending",
+    ) -> dict:
+        """Create a canonical message in the ledger.
+
+        Returns the created message as a dict. Raises DuplicateConflictError
+        if the client_message_id is already used in this conversation.
+        """
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Get next sequence
+                sequence = self._get_next_sequence(conn, conversation_id)
+                # Generate canonical message ID
+                canonical_message_id = str(uuid.uuid4())
+                # Insert the message
+                try:
+                    conn.execute(
+                        "INSERT INTO conversation_messages "
+                        "(canonical_message_id, conversation_id, sequence, revision, "
+                        " role, client_message_id, job_id, hermes_message_id, "
+                        " content, display_content, model_input_content, state, "
+                        " created_at, updated_at) "
+                        "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            canonical_message_id, conversation_id, sequence, role,
+                            client_message_id, job_id, hermes_message_id,
+                            content, display_content, model_input_content,
+                            state, now, now,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    conn.rollback()
+                    if "UNIQUE constraint failed" in str(exc) and client_message_id:
+                        raise DuplicateConflictError(
+                            client_message_id,
+                            f"client_message_id {client_message_id} already exists "
+                            f"in conversation {conversation_id}",
+                        ) from exc
+                    raise
+                # Increment conversation revision
+                revision = self._increment_conversation_revision(
+                    conn, conversation_id
+                )
+                conn.commit()
+                return {
+                    "canonicalMessageId": canonical_message_id,
+                    "conversationId": conversation_id,
+                    "sequence": sequence,
+                    "revision": revision,
+                    "role": role,
+                    "clientMessageId": client_message_id,
+                    "jobId": job_id,
+                    "hermesMessageId": hermes_message_id,
+                    "content": content,
+                    "displayContent": display_content,
+                    "modelInputContent": model_input_content,
+                    "state": state,
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def get_canonical_message(self, canonical_message_id: str) -> dict | None:
+        """Get a canonical message by its ID."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE canonical_message_id = ?",
+                    (canonical_message_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return {
+                    "canonicalMessageId": row["canonical_message_id"],
+                    "conversationId": row["conversation_id"],
+                    "sequence": row["sequence"],
+                    "revision": row["revision"],
+                    "role": row["role"],
+                    "clientMessageId": row["client_message_id"],
+                    "jobId": row["job_id"],
+                    "hermesMessageId": row["hermes_message_id"],
+                    "content": row["content"],
+                    "displayContent": row["display_content"],
+                    "modelInputContent": row["model_input_content"],
+                    "state": row["state"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            finally:
+                conn.close()
+
+    def get_message_by_client_id(
+        self, conversation_id: str, client_message_id: str
+    ) -> dict | None:
+        """Get a canonical message by client_message_id within a conversation."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE conversation_id = ? AND client_message_id = ?",
+                    (conversation_id, client_message_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                return {
+                    "canonicalMessageId": row["canonical_message_id"],
+                    "conversationId": row["conversation_id"],
+                    "sequence": row["sequence"],
+                    "revision": row["revision"],
+                    "role": row["role"],
+                    "clientMessageId": row["client_message_id"],
+                    "jobId": row["job_id"],
+                    "hermesMessageId": row["hermes_message_id"],
+                    "content": row["content"],
+                    "displayContent": row["display_content"],
+                    "modelInputContent": row["model_input_content"],
+                    "state": row["state"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            finally:
+                conn.close()
+
+    def get_message_by_job_id(
+        self, conversation_id: str, job_id: str
+    ) -> dict | None:
+        """Get a canonical message by job_id within a conversation."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE conversation_id = ? AND job_id = ?",
+                    (conversation_id, job_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                return {
+                    "canonicalMessageId": row["canonical_message_id"],
+                    "conversationId": row["conversation_id"],
+                    "sequence": row["sequence"],
+                    "revision": row["revision"],
+                    "role": row["role"],
+                    "clientMessageId": row["client_message_id"],
+                    "jobId": row["job_id"],
+                    "hermesMessageId": row["hermes_message_id"],
+                    "content": row["content"],
+                    "displayContent": row["display_content"],
+                    "modelInputContent": row["model_input_content"],
+                    "state": row["state"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            finally:
+                conn.close()
+
+    def update_message_state(
+        self,
+        canonical_message_id: str,
+        state: str,
+        *,
+        content: str | None = None,
+        display_content: str | None = None,
+        job_id: str | None = None,
+        hermes_message_id: str | None = None,
+    ) -> dict | None:
+        """Update a canonical message's state and optionally other fields."""
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Build update clause dynamically
+                updates = ["state = ?", "updated_at = ?"]
+                params: list[Any] = [state, now]
+                if content is not None:
+                    updates.append("content = ?")
+                    params.append(content)
+                if display_content is not None:
+                    updates.append("display_content = ?")
+                    params.append(display_content)
+                if job_id is not None:
+                    updates.append("job_id = ?")
+                    params.append(job_id)
+                if hermes_message_id is not None:
+                    updates.append("hermes_message_id = ?")
+                    params.append(hermes_message_id)
+                params.append(canonical_message_id)
+                conn.execute(
+                    f"UPDATE conversation_messages SET {', '.join(updates)} "
+                    "WHERE canonical_message_id = ?",
+                    params,
+                )
+                # Increment message revision
+                conn.execute(
+                    "UPDATE conversation_messages SET revision = revision + 1 "
+                    "WHERE canonical_message_id = ?",
+                    (canonical_message_id,),
+                )
+                conn.commit()
+                # Return updated message
+                return self.get_canonical_message(canonical_message_id)
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def get_conversation_messages(
+        self, conversation_id: str, *, after_sequence: int = 0
+    ) -> list[dict]:
+        """Get all messages for a conversation, ordered by sequence."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE conversation_id = ? AND sequence > ? "
+                    "ORDER BY sequence ASC",
+                    (conversation_id, after_sequence),
+                ).fetchall()
+                return [
+                    {
+                        "canonicalMessageId": row["canonical_message_id"],
+                        "conversationId": row["conversation_id"],
+                        "sequence": row["sequence"],
+                        "revision": row["revision"],
+                        "role": row["role"],
+                        "clientMessageId": row["client_message_id"],
+                        "jobId": row["job_id"],
+                        "hermesMessageId": row["hermes_message_id"],
+                        "content": row["content"],
+                        "displayContent": row["display_content"],
+                        "modelInputContent": row["model_input_content"],
+                        "state": row["state"],
+                        "createdAt": row["created_at"],
+                        "updatedAt": row["updated_at"],
+                    }
+                    for row in rows
+                ]
+            finally:
+                conn.close()
+
+    def get_conversation_revision(self, conversation_id: str) -> int:
+        """Get the current revision for a conversation."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT revision FROM conversation_bindings "
+                    "WHERE app_conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                return int(row["revision"]) if row else 0
+            finally:
+                conn.close()
+
+    def create_user_message_atomically(
+        self,
+        conversation_id: str,
+        client_message_id: str,
+        content: str,
+        display_content: str,
+        *,
+        model_input_content: str | None = None,
+        device_id: str = "",
+    ) -> dict:
+        """Atomically create a user message, request, and job in one transaction.
+
+        This is the Build 108 atomic acceptance contract:
+        1. Canonical user message with sequence
+        2. Request idempotency record
+        3. New conversation revision
+        """
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Check for duplicate client_message_id
+                existing = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE conversation_id = ? AND client_message_id = ?",
+                    (conversation_id, client_message_id),
+                ).fetchone()
+                if existing is not None:
+                    conn.rollback()
+                    return {
+                        "canonicalMessageId": existing["canonical_message_id"],
+                        "conversationId": conversation_id,
+                        "sequence": existing["sequence"],
+                        "revision": existing["revision"],
+                        "role": existing["role"],
+                        "clientMessageId": existing["client_message_id"],
+                        "jobId": existing["job_id"],
+                        "hermesMessageId": existing["hermes_message_id"],
+                        "content": existing["content"],
+                        "displayContent": existing["display_content"],
+                        "modelInputContent": existing["model_input_content"],
+                        "state": existing["state"],
+                        "createdAt": existing["created_at"],
+                        "updatedAt": existing["updated_at"],
+                        "duplicate": True,
+                    }
+                # Get next sequence
+                sequence = self._get_next_sequence(conn, conversation_id)
+                # Generate canonical message ID
+                canonical_message_id = str(uuid.uuid4())
+                # Insert canonical message
+                conn.execute(
+                    "INSERT INTO conversation_messages "
+                    "(canonical_message_id, conversation_id, sequence, revision, "
+                    " role, client_message_id, content, display_content, "
+                    " model_input_content, state, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 1, 'user', ?, ?, ?, ?, 'accepted', ?, ?)",
+                    (
+                        canonical_message_id, conversation_id, sequence,
+                        client_message_id, content, display_content,
+                        model_input_content, now, now,
+                    ),
+                )
+                # Insert request idempotency record
+                request_sha = request_sha256(display_content, None)
+                conn.execute(
+                    "INSERT INTO message_requests "
+                    "(client_message_id, conversation_id, owner_device_id, "
+                    " request_sha256, clean_text, state, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+                    (client_message_id, conversation_id, device_id,
+                     request_sha, display_content, now, now),
+                )
+                # Increment conversation revision
+                revision = self._increment_conversation_revision(
+                    conn, conversation_id
+                )
+                conn.commit()
+                return {
+                    "canonicalMessageId": canonical_message_id,
+                    "conversationId": conversation_id,
+                    "sequence": sequence,
+                    "revision": revision,
+                    "role": "user",
+                    "clientMessageId": client_message_id,
+                    "jobId": None,
+                    "hermesMessageId": None,
+                    "content": content,
+                    "displayContent": display_content,
+                    "modelInputContent": model_input_content,
+                    "state": "accepted",
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "duplicate": False,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    # ── build 108 migration: canonical ledger import ─────────────────────
+
+    def migrate_to_canonical_ledger(
+        self, *, evidence_dir: str | Path | None = None
+    ) -> dict:
+        """Migrate existing message_requests to canonical ledger.
+
+        Build 108 Workstream B: imports existing user/assistant display rows
+        into the conversation_messages ledger table. The migration:
+
+        1. Backs up the active delivery database.
+        2. For each active binding, imports Hermes user/assistant display rows.
+        3. Strips system-context envelopes from imported user display content.
+        4. Assigns sequences using stable database row identity.
+        5. Resolves aliases to the binding that owns the Hermes session.
+        6. Verifies unique constraints.
+        7. Generates a migration report.
+
+        Idempotent: re-running on an already-migrated DB is a no-op.
+        """
+        report: dict[str, Any] = {
+            "schemaVersion": _EXPECTED_SCHEMA_VERSION,
+            "evidenceDir": str(evidence_dir) if evidence_dir else None,
+            "imported": 0,
+            "deduplicated": 0,
+            "aliasResolved": 0,
+            "quarantined": 0,
+            "failed": 0,
+        }
+        ts = _utcnow_rfc3339()
+        if evidence_dir is None:
+            base = Path(os.getenv(
+                "HERMES_MOBILE_CONNECTOR_HOME"
+            ) or str(Path.home() / ".hermes-mobile")) / "evidence"
+            evidence_dir = base / f"pre-b108-{ts}"
+        evidence_path = Path(evidence_dir)
+        evidence_path.mkdir(parents=True, exist_ok=True)
+
+        # Snapshot the database before migration
+        snapshot = evidence_path / "delivery.sqlite3.snapshot"
+        try:
+            import shutil
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                src = Path(str(self.db_path) + suffix)
+                if src.exists():
+                    shutil.copy2(src, Path(str(snapshot) + suffix))
+        except OSError as exc:
+            logger.warning(
+                "delivery: snapshot failed (%s) — migration will continue but "
+                "the rollback path is incomplete", exc,
+            )
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                # Check if migration has already run
+                existing_count = conn.execute(
+                    "SELECT COUNT(*) FROM conversation_messages"
+                ).fetchone()[0]
+                if existing_count > 0:
+                    logger.info(
+                        "delivery: canonical ledger migration already complete "
+                        "(%d messages)", existing_count
+                    )
+                    return report
+
+                # Get all active bindings
+                bindings = conn.execute(
+                    "SELECT * FROM conversation_bindings WHERE archived = 0"
+                ).fetchall()
+
+                for binding in bindings:
+                    conv_id = binding["app_conversation_id"]
+                    hermes_id = binding["hermes_session_id"]
+
+                    # Get message_requests for this binding
+                    requests = conn.execute(
+                        "SELECT * FROM message_requests "
+                        "WHERE conversation_id = ? "
+                        "ORDER BY created_at ASC",
+                        (conv_id,),
+                    ).fetchall()
+
+                    sequence = 1
+                    for req in requests:
+                        client_msg_id = req["client_message_id"]
+                        clean_text = req["clean_text"]
+                        state = req["state"]
+                        job_id = req["job_id"]
+
+                        # Strip system-context envelope from user display content
+                        display_content = clean_text
+                        if display_content.startswith("[System context"):
+                            # Find the end of the system context block
+                            end_idx = display_content.find("]")
+                            if end_idx != -1:
+                                display_content = display_content[end_idx + 1:].strip()
+
+                        # Generate canonical message ID
+                        canonical_msg_id = str(uuid.uuid4())
+
+                        # Insert into canonical ledger
+                        try:
+                            conn.execute(
+                                "INSERT INTO conversation_messages "
+                                "(canonical_message_id, conversation_id, sequence, "
+                                " revision, role, client_message_id, job_id, "
+                                " content, display_content, state, created_at, updated_at) "
+                                "VALUES (?, ?, ?, 1, 'user', ?, ?, ?, ?, ?, ?, ?)",
+                                (
+                                    canonical_msg_id, conv_id, sequence,
+                                    client_msg_id, job_id, clean_text, display_content,
+                                    state, req["created_at"], req["updated_at"],
+                                ),
+                            )
+                            report["imported"] += 1
+                            sequence += 1
+                        except sqlite3.IntegrityError as exc:
+                            if "UNIQUE constraint failed" in str(exc):
+                                report["deduplicated"] += 1
+                                logger.debug(
+                                    "delivery: skipping duplicate message %s",
+                                    client_msg_id,
+                                )
+                            else:
+                                report["failed"] += 1
+                                logger.warning(
+                                    "delivery: failed to import message %s: %s",
+                                    client_msg_id, exc,
+                                )
+
+                    # Increment conversation revision to match imported messages
+                    if report["imported"] > 0:
+                        conn.execute(
+                            "UPDATE conversation_bindings SET revision = ?, "
+                            "updated_at = ? WHERE app_conversation_id = ?",
+                            (sequence, ts, conv_id),
+                        )
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+        # Write migration report
+        try:
+            (evidence_path / "migration_report.json").write_text(
+                json.dumps(report, indent=2, sort_keys=True),
+            )
+        except OSError as exc:
+            logger.warning(
+                "delivery: could not write migration_report.json (%s)", exc,
+            )
+
+        logger.info(
+            "delivery: canonical ledger migration complete — imported=%d, "
+            "deduplicated=%d, aliasResolved=%d, quarantined=%d, failed=%d",
+            report["imported"], report["deduplicated"], report["aliasResolved"],
+            report["quarantined"], report["failed"],
+        )
+        return report
 
     # ── build 104 migration: collapse duplicate bindings ──────────────────
 

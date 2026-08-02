@@ -1,23 +1,18 @@
-"""RESCUED 2026-07-30 from connector.backup-20260727-200203 on fih-ai-host.
+"""Stream Contract v2 — invariants that must hold for every relay run.
 
-The `stream_contract` module and its golden fixtures were deleted in B7
-(7f02f76); this test outlived them in a backup directory and was almost
-lost when that backup was cleaned up.
+Restored 2026-08-01 for Build 108 Phase 3A.  The contract module that
+this suite validates was deleted in B7 (7f02f76) and brought back here
+alongside the test.  The invariants encoded below are the ones that
+regressed silently when the contract was missing: seq-monotonic
+ordering from 1, exactly one terminal event and it must be last (or a
+single run.requeued closing the attempt), and a single
+jobId/conversationId across the whole stream.
 
-It is kept here because it encodes the invariants that keep regressing --
-seq-monotonic ordering, exactly one terminal event and it must be last,
-and jobId/conversationId consistency. It skips until the contract module
-is restored; if you rebuild Stream Contract v2, this suite wakes up on its own.
+If this suite ever starts failing because the contract was loosened
+again, do NOT widen the assertions — fix the publisher to match.
 """
 
 from __future__ import annotations
-
-import pytest
-
-pytest.importorskip(
-    "herald_connector.stream_contract",
-    reason="Stream Contract v2 module was deleted in B7 (7f02f76); restore it to enable.",
-)
 
 import json
 from pathlib import Path

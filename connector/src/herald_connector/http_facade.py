@@ -325,10 +325,131 @@ def _relay_attachments(attachments: list | None) -> list | None:
     return shaped or None
 
 
+def _resolve_canonical_row(
+    *,
+    app_conversation_id: Any = None,
+    client_message_id: Any = None,
+    job_id: Any = None,
+    message_id: Any = None,
+) -> dict | None:
+    """Best-effort lookup of the canonical ledger row for a relay message.
+
+    The order matches the way message identities flow in from the wire:
+
+      1. ``client_message_id`` (always set for user sends; carried on
+         retries of the same send).  Requires ``app_conversation_id`` to
+         scope the lookup — the same id can exist in many conversations
+         after re-use of a draft alias.
+      2. ``job_id`` (set for every assistant response after the job is
+         accepted; survives the done event).  Also requires the
+         conversation scope.
+      3. ``message_id`` (the canonical id itself, when the caller
+         already has one — the success path of the terminal mirror).
+         Global lookup; no conversation scope needed.
+
+    Returns the canonical row dict (as the storage methods return it),
+    or ``None`` when no row exists.  Never raises; the relay projection
+    emits null/0/False when this returns None so the wire contract is
+    additive even for pre-existing rows that predate the ledger.
+    """
+    try:
+        from .delivery_store import get_delivery_store
+        store = get_delivery_store()
+    except Exception:                                 # noqa: BLE001
+        logger.debug("canonical lookup: store unavailable (non-fatal)")
+        return None
+    cmid = _coerce_uuid(client_message_id)
+    jid = _coerce_uuid(job_id)
+    mid = _coerce_uuid(message_id)
+    conv = _coerce_uuid(app_conversation_id)
+    if mid:
+        try:
+            row = store.get_canonical_message(mid)
+            if row is not None:
+                return row
+        except Exception:                             # noqa: BLE001
+            logger.debug("canonical lookup by message_id failed (non-fatal)")
+    if conv and jid:
+        try:
+            row = store.get_message_by_job_id(conv, jid)
+            if row is not None:
+                return row
+        except Exception:                             # noqa: BLE001
+            logger.debug("canonical lookup by job_id failed (non-fatal)")
+    if conv and cmid:
+        try:
+            row = store.get_message_by_client_id(conv, cmid)
+            if row is not None:
+                return row
+        except Exception:                             # noqa: BLE001
+            logger.debug("canonical lookup by client_id failed (non-fatal)")
+    return None
+
+
+def _canonical_projection(
+    *,
+    app_conversation_id: Any = None,
+    client_message_id: Any = None,
+    job_id: Any = None,
+    message_id: Any = None,
+    text: str | None = None,
+) -> dict:
+    """Project the canonical-ledger fields for a relay message.
+
+    Always returns a dict with every required canonical key (camelCase);
+    the values are the resolved ones when the ledger has a row, or
+    null/0/False when it does not.  Build 108 Phase 3A requires these
+    keys to be present on every wire payload so the iOS reducer can
+    treat them as authoritative, not optional.
+    """
+    row = _resolve_canonical_row(
+        app_conversation_id=app_conversation_id,
+        client_message_id=client_message_id,
+        job_id=job_id,
+        message_id=message_id,
+    )
+    if row is None:
+        return {
+            "canonicalMessageId": None,
+            "canonicalConversationId": conv_or_none(app_conversation_id),
+            "sequence": 0,
+            "messageRevision": 0,
+            "conversationRevision": 0,
+            "displayContent": text or "",
+            "deleted": False,
+        }
+    # row already speaks camelCase (the storage layer's return shape).
+    # conversationRevision lives on the binding row, not the message row,
+    # so we read it through the store helper for the projection.
+    conv_id = row.get("conversationId")
+    conv_rev = 0
+    if conv_id:
+        try:
+            from .delivery_store import get_delivery_store
+            conv_rev = get_delivery_store().get_conversation_revision(conv_id)
+        except Exception:                             # noqa: BLE001
+            logger.debug("conversation revision lookup failed (non-fatal)")
+    return {
+        "canonicalMessageId": row.get("canonicalMessageId"),
+        "canonicalConversationId": conv_id,
+        "sequence": int(row.get("sequence") or 0),
+        "messageRevision": int(row.get("revision") or 0),
+        "conversationRevision": conv_rev,
+        "displayContent": row.get("displayContent") or text or "",
+        "deleted": bool(row.get("deleted") or False),
+    }
+
+
+def conv_or_none(value: Any) -> str | None:
+    """Coerce an app_conversation_id to UUID, else None. Never raises."""
+    return _coerce_uuid(value)
+
+
 def _relay_message(role: str, text: str, *, client_message_id: Any = None,
                    job_id: Any = None, attachments: list | None = None,
                    delivery_status: str = "delivered",
-                   message_id: str | None = None) -> dict:
+                   message_id: str | None = None,
+                   app_conversation_id: Any = None) -> dict:
     """Build one RelayMessage (LiveHeraldClient.swift:39-48).
 
     id / role / text / timestamp are non-optional on the app side.  `role` accepts
@@ -341,8 +462,17 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
     Build 23: *delivery_status* is explicit.  A user message in a pending
     acknowledgement must be "sent", not "delivered" — the green check is a
     final-delivery signal tied to a credible terminal result.
+
+    Build 108 Phase 3A: the returned dict also carries the canonical
+    field set — canonicalMessageId, canonicalConversationId, sequence,
+    messageRevision, conversationRevision, displayContent, deleted —
+    so the iOS reducer can build its transcript from server-projected
+    rows without inventing sequence/revision from arrival order.  The
+    fields are additive; existing decoders ignore them via decodeIfPresent.
+    For pre-existing rows that predate the ledger the values are
+    null/0/False but the keys are still emitted.
     """
-    return {
+    msg = {
         "id": message_id or str(uuid.uuid4()),
         "clientMessageId": _coerce_uuid(client_message_id),
         "role": role,
@@ -352,6 +482,31 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
         "jobId": _coerce_uuid(job_id),
         "attachments": _relay_attachments(attachments),
     }
+    # Phase 3A: layer the canonical fields on top so the iOS reducer
+    # gets one stable identity per message.  Never raises — a missing
+    # ledger row produces a null/0/False projection.
+    try:
+        msg.update(_canonical_projection(
+            app_conversation_id=app_conversation_id,
+            client_message_id=client_message_id,
+            job_id=job_id,
+            message_id=message_id,
+            text=text,
+        ))
+    except Exception:                                 # noqa: BLE001
+        logger.exception("_relay_message: canonical projection failed")
+        # Fall back to a conservative additive projection so the wire
+        # contract still holds every required key.
+        msg.update({
+            "canonicalMessageId": None,
+            "canonicalConversationId": conv_or_none(app_conversation_id),
+            "sequence": 0,
+            "messageRevision": 0,
+            "conversationRevision": 0,
+            "displayContent": text or "",
+            "deleted": False,
+        })
+    return msg
 
 
 def _prune_http_jobs() -> None:
@@ -701,6 +856,25 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     temporal_context = _build_temporal_context()
 
     def _publish(event: dict) -> None:
+        # Build 108 Phase 3A: every emitted event carries the canonical
+        # conversation id and the current conversation revision so the
+        # iOS reducer can apply the event against the server-projected
+        # cursor without inventing it from arrival order.  Per-message
+        # canonical fields are added when the message identity is
+        # allocated (see the text_delta / run.completed paths below).
+        conv_id = job.get("conversationId")
+        if conv_id is not None and "canonicalConversationId" not in event.get("data", {}):
+            try:
+                data = event.setdefault("data", {})
+                if "canonicalConversationId" not in data:
+                    data["canonicalConversationId"] = _coerce_uuid(conv_id) or conv_id
+                if "conversationRevision" not in data:
+                    from .delivery_store import get_delivery_store
+                    data["conversationRevision"] = (
+                        get_delivery_store().get_conversation_revision(conv_id)
+                    )
+            except Exception:                         # noqa: BLE001
+                logger.debug("publish: canonical projection failed (non-fatal)")
         job["events"].append(event)
         job["updatedAt"] = time.time()
         for queue in list(job["subscribers"]):
@@ -742,17 +916,13 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 staged_dir, attachment_context, staged_meta = _stage_inbound_attachments(
                     job_id, attachments
                 )
+                # Build 108 Workstream E: text is already model_input (displayText + clientContext)
+                # No additional temporal context needed - it's in clientContext
                 text_with_attachments = text
                 # Build 31 (fix): continuationContext is retry transport metadata.
                 # Prepend it to the Hermes input so the model resumes from the
                 # cut-off point, but never include it in `text` / `cleanText` —
                 # those are canonical user content stored and displayed verbatim.
-                # Build 102 P1: temporal context goes BEFORE continuationContext
-                # so the model sees the current time before any resume metadata.
-                if temporal_context:
-                    text_with_attachments = f"{temporal_context}{text}"
-                else:
-                    text_with_attachments = text
                 if continuation_context:
                     text_with_attachments = f"[{continuation_context}]\n\n{text_with_attachments}"
                 if attachment_context:
@@ -1038,6 +1208,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 "herald", accumulated, job_id=job_id,
                 attachments=media_attachments or None,
                 message_id=assistant_message_id,
+                app_conversation_id=job.get("conversationId"),
             )
 
         # Build 31: record a clean-text override for the user message
@@ -2509,6 +2680,11 @@ async def send_message(request: Request) -> JSONResponse:
             },
         )
 
+    # Build 108 Workstream E: displayText is the user-visible message,
+    # clientContext is structured metadata for model input construction.
+    display_text = body.get("displayText") or body.get("text", "")
+    client_context = body.get("clientContext")
+    # Legacy text field for backward compatibility
     text = body.get("text", "")
     history = body.get("history") or []
     session_id = body.get("sessionId")
@@ -2517,6 +2693,17 @@ async def send_message(request: Request) -> JSONResponse:
     client_message_id = body.get("clientMessageId")
     raw_conversation_id = body.get("conversationId")
     continuation_context = body.get("continuationContext")  # Build 31: retry resume hint
+
+    # Build model input from displayText + clientContext
+    model_input = display_text
+    if client_context and isinstance(client_context, dict):
+        context_parts = []
+        if client_context.get("localTime"):
+            context_parts.append(f"[System context: {client_context['localTime']}]")
+        if client_context.get("timezone"):
+            context_parts.append(f"[Timezone: {client_context['timezone']}]")
+        if context_parts:
+            model_input = " ".join(context_parts) + " " + display_text
 
     # Resolve the app's conversation UUID to a Hermes session id.
     # P0-1: instead of a random uuid4() that maps to nothing, use the
@@ -2580,7 +2767,8 @@ async def send_message(request: Request) -> JSONResponse:
             if isinstance(a, dict) and (a.get("thumbnailData") or a.get("data"))
         ] or None
     user_message = _relay_message("user", text, client_message_id=client_message_id,
-                                  delivery_status="sent", attachments=ack_attachments)
+                                  delivery_status="sent", attachments=ack_attachments,
+                                  app_conversation_id=app_conversation_id)
 
     # Build 28: resolve the requesting device identity from the auth token
     # so the session can be attributed to a device for allDevices scoping.
@@ -2692,11 +2880,11 @@ async def send_message(request: Request) -> JSONResponse:
                 "context": None,
                 "diff": None,
             })
-        request_hash = request_sha256(text, attachments)
+        request_hash = request_sha256(display_text, attachments)
         try:
             request_row = delivery_store.create_message_request(
                 client_message_id, app_conversation_id, installation_id,
-                text, request_hash,
+                display_text, request_hash,
             )
         except DuplicateConflictError:
             logger.warning(
@@ -2734,14 +2922,12 @@ async def send_message(request: Request) -> JSONResponse:
                 "jobId": request_row["jobId"],
                 "state": "accepted",
                 "existingState": request_row["state"],
-                "conversation": {
-                    "id": app_conversation_id,
-                    "title": conversation_title,
-                    "updatedAt": _now_iso(),
-                    "messages": [],
-                    "latestUsage": None,
-                    "latestContext": None,
-                },
+                "conversation": _conversation_envelope_canonical(
+                    app_conversation_id,
+                    fallback_title=conversation_title,
+                    fallback_updated_at=_now_iso(),
+                    messages=[],
+                ),
                 "userMessage": None,
                 "message": None,
                 "usage": None,
@@ -2760,7 +2946,9 @@ async def send_message(request: Request) -> JSONResponse:
         "conversationId": app_conversation_id,
         "installationId": installation_id,
         "clientMessageId": client_message_id,
-        "cleanText": text,           # Build 31: original text without staging context
+        "cleanText": display_text,           # Build 108 WS-E: user-visible text
+        "displayText": display_text,        # Build 108 WS-E: explicit display text
+        "modelInput": model_input,          # Build 108 WS-E: model input with context
         "accountId": ctx.paired_user_id or "",   # B33 WS B: binding attribution
         "message": None,
         "error": None,
@@ -2774,7 +2962,7 @@ async def send_message(request: Request) -> JSONResponse:
     _prune_http_jobs()
 
     task = asyncio.create_task(
-        _run_http_job(job_id, ctx.message_handler, text, history,
+        _run_http_job(job_id, ctx.message_handler, model_input, history,
                       hermes_session_id, attachments, reasoning_effort,
                       continuation_context)
     )
@@ -2784,14 +2972,12 @@ async def send_message(request: Request) -> JSONResponse:
     return JSONResponse({
         "replyState": "pending",
         "jobId": job_id,
-        "conversation": {
-            "id": app_conversation_id,
-            "title": conversation_title,
-            "updatedAt": _now_iso(),
-            "messages": [user_message],
-            "latestUsage": None,
-            "latestContext": None,
-        },
+        "conversation": _conversation_envelope_canonical(
+            app_conversation_id,
+            fallback_title=conversation_title,
+            fallback_updated_at=_now_iso(),
+            messages=[user_message],
+        ),
         "userMessage": user_message,
         "message": None,
         "usage": None,
@@ -3195,6 +3381,49 @@ async def host_enrollment_codes(request: Request) -> JSONResponse:
 # ── P0-4: Chat critical-path endpoints ────────────────────────────────────
 
 
+def _conversation_envelope_canonical(
+    conv_id: str | None,
+    *,
+    fallback_title: str,
+    fallback_updated_at: str,
+    messages: list | None,
+    extra: dict | None = None,
+) -> dict:
+    """Build the conversation-level envelope with canonical fields.
+
+    Build 108 Phase 3A requires every snapshot response to carry
+    ``canonicalConversationId`` and ``conversationRevision`` at the
+    envelope level, so the iOS reducer can build its transcript from
+    server-projected rows without inventing cursors from arrival order.
+    Both fields are additive — they do not replace the existing
+    ``id``/``title``/``updatedAt`` keys that the iOS decoder already
+    requires.
+    """
+    revision = 0
+    if conv_id:
+        try:
+            from .delivery_store import get_delivery_store
+            revision = get_delivery_store().get_conversation_revision(conv_id)
+        except Exception:                             # noqa: BLE001
+            logger.debug(
+                "conversation revision lookup failed for %s", conv_id,
+            )
+    envelope: dict = {
+        "id": conv_id or _stable_conversation_id(),
+        "title": fallback_title,
+        "updatedAt": fallback_updated_at,
+        "messages": messages or [],
+        "latestUsage": None,
+        "latestContext": None,
+        # Build 108 Phase 3A additive fields:
+        "canonicalConversationId": _coerce_uuid(conv_id) or conv_id,
+        "conversationRevision": revision,
+    }
+    if extra:
+        envelope.update(extra)
+    return envelope
+
+
 async def session_conversation(request: Request) -> JSONResponse:
     """Get message history for a session.
 
@@ -3203,6 +3432,10 @@ async def session_conversation(request: Request) -> JSONResponse:
     `id` must be a UUID. The connector RPC returns a flat
     {sessionId, messages, title} (client.py:2819), so normalize here exactly
     as current_conversation() does (http_facade.py:1139-1146).
+
+    Build 108 Phase 3A: the conversation envelope also carries the
+    canonical conversation id and revision (additive) so the iOS
+    reducer can synchronise on the server-projected cursor.
     """
     await require_auth(request)
     ctx = get_context()
@@ -3214,18 +3447,31 @@ async def session_conversation(request: Request) -> JSONResponse:
         result = await result
     result = result or {}
     if "conversation" in result:
-        return JSONResponse(result)
-    return JSONResponse({"conversation": {
-        # Echo the app-facing UUID the client asked for. Never return the
-        # Hermes session id here (e.g. "api-9af38ce…") — it is not a UUID and
-        # RelayConversation.id has no fallback (LiveHeraldClient.swift:58).
-        "id": _coerce_uuid(session_id) or _coerce_uuid(result.get("sessionId")) or _stable_conversation_id(),
-        "title": result.get("title") or "New Chat",
-        "updatedAt": _now_iso(),
-        "messages": result.get("messages") or [],
-        "latestUsage": None,
-        "latestContext": None,
-    }})
+        # Upstream returned a full conversation; layer the additive
+        # canonical fields onto it without dropping the existing keys.
+        conv = dict(result["conversation"])
+        conv_id = _coerce_uuid(conv.get("id")) or _coerce_uuid(session_id) or _coerce_uuid(result.get("sessionId"))
+        revision = 0
+        if conv_id:
+            try:
+                from .delivery_store import get_delivery_store
+                revision = get_delivery_store().get_conversation_revision(conv_id)
+            except Exception:                         # noqa: BLE001
+                logger.debug("session_conversation: revision lookup failed")
+        conv.setdefault("canonicalConversationId", conv_id)
+        conv.setdefault("conversationRevision", revision)
+        return JSONResponse({"conversation": conv})
+    conv_id = (
+        _coerce_uuid(session_id)
+        or _coerce_uuid(result.get("sessionId"))
+        or _stable_conversation_id()
+    )
+    return JSONResponse({"conversation": _conversation_envelope_canonical(
+        conv_id,
+        fallback_title=result.get("title") or "New Chat",
+        fallback_updated_at=_now_iso(),
+        messages=result.get("messages") or [],
+    )})
 
 
 async def current_conversation(request: Request) -> JSONResponse:
@@ -3235,6 +3481,11 @@ async def current_conversation(request: Request) -> JSONResponse:
     (LiveHeraldClient.swift:23-30) — `conversation` is required and its id/title/
     updatedAt/messages are all non-optional. The connector stub returns a flat
     {sessionId, messages, title}, so normalize here.
+
+    Build 108 Phase 3A: same additive canonical envelope as
+    ``session_conversation``; both snapshot endpoints return the
+    server-projected cursor so the iOS reducer can apply it as the
+    authoritative starting point.
     """
     await require_auth(request)
     ctx = get_context()
@@ -3245,15 +3496,25 @@ async def current_conversation(request: Request) -> JSONResponse:
         result = await result
     result = result or {}
     if "conversation" in result:
-        return JSONResponse(result)
-    return JSONResponse({"conversation": {
-        "id": _coerce_uuid(result.get("sessionId")) or _stable_conversation_id(),
-        "title": result.get("title") or "Herald",
-        "updatedAt": _now_iso(),
-        "messages": result.get("messages") or [],
-        "latestUsage": None,
-        "latestContext": None,
-    }})
+        conv = dict(result["conversation"])
+        conv_id = _coerce_uuid(conv.get("id")) or _coerce_uuid(result.get("sessionId"))
+        revision = 0
+        if conv_id:
+            try:
+                from .delivery_store import get_delivery_store
+                revision = get_delivery_store().get_conversation_revision(conv_id)
+            except Exception:                         # noqa: BLE001
+                logger.debug("current_conversation: revision lookup failed")
+        conv.setdefault("canonicalConversationId", conv_id)
+        conv.setdefault("conversationRevision", revision)
+        return JSONResponse({"conversation": conv})
+    conv_id = _coerce_uuid(result.get("sessionId")) or _stable_conversation_id()
+    return JSONResponse({"conversation": _conversation_envelope_canonical(
+        conv_id,
+        fallback_title=result.get("title") or "Herald",
+        fallback_updated_at=_now_iso(),
+        messages=result.get("messages") or [],
+    )})
 
 
 async def ensure_conversation(request: Request) -> JSONResponse:
