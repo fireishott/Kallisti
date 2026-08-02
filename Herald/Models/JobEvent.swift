@@ -156,6 +156,7 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
     let conversationId: String
     let attempt: Int
     let seq: Int
+    let conversationRevision: Int?
     let type: JobEventType
     let timestamp: Date
     let payload: JobEventPayload
@@ -166,6 +167,7 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
         case conversationId
         case attempt
         case seq
+        case conversationRevision
         case type
         case timestamp
         case payload
@@ -179,6 +181,7 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
         conversationId: String,
         attempt: Int,
         seq: Int,
+        conversationRevision: Int? = nil,
         type: JobEventType,
         timestamp: Date,
         payload: JobEventPayload
@@ -188,6 +191,7 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
         self.conversationId = conversationId
         self.attempt = attempt
         self.seq = seq
+        self.conversationRevision = conversationRevision
         self.type = type
         self.timestamp = timestamp
         self.payload = payload
@@ -200,6 +204,7 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
         conversationId = try container.decode(String.self, forKey: .conversationId)
         attempt = try container.decode(Int.self, forKey: .attempt)
         seq = try container.decode(Int.self, forKey: .seq)
+        conversationRevision = try container.decodeIfPresent(Int.self, forKey: .conversationRevision)
         type = try container.decode(JobEventType.self, forKey: .type)
         timestamp = try container.decode(Date.self, forKey: .timestamp)
 
