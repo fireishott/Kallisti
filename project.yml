@@ -33,7 +33,6 @@ schemes:
         Herald: all
         HeraldWidgets: all
         HeraldIntents: all
-        HeraldControls: all
     run:
       config: Debug
     test:
@@ -107,7 +106,6 @@ targets:
       - target: HeraldWidgets
       - target: HeraldNotificationService
       - target: HeraldIntents
-      - target: HeraldControls
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
