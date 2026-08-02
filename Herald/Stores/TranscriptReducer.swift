@@ -12,14 +12,30 @@ actor TranscriptReducer {
         var nextLocalOrdinal: UInt64
     }
 
+    /// A canonical message as delivered by the server in a snapshot.
+    struct CanonicalMessage: Sendable {
+        let canonicalMessageID: CanonicalMessageID
+        let clientMessageID: ClientMessageID?
+        let jobID: JobID?
+        let sequence: CanonicalSequence
+        let messageRevision: MessageRevision
+        let kind: TranscriptRowKind
+        let displayContent: String
+        let deleted: Bool
+    }
+
     struct TranscriptSnapshot: Sendable {
         let conversationID: CanonicalConversationID
         let revision: ConversationRevision
         let rows: [TranscriptRow]
-        init(conversationID: CanonicalConversationID, revision: ConversationRevision, rows: [TranscriptRow] = []) {
+        /// Canonical messages from the server ledger for reconciliation.
+        let canonicalMessages: [CanonicalMessage]
+        init(conversationID: CanonicalConversationID, revision: ConversationRevision,
+             rows: [TranscriptRow] = [], canonicalMessages: [CanonicalMessage] = []) {
             self.conversationID = conversationID
             self.revision = revision
             self.rows = rows
+            self.canonicalMessages = canonicalMessages
         }
     }
 
@@ -189,8 +205,13 @@ actor TranscriptReducer {
 
         case let .hydrateCache(snapshot, epoch), let .snapshotReceived(snapshot, epoch):
             try requireEpoch(epoch); try requireConversation(snapshot.conversationID)
-            state.conversationRevision = max(state.conversationRevision, snapshot.revision)
-            replaceRows(snapshot.rows)
+            // Reject snapshot with conversation revision older than current authoritative revision
+            guard snapshot.revision >= state.conversationRevision else {
+                record("stale_conversation_revision",
+                       "Snapshot revision \(snapshot.revision.rawValue) < reducer revision \(state.conversationRevision.rawValue)")
+                break
+            }
+            reconcileSnapshot(snapshot)
 
         // MARK: User optimistic submission
         case let .optimisticUserSubmitted(submission, epoch):
@@ -506,6 +527,122 @@ actor TranscriptReducer {
             conversationID: state.activeConversationID))
     }
 
+    // MARK: - Snapshot reconciliation
+
+    /// Reconcile a snapshot's canonical messages against the reducer's current rows.
+    /// - Validates conversation/epoch (caller's responsibility)
+    /// - Rejects stale conversation revisions (caller's responsibility)
+    /// - Upgrades matched rows in place, preserving renderID
+    /// - Creates new render rows for unmatched canonical messages
+    /// - Preserves optimistic rows absent from the snapshot
+    /// - Marks deleted rows as `.deleted` (does not remove them)
+    private func reconcileSnapshot(_ snapshot: TranscriptSnapshot) {
+        let previousRevision = state.conversationRevision
+
+        // Collect optimistic row renderIDs for preservation
+        var optimisticRenderIDs = Set<TranscriptRenderID>()
+        for (_, row) in state.rowsByRenderID {
+            if row.lifecycle == .optimistic || row.lifecycle == .submitting {
+                optimisticRenderIDs.insert(row.renderID)
+            }
+        }
+
+        // Track which canonical IDs are covered by this snapshot
+        var coveredCanonicalIDs = Set<CanonicalMessageID>()
+
+        for msg in snapshot.canonicalMessages {
+            coveredCanonicalIDs.insert(msg.canonicalMessageID)
+
+            // Identity matching: user rows by clientMessageID then canonicalMessageID;
+            // assistant rows by canonicalMessageID then jobID
+            var matchedRenderID: TranscriptRenderID?
+
+            switch msg.kind {
+            case .user:
+                // User rows: try clientMessageID first, then canonicalMessageID
+                if let clientID = msg.clientMessageID,
+                   let rid = state.renderIDByClientID[clientID] {
+                    matchedRenderID = rid
+                } else if let rid = state.renderIDByCanonicalID[msg.canonicalMessageID] {
+                    matchedRenderID = rid
+                }
+            default:
+                // Assistant/tool/reasoning: canonicalMessageID first, then jobID
+                if let rid = state.renderIDByCanonicalID[msg.canonicalMessageID] {
+                    matchedRenderID = rid
+                } else if let jobID = msg.jobID, let rid = state.renderIDByJobID[jobID] {
+                    matchedRenderID = rid
+                }
+            }
+
+            if let renderID = matchedRenderID, var row = state.rowsByRenderID[renderID] {
+                // === Per-message revision guard ===
+                guard msg.messageRevision >= row.messageRevision else {
+                    record("stale_message_revision",
+                           "Canonical \(msg.canonicalMessageID.rawValue) revision \(msg.messageRevision.rawValue) < row revision \(row.messageRevision.rawValue)")
+                    continue
+                }
+
+                // Same revision with conflicting content = contract violation
+                if msg.messageRevision == row.messageRevision && msg.displayContent != row.displayContent {
+                    record("snapshot_content_conflict",
+                           "Same revision \(msg.messageRevision.rawValue) with conflicting content for \(msg.canonicalMessageID.rawValue)")
+                    continue
+                }
+
+                // Upgrade row in place, preserving renderID
+                // Transition lifecycle
+                if msg.deleted {
+                    row.lifecycle = .deleted
+                } else if row.lifecycle == .optimistic || row.lifecycle == .submitting {
+                    row.lifecycle = .accepted
+                }
+                row.canonicalSequence = msg.sequence
+                row.messageRevision = msg.messageRevision
+                row.displayContent = msg.displayContent
+                row.lastUpdatedAt = Date()
+                row = TranscriptRow(renderID: row.renderID, canonicalMessageID: msg.canonicalMessageID,
+                    clientMessageID: row.clientMessageID ?? msg.clientMessageID, jobID: row.jobID ?? msg.jobID,
+                    canonicalSequence: row.canonicalSequence, messageRevision: row.messageRevision,
+                    conversationRevisionSeen: row.conversationRevisionSeen, retryGeneration: row.retryGeneration,
+                    localOrdinal: row.localOrdinal, kind: row.kind, lifecycle: row.lifecycle,
+                    displayContent: row.displayContent, reasoning: row.reasoning, toolActivity: row.toolActivity,
+                    attachments: row.attachments, createdAt: row.createdAt, lastUpdatedAt: row.lastUpdatedAt)
+
+                replace(row: row)
+                // Remove from optimistic set — it has been upgraded
+                optimisticRenderIDs.remove(renderID)
+            } else {
+                // No matching row — create a new render row
+                let now = Date()
+                let lifecycle: TranscriptRowLifecycle = msg.deleted ? .deleted : .accepted
+                let newRow = TranscriptRow(
+                    renderID: TranscriptRenderID(),
+                    canonicalMessageID: msg.canonicalMessageID,
+                    clientMessageID: msg.clientMessageID,
+                    jobID: msg.jobID,
+                    canonicalSequence: msg.sequence,
+                    messageRevision: msg.messageRevision,
+                    conversationRevisionSeen: snapshot.revision,
+                    retryGeneration: 0,
+                    localOrdinal: LocalOrdinal(rawValue: state.nextLocalOrdinal),
+                    kind: msg.kind,
+                    lifecycle: lifecycle,
+                    displayContent: msg.displayContent,
+                    reasoning: nil,
+                    toolActivity: nil,
+                    attachments: [],
+                    createdAt: now,
+                    lastUpdatedAt: now)
+                state.nextLocalOrdinal &+= 1
+                insert(newRow)
+            }
+        }
+
+        // Update conversation revision
+        state.conversationRevision = max(state.conversationRevision, snapshot.revision)
+    }
+
     private func clearRows() {
         state.rowsByRenderID.removeAll()
         state.renderIDByCanonicalID.removeAll()
@@ -570,6 +707,9 @@ private extension TranscriptReducer {
                 let seqA = a.canonicalSequence!.rawValue
                 let seqB = b.canonicalSequence!.rawValue
                 if seqA != seqB { return seqA < seqB }
+                // Server contract violation: two acknowledged rows with same canonical sequence
+                record("duplicate_canonical_sequence",
+                       "Two acknowledged rows share sequence \(seqA): \(a.canonicalMessageID?.rawValue ?? "?") and \(b.canonicalMessageID?.rawValue ?? "?")")
                 return a.localOrdinal.rawValue < b.localOrdinal.rawValue
             }
 
@@ -597,6 +737,25 @@ private extension TranscriptReducer {
             }
         }
 
+        // Build cacheable canonical state from acknowledged rows (those with canonicalSequence)
+        let canonicalState: Data?
+        do {
+            let canonicalRows = visible.compactMap { row -> [String: Any]? in
+                guard let canonicalID = row.canonicalMessageID,
+                      let sequence = row.canonicalSequence else { return nil }
+                return [
+                    "canonicalMessageId": canonicalID.rawValue,
+                    "sequence": sequence.rawValue,
+                    "messageRevision": row.messageRevision.rawValue,
+                    "displayContent": row.displayContent,
+                    "lifecycle": String(describing: row.lifecycle)
+                ]
+            }
+            canonicalState = try JSONSerialization.data(withJSONObject: canonicalRows)
+        } catch {
+            canonicalState = nil
+        }
+
         return TranscriptProjection(
             activeConversationID: state.activeConversationID,
             navigationEpoch: state.navigationEpoch,
@@ -604,7 +763,7 @@ private extension TranscriptReducer {
             orderedVisibleRows: visible,
             activeJobIDs: activeJobs,
             terminalFailuresByRenderID: terminalFailures,
-            cacheableCanonicalState: nil  // Task 8 territory
+            cacheableCanonicalState: canonicalState
         )
     }
 }
@@ -612,6 +771,7 @@ private extension TranscriptReducer {
 // MARK: - Type aliases
 
 typealias TranscriptSnapshot = TranscriptReducer.TranscriptSnapshot
+typealias CanonicalMessage = TranscriptReducer.CanonicalMessage
 typealias OptimisticUserSubmission = TranscriptReducer.OptimisticUserSubmission
 typealias UserSubmissionAcceptance = TranscriptReducer.UserSubmissionAcceptance
 typealias UserSubmissionRetrying = TranscriptReducer.UserSubmissionRetrying
