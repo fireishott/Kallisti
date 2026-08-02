@@ -29,6 +29,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "BBF4034A0931382269EBE4B8"
+               BuildableName = "HeraldControls.appex"
+               BlueprintName = "HeraldControls"
+               ReferencedContainer = "container:Herald.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "E92254BC81A0B16BACBDF97E"
                BuildableName = "HeraldIntents.appex"
                BlueprintName = "HeraldIntents"
@@ -86,6 +100,17 @@
                BlueprintIdentifier = "4B7C32DE8E967AE5A16A9764"
                BuildableName = "HeraldUITests.xctest"
                BlueprintName = "HeraldUITests"
+               ReferencedContainer = "container:Herald.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1D1CBFCD2981FD701075ADA4"
+               BuildableName = "HeraldControlsTests.xctest"
+               BlueprintName = "HeraldControlsTests"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </TestableReference>

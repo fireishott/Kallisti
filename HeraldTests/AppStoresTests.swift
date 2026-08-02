@@ -2637,13 +2637,13 @@ struct NotificationReplyTests {
             conversationID: UUID(),
             messageID: "msg-123",
             jobID: "job-456",
-            action: NotificationActionID.reply,
+            action: NotificationActionID.reply.rawValue,
             replyText: "Hello from notification"
         )
 
         #expect(route.replyText == "Hello from notification")
         #expect(route.conversationID != nil)
-        #expect(route.action == NotificationActionID.reply)
+        #expect(route.action == NotificationActionID.reply.rawValue)
     }
 
     @Test @MainActor
@@ -2652,7 +2652,7 @@ struct NotificationReplyTests {
             conversationID: UUID(),
             messageID: nil,
             jobID: nil,
-            action: NotificationActionID.reply,
+            action: NotificationActionID.reply.rawValue,
             replyText: nil
         )
 
@@ -2668,7 +2668,7 @@ struct NotificationReplyTests {
             conversationID: conversationID,
             messageID: "msg-789",
             jobID: nil,
-            action: NotificationActionID.reply,
+            action: NotificationActionID.reply.rawValue,
             replyText: expectedText
         )
 
