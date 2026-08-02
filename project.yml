@@ -74,6 +74,8 @@ targets:
     dependencies:
       - target: HeraldWidgets
       - target: HeraldNotificationService
+      - target: HeraldIntents
+      - target: HeraldControls
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
@@ -84,6 +86,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Herald
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
     info:
       path: Herald/Resources/Info.plist
       properties:
@@ -165,12 +170,21 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
 
   HeraldNotificationService:
     type: app-extension
     platform: iOS
     sources:
       - path: HeraldNotificationService
+    entitlements:
+      path: HeraldNotificationService/HeraldNotificationService.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups:
+          - group.net.fihonline.herald
     info:
       path: HeraldNotificationService/Info.plist
       properties:
@@ -190,6 +204,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
 
   HeraldIntents:
     type: app-extension
@@ -197,13 +214,9 @@ targets:
     sources:
       - path: HeraldIntents
     entitlements:
-      path: Herald/Herald.entitlements
+      path: HeraldIntents/HeraldIntents.entitlements
       properties:
         com.apple.developer.siri: true
-        com.apple.developer.healthkit: true
-        com.apple.developer.healthkit.access: []
-        com.apple.developer.healthkit.background-delivery: true
-        aps-environment: production
         com.apple.security.application-groups:
           - group.net.fihonline.herald
     info:
@@ -230,6 +243,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
 
   HeraldControls:
     type: app-extension
@@ -248,6 +264,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "iPhone Distribution"
     dependencies:
       - target: HeraldWidgets
 

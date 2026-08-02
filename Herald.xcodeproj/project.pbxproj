@@ -23,6 +23,7 @@
 		0E585D9EC19E949E3A04FEA5 /* NoteRecognition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FB367EBF1680BB4107EC26C /* NoteRecognition.swift */; };
 		0F0DAFCF7FA767631D7FFD9A /* ResilientInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A6239CAEC02D15C4FB3C6B1 /* ResilientInboxService.swift */; };
 		10250EAE82A59D5083B19812 /* InboxItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40A3575730BD9D3C7D9FFF05 /* InboxItem.swift */; };
+		10F8FB6DC6E07EDE53278179 /* HeraldIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D94AFC9CE583A234483D02A8 /* HeraldIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		11412A6BB69D8A43B09CA463 /* SlashCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88B179CF374730DABD661130 /* SlashCommand.swift */; };
 		1149AC9233AC36DE7FA7FB50 /* AuxModelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0BC2BDBAD71C3F6934D7DB3 /* AuxModelService.swift */; };
 		12E92DA10EC4BE2728D8EF9B /* GatewayStatusControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE2D9C6C2FEFF697D1BC4A77 /* GatewayStatusControl.swift */; };
@@ -137,6 +138,7 @@
 		73F600E0CBFC1F829128964E /* ModelSwitchControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891D5650A6FA0C313E2AF110 /* ModelSwitchControl.swift */; };
 		74FCE246DA5753A9B6EBDA78 /* TokenUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 432C23AEFCEE4513CA03A4A1 /* TokenUsage.swift */; };
 		76E2879025E8686C14310AC9 /* DashboardLogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CEB24E972FC822860E0D282 /* DashboardLogService.swift */; };
+		77F22AD585BCBBD96CB5007A /* NotificationCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A8462C507D0CEC7881190AE /* NotificationCategories.swift */; };
 		78C818AD74CDA519AD62653D /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 47B56823EBDD93AC6067B894 /* README.md */; };
 		7945684F8644B85B7AE994F4 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95FEDCF15C7C47E1A4464694 /* ThemeManager.swift */; };
 		7A270AF36305C5B2CC167B00 /* HeraldNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A25B5F8BB8056825CB02BFFB /* HeraldNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -212,6 +214,7 @@
 		B04AFCBECB745ADF46683A08 /* LiveNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FCBEE8C83861E878B8407B3 /* LiveNotificationService.swift */; };
 		B1A19F3C00B38D725589314A /* VoiceOverlayScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90C11E2E04E9FBBD0B875F1 /* VoiceOverlayScreen.swift */; };
 		B1DACC517FAF8137C899A28E /* GatewayLogsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */; };
+		B21E8E9EF5377EEFF19F5E5D /* HeraldControls.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 067906D33CC9DCAACEED6091 /* HeraldControls.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B3230F595D9A82F888383087 /* LegacySpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6686C9A33220A9771A0387 /* LegacySpeechService.swift */; };
 		B3230FFE37EB3C2B064B5FF1 /* TableBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08827897CC69610DD892AF43 /* TableBlockView.swift */; };
 		B370A9FB5DEE55E52D216E4D /* HeraldNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605DD1AA9F59AF394AA92F81 /* HeraldNote.swift */; };
@@ -297,6 +300,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		7A5EAC85BC9305E67AB1E774 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 71FF6D7DEF6EE12D51CB29D0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BBF4034A0931382269EBE4B8;
+			remoteInfo = HeraldControls;
+		};
 		8BF5A0CBFF507D894D56722C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 71FF6D7DEF6EE12D51CB29D0 /* Project object */;
@@ -332,6 +342,13 @@
 			remoteGlobalIDString = 2EDF6331E478FC25A257950E;
 			remoteInfo = Herald;
 		};
+		EDB75A22C80DC8ABAC36A6D8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 71FF6D7DEF6EE12D51CB29D0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E92254BC81A0B16BACBDF97E;
+			remoteInfo = HeraldIntents;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -343,6 +360,8 @@
 			files = (
 				4E444730C90C27E90A3FC56B /* HeraldWidgets.appex in Embed Foundation Extensions */,
 				7A270AF36305C5B2CC167B00 /* HeraldNotificationService.appex in Embed Foundation Extensions */,
+				10F8FB6DC6E07EDE53278179 /* HeraldIntents.appex in Embed Foundation Extensions */,
+				B21E8E9EF5377EEFF19F5E5D /* HeraldControls.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -470,6 +489,7 @@
 		64F5F06670020BB6FC843019 /* ProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileStore.swift; sourceTree = "<group>"; };
 		660D3914500E5EAF0A22B8F5 /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
 		674210B133840B32753E5B8F /* LiveMotionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMotionService.swift; sourceTree = "<group>"; };
+		678F979BAE0AD4218EAF367E /* HeraldIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldIntents.entitlements; sourceTree = "<group>"; };
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
 		69739260DD17C6229D2A945D /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
 		6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLogsScreen.swift; sourceTree = "<group>"; };
@@ -531,6 +551,7 @@
 		990F347F42BDC922A71AEF77 /* InboxItemType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemType.swift; sourceTree = "<group>"; };
 		9983DFC8EB73F48B019EA346 /* MockVoiceSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockVoiceSessionService.swift; sourceTree = "<group>"; };
 		9A4D20428C97C911A72A2702 /* SyncStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStatus.swift; sourceTree = "<group>"; };
+		9A8462C507D0CEC7881190AE /* NotificationCategories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationCategories.swift; sourceTree = "<group>"; };
 		9B4312577C67163337F3571A /* NoteRecognitionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRecognitionCoordinator.swift; sourceTree = "<group>"; };
 		9C64FCA17635A50E9A39AD7E /* HeraldTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldTimelineProvider.swift; sourceTree = "<group>"; };
 		A05A57457B900B475ABCDB11 /* stream_v2_commentary.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_commentary.json; sourceTree = "<group>"; };
@@ -631,6 +652,7 @@
 		F2DE9E10D6772C6627EC6904 /* Herald.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Herald.entitlements; sourceTree = "<group>"; };
 		F3C879D7DE3CC826078723BE /* LiveLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveLogView.swift; sourceTree = "<group>"; };
 		F6423EAA6221083F645AE41F /* SpeechTextRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTextRenderer.swift; sourceTree = "<group>"; };
+		F8CE57CAE90A3FC6228CC2CD /* HeraldNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldNotificationService.entitlements; sourceTree = "<group>"; };
 		F9EC61A24B6979033F9896A4 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		FA091035BFB4BAD3EFB013F6 /* JobStreamCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobStreamCoordinator.swift; sourceTree = "<group>"; };
 		FAAC85E4F93AD704A0A951B9 /* InboxLocalState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxLocalState.swift; sourceTree = "<group>"; };
@@ -845,6 +867,7 @@
 		32B8A6A539448D1C066B338C /* HeraldNotificationService */ = {
 			isa = PBXGroup;
 			children = (
+				F8CE57CAE90A3FC6228CC2CD /* HeraldNotificationService.entitlements */,
 				2303C1EF072F4904D7B24FE4 /* Info.plist */,
 				F9EC61A24B6979033F9896A4 /* NotificationService.swift */,
 			);
@@ -1050,6 +1073,7 @@
 		80E59F95F2B0CCFD14490D6D /* HeraldIntents */ = {
 			isa = PBXGroup;
 			children = (
+				678F979BAE0AD4218EAF367E /* HeraldIntents.entitlements */,
 				1A549817DA633882744FA0A2 /* Info.plist */,
 				D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */,
 			);
@@ -1151,6 +1175,7 @@
 				E138EFAEBD8F22BE0249EC66 /* InboxServiceProtocol.swift */,
 				291B25B2C82AB794287CA743 /* LocationServiceProtocol.swift */,
 				171F9B390C95F7572923823E /* MediaServiceProtocol.swift */,
+				9A8462C507D0CEC7881190AE /* NotificationCategories.swift */,
 				C552DADC1F9E5F608AD0A4AD /* NotificationServiceProtocol.swift */,
 				4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */,
 				43D32A538E6F815C92B06203 /* SecureStoreProtocol.swift */,
@@ -1271,6 +1296,8 @@
 			dependencies = (
 				1901AF0D112120A555BDFB4F /* PBXTargetDependency */,
 				C124D7B5E91788FEEDBD4173 /* PBXTargetDependency */,
+				572DCBB2D2F6C47A03A40060 /* PBXTargetDependency */,
+				48C1A942150D5B9DC657D62A /* PBXTargetDependency */,
 			);
 			name = Herald;
 			packageProductDependencies = (
@@ -1669,6 +1696,7 @@
 				C9C6E26215098E1D1E637B0C /* NotesRepository.swift in Sources */,
 				7B43137338001DB808920981 /* NotesStore.swift in Sources */,
 				54D3C774DFE2C15E2D302C81 /* NotesWorkspaceView.swift in Sources */,
+				77F22AD585BCBBD96CB5007A /* NotificationCategories.swift in Sources */,
 				59393BAF0BDEE132A1013851 /* NotificationServiceProtocol.swift in Sources */,
 				FA01083941E14E72899C65F8 /* OnboardingFlowView.swift in Sources */,
 				40A4E601CE93BF22DB065DE0 /* PCMPlaybackQueue.swift in Sources */,
@@ -1812,6 +1840,16 @@
 			target = F9FC8FDC9517504A2312E58A /* HeraldWidgets */;
 			targetProxy = AF463146E0F25CBE6CFB9211 /* PBXContainerItemProxy */;
 		};
+		48C1A942150D5B9DC657D62A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BBF4034A0931382269EBE4B8 /* HeraldControls */;
+			targetProxy = 7A5EAC85BC9305E67AB1E774 /* PBXContainerItemProxy */;
+		};
+		572DCBB2D2F6C47A03A40060 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E92254BC81A0B16BACBDF97E /* HeraldIntents */;
+			targetProxy = EDB75A22C80DC8ABAC36A6D8 /* PBXContainerItemProxy */;
+		};
 		9A04029E791E458617D25856 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = F9FC8FDC9517504A2312E58A /* HeraldWidgets */;
@@ -1856,7 +1894,8 @@
 		6B01CBAFFFFA35ADB7B782E4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_ENTITLEMENTS = HeraldIntents/HeraldIntents.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -1882,6 +1921,8 @@
 		A197BD8FFE733775FCD8C9ED /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = HeraldNotificationService/HeraldNotificationService.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -1963,6 +2004,7 @@
 		D4754180A40F7DB899DBBD40 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = HeraldNotificationService/HeraldNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -1979,6 +2021,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2020,6 +2063,7 @@
 		E36308D771CF92884207D48A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_IDENTITY = "iPhone Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2036,7 +2080,7 @@
 		F29014D978967B9ACD7F7A55 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_ENTITLEMENTS = HeraldIntents/HeraldIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2053,6 +2097,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 108;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
