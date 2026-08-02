@@ -301,7 +301,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: HeraldControls/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Controls
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.controlsWidget
         PRODUCT_NAME: HeraldControls
         MARKETING_VERSION: "2.4.1"
         CURRENT_PROJECT_VERSION: "108"
