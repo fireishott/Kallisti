@@ -42,8 +42,38 @@ actor GatewayClient {
         let maxReconnectAttempts: Int
         let baseReconnectDelaySeconds: Double
 
+        /// Create configuration from the relay's base URL.
+        ///
+        /// The relay's REST API is at `<base>/v1/...` but the WebSocket
+        /// endpoint is at `<host>/api/ws` (not under /v1).
+        static func from(relayBaseURL: String, authToken: String? = nil) -> Configuration? {
+            guard let baseURL = URL(string: relayBaseURL) else { return nil }
+            // Strip /v1 suffix if present, then append /api/ws
+            var host = baseURL.absoluteString
+            if host.hasSuffix("/v1") {
+                host = String(host.dropLast(3))
+            } else if host.hasSuffix("/v1/") {
+                host = String(host.dropLast(4))
+            }
+            // Convert https:// to wss:// and http:// to ws://
+            if host.hasPrefix("https://") {
+                host = "wss://" + host.dropFirst(8)
+            } else if host.hasPrefix("http://") {
+                host = "ws://" + host.dropFirst(7)
+            }
+            guard let wsURL = URL(string: "\(host)/api/ws") else { return nil }
+            return Configuration(
+                url: wsURL,
+                authToken: authToken,
+                connectTimeoutSeconds: 15,
+                requestTimeoutSeconds: 60,
+                maxReconnectAttempts: 10,
+                baseReconnectDelaySeconds: 1
+            )
+        }
+
         static let `default` = Configuration(
-            url: URL(string: "wss://relay.fihonline.net/api/ws")!,
+            url: URL(string: "wss://localhost:8010/api/ws")!,
             authToken: nil,
             connectTimeoutSeconds: 15,
             requestTimeoutSeconds: 60,
@@ -201,12 +231,20 @@ actor GatewayClient {
     // MARK: - Connection management
 
     private func establishConnection() async throws {
-        var request = URLRequest(url: config.url)
-        request.timeoutInterval = config.connectTimeoutSeconds
-
+        // Construct URL with token query parameter if available
+        var url = config.url
         if let token = config.authToken {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            var queryItems = components?.queryItems ?? []
+            queryItems.append(URLQueryItem(name: "token", value: token))
+            components?.queryItems = queryItems
+            if let tokenURL = components?.url {
+                url = tokenURL
+            }
         }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = config.connectTimeoutSeconds
 
         let session = URLSession(configuration: .default)
         let task = session.webSocketTask(with: request)
