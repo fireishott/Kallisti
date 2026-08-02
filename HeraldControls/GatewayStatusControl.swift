@@ -1,4 +1,5 @@
 import AppIntents
+import HeraldSupport
 import SwiftUI
 import WidgetKit
 
@@ -30,37 +31,29 @@ struct RefreshGatewayStatusIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let client = RelayAPIClient(
-            baseURLProvider: { HeraldAppState.shared.relayBaseURL }
+        let client = GatewayControlClient(
+            configuration: SharedRelayConfiguration.shared,
+            credentials: SharedCredentialProvider.shared
         )
 
-        struct StatusResponse: Decodable {
-            struct Data: Decodable {
-                let connected: Bool
-                let activeJobs: Int
-                let model: String?
-                let version: String
-                let uptimeSeconds: Int
-            }
-            let data: Data
-        }
-
         do {
-            let response: StatusResponse = try await client.get(
-                path: "/gw/status",
-                accessToken: HeraldAppState.shared.accessToken
-            )
+            let status = try await client.fetchStatus()
             await MainActor.run {
-                GatewayState.shared.update(
-                    connected: response.data.connected,
-                    activeJobs: response.data.activeJobs,
-                    model: response.data.model,
-                    version: response.data.version
+                SharedGatewayStatus.shared.update(
+                    connected: status.connectorConnected && (status.hermesActive ?? true),
+                    activeJobs: status.activeJobs,
+                    model: status.activeModel,
+                    version: status.connectorVersion
                 )
             }
         } catch {
             await MainActor.run {
-                GatewayState.shared.update(connected: false, activeJobs: 0, model: nil, version: nil)
+                SharedGatewayStatus.shared.update(
+                    connected: false,
+                    activeJobs: 0,
+                    model: nil,
+                    version: nil
+                )
             }
         }
 

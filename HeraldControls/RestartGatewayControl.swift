@@ -1,9 +1,16 @@
 import AppIntents
+import HeraldSupport
 import SwiftUI
 import WidgetKit
 
-/// Control Center widget to restart the Herald gateway, connector, or Hermes agent.
-/// Long-press to choose the target, tap to confirm.
+/// Control Center widget to restart the Herald gateway or the connector.
+///
+/// The restart is destructive — Build 108 §15A.6 requires an explicit
+/// confirmation before POST.  Apple's `ControlWidget` API does not expose
+/// a native confirmation dialog, so this widget launches the Herald app
+/// onto its confirmed restart screen instead of executing the restart
+/// directly.  When iOS eventually ships a Control Center confirmation
+/// surface, the deep-link fallback can be removed.
 struct RestartGatewayControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
@@ -15,7 +22,7 @@ struct RestartGatewayControl: ControlWidget {
             .tint(.orange)
         }
         .displayName("Restart Gateway")
-        .description("Restart the Herald gateway, connector, or Hermes agent.")
+        .description("Restart the Herald gateway or connector — opens Herald to confirm.")
     }
 }
 
@@ -24,7 +31,10 @@ struct RestartGatewayControl: ControlWidget {
 struct RestartGatewayIntent: AppIntent {
     static let title: LocalizedStringResource = "Restart Gateway"
 
-    @Parameter(title: "Target", default: "relay")
+    /// Open in app when run from Control Center so the user can confirm.
+    static let openAppWhenRun: Bool = true
+
+    @Parameter(title: "Target", default: "hermes")
     var target: String
 
     init() {}
@@ -35,31 +45,14 @@ struct RestartGatewayIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let client = RelayAPIClient(
-            baseURLProvider: { HeraldAppState.shared.relayBaseURL }
-        )
-
-        struct RestartRequest: Encodable {
-            let target: String
-        }
-
-        struct RestartResponse: Decodable {
-            let restarting: Bool
-            let target: String
-            let message: String?
-        }
-
-        let body = RestartRequest(target: target)
-        let response: RestartResponse = try await client.postGateway(
-            path: "/gw/restart",
-            body: body,
-            accessToken: HeraldAppState.shared.accessToken
-        )
-
-        if response.restarting {
-            return .result(dialog: "\(response.target) restart initiated")
-        } else {
-            return .result(dialog: "Restart failed: \(response.message ?? "unknown error")")
-        }
+        // Build 108 §15A.6: the Control Widget API does not provide a
+        // confirmation dialog sufficient for a destructive action.  Deep-
+        // link into the main app's confirmed restart screen rather than
+        // executing the restart directly from Control Center.
+        // The actual POST /gw/restart with Idempotency-Key and the polling
+        // are performed by `GatewayControlService` in the host app, which
+        // surfaces the typed `GatewayControlError` cases through its own
+        // confirmation UI.
+        return .result()
     }
 }

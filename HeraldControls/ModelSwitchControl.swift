@@ -1,4 +1,5 @@
 import AppIntents
+import HeraldSupport
 import SwiftUI
 import WidgetKit
 
@@ -34,37 +35,28 @@ struct ModelSwitchIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let client = RelayAPIClient(
-            baseURLProvider: { HeraldAppState.shared.relayBaseURL }
+        let client = GatewayControlClient(
+            configuration: SharedRelayConfiguration.shared,
+            credentials: SharedCredentialProvider.shared
         )
 
-        struct SwitchRequest: Encodable {
-            let model: String
-        }
-
-        struct SwitchResponse: Decodable {
-            struct Data: Decodable {
-                let switched: Bool
-                let model: String?
-                let error: String?
+        do {
+            let result = try await client.switchModel(name: model)
+            if result.switched {
+                await MainActor.run {
+                    if let activeModel = result.model {
+                        SharedGatewayStatus.shared.update(model: activeModel)
+                    }
+                }
+                return .result(dialog: IntentDialog(stringLiteral: "Switched to \(result.model ?? model)"))
+            } else {
+                let reason = result.error ?? "unknown error"
+                return .result(dialog: IntentDialog(stringLiteral: "Switch failed: \(reason)"))
             }
-            let data: Data
-        }
-
-        let body = SwitchRequest(model: model)
-        let response: SwitchResponse = try await client.post(
-            path: "/gw/model/switch",
-            body: body,
-            accessToken: HeraldAppState.shared.accessToken
-        )
-
-        if response.data.switched {
-            await MainActor.run {
-                GatewayState.shared.update(model: response.data.model)
-            }
-            return .result(dialog: "Switched to \(response.data.model ?? model)")
-        } else {
-            return .result(dialog: "Failed: \(response.data.error ?? "unknown")")
+        } catch let error as GatewayControlError {
+            return .result(dialog: IntentDialog(stringLiteral: error.errorDescription ?? "Switch failed."))
+        } catch {
+            return .result(dialog: IntentDialog(stringLiteral: "Switch failed: \(error.localizedDescription)"))
         }
     }
 }

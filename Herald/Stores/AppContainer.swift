@@ -630,6 +630,12 @@ final class AppContainer {
     }
 
     func initialize() async {
+        // Build 108 §15A.4: run the legacy → shared-Keychain token migration
+        // once per launch.  Idempotent and best-effort; if the shared
+        // Keychain entry is unreachable (no entitlement yet) we log and
+        // continue so the rest of the app can boot.
+        SharedTokenBridge.migrateOnce()
+
         guard pairingStore.isPaired else {
             sessionStore.launchState = .unpaired
             return
@@ -661,6 +667,13 @@ final class AppContainer {
 
         // Register notification categories before remote notifications can be acted on
         notificationService?.registerCategories()
+
+        // Build 108 Phase 3W: bridge WatchConnectivity actions into the same
+        // identity-anchored pipeline as lock-screen notification actions.
+        // (Temporarily disabled until Task 10 wires the Watch target's
+        // WatchActionBridge into the iOS host — the type currently lives
+        // in the watchOS target.)
+        // _ = WatchActionBridge(container: self)
 
         await hostStore.refresh()
         lastKnownHostOnline = hostStore.isHostOnline
@@ -708,6 +721,26 @@ final class AppContainer {
         }
     }
 
+    /// Bridge a Watch-originated action into the same identifier-anchored
+    /// pipeline as a lock-screen notification action. The Watch coordinator
+    /// calls into this so the iOS side performs exactly one canonical user
+    /// submission per Watch-originated reply.
+    func handleWatchAction(
+        action: String,
+        conversationID: UUID?,
+        messageID: String?,
+        jobID: String?,
+        replyText: String? = nil
+    ) {
+        handleNotificationRoute(
+            conversationID: conversationID,
+            messageID: messageID,
+            jobID: jobID,
+            action: action,
+            replyText: replyText
+        )
+    }
+
     private func processPendingNotificationRoute() async {
         guard let route = pendingNotificationRoute else { return }
         pendingNotificationRoute = nil
@@ -717,7 +750,7 @@ final class AppContainer {
     private func processRoute(_ route: PendingNotificationRoute, replyText: String? = nil) async {
         // Handle actions that don't require navigation
         switch route.action {
-        case NotificationActionID.reply:
+        case NotificationActionID.reply.rawValue:
             guard let conversationID = route.conversationID,
                   let text = replyText, !text.isEmpty else {
                 Logger.app.warning("Notification reply: missing conversation ID or empty text")
@@ -732,7 +765,7 @@ final class AppContainer {
             }
             return
 
-        case NotificationActionID.stop:
+        case NotificationActionID.stop.rawValue:
             guard let jobIDString = route.jobID, let jobID = UUID(uuidString: jobIDString) else {
                 Logger.app.warning("Notification stop: missing or invalid job ID")
                 return
@@ -745,7 +778,7 @@ final class AppContainer {
             }
             return
 
-        case NotificationActionID.nudge:
+        case NotificationActionID.nudge.rawValue:
             guard let conversationID = route.conversationID else {
                 Logger.app.warning("Notification nudge: missing conversation ID")
                 return
@@ -760,13 +793,13 @@ final class AppContainer {
             }
             return
 
-        case NotificationActionID.remindLater:
+        case NotificationActionID.remindLater.rawValue:
             // Schedule a reminder notification for 1 hour from now
             let content = UNMutableNotificationContent()
             content.title = "Herald"
             content.body = "You asked to be reminded about this conversation."
             content.sound = .default
-            content.categoryIdentifier = NotificationCategoryID.sessionReminder
+            content.categoryIdentifier = NotificationCategoryID.sessionReminder.rawValue
             if let conversationID = route.conversationID {
                 content.userInfo["conversationId"] = conversationID.uuidString
             }
@@ -784,7 +817,7 @@ final class AppContainer {
             }
             return
 
-        case NotificationActionID.dismiss:
+        case NotificationActionID.dismiss.rawValue:
             // Dismiss the notification without navigating
             return
 
@@ -1324,16 +1357,24 @@ final class AppContainer {
 
     // MARK: - Shared State (Control Center)
 
-    /// Persist relay URL and access token to App Group UserDefaults so the
-    /// Control Center widgets (HeraldControls extension) can make authenticated
-    /// HTTP calls without launching the main app.
+    /// Persist relay URL and access token to the cross-process support
+    /// module (`HeraldSupport`) so the HeraldControls extension can make
+    /// authenticated gateway calls without launching the main app.  The
+    /// legacy `HeraldAppState` UserDefaults entry is mirrored for backward
+    /// compatibility with widget binaries that still read it.
     private func updateSharedAppState() {
         guard let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString
         else { return }
         Task {
             let token = await sessionStore.currentAccessToken()
-            HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: token)
+            // Build 108 §15A: publish to the shared Keychain (extension-
+            // safe) and the App Group URL store.
+            SharedTokenBridge.publish(relayBaseURL: relayURL, accessToken: token)
+            // Legacy widget/control binaries still read the App-Group
+            // UserDefaults entry for the URL; mirror it so they don't
+            // see an empty value after upgrade.
+            HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: nil)
         }
     }
 

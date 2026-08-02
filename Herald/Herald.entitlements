@@ -16,5 +16,9 @@
 	<array>
 		<string>group.net.fihonline.herald</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)group.net.fihonline.herald.shared</string>
+	</array>
 </dict>
 </plist>
