@@ -338,17 +338,32 @@ final class AppContainer {
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
         } else {
-            let liveClient = LiveHeraldClient(
-                apiClient: apiClient,
-                accessTokenProvider: { await sessionStore.currentAccessToken() },
-                accessTokenRefresher: {
-                    await sessionStore.refreshAccessTokenIfNeeded()
-                    return await sessionStore.currentAccessToken()
-                },
-                allowDemoFallback: false
-            )
-            liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
-            heraldClient = liveClient
+            // Feature flag: use GatewayHeraldClient for JSON-RPC WebSocket protocol
+            // Falls back to LiveHeraldClient (REST/SSE) if disabled
+            let useGatewayClient = processEnvironment["HERALD_USE_GATEWAY_CLIENT"] == "true"
+
+            if useGatewayClient {
+                let gatewayClient = GatewayHeraldClient(
+                    relayBaseURLProvider: {
+                        activePairingStore?.pairedRelayConfiguration?.baseURLString
+                            ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                    },
+                    accessTokenProvider: { await sessionStore.currentAccessToken() }
+                )
+                heraldClient = gatewayClient
+            } else {
+                let liveClient = LiveHeraldClient(
+                    apiClient: apiClient,
+                    accessTokenProvider: { await sessionStore.currentAccessToken() },
+                    accessTokenRefresher: {
+                        await sessionStore.refreshAccessTokenIfNeeded()
+                        return await sessionStore.currentAccessToken()
+                    },
+                    allowDemoFallback: false
+                )
+                liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
+                heraldClient = liveClient
+            }
         }
 
         let liveLocationService = LiveLocationService()
