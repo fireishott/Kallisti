@@ -1561,7 +1561,7 @@ final class ChatStore {
                         content.title = "Herald"
                         content.body = String(finalMessage.content.prefix(100))
                         content.sound = .default
-                        content.categoryIdentifier = NotificationCategoryID.messageReady
+                        content.categoryIdentifier = NotificationCategoryID.messageReady.rawValue
                         if let convId = self.conversation?.id.uuidString {
                             content.userInfo = [
                                 "conversationId": convId,
@@ -3061,16 +3061,29 @@ final class ChatStore {
         //
         // `activeStreams` is the authority on whether a stream still owns a
         // placeholder; only settle the ones nothing is streaming into.
+        //
+        // Build 108 WS-D: Do NOT settle as empty_response if the job is still
+        // running. Stream ownership and server state, not empty text, decide
+        // whether a response failed.
         let livePlaceholders = Set(activeStreams.values)
         let settledLocalOnly: [Message] = localOnly.map { message in
             guard message.isStreaming else { return message }
             guard !livePlaceholders.contains(message.id) else { return message }
             var settled = message
             settled.isStreaming = false
+            // Only mark as empty_response if we have a job that has definitively
+            // ended (not running). If no job is associated, keep as in-progress
+            // so the polling fallback can resolve it.
             if settled.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                settled.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                settled.status = .failed
-                settled.errorCategory = "empty_response"
+                // Check if this placeholder has an associated job that is NOT running
+                if let jobID = activeStreams.first(where: { $0.value == message.id })?.key {
+                    // Job exists but is not in activeStreams (already removed)
+                    // This means the job has ended - safe to mark as empty_response
+                    settled.status = .failed
+                    settled.errorCategory = "empty_response"
+                }
+                // If no job found, leave as in-progress - polling will resolve
             }
             return settled
         }

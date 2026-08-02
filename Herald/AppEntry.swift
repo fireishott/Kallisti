@@ -146,7 +146,7 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
         // Extract reply text for Reply action
         var replyText: String?
-        if action == NotificationActionID.reply,
+        if action == NotificationActionID.reply.rawValue,
            let textResponse = response as? UNTextInputNotificationResponse {
             replyText = textResponse.userText
         }

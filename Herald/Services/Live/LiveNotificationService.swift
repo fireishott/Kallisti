@@ -55,24 +55,24 @@ final class LiveNotificationService: NotificationServiceProtocol {
     func registerCategories() {
         // HERALD_MESSAGE_READY: completed chat reply
         let readAction = UNNotificationAction(
-            identifier: NotificationActionID.read,
+            identifier: NotificationActionID.read.rawValue,
             title: "Read",
             options: .foreground
         )
         let replyAction = UNTextInputNotificationAction(
-            identifier: NotificationActionID.reply,
+            identifier: NotificationActionID.reply.rawValue,
             title: "Reply",
             options: [],
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Type your reply..."
         )
         let nudgeAction = UNNotificationAction(
-            identifier: NotificationActionID.nudge,
+            identifier: NotificationActionID.nudge.rawValue,
             title: "Nudge",
             options: []
         )
         let messageReadyCategory = UNNotificationCategory(
-            identifier: NotificationCategoryID.messageReady,
+            identifier: NotificationCategoryID.messageReady.rawValue,
             actions: [readAction, replyAction, nudgeAction],
             intentIdentifiers: [],
             options: []
@@ -80,12 +80,12 @@ final class LiveNotificationService: NotificationServiceProtocol {
 
         // HERALD_JOB_ACTIVE: job is still running
         let stopAction = UNNotificationAction(
-            identifier: NotificationActionID.stop,
+            identifier: NotificationActionID.stop.rawValue,
             title: "Stop",
             options: [.destructive]
         )
         let jobActiveCategory = UNNotificationCategory(
-            identifier: NotificationCategoryID.jobActive,
+            identifier: NotificationCategoryID.jobActive.rawValue,
             actions: [readAction, stopAction, nudgeAction],
             intentIdentifiers: [],
             options: []
@@ -93,17 +93,17 @@ final class LiveNotificationService: NotificationServiceProtocol {
 
         // HERALD_SESSION_REMINDER: time-sensitive reminder
         let remindLaterAction = UNNotificationAction(
-            identifier: NotificationActionID.remindLater,
+            identifier: NotificationActionID.remindLater.rawValue,
             title: "Remind in 1h",
             options: []
         )
         let dismissAction = UNNotificationAction(
-            identifier: NotificationActionID.dismiss,
+            identifier: NotificationActionID.dismiss.rawValue,
             title: "Dismiss",
             options: .destructive
         )
         let sessionReminderCategory = UNNotificationCategory(
-            identifier: NotificationCategoryID.sessionReminder,
+            identifier: NotificationCategoryID.sessionReminder.rawValue,
             actions: [readAction, remindLaterAction, dismissAction],
             intentIdentifiers: [],
             options: []

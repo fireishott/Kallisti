@@ -1,20 +1,8 @@
 import Foundation
 
-/// Stable identifiers for notification categories and actions.
-enum NotificationCategoryID {
-    static let messageReady = "HERALD_MESSAGE_READY"
-    static let jobActive = "HERALD_JOB_ACTIVE"
-    static let sessionReminder = "HERALD_SESSION_REMINDER"
-}
-
-enum NotificationActionID {
-    static let read = "HERALD_ACTION_READ"
-    static let reply = "HERALD_ACTION_REPLY"
-    static let stop = "HERALD_ACTION_STOP"
-    static let nudge = "HERALD_ACTION_NUDGE"
-    static let remindLater = "HERALD_ACTION_REMIND_LATER"
-    static let dismiss = "HERALD_ACTION_DISMISS"
-}
+// Shared category/action identifiers now live in
+// `Herald/Services/Protocols/NotificationCategories.swift`. They are mirrored
+// to the HeraldNotificationService and HeraldWatch targets via project.yml.
 
 @MainActor
 protocol NotificationServiceProtocol {
