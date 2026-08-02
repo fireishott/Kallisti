@@ -1,0 +1,66 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:45:00.000Z",
+    "payload": {"phase": "thinking", "attempt": 1}
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 2,
+    "type": "commentary",
+    "timestamp": "2026-07-20T14:45:00.500Z",
+    "payload": {"text": "Analyzing the request to determine the best approach..."}
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 3,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:45:01.000Z",
+    "payload": {"delta": "Based on my analysis, ", "segmentId": "seg-004"}
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 4,
+    "type": "commentary",
+    "timestamp": "2026-07-20T14:45:01.500Z",
+    "payload": {"text": "Gathering additional context from the codebase..."}
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 5,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:45:02.000Z",
+    "payload": {"delta": "here are my recommendations.", "segmentId": "seg-004"}
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 6,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:45:03.000Z",
+    "payload": {
+      "messageId": "msg-004",
+      "text": "Based on my analysis, here are my recommendations.",
+      "usage": {"prompt_tokens": 180, "completion_tokens": 35, "total_tokens": 215}
+    }
+  }
+]

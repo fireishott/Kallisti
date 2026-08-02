@@ -84,10 +84,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let messages: [RelayMessage]
         let latestUsage: TokenUsage?
         let latestContext: ContextInfo?
+        /// Build 108 Phase 3A v2: envelope-level revision so the iOS
+        /// reducer can detect "something changed since I last saw this
+        /// conversation" without inspecting every row.  Optional during
+        /// rollout — Phase 3B will use it as the authoritative cursor.
+        let revision: Int?
 
         enum CodingKeys: String, CodingKey {
             case id, title, updatedAt, messages
             case latestUsage, latestContext
+            case revision
         }
 
         init(from decoder: Decoder) throws {
@@ -98,6 +104,9 @@ final class LiveHeraldClient: HeraldClientProtocol {
             messages = (try? container.decode([RelayMessage].self, forKey: .messages)) ?? []
             latestUsage = try container.decodeIfPresent(TokenUsage.self, forKey: .latestUsage)
             latestContext = try container.decodeIfPresent(ContextInfo.self, forKey: .latestContext)
+            // The wire field is `revision`; tolerate absence during
+            // rollout so older connectors still decode.
+            revision = try container.decodeIfPresent(Int.self, forKey: .revision)
         }
     }
 
@@ -118,10 +127,34 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let jobId: UUID?
         let attachments: [RelayAttachment]?
         let reasoning: String?
+        // Build 108 Phase 3A v2 widening: the canonical per-message
+        // field set.  ``id`` is the canonical message UUID (same value
+        // as the legacy ``id`` field above); ``conversationId`` is the
+        // application conversation UUID; ``sequence`` and ``revision``
+        // are positive server-projected cursors; ``displayContent`` is
+        // the user-visible text (identical to ``text`` for current
+        // connectors); ``deleted`` flags soft-deleted rows.
+        //
+        // Every new field uses ``decodeIfPresent`` so the decoder does
+        // not crash on legacy responses that pre-date the v3 contract.
+        // Phase 3B's TranscriptReducer will treat absent values as
+        // "pre-ledger row, do not reconcile against this id".
+        let canonicalMessageId: UUID?
+        let conversationId: UUID?
+        let sequence: Int?
+        let revision: Int?
+        let conversationRevision: Int?
+        let displayContent: String?
+        let deleted: Bool?
+        let createdAt: Date?
+        let updatedAt: Date?
 
         enum CodingKeys: String, CodingKey {
             case id, role, text, timestamp
             case clientMessageId, deliveryStatus, jobId, attachments, reasoning
+            case canonicalMessageId, conversationId, sequence, revision
+            case conversationRevision, displayContent, deleted
+            case createdAt, updatedAt
         }
 
         init(from decoder: Decoder) throws {
@@ -139,6 +172,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
             jobId = try container.decodeIfPresent(UUID.self, forKey: .jobId)
             attachments = try container.decodeIfPresent([RelayAttachment].self, forKey: .attachments)
             reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
+            // Build 108 v2 widening — see header comment.
+            canonicalMessageId = try container.decodeIfPresent(UUID.self, forKey: .canonicalMessageId)
+            conversationId = try container.decodeIfPresent(UUID.self, forKey: .conversationId)
+            sequence = try container.decodeIfPresent(Int.self, forKey: .sequence)
+            revision = try container.decodeIfPresent(Int.self, forKey: .revision)
+            conversationRevision = try container.decodeIfPresent(Int.self, forKey: .conversationRevision)
+            displayContent = try container.decodeIfPresent(String.self, forKey: .displayContent)
+            deleted = try container.decodeIfPresent(Bool.self, forKey: .deleted)
+            createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+            updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
         }
     }
 
@@ -185,6 +228,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
     private struct MessageCreateBody: Encodable {
         let heraldProtocol: Int = 5           // Build 34: schema validation, health probe, protocol 5
         let conversationId: UUID?
+        /// Build 108 Workstream E: displayText is the user-visible message.
+        /// The connector constructs model input server-side from this plus clientContext.
+        let displayText: String
+        /// Build 108 Workstream E: structured client context (local time, locale, timezone).
+        /// The connector combines this with displayText to create model input.
+        let clientContext: ClientContext?
+        /// Legacy text field for backward compatibility during rollout.
         let text: String
         let clientMessageId: UUID
         let attachments: [AttachmentPayload]?
@@ -194,6 +244,13 @@ final class LiveHeraldClient: HeraldClientProtocol {
         /// point, but stores only `cleanText` (the original user prompt) in the
         /// canonical user message.  Never displayed in transcripts or notifications.
         let continuationContext: String?
+    }
+
+    /// Build 108 Workstream E: structured client context for model input construction.
+    struct ClientContext: Encodable {
+        let localTime: String
+        let locale: String
+        let timezone: String
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -742,8 +799,16 @@ final class LiveHeraldClient: HeraldClientProtocol {
             resolvedConversationId = UUID()
             Logger.app.info("makeCreateBody: currentConversation nil, using fresh UUID \(resolvedConversationId.uuidString.prefix(8))")
         }
+        // Build 108 Workstream E: separate displayText from client context
+        let clientContext = ClientContext(
+            localTime: ISO8601DateFormatter().string(from: Date()),
+            locale: Locale.current.identifier,
+            timezone: TimeZone.current.identifier
+        )
         let body = MessageCreateBody(
             conversationId: resolvedConversationId,
+            displayText: text,
+            clientContext: clientContext,
             text: text,
             clientMessageId: clientMessageID,
             attachments: payloads,
@@ -1250,9 +1315,17 @@ extension LiveHeraldClient {
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         let effort = reasoningEffortProvider?()
+        // Build 108 Workstream E: separate displayText from client context
+        let clientContext = ClientContext(
+            localTime: ISO8601DateFormatter().string(from: Date()),
+            locale: Locale.current.identifier,
+            timezone: TimeZone.current.identifier
+        )
         let body = MessageCreateBody(
             conversationId: conversationID,
-            text: text,
+            displayText: text,
+            clientContext: clientContext,
+            text: text,  // Legacy field for backward compatibility
             clientMessageId: clientMessageID,
             attachments: nil,
             reasoningEffort: effort?.rawValue,

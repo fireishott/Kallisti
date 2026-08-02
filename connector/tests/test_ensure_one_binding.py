@@ -112,9 +112,9 @@ def no_session_lookups(monkeypatch):
 
 
 class TestSchemaVersion2:
-    def test_schema_version_is_2(self):
+    def test_schema_version_is_3(self):
         from herald_connector.delivery_store import _EXPECTED_SCHEMA_VERSION
-        assert _EXPECTED_SCHEMA_VERSION == 2
+        assert _EXPECTED_SCHEMA_VERSION == 3
 
     def test_archived_columns_exist(self, store):
         names = {

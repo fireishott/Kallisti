@@ -3,6 +3,13 @@
 Before the fix, `_run_http_job`'s `finally` promoted any generator that ended
 without a `done` event to status="completed", so the phone showed a delivered
 check, a green dot and a completion haptic for a dead turn.
+
+Phase 3A v2 correction: the events in ``job["events"]`` are now v3
+envelopes (with ``contractVersion``, ``jobId``, ``conversationId``,
+``type``, ``payload``, ...) rather than the legacy ``{type, data}``
+shape.  Tests locate the terminal event by its ``type`` and read the
+typed fields off the v3 envelope (``payload`` for the producer data,
+``type`` for the event kind).
 """
 import pytest
 
@@ -13,10 +20,17 @@ from herald_connector.herald_api_executor import (
 )
 
 
+_TERMINAL_TYPES = {"run.completed", "run.failed", "run.cancelled"}
+
+
 def _new_job(job_id):
     hf._http_jobs[job_id] = {
         "status": "running", "events": [], "subscribers": [],
-        "updatedAt": 0.0, "conversationId": None,
+        "updatedAt": 0.0,
+        # Phase 3A v2: the v3 envelope requires a non-null
+        # conversationId on every event.  Tests must supply one or the
+        # publisher drops events as malformed.
+        "conversationId": "11111111-2222-3333-4444-555555555555",
     }
     return hf._http_jobs[job_id]
 
@@ -24,8 +38,12 @@ def _new_job(job_id):
 async def _drain(job_id, handler):
     job = _new_job(job_id)
     await hf._run_http_job(job_id, handler, "hi", None, None, None, None)
-    terminal = [e for e in job["events"] if e["type"] == "done"][-1]
-    return job, terminal["data"]
+    # Phase 3A v2: locate the terminal v3 envelope.  The publisher
+    # also emits a legacy ``done`` sentinel for the iOS coordinator
+    # — we use the typed terminal (``run.completed``/etc.) for our
+    # assertions so the test is not coupled to the iOS legacy path.
+    terminal = [e for e in job["events"] if e.get("type") in _TERMINAL_TYPES][-1]
+    return job, terminal["payload"]
 
 
 # ── B1: the facade must not synthesize success ────────────────────────────

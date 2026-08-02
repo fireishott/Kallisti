@@ -111,6 +111,35 @@ class DuplicateConflictError(RuntimeError):
         self.client_message_id = client_message_id
 
 
+class CanonicalSnapshotIncomplete(RuntimeError):
+    """Phase 3A fail-closed: the canonical ledger cannot satisfy the snapshot.
+
+    Raised by ``get_conversation_snapshot`` when a row in the canonical
+    ledger is missing a required field (a null canonical_message_id, a
+    zero sequence, or a zero revision) that would force the snapshot to
+    lie.  Callers must either materialize the missing row atomically or
+    surface the failure as HTTP 409/503 with a machine-readable code so
+    the client can retry — never emit a null/zero placeholder on the
+    authoritative wire.
+
+    The handler is expected to log the correlation id and leave any
+    optimistic iOS row pending so the next reconnect picks up the
+    reconciled snapshot.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        conversation_id: str | None = None,
+        canonical_message_id: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.conversation_id = conversation_id
+        self.canonical_message_id = canonical_message_id
+
+
 # ── Request hashing ───────────────────────────────────────────────────────
 
 
@@ -896,6 +925,51 @@ class DeliveryStore:
             })
         return events
 
+    # ── Phase 3A: per-job sequence allocation for v3 envelopes ───────────
+
+    def allocate_job_seq(
+        self,
+        *,
+        job_id: str,
+        conversation_id: str | None = None,
+        attempt: int | None = None,
+    ) -> int:
+        """Allocate the next sequence number for a job attempt.
+
+        Phase 3A v3: the live-event publisher needs an authoritative,
+        monotonically increasing sequence per job attempt.  Backed by
+        ``job_events`` so a reconnect replay or a connector restart
+        observes the same seq numbers the original attempt emitted.
+
+        Returns the next seq (always >= 1).
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) AS next_seq "
+                    "FROM job_events WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                next_seq = int(row["next_seq"]) + 1 if row else 1
+                return next_seq
+            finally:
+                conn.close()
+
+    def get_max_job_seq(self, job_id: str) -> int:
+        """Return the largest seq allocated for *job_id* (0 if none)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) AS max_seq "
+                    "FROM job_events WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                return int(row["max_seq"]) if row else 0
+            finally:
+                conn.close()
+
     # ── canonical message ledger (Build 108) ─────────────────────────────
 
     def _get_next_sequence(self, conn: sqlite3.Connection, conversation_id: str) -> int:
@@ -1199,6 +1273,115 @@ class DeliveryStore:
                 return int(row["revision"]) if row else 0
             finally:
                 conn.close()
+
+    # ── Phase 3A: consistent snapshot transaction ─────────────────────────
+
+    def get_conversation_snapshot(
+        self, conversation_id: str
+    ) -> dict:
+        """Return an authoritative snapshot of one conversation in one read.
+
+        Phase 3A fix: the v1 implementation called
+        ``get_conversation_revision`` after fetching rows, which allowed the
+        envelope revision and the row set to describe different instants.
+        This method reads the binding revision AND every canonical message
+        row inside a single BEGIN DEFERRED transaction, so the snapshot
+        is internally consistent — what the caller returns as
+        ``revision`` is the revision that produced the rows it ships.
+
+        The snapshot is fail-closed: any row with a null canonical id, a
+        zero/negative sequence, or a zero/negative revision raises
+        ``CanonicalSnapshotIncomplete`` with a machine-readable reason.
+        The handler must NOT emit those values on the wire — that is the
+        v1 defect this method is designed to prevent.
+
+        Returns a dict with ``revision`` and ``messages``; messages is a
+        list of the canonical row dicts already shaped for the wire (the
+        same keys as ``get_canonical_message``).  The conversation
+        envelope (id, title, updatedAt, …) is not stored here — that
+        metadata is the connector's responsibility to source from
+        session_store / session_meta.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN DEFERRED")
+                rev_row = conn.execute(
+                    "SELECT revision FROM conversation_bindings "
+                    "WHERE app_conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                # No binding → empty snapshot with revision 0.  The wire
+                # caller must surface that as a separate "no binding" error
+                # rather than coerce a 0 into "real initial revision".
+                if rev_row is None:
+                    conn.commit()
+                    return {
+                        "conversationId": conversation_id,
+                        "revision": 0,
+                        "messages": [],
+                        "bindingPresent": False,
+                    }
+                revision = int(rev_row["revision"])
+                rows = conn.execute(
+                    "SELECT * FROM conversation_messages "
+                    "WHERE conversation_id = ? "
+                    "ORDER BY sequence ASC",
+                    (conversation_id,),
+                ).fetchall()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        messages: list[dict] = []
+        for row in rows:
+            cmid = row["canonical_message_id"]
+            seq = int(row["sequence"]) if row["sequence"] is not None else 0
+            message_rev = int(row["revision"]) if row["revision"] is not None else 0
+            # Fail-closed: refuse to fabricate authority from a malformed
+            # ledger row.  Any zero/null canonical field is the v1 bug
+            # this method is supposed to catch before publication.
+            if not cmid:
+                raise CanonicalSnapshotIncomplete(
+                    "canonical_message_id is null",
+                    conversation_id=conversation_id,
+                )
+            if seq <= 0:
+                raise CanonicalSnapshotIncomplete(
+                    f"sequence must be positive (got {seq})",
+                    conversation_id=conversation_id,
+                    canonical_message_id=cmid,
+                )
+            if message_rev <= 0:
+                raise CanonicalSnapshotIncomplete(
+                    f"message revision must be positive (got {message_rev})",
+                    conversation_id=conversation_id,
+                    canonical_message_id=cmid,
+                )
+            messages.append({
+                "canonicalMessageId": cmid,
+                "conversationId": row["conversation_id"],
+                "sequence": seq,
+                "revision": message_rev,
+                "role": row["role"],
+                "clientMessageId": row["client_message_id"],
+                "jobId": row["job_id"],
+                "hermesMessageId": row["hermes_message_id"],
+                "content": row["content"],
+                "displayContent": row["display_content"],
+                "modelInputContent": row["model_input_content"],
+                "state": row["state"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            })
+        return {
+            "conversationId": conversation_id,
+            "revision": revision,
+            "messages": messages,
+            "bindingPresent": True,
+        }
 
     def create_user_message_atomically(
         self,

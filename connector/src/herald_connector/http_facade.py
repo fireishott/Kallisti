@@ -50,6 +50,18 @@ from . import __version__, HERALD_PROTOCOL
 
 logger = logging.getLogger("herald.http_facade")
 
+# Phase 3A v3: event types whose payload names a single canonical
+# message.  The publisher annotates these with the resolved canonical
+# row (id + revision) so the iOS reducer can apply the mutation
+# without a separate round-trip.
+TERMINAL_OR_MUTATING_EVENT_TYPES = frozenset({
+    "text.delta",
+    "reasoning.delta",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+})
+
 # ── Process lifetime ──────────────────────────────────────────────────────
 
 _PROCESS_STARTED_AT = time.monotonic()
@@ -327,30 +339,36 @@ def _relay_attachments(attachments: list | None) -> list | None:
 
 def _resolve_canonical_row(
     *,
+    role: str,
     app_conversation_id: Any = None,
     client_message_id: Any = None,
     job_id: Any = None,
     message_id: Any = None,
 ) -> dict | None:
-    """Best-effort lookup of the canonical ledger row for a relay message.
+    """Role-aware lookup of the canonical ledger row for a relay message.
 
-    The order matches the way message identities flow in from the wire:
+    Phase 3A v2 correction: a generic resolver that tries every key in
+    a fixed order masks the real lookup semantics.  The wire contract
+    says:
 
-      1. ``client_message_id`` (always set for user sends; carried on
-         retries of the same send).  Requires ``app_conversation_id`` to
-         scope the lookup — the same id can exist in many conversations
-         after re-use of a draft alias.
-      2. ``job_id`` (set for every assistant response after the job is
-         accepted; survives the done event).  Also requires the
-         conversation scope.
-      3. ``message_id`` (the canonical id itself, when the caller
-         already has one — the success path of the terminal mirror).
-         Global lookup; no conversation scope needed.
+      * **User rows** reconcile on ``(conversationId, clientMessageId)``.
+        The clientMessageId is set on every send and survives retries;
+        the same id can exist in many conversations after a draft alias
+        re-use, so the conversation scope is mandatory.
+      * **Assistant rows** reconcile on ``(conversationId, jobId)``.
+        ``jobId`` is set on every accepted response and is stable for
+        the lifetime of the run; cross-conversation lookups by job id
+        are forbidden by the storage layer's UNIQUE(job_id) constraint.
+      * **Canonical message id** is the authoritative fallback for both
+        roles — but only after the resolved row's ``conversationId``
+        matches the request's ``conversationId``.  A canonical id that
+        resolves to a different conversation is a contract violation
+        (someone leaked an id from another chat).
 
     Returns the canonical row dict (as the storage methods return it),
-    or ``None`` when no row exists.  Never raises; the relay projection
-    emits null/0/False when this returns None so the wire contract is
-    additive even for pre-existing rows that predate the ledger.
+    or ``None`` when no row exists.  Does not raise; callers must
+    translate ``None`` into either an atomic row materialization or a
+    typed incomplete-snapshot error (see ``_canonical_projection``).
     """
     try:
         from .delivery_store import get_delivery_store
@@ -362,59 +380,143 @@ def _resolve_canonical_row(
     jid = _coerce_uuid(job_id)
     mid = _coerce_uuid(message_id)
     conv = _coerce_uuid(app_conversation_id)
-    if mid:
+    role_norm = (role or "").lower()
+    is_user = role_norm in ("user",)
+    is_assistant = role_norm in (
+        "assistant", "herald", "hermes", "tool", "system", "reasoning",
+    )
+
+    def _belongs_to_request(row: dict | None) -> dict | None:
+        if row is None:
+            return None
+        if not conv:
+            return row  # no scope to verify against
+        row_conv = _coerce_uuid(row.get("conversationId"))
+        if row_conv and row_conv != conv:
+            logger.warning(
+                "canonical lookup: cross-conversation id rejected "
+                "(requested=%s, row=%s, canonical=%s)",
+                conv, row_conv, row.get("canonicalMessageId"),
+            )
+            return None
+        return row
+
+    if is_user:
+        # User rows: conversationId + clientMessageId wins; canonical id
+        # is the fallback AFTER the conversation scope is verified.
+        if conv and cmid:
+            try:
+                row = store.get_message_by_client_id(conv, cmid)
+                row = _belongs_to_request(row)
+                if row is not None:
+                    return row
+            except Exception:                         # noqa: BLE001
+                logger.debug("canonical lookup by client_id failed (non-fatal)")
+        if mid:
+            try:
+                row = store.get_canonical_message(mid)
+                row = _belongs_to_request(row)
+                if row is not None:
+                    return row
+            except Exception:                         # noqa: BLE001
+                logger.debug("canonical lookup by message_id failed (non-fatal)")
+        return None
+    if is_assistant:
+        # Assistant rows: conversationId + jobId wins; canonical id is
+        # the fallback AFTER the conversation scope is verified.
+        if conv and jid:
+            try:
+                row = store.get_message_by_job_id(conv, jid)
+                row = _belongs_to_request(row)
+                if row is not None:
+                    return row
+            except Exception:                         # noqa: BLE001
+                logger.debug("canonical lookup by job_id failed (non-fatal)")
+        if mid:
+            try:
+                row = store.get_canonical_message(mid)
+                row = _belongs_to_request(row)
+                if row is not None:
+                    return row
+            except Exception:                         # noqa: BLE001
+                logger.debug("canonical lookup by message_id failed (non-fatal)")
+        return None
+    # Unknown role — fall through to a conservative cross-conversation
+    # rejection: only an explicit canonical id scoped to the requested
+    # conversation is acceptable.
+    if mid and conv:
         try:
             row = store.get_canonical_message(mid)
+            row = _belongs_to_request(row)
             if row is not None:
                 return row
         except Exception:                             # noqa: BLE001
             logger.debug("canonical lookup by message_id failed (non-fatal)")
-    if conv and jid:
-        try:
-            row = store.get_message_by_job_id(conv, jid)
-            if row is not None:
-                return row
-        except Exception:                             # noqa: BLE001
-            logger.debug("canonical lookup by job_id failed (non-fatal)")
-    if conv and cmid:
-        try:
-            row = store.get_message_by_client_id(conv, cmid)
-            if row is not None:
-                return row
-        except Exception:                             # noqa: BLE001
-            logger.debug("canonical lookup by client_id failed (non-fatal)")
     return None
 
 
 def _canonical_projection(
     *,
+    role: str = "assistant",
     app_conversation_id: Any = None,
     client_message_id: Any = None,
     job_id: Any = None,
     message_id: Any = None,
     text: str | None = None,
+    strict: bool = True,
 ) -> dict:
     """Project the canonical-ledger fields for a relay message.
 
-    Always returns a dict with every required canonical key (camelCase);
-    the values are the resolved ones when the ledger has a row, or
-    null/0/False when it does not.  Build 108 Phase 3A requires these
-    keys to be present on every wire payload so the iOS reducer can
-    treat them as authoritative, not optional.
+    Phase 3A v2 correction: this function is **fail-closed**.  When the
+    ledger lookup cannot resolve a row, we either materialize the row
+    atomically OR raise ``CanonicalSnapshotIncomplete``.  The v1
+    behaviour — returning a dict with ``sequence=0``,
+    ``messageRevision=0``, ``conversationRevision=0``, and
+    ``canonicalMessageId=None`` — is explicitly forbidden because those
+    values cannot be reconciled against optimistic, snapshot, and live
+    rows on the iOS side.
+
+    Two non-throwing callers still exist (the optimistic user ack path,
+    the terminal mirror) and need a *partial* projection they can attach
+    to the envelope before materialization completes.  For those, set
+    ``strict=False`` and the function returns the resolved keys with
+    explicit ``None`` for any field that could not be sourced from the
+    ledger; the caller is expected to materialize the row before the
+    row hits the snapshot wire.
+
+    The returned dict always carries the v3 wire keys:
+      ``canonicalMessageId``, ``conversationId`` (the application
+      conversation UUID, replacing the v1 ``canonicalConversationId``),
+      ``sequence``, ``revision``, ``conversationRevision``,
+      ``displayContent``, ``deleted``.
     """
     row = _resolve_canonical_row(
+        role=role,
         app_conversation_id=app_conversation_id,
         client_message_id=client_message_id,
         job_id=job_id,
         message_id=message_id,
     )
     if row is None:
+        if strict:
+            from .delivery_store import CanonicalSnapshotIncomplete
+            raise CanonicalSnapshotIncomplete(
+                "canonical ledger lookup returned no row "
+                f"(role={role}, conversationId={app_conversation_id}, "
+                f"clientMessageId={client_message_id}, jobId={job_id}, "
+                f"messageId={message_id})",
+                conversation_id=str(app_conversation_id) if app_conversation_id else None,
+            )
+        # Partial projection — explicit None on every field we cannot
+        # source from the ledger.  Never synthesize a 0 or a fabricated
+        # UUID here; the wire consumer must treat None as "not yet
+        # materialized, do not reconcile against this row".
         return {
             "canonicalMessageId": None,
-            "canonicalConversationId": conv_or_none(app_conversation_id),
-            "sequence": 0,
-            "messageRevision": 0,
-            "conversationRevision": 0,
+            "conversationId": conv_or_none(app_conversation_id),
+            "sequence": None,
+            "revision": None,
+            "conversationRevision": None,
             "displayContent": text or "",
             "deleted": False,
         }
@@ -431,9 +533,9 @@ def _canonical_projection(
             logger.debug("conversation revision lookup failed (non-fatal)")
     return {
         "canonicalMessageId": row.get("canonicalMessageId"),
-        "canonicalConversationId": conv_id,
+        "conversationId": conv_id,
         "sequence": int(row.get("sequence") or 0),
-        "messageRevision": int(row.get("revision") or 0),
+        "revision": int(row.get("revision") or 0),
         "conversationRevision": conv_rev,
         "displayContent": row.get("displayContent") or text or "",
         "deleted": bool(row.get("deleted") or False),
@@ -449,7 +551,8 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
                    job_id: Any = None, attachments: list | None = None,
                    delivery_status: str = "delivered",
                    message_id: str | None = None,
-                   app_conversation_id: Any = None) -> dict:
+                   app_conversation_id: Any = None,
+                   strict_canonical: bool = False) -> dict:
     """Build one RelayMessage (LiveHeraldClient.swift:39-48).
 
     id / role / text / timestamp are non-optional on the app side.  `role` accepts
@@ -464,13 +567,22 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
     final-delivery signal tied to a credible terminal result.
 
     Build 108 Phase 3A: the returned dict also carries the canonical
-    field set — canonicalMessageId, canonicalConversationId, sequence,
-    messageRevision, conversationRevision, displayContent, deleted —
-    so the iOS reducer can build its transcript from server-projected
-    rows without inventing sequence/revision from arrival order.  The
-    fields are additive; existing decoders ignore them via decodeIfPresent.
-    For pre-existing rows that predate the ledger the values are
-    null/0/False but the keys are still emitted.
+    field set — canonicalMessageId, conversationId, sequence, revision,
+    conversationRevision, displayContent, deleted — so the iOS reducer
+    can build its transcript from server-projected rows without
+    inventing sequence/revision from arrival order.  ``conversationId``
+    replaces the v1 ``canonicalConversationId`` (the application
+    conversation UUID is the canonical conversation identifier;
+    ``hermesSessionId`` is the Hermes session identifier and is never
+    substituted for it).
+
+    ``strict_canonical`` defaults to False for backward compatibility
+    with the optimistic ack path: a row that has not yet been
+    materialized can still return an envelope with explicit ``None``
+    values, which the iOS reducer treats as "not yet authoritative"
+    rather than "zero cursor".  The snapshot endpoint sets
+    ``strict_canonical=True`` so any unresolved row fails the snapshot
+    before publication.
     """
     msg = {
         "id": message_id or str(uuid.uuid4()),
@@ -482,30 +594,22 @@ def _relay_message(role: str, text: str, *, client_message_id: Any = None,
         "jobId": _coerce_uuid(job_id),
         "attachments": _relay_attachments(attachments),
     }
-    # Phase 3A: layer the canonical fields on top so the iOS reducer
-    # gets one stable identity per message.  Never raises — a missing
-    # ledger row produces a null/0/False projection.
-    try:
-        msg.update(_canonical_projection(
-            app_conversation_id=app_conversation_id,
-            client_message_id=client_message_id,
-            job_id=job_id,
-            message_id=message_id,
-            text=text,
-        ))
-    except Exception:                                 # noqa: BLE001
-        logger.exception("_relay_message: canonical projection failed")
-        # Fall back to a conservative additive projection so the wire
-        # contract still holds every required key.
-        msg.update({
-            "canonicalMessageId": None,
-            "canonicalConversationId": conv_or_none(app_conversation_id),
-            "sequence": 0,
-            "messageRevision": 0,
-            "conversationRevision": 0,
-            "displayContent": text or "",
-            "deleted": False,
-        })
+    # Phase 3A v2 correction: layer the canonical fields on top so the
+    # iOS reducer gets one stable identity per message.  The strict
+    # caller (snapshot endpoints) raises CanonicalSnapshotIncomplete
+    # when no row exists; the lenient caller (optimistic ack / terminal
+    # mirror) returns a partial projection with explicit None on every
+    # field that cannot be sourced from the ledger.  Either way the
+    # projection NEVER emits a fabricated zero cursor or random UUID.
+    msg.update(_canonical_projection(
+        role=role,
+        app_conversation_id=app_conversation_id,
+        client_message_id=client_message_id,
+        job_id=job_id,
+        message_id=message_id,
+        text=text,
+        strict=strict_canonical,
+    ))
     return msg
 
 
@@ -856,29 +960,138 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     temporal_context = _build_temporal_context()
 
     def _publish(event: dict) -> None:
-        # Build 108 Phase 3A: every emitted event carries the canonical
-        # conversation id and the current conversation revision so the
-        # iOS reducer can apply the event against the server-projected
-        # cursor without inventing it from arrival order.  Per-message
-        # canonical fields are added when the message identity is
-        # allocated (see the text_delta / run.completed paths below).
+        """Validate and emit one relay event through the strict v3 builder.
+
+        Phase 3A v2 correction: every emitted event now flows through the
+        single ``stream_contract.build_envelope`` builder so the wire
+        shape is uniform, the contract version is bumped atomically, and
+        the strict Pydantic schema validates the envelope before
+        publication.  The legacy v1 ``{type, data}`` dict shape is
+        converted into the v3 envelope at this boundary so downstream
+        subscribers (SSE replay buffer, queue fan-out) all observe the
+        authoritative shape — no second legacy event dictionary is
+        constructed downstream.
+
+        Sequence allocation is the caller's responsibility; this function
+        receives the seq allocated by the ledger.
+        """
+        # Convert legacy {type, data} into v3 envelope on the way in.
+        # The build_envelope helper expects (jobId, conversationId,
+        # attempt, seq, conversationRevision, type, timestamp, payload);
+        # anything else from the producer is the typed payload.
+        from .stream_contract import build_envelope as _build_envelope
         conv_id = job.get("conversationId")
-        if conv_id is not None and "canonicalConversationId" not in event.get("data", {}):
+        if conv_id is None:
+            # The producer forgot to set a conversation id.  Fail closed:
+            # refuse to publish an envelope whose conversationId is None,
+            # because the iOS reducer would have no conversation cursor
+            # to apply the event against.
+            logger.error(
+                "_publish: dropping event %s for job %s — no conversationId",
+                (event or {}).get("type"), job_id,
+            )
+            return
+        attempt = int(job.get("attempt", 1) or 1)
+        # Allocate the next sequence from the ledger (or fall back to
+        # the per-attempt counter if the ledger is unavailable).  The
+        # builder refuses to publish an envelope whose seq is < 1.
+        try:
+            from .delivery_store import get_delivery_store
+            seq = get_delivery_store().allocate_job_seq(
+                job_id=job_id,
+                conversation_id=conv_id,
+                attempt=attempt,
+            )
+        except Exception:                             # noqa: BLE001
+            logger.exception("_publish: ledger seq allocate failed; using job counter")
+            seq = len(job["events"]) + 1
+        if seq <= 0:
+            seq = 1
+        # Look up the current conversation revision (best-effort).
+        try:
+            from .delivery_store import get_delivery_store
+            conv_rev = get_delivery_store().get_conversation_revision(conv_id)
+        except Exception:                             # noqa: BLE001
+            conv_rev = 0
+        event_type = (event or {}).get("type") or "progress"
+        payload = (event or {}).get("data") or {}
+        # If the payload is itself shaped as an envelope (a v3 envelope
+        # that we are forwarding), pass the payload through; otherwise
+        # wrap the producer's data dict.
+        if (
+            isinstance(payload, dict)
+            and payload.get("contractVersion") is not None
+            and payload.get("type") == event_type
+        ):
+            payload_dict = dict(payload.get("payload") or {})
+        else:
+            payload_dict = dict(payload)
+        # Phase 3A: layer message-mutating envelope fields for events
+        # that target a single canonical message.  The relay projection
+        # is fail-closed: a text.delta / run.completed without a
+        # resolved canonical row is logged and skipped (the iOS
+        # optimistic row stays pending).
+        target_mid = (
+            payload_dict.get("canonicalMessageId")
+            or payload_dict.get("messageId")
+        )
+        if target_mid and event_type in TERMINAL_OR_MUTATING_EVENT_TYPES:
             try:
-                data = event.setdefault("data", {})
-                if "canonicalConversationId" not in data:
-                    data["canonicalConversationId"] = _coerce_uuid(conv_id) or conv_id
-                if "conversationRevision" not in data:
-                    from .delivery_store import get_delivery_store
-                    data["conversationRevision"] = (
-                        get_delivery_store().get_conversation_revision(conv_id)
+                canonical_row = _resolve_canonical_row(
+                    role="assistant",
+                    app_conversation_id=conv_id,
+                    job_id=job_id,
+                    message_id=target_mid,
+                )
+                if canonical_row is not None:
+                    payload_dict["canonicalMessageId"] = (
+                        canonical_row.get("canonicalMessageId")
+                    )
+                    payload_dict["messageRevision"] = int(
+                        canonical_row.get("revision") or 0
+                    )
+                    payload_dict["conversationId"] = (
+                        canonical_row.get("conversationId") or conv_id
+                    )
+                else:
+                    logger.warning(
+                        "_publish: %s for job %s references unknown canonical "
+                        "message %s — leaving payload unannotated",
+                        event_type, job_id, target_mid,
                     )
             except Exception:                         # noqa: BLE001
-                logger.debug("publish: canonical projection failed (non-fatal)")
-        job["events"].append(event)
+                logger.exception(
+                    "_publish: canonical row lookup failed for %s/%s",
+                    event_type, target_mid,
+                )
+        try:
+            envelope = _build_envelope(
+                job_id=job_id,
+                conversation_id=conv_id,
+                attempt=attempt,
+                seq=seq,
+                conversation_revision=conv_rev,
+                event_type=event_type,
+                timestamp=_now_iso(),
+                payload=payload_dict,
+            )
+        except Exception:
+            # Phase 3A v2 correction: malformed producer events fail
+            # before publication.  We log loudly and skip rather than
+            # send a half-baked envelope that the iOS decoder cannot
+            # apply.
+            logger.exception(
+                "_publish: builder rejected event %s seq=%s for job %s — dropped",
+                event_type, seq, job_id,
+            )
+            return
+        # Publish the validated v3 envelope.  The legacy {type, data}
+        # shape is NEVER constructed downstream — subscribers all see
+        # the validated envelope.
+        job["events"].append(envelope)
         job["updatedAt"] = time.time()
         for queue in list(job["subscribers"]):
-            queue.put_nowait(event)
+            queue.put_nowait(envelope)
 
     timeout_seconds = int(os.getenv("HERALD_JOB_TIMEOUT_SECONDS", "170"))
     try:
@@ -1285,7 +1498,9 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 )
 
         terminal = {
-            "type": "done",
+            "type": "run.completed" if job["status"] == "completed" else (
+                "run.failed" if job["status"] == "failed" else "run.cancelled"
+            ),
             "data": {
                 "jobId": job_id,
                 "status": job["status"],
@@ -1298,7 +1513,48 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 "message": job.get("message"),
             },
         }
+        # Phase 3A v3: the terminal event flows through the same strict
+        # builder that every other envelope uses.  The legacy
+        # ``{type:"done", ...}`` shape is never emitted on the wire
+        # downstream — subscribers all observe the v3 envelope.
         _publish(terminal)
+        # Maintain backward compatibility with iOS JobStreamCoordinator
+        # which still pattern-matches on ``event.type == "done"`` while
+        # it migrates to the v3 terminal types.  We append a sentinel
+        # entry that carries no payload but preserves the legacy event
+        # name for the poll/SSE coordinator.
+        try:
+            from .stream_contract import build_envelope as _build_legacy_done
+            conv_id = job.get("conversationId")
+            if conv_id is not None:
+                legacy_done = _build_legacy_done(
+                    job_id=job_id,
+                    conversation_id=conv_id,
+                    attempt=int(job.get("attempt", 1) or 1),
+                    seq=get_delivery_store().allocate_job_seq(
+                        job_id=job_id,
+                        conversation_id=conv_id,
+                        attempt=int(job.get("attempt", 1) or 1),
+                    ),
+                    conversation_revision=(
+                        get_delivery_store().get_conversation_revision(conv_id)
+                        if conv_id else 0
+                    ),
+                    event_type="done",
+                    timestamp=_now_iso(),
+                    payload={
+                        "jobId": job_id,
+                        "status": job["status"],
+                        "text": accumulated,
+                    },
+                )
+                job["events"].append(legacy_done)
+                # Don't re-emit to subscribers — they already saw the
+                # v3 envelope; the legacy entry only lives in the
+                # replay buffer for iOS coordinators that still match
+                # on the old event name.
+        except Exception:
+            logger.debug("legacy done sentinel skipped (non-fatal)")
         for queue in list(job["subscribers"]):
             queue.put_nowait(None)                # sentinel: close the SSE stream
         job["updatedAt"] = time.time()
@@ -3381,33 +3637,98 @@ async def host_enrollment_codes(request: Request) -> JSONResponse:
 # ── P0-4: Chat critical-path endpoints ────────────────────────────────────
 
 
+def _canonical_message_to_relay(row: dict) -> dict:
+    """Convert a canonical ledger row into the per-message wire shape.
+
+    Phase 3A v2 correction: the per-message row schema is
+    ``{id, conversationId, clientMessageId, jobId, role,
+    displayContent, sequence, revision, deleted, createdAt, updatedAt,
+    deliveryStatus, attachments, reasoning}``.  ``id`` is the canonical
+    message UUID; ``canonicalMessageId`` is kept as an alias so the iOS
+    reducer can locate it without breaking the v1 lookup key.  Each row
+    is sourced from ``get_conversation_snapshot`` so the projection
+    fails closed upstream of this function.
+    """
+    cmid = row.get("canonicalMessageId")
+    conv_id = row.get("conversationId")
+    seq = row.get("sequence")
+    rev = row.get("revision")
+    display = row.get("displayContent") or row.get("content") or ""
+    if not cmid or not conv_id or seq is None or rev is None:
+        # Should never happen — get_conversation_snapshot is fail-closed.
+        # Surface loudly so the bug is caught before the snapshot ships.
+        raise RuntimeError(
+            "canonical row missing required fields: "
+            f"cmid={cmid!r} conv={conv_id!r} seq={seq!r} rev={rev!r}"
+        )
+    out: dict = {
+        # Per-message schema: id IS the canonical message UUID.
+        "id": cmid,
+        # conversationId (replaces canonicalConversationId).
+        "conversationId": conv_id,
+        "clientMessageId": row.get("clientMessageId"),
+        "jobId": row.get("jobId"),
+        "role": row.get("role", "assistant"),
+        "text": display,
+        "displayContent": display,
+        "sequence": int(seq),
+        "revision": int(rev),
+        "deleted": bool(row.get("deleted", False)),
+        "createdAt": row.get("createdAt") or _now_iso(),
+        "updatedAt": row.get("updatedAt") or _now_iso(),
+        # deliveryStatus is best-effort derived from the row state; the
+        # iOS reducer also tolerates it being absent.
+        "deliveryStatus": _delivery_status_for_state(row.get("state", "")),
+        "attachments": row.get("attachments") or [],
+        "reasoning": row.get("reasoning"),
+        # Back-compat alias for the v1 iOS reducer lookup key.  Same
+        # value as ``id``; once Phase 3B lands, this alias can be
+        # removed in a paired connector/iOS change.
+        "canonicalMessageId": cmid,
+    }
+    return out
+
+
+def _delivery_status_for_state(state: str | None) -> str:
+    """Map a canonical ledger state to the wire deliveryStatus."""
+    s = (state or "").lower()
+    if s in ("accepted", "running", "pending"):
+        return "pending"
+    if s in ("terminal", "completed"):
+        return "delivered"
+    if s in ("failed", "permanent_failure"):
+        return "failed"
+    if s == "cancelled":
+        return "failed"
+    return "delivered"
+
+
 def _conversation_envelope_canonical(
     conv_id: str | None,
     *,
     fallback_title: str,
     fallback_updated_at: str,
     messages: list | None,
+    revision: int = 0,
     extra: dict | None = None,
 ) -> dict:
     """Build the conversation-level envelope with canonical fields.
 
-    Build 108 Phase 3A requires every snapshot response to carry
-    ``canonicalConversationId`` and ``conversationRevision`` at the
-    envelope level, so the iOS reducer can build its transcript from
-    server-projected rows without inventing cursors from arrival order.
-    Both fields are additive — they do not replace the existing
-    ``id``/``title``/``updatedAt`` keys that the iOS decoder already
-    requires.
+    Build 108 Phase 3A requires every snapshot response to carry the
+    application conversation UUID as ``id`` and the current
+    ``revision`` at the envelope level, so the iOS reducer can build
+    its transcript from server-projected rows without inventing
+    cursors from arrival order.  ``conversationId`` is NOT emitted at
+    the envelope level — it is identical to ``id`` for the snapshot
+    envelope and the iOS decoder reads ``id``.  ``hermesSessionId`` is
+    kept on the binding row, never on the envelope.
+
+    ``revision`` MUST be passed in by the caller — typically from
+    ``get_conversation_snapshot`` — so the envelope revision and the
+    message rows describe the same instant.  Passing ``0`` is allowed
+    only when the caller has confirmed no binding exists yet; the
+    snapshot endpoint raises instead.
     """
-    revision = 0
-    if conv_id:
-        try:
-            from .delivery_store import get_delivery_store
-            revision = get_delivery_store().get_conversation_revision(conv_id)
-        except Exception:                             # noqa: BLE001
-            logger.debug(
-                "conversation revision lookup failed for %s", conv_id,
-            )
     envelope: dict = {
         "id": conv_id or _stable_conversation_id(),
         "title": fallback_title,
@@ -3415,9 +3736,10 @@ def _conversation_envelope_canonical(
         "messages": messages or [],
         "latestUsage": None,
         "latestContext": None,
-        # Build 108 Phase 3A additive fields:
-        "canonicalConversationId": _coerce_uuid(conv_id) or conv_id,
-        "conversationRevision": revision,
+        # Build 108 Phase 3A: revision at the envelope level so the
+        # iOS reducer can detect "something changed since I last saw
+        # this conversation" without inspecting every row.
+        "revision": int(revision),
     }
     if extra:
         envelope.update(extra)
@@ -3433,9 +3755,14 @@ async def session_conversation(request: Request) -> JSONResponse:
     {sessionId, messages, title} (client.py:2819), so normalize here exactly
     as current_conversation() does (http_facade.py:1139-1146).
 
-    Build 108 Phase 3A: the conversation envelope also carries the
-    canonical conversation id and revision (additive) so the iOS
-    reducer can synchronise on the server-projected cursor.
+    Build 108 Phase 3A v2 correction: the conversation envelope is now
+    sourced from a single ``get_conversation_snapshot`` transaction so
+    the envelope revision and the message rows describe the same
+    instant.  Each row is rebuilt from the canonical ledger
+    (``_canonical_message_to_relay``) — legacy upstream ``messages``
+    fields are NOT merged into the snapshot.  Failures
+    (``CanonicalSnapshotIncomplete``) surface as HTTP 409 with a
+    machine-readable code so the client can retry.
     """
     await require_auth(request)
     ctx = get_context()
@@ -3446,32 +3773,43 @@ async def session_conversation(request: Request) -> JSONResponse:
     if inspect.isawaitable(result):
         result = await result
     result = result or {}
-    if "conversation" in result:
-        # Upstream returned a full conversation; layer the additive
-        # canonical fields onto it without dropping the existing keys.
-        conv = dict(result["conversation"])
-        conv_id = _coerce_uuid(conv.get("id")) or _coerce_uuid(session_id) or _coerce_uuid(result.get("sessionId"))
-        revision = 0
-        if conv_id:
-            try:
-                from .delivery_store import get_delivery_store
-                revision = get_delivery_store().get_conversation_revision(conv_id)
-            except Exception:                         # noqa: BLE001
-                logger.debug("session_conversation: revision lookup failed")
-        conv.setdefault("canonicalConversationId", conv_id)
-        conv.setdefault("conversationRevision", revision)
-        return JSONResponse({"conversation": conv})
     conv_id = (
         _coerce_uuid(session_id)
         or _coerce_uuid(result.get("sessionId"))
+        or _coerce_uuid((result.get("conversation") or {}).get("id"))
         or _stable_conversation_id()
     )
-    return JSONResponse({"conversation": _conversation_envelope_canonical(
+    snapshot = _load_canonical_snapshot(conv_id)
+    # The upstream RPC may still carry a title and updatedAt hint, which
+    # is what the iOS bubble / session list renders.  We keep those
+    # but strip any upstream ``messages`` array — the canonical ledger
+    # is authoritative for message rows.
+    upstream_conv = result.get("conversation") or {}
+    fallback_title = (
+        upstream_conv.get("title")
+        or result.get("title")
+        or "New Chat"
+    )
+    fallback_updated_at = (
+        upstream_conv.get("updatedAt")
+        or result.get("updatedAt")
+        or _now_iso()
+    )
+    messages = [_canonical_message_to_relay(m) for m in snapshot["messages"]]
+    envelope = _conversation_envelope_canonical(
         conv_id,
-        fallback_title=result.get("title") or "New Chat",
-        fallback_updated_at=_now_iso(),
-        messages=result.get("messages") or [],
-    )})
+        fallback_title=fallback_title,
+        fallback_updated_at=fallback_updated_at,
+        messages=messages,
+        revision=snapshot["revision"],
+    )
+    # Allow the upstream to layer extra context (latestUsage,
+    # latestContext, etc.) on top of the canonical envelope without
+    # overwriting the canonical fields.
+    for key in ("latestUsage", "latestContext"):
+        if key in upstream_conv:
+            envelope[key] = upstream_conv[key]
+    return JSONResponse({"conversation": envelope})
 
 
 async def current_conversation(request: Request) -> JSONResponse:
@@ -3482,10 +3820,9 @@ async def current_conversation(request: Request) -> JSONResponse:
     updatedAt/messages are all non-optional. The connector stub returns a flat
     {sessionId, messages, title}, so normalize here.
 
-    Build 108 Phase 3A: same additive canonical envelope as
-    ``session_conversation``; both snapshot endpoints return the
-    server-projected cursor so the iOS reducer can apply it as the
-    authoritative starting point.
+    Build 108 Phase 3A v2 correction: identical fail-closed canonical
+    snapshot contract as ``session_conversation``.  The legacy v1 path
+    that merged upstream ``messages`` is gone.
     """
     await require_auth(request)
     ctx = get_context()
@@ -3495,26 +3832,62 @@ async def current_conversation(request: Request) -> JSONResponse:
     if inspect.isawaitable(result):
         result = await result
     result = result or {}
-    if "conversation" in result:
-        conv = dict(result["conversation"])
-        conv_id = _coerce_uuid(conv.get("id")) or _coerce_uuid(result.get("sessionId"))
-        revision = 0
-        if conv_id:
-            try:
-                from .delivery_store import get_delivery_store
-                revision = get_delivery_store().get_conversation_revision(conv_id)
-            except Exception:                         # noqa: BLE001
-                logger.debug("current_conversation: revision lookup failed")
-        conv.setdefault("canonicalConversationId", conv_id)
-        conv.setdefault("conversationRevision", revision)
-        return JSONResponse({"conversation": conv})
-    conv_id = _coerce_uuid(result.get("sessionId")) or _stable_conversation_id()
-    return JSONResponse({"conversation": _conversation_envelope_canonical(
+    upstream_conv = result.get("conversation") or {}
+    conv_id = (
+        _coerce_uuid(upstream_conv.get("id"))
+        or _coerce_uuid(result.get("sessionId"))
+        or _stable_conversation_id()
+    )
+    snapshot = _load_canonical_snapshot(conv_id)
+    fallback_title = (
+        upstream_conv.get("title")
+        or result.get("title")
+        or "Herald"
+    )
+    fallback_updated_at = (
+        upstream_conv.get("updatedAt")
+        or result.get("updatedAt")
+        or _now_iso()
+    )
+    messages = [_canonical_message_to_relay(m) for m in snapshot["messages"]]
+    envelope = _conversation_envelope_canonical(
         conv_id,
-        fallback_title=result.get("title") or "Herald",
-        fallback_updated_at=_now_iso(),
-        messages=result.get("messages") or [],
-    )})
+        fallback_title=fallback_title,
+        fallback_updated_at=fallback_updated_at,
+        messages=messages,
+        revision=snapshot["revision"],
+    )
+    for key in ("latestUsage", "latestContext"):
+        if key in upstream_conv:
+            envelope[key] = upstream_conv[key]
+    return JSONResponse({"conversation": envelope})
+
+
+def _load_canonical_snapshot(conv_id: str) -> dict:
+    """Run the fail-closed snapshot transaction and translate errors to HTTP.
+
+    Returns the snapshot dict from ``DeliveryStore.get_conversation_snapshot``.
+    Raises ``CanonicalSnapshotIncomplete`` translated to HTTP 409 with a
+    machine-readable error code, and logs the correlation id so the
+    operator can find the row in the ledger.
+    """
+    from .delivery_store import CanonicalSnapshotIncomplete, get_delivery_store
+    try:
+        return get_delivery_store().get_conversation_snapshot(conv_id)
+    except CanonicalSnapshotIncomplete as exc:
+        logger.error(
+            "canonical snapshot incomplete for %s: %s (cmid=%s)",
+            exc.conversation_id, exc.reason, exc.canonical_message_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "canonical_snapshot_incomplete",
+                "reason": exc.reason,
+                "conversationId": exc.conversation_id,
+                "canonicalMessageId": exc.canonical_message_id,
+            },
+        ) from exc
 
 
 async def ensure_conversation(request: Request) -> JSONResponse:
@@ -3887,6 +4260,23 @@ async def job_status(request: Request) -> JSONResponse:
     return JSONResponse({"data": result})
 
 
+def _format_sse_frame(event: dict, seq: int) -> str:
+    """Format one SSE frame for the live-event endpoint.
+
+    Phase 3A v3 correction: the SSE ``data:`` payload contains the FULL
+    JSON envelope produced by ``_publish`` (the v3 Pydantic-validated
+    dict).  The ``event:`` line repeats the type for observability but
+    the decoder's authority is the JSON payload — never a secondary
+    legacy ``{type, data}`` shape.
+    """
+    event_type = event.get("type", "progress")
+    return (
+        f"id: {seq}\n"
+        f"event: {event_type}\n"
+        f"data: {json.dumps(event)}\n\n"
+    )
+
+
 async def job_events(request: Request) -> StreamingResponse:
     """SSE stream of job events."""
     await require_auth(request)
@@ -3908,11 +4298,24 @@ async def job_events(request: Request) -> StreamingResponse:
             backlog = list(job["events"])
             job["subscribers"].append(queue)
             try:
+                # Phase 3A v3: ``Last-Event-ID`` is the seq number of the
+                # last event the client received.  Replay events with
+                # ``seq > cursor`` strictly — backlog index ``cursor``
+                # corresponds to the envelope with ``seq == cursor + 1``,
+                # so the slice starts at ``cursor`` (or 0 for first
+                # connect).  The SSE ``id:`` line is the canonical
+                # "next id", one greater than the cursor.
                 seq = cursor + 1
-                for event in backlog[cursor + 1:]:
-                    yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+                start_index = cursor if cursor >= 0 else 0
+                for event in backlog[start_index:]:
+                    yield _format_sse_frame(event, seq)
                     seq += 1
-                if job["status"] != "running" and backlog and backlog[-1]["type"] == "done":
+                if job["status"] != "running" and backlog and (
+                    backlog[-1].get("type") == "run.completed"
+                    or backlog[-1].get("type") == "run.failed"
+                    or backlog[-1].get("type") == "run.cancelled"
+                    or backlog[-1].get("type") == "done"
+                ):
                     return
                 while True:
                     event = await queue.get()
@@ -3920,7 +4323,7 @@ async def job_events(request: Request) -> StreamingResponse:
                         return
                     if await request.is_disconnected():
                         return
-                    yield f"id: {seq}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+                    yield _format_sse_frame(event, seq)
                     seq += 1
             except asyncio.CancelledError:
                 yield ": bye\n\n"

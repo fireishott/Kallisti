@@ -74,11 +74,18 @@ DEVICE = "abc123def"
 # Required canonical field names on every per-message payload.  iOS
 # decoders ignore fields outside their known set, so we only assert
 # presence + nullability; the iOS reducer (Phase 3B) will read them.
+#
+# Phase 3A v2 correction: the wire field names are now ``conversationId``
+# (replaces ``canonicalConversationId``) and ``revision`` (replaces the
+# v1 ``messageRevision``).  ``canonicalMessageId`` is kept as an alias
+# for ``id`` so the iOS reducer can locate it without breaking the v1
+# lookup key.
 CANONICAL_MSG_KEYS = {
+    "id",
     "canonicalMessageId",
-    "canonicalConversationId",
+    "conversationId",
     "sequence",
-    "messageRevision",
+    "revision",
     "conversationRevision",
     "displayContent",
     "deleted",
@@ -191,10 +198,10 @@ class TestUserMessageCanonicalIdentity:
         assert CANONICAL_MSG_KEYS.issubset(user.keys()), (
             f"missing canonical keys: {CANONICAL_MSG_KEYS - set(user.keys())}"
         )
-        # Conversation-level envelope carries the additive cursor.
+        # Conversation-level envelope carries the revision cursor.
         conv = data["conversation"]
-        assert "canonicalConversationId" in conv
-        assert "conversationRevision" in conv
+        assert "revision" in conv
+        assert conv["revision"] >= 0
 
     def test_user_message_canonical_id_persisted_in_ledger(
         self, client, ctx, store, no_session_lookups,
@@ -302,10 +309,12 @@ class TestSnapshotUniqueness:
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
-        assert "canonicalConversationId" in conv
-        assert "conversationRevision" in conv
-        # The envelope revision is the binding's current revision.
-        assert conv["conversationRevision"] >= 0
+        # Phase 3A v3: revision lives at the envelope level (the wire
+        # field ``id`` is the application conversation UUID, no longer
+        # the redundant ``canonicalConversationId``).
+        assert "revision" in conv
+        assert conv["id"] == CONV
+        assert conv["revision"] >= 0
 
     def test_session_conversation_envelope_carries_canonical_fields(
         self, client, ctx, store, no_session_lookups,
@@ -320,8 +329,8 @@ class TestSnapshotUniqueness:
             resp = client.get(f"/v1/sessions/{CONV}/conversation")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
-        assert conv["canonicalConversationId"] == CONV
-        assert "conversationRevision" in conv
+        assert conv["id"] == CONV
+        assert "revision" in conv
 
 
 # ── 4. Conversation revision increases after every mutation
@@ -620,7 +629,8 @@ class TestStreamContractWiring:
 
     def test_stream_contract_module_importable(self):
         from herald_connector import stream_contract
-        assert stream_contract.CONTRACT_VERSION == 2
+        # Phase 3A v2 correction: bumped to v3.
+        assert stream_contract.CONTRACT_VERSION == 3
         # Twelve event types
         expected = {
             "run.started", "text.delta", "reasoning.delta",

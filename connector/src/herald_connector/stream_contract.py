@@ -1,21 +1,27 @@
-"""Stream Contract v2 — typed Pydantic envelope for relay live events.
+"""Stream Contract v3 — typed Pydantic envelope for relay live events.
 
 The relay emits a series of small JSON envelopes per agent run.  Each
 envelope is one of 12 well-known event kinds; the envelope shape is
 shared and only the `payload` field varies.  This module is the
 authoritative schema for the wire side and is enforced by the
-``test_stream_contract`` suite in ``connector/tests/``.
+``test_stream_contract_v3`` suite in ``connector/tests/``.
 
-History: deleted in B7 (7f02f76), restored 2026-08-01 for Build 108
-Phase 3A.  The invariants this contract enforces (seq-monotonic, exactly
-one terminal event, single jobId/conversationId per stream) are the
-ones that regressed silently in B7 and surfaced as duplicate or
-out-of-order bubbles on iOS.
+History
+-------
+- B7 (7f02f76) deleted the contract module; restored in Build 108
+  Phase 3A as v2 (8 fields).
+- Build 108 Phase 3A v2 correction: bumped to v3 — adds
+  ``conversationRevision`` so the iOS reducer can apply every event
+  against a server-projected cursor without inventing the cursor from
+  arrival order, and pins the wire field name to ``conversationId``
+  (the application conversation UUID).  ``hermesSessionId`` continues
+  to identify the Hermes session and is never substituted for
+  ``conversationId``.
 
-Naming: model class names match the iOS Swift `LiveActivityRunEvent`
-discriminator union (see ``Herald/Services/Live/LiveHeraldClient.swift``)
-so any cross-language fixtures and codegen stay aligned.  The wire
-field names follow the JSON-envelope shape; do not rename them without
+Naming: model class names match the iOS Swift ``JobEventEnvelope``
+discriminator union (see ``Herald/Models/JobEvent.swift``) so any
+cross-language fixtures and codegen stay aligned.  The wire field
+names follow the JSON-envelope shape; do not rename them without
 updating both decoders.
 """
 
@@ -27,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # contractVersion is the field the iOS test suite pins; bumping it is a
 # breaking change that requires BOTH sides of the wire to move together.
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 
 # Event kinds that close a run.  ``run.requeued`` is NOT terminal — it
 # closes one attempt and signals a follow-up attempt will start.  The
@@ -39,8 +45,14 @@ TERMINAL_TYPES = frozenset({"run.completed", "run.failed", "run.cancelled"})
 class _EnvelopeBase(BaseModel):
     """Shared envelope — every relay event has these fields.
 
-    The 8 envelope fields are the iOS decoder's hard contract.  Do not
+    The 9 envelope fields are the iOS decoder's hard contract.  Do not
     add fields here without a paired iOS change; do not remove any.
+
+    Phase 3A v2 correction: ``extra`` is still ``allow`` during the
+    rollout window so legacy v2 frames that pre-date the iOS paired
+    decoder do not fail validation.  Unknown fields are tolerated but
+    logged at WARNING so the operator sees them; once iOS is paired
+    this flips to ``"forbid"`` (see the brief §3 — "after iOS paired").
     """
 
     model_config = ConfigDict(extra="allow")
@@ -50,6 +62,10 @@ class _EnvelopeBase(BaseModel):
     conversationId: str
     attempt: int
     seq: int
+    # Phase 3A v3: every event carries the current conversation revision
+    # so the iOS reducer can apply it against the server-projected cursor
+    # without inventing the cursor from arrival order.
+    conversationRevision: int = 0
     type: str
     timestamp: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -162,6 +178,10 @@ def parse_event(raw: dict[str, Any]) -> _EnvelopeBase:
     Raises ``pydantic.ValidationError`` on any contract violation.  Used
     by the live-event publisher in ``_run_http_job`` and by the test
     suite's fixture loader.
+
+    Phase 3A v3: this is the production schema validator.  Every emitted
+    SSE frame flows through ``build_envelope`` → ``parse_event`` before
+    publication so the wire can never drift from the typed envelope.
     """
     type_str = raw.get("type")
     if not isinstance(type_str, str):
@@ -180,3 +200,48 @@ def parse_stream(events: List[dict[str, Any]]) -> List[_EnvelopeBase]:
     each JSON fixture and asserts the invariants on the typed result.
     """
     return [parse_event(raw) for raw in events]
+
+
+# ── Strict builder used by the production SSE publisher ───────────────────
+#
+# The publisher must construct every event through this builder so the
+# envelope shape is uniform, the contract version is bumped atomically,
+# and validation is mandatory before the SSE data: line is emitted.
+
+def build_envelope(
+    *,
+    job_id: str,
+    conversation_id: str,
+    attempt: int,
+    seq: int,
+    conversation_revision: int,
+    event_type: str,
+    timestamp: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Construct a single v3 envelope dict and validate it.
+
+    This is the single entry point the production SSE publisher uses.
+    It allocates nothing beyond the envelope fields (sequence allocation
+    is the caller's responsibility — the caller passes the seq it
+    allocated from the ledger).  Validation through ``parse_event`` is
+    the last step, so a malformed envelope cannot escape this function.
+
+    Raises ``ValueError`` when ``event_type`` is unknown and
+    ``pydantic.ValidationError`` when required fields are missing.
+    """
+    envelope: dict[str, Any] = {
+        "contractVersion": CONTRACT_VERSION,
+        "jobId": job_id,
+        "conversationId": conversation_id,
+        "attempt": attempt,
+        "seq": seq,
+        "conversationRevision": int(conversation_revision),
+        "type": event_type,
+        "timestamp": timestamp,
+        "payload": dict(payload or {}),
+    }
+    # Validate before returning — the publisher MUST NOT publish an
+    # envelope that fails the strict schema.
+    parse_event(envelope)
+    return envelope
