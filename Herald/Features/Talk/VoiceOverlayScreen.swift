@@ -174,7 +174,7 @@ struct VoiceOverlayScreen: View {
                 if let reason = talkStore.blockedReason,
                    reason.localizedCaseInsensitiveContains("api key") || reason.localizedCaseInsensitiveContains("mimo") {
                     Button {
-                        router.activeTab = .settings
+                        router.presentSheet(.settings)
                         router.isVoiceOverlayPresented = false
                     } label: {
                         Text("Update API Key")
