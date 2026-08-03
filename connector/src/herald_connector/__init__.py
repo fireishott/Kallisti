@@ -1,5 +1,5 @@
 __all__ = ["__version__", "HERALD_PROTOCOL"]
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 # Minimum connector version the app MUST negotiate.  The iOS app sends this
 # protocol version in every POST /v1/messages request; the connector rejects
