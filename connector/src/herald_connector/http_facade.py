@@ -109,9 +109,21 @@ async def _extract_token(request: Request) -> str:
 async def require_auth(request: Request) -> str:
     """Validate the Bearer token. Raises 401 if invalid."""
     token = await _extract_token(request)
-    if not token or not _default_validator.is_valid(token):
-        raise HTTPException(status_code=401, detail="Invalid or missing access token")
-    return token
+    if token and _default_validator.is_valid(token):
+        return token
+    # B116: a token missing from the in-memory set but present in the persisted
+    # device registry is a device that paired before the last restart. Re-admit
+    # it instead of 401'ing (a 401 here also kills /v1/auth/refresh and bricks
+    # the app). This is the belt-and-suspenders to the startup rehydration.
+    if token:
+        try:
+            from .session_store import device_id_for_token
+            if device_id_for_token(token):
+                _default_validator.add_token(token)
+                return token
+        except Exception:
+            pass
+    raise HTTPException(status_code=401, detail="Invalid or missing access token")
 
 
 # ── Model / Profile providers ─────────────────────────────────────────

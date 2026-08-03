@@ -108,6 +108,17 @@ def _save_device_registry(data: dict) -> None:
     tmp.rename(_device_registry_path())
 
 
+def all_device_tokens() -> list[str]:
+    """Every auth token recorded at pairing/registration time.
+
+    B116: used at connector startup to rehydrate the in-memory access-token
+    validator so paired devices survive a connector restart. Without this the
+    validator held only the shared connector credential and every per-device
+    ``hd_`` token 401'd after any restart.
+    """
+    return list(_load_device_registry().get("tokens", {}).keys())
+
+
 def _session_belongs_to_device(session_id: str, device_id: str) -> bool:
     """True if *session_id* is recorded as owned by *device_id*.
 
@@ -580,7 +591,8 @@ def session_messages(
               -- but this filter is defence-in-depth for cases where the
               -- override was not recorded (e.g., connector restart between
               -- job completion and override recording).
-              AND content NOT LIKE '[System context — current local time]%'
+              AND content NOT LIKE '[System context:%'
+              AND content NOT LIKE '[System context —%'
             ORDER BY timestamp ASC
             LIMIT ?
             """,
@@ -1108,6 +1120,8 @@ def _derived_title(hermes_id: str, conn: sqlite3.Connection | None = None) -> st
               AND role = 'user'
               AND content != ''
               AND active = 1
+              AND content NOT LIKE '[System context:%'
+              AND content NOT LIKE '[System context —%'
             ORDER BY timestamp ASC
             LIMIT 1
             """,

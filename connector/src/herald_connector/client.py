@@ -881,9 +881,24 @@ class HeraldConnector:
             facade_ctx.clear_conversation = self._rpc_clear_conversation
             facade_ctx.push_register = self._rpc_push_register
             from .http_facade import set_token_validator, AccessTokenValidator
+            # B116: the validator is an in-memory set. It used to be seeded with
+            # ONLY the shared connector credential, so every per-device `hd_`
+            # token minted at pairing (persisted in device_registry.json) was
+            # invalid after any connector restart -> 401 on every call, and
+            # refresh_auth (which routes through require_auth) could not recover,
+            # so chat died with "Could not reach the Herald host." This host
+            # restarts several times an hour, so it bricked constantly.
+            seed: set[str] = set()
             if state.connector_credential:
-                validator = AccessTokenValidator({state.connector_credential})
-                set_token_validator(validator)
+                seed.add(state.connector_credential)
+            try:
+                from .session_store import all_device_tokens
+                seed.update(all_device_tokens())
+            except Exception:
+                logger.exception("B116: failed to hydrate persisted device tokens")
+            if seed:
+                set_token_validator(AccessTokenValidator(seed))
+                logger.info("B116: token validator seeded with %d token(s)", len(seed))
             _http_task = asyncio.create_task(
                 serve_http_facade(host="0.0.0.0", port=http_port)
             )
