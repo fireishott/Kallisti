@@ -2487,12 +2487,19 @@ final class ChatStore {
     }
 
     private func hasPendingDuplicateMessage(_ content: String, attachments: [PendingAttachment]) -> Bool {
-        conversation?.messages.contains(where: {
+        guard let messages = conversation?.messages else { return false }
+        let attSig = attachmentSignature(for: attachments.map { MessageAttachment(from: $0) })
+        let now = Date()
+        return messages.contains(where: {
             $0.sender == .user
-                && $0.status == .sending
+                && (
+                    $0.status == .sending
+                    || ($0.status == .sent && now.timeIntervalSince($0.timestamp) < 60)
+                    || ($0.status == .delivered && now.timeIntervalSince($0.timestamp) < 30)
+                )
                 && normalizedRetryContent(for: $0) == content
-                && attachmentSignature(for: $0.attachments) == attachmentSignature(for: attachments.map { MessageAttachment(from: $0) })
-        }) == true
+                && attachmentSignature(for: $0.attachments) == attSig
+        })
     }
 
     // MARK: - Delta coalescing
@@ -3041,6 +3048,12 @@ final class ChatStore {
                 if let claim = candidates.first(where: { !claimedRefreshedIndices.contains($0) }) {
                     claimedRefreshedIndices.insert(claim)
                     localToRefreshedIndex[message.id] = claim
+                    continue
+                }
+                // Build 118: If the local message is a user prompt whose content is already
+                // represented in the refreshed conversation, do NOT append as localOnly.
+                if message.sender == .user {
+                    Self.logger.info("Build 118: collapsing duplicate local user message \(message.id.uuidString.prefix(8)) matching existing claimed candidate")
                     continue
                 }
                 // Build 30: all fingerprint candidates were already claimed.

@@ -1120,8 +1120,9 @@ def _derived_title(hermes_id: str, conn: sqlite3.Connection | None = None) -> st
               AND role = 'user'
               AND content != ''
               AND active = 1
-              AND content NOT LIKE '[System context:%'
-              AND content NOT LIKE '[System context —%'
+              AND content NOT LIKE '[System context%'
+              AND content NOT LIKE '[Timezone:%'
+              AND content NOT LIKE '[Local user time:%'
             ORDER BY timestamp ASC
             LIMIT 1
             """,

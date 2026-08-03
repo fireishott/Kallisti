@@ -219,6 +219,21 @@ _conversation_id_singleton: str | None = None
 _session_locks: dict[str, asyncio.Lock] = {}
 
 
+def _clean_title_text(text: str) -> str:
+    """Strip leading system context, timezone, and local user time headers before deriving session title."""
+    import re
+    if not text:
+        return ""
+    cleaned = text
+    cleaned = re.sub(
+        r'^(?:\s*\[(?:System context|Timezone|Local user time)[^\]]*\])+',
+        '',
+        cleaned,
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else text
+
+
 async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str | None:
     """Generate a title for a session from its first user message.
 
@@ -228,6 +243,9 @@ async def _auto_title(handler, text: str, hermes_sid: str, app_uuid: str) -> str
     Tries the message_handler with a short title prompt first; falls back
     to a truncation of the first user message.
     """
+    text = _clean_title_text(text)
+    if not text:
+        return None
     title_prompt = (
         "Generate a short title (3-8 words) for a conversation that "
         "begins with this message. Return ONLY the title, no quotes, "
@@ -2985,8 +3003,16 @@ async def send_message(request: Request) -> JSONResponse:
     model_input = display_text
     if client_context and isinstance(client_context, dict):
         context_parts = []
-        if client_context.get("localTime"):
-            context_parts.append(f"[System context: {client_context['localTime']}]")
+        local_time_raw = client_context.get("localTime")
+        if local_time_raw:
+            context_parts.append(f"[System context: {local_time_raw}]")
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(local_time_raw.replace("Z", "+00:00"))
+                readable = dt.strftime("%A, %b %d, %Y at %I:%M %p")
+                context_parts.append(f"[Local user time: {readable}]")
+            except Exception:
+                pass
         if client_context.get("timezone"):
             context_parts.append(f"[Timezone: {client_context['timezone']}]")
         if context_parts:
@@ -4945,7 +4971,9 @@ async def session_generate_title(request: Request) -> JSONResponse:
         msgs = session_messages(session_id, limit=5, include_reasoning=False)
         for m in msgs:
             if m.get("role") == "user" and m.get("text"):
-                user_text = m["text"].strip()
+                user_text = _clean_title_text(m["text"].strip())
+                if not user_text:
+                    continue
                 ctx = get_context()
                 if ctx.message_handler:
                     from .session_store import _app_uuid
@@ -4954,7 +4982,6 @@ async def session_generate_title(request: Request) -> JSONResponse:
                         ctx.message_handler, user_text, session_id, app_id
                     )
                 if not title:
-                    # Fallback: first line, first 80 chars
                     first_line = user_text.split("\n")[0].strip()
                     title = first_line[:80] if first_line else None
                 break

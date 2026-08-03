@@ -250,6 +250,14 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let localTime: String
         let locale: String
         let timezone: String
+
+        /// Build 118: produce ISO 8601 with explicit local timezone offset (not UTC Z suffix).
+        static var currentLocalTimeISO: String {
+            let formatter = ISO8601DateFormatter()
+            formatter.timeZone = TimeZone.current
+            formatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+            return formatter.string(from: Date())
+        }
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -800,7 +808,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         }
         // Build 108 Workstream E: separate displayText from client context
         let clientContext = ClientContext(
-            localTime: ISO8601DateFormatter().string(from: Date()),
+            localTime: ClientContext.currentLocalTimeISO,
             locale: Locale.current.identifier,
             timezone: TimeZone.current.identifier
         )
@@ -1316,7 +1324,7 @@ extension LiveHeraldClient {
         let effort = reasoningEffortProvider?()
         // Build 108 Workstream E: separate displayText from client context
         let clientContext = ClientContext(
-            localTime: ISO8601DateFormatter().string(from: Date()),
+            localTime: ClientContext.currentLocalTimeISO,
             locale: Locale.current.identifier,
             timezone: TimeZone.current.identifier
         )
