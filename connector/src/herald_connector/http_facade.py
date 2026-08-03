@@ -1525,6 +1525,38 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     delivery_client_msg_id, exc_info=True,
                 )
 
+        # B116: materialize the assistant reply into the canonical ledger.
+        # create_canonical_message was orphaned (never called), so assistant
+        # rows were never written and the read path returned only the user
+        # turn -> "no reply". Idempotent per job so a re-fired terminal never
+        # duplicates the row. state MUST be one of the CHECK-constrained
+        # values ('pending','accepted','running','terminal','failed','cancelled').
+        if job.get("status") == "completed" and (accumulated or "").strip():
+            try:
+                from .delivery_store import get_delivery_store
+                _ds = get_delivery_store()
+                _conv_led = _coerce_uuid(job.get("conversationId"))
+                if _conv_led:
+                    _exists = False
+                    _c = _ds._connect()
+                    try:
+                        _exists = _c.execute(
+                            "SELECT 1 FROM conversation_messages WHERE "
+                            "conversation_id=? AND role='assistant' AND job_id=? LIMIT 1",
+                            (_conv_led, job_id),
+                        ).fetchone() is not None
+                    finally:
+                        _c.close()
+                    if not _exists:
+                        _ds.create_canonical_message(
+                            conversation_id=_conv_led, role="assistant",
+                            content=accumulated, display_content=accumulated,
+                            job_id=job_id, state="terminal",
+                        )
+                        logger.info("B116: materialized assistant ledger row for job %s", job_id)
+            except Exception:
+                logger.warning("B116: assistant ledger materialization failed for job %s", job_id, exc_info=True)
+
         terminal = {
             "type": "run.completed" if job["status"] == "completed" else (
                 "run.failed" if job["status"] == "failed" else "run.cancelled"
