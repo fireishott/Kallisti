@@ -642,34 +642,28 @@ class TestSendMessageIdempotency:
         assert row["state"] == "permanent_failure"
         assert row["errorCategory"] == "upstream_interrupted"
 
-    def test_unbound_conversation_send_returns_typed_error(self, app_env, client, no_session_lookups):
-        """Build 102 P0-B.1: a send for an unbound conversation with no
-        real Hermes session_id must NOT 500 (the FK would still 500), and
-        must NOT fabricate a UUID. Instead it returns a typed
-        ``replyState="conversation_not_ensured"`` error so the iOS client
-        can call POST /v1/conversations/ensure and recover.
+    def test_unbound_conversation_send_auto_binds_and_succeeds(self, app_env, client, no_session_lookups):
+        """Build 118 Hotfix Bug 2: a send for an unbound conversation with no
+        real Hermes session_id now auto-binds via _resolve_hermes_id/_app_uuid
+        fallback instead of returning 409. This lets follow-up sends work
+        without requiring a separate POST /v1/conversations/ensure first.
 
-        Replaces the legacy behavior tested by
-        test_unbound_conversation_send_still_works_untracked, which
-        encoded the bug Build 101 shipped (a fabricated UUID was inserted
-        into the binding table, later colliding with the real Hermes
-        session and silently corrupting the conversation).
+        Replaces the legacy test_unbound_conversation_send_returns_typed_error
+        which expected a 409 — that blocking path caused the "no follow-up
+        reply" regression on Build 118.
         """
         app_env.message_handler = completed_handler
         resp = client.post(
             "/v1/messages",
             json=post_message(client, conversationId=CONV),
         )
-        assert resp.status_code == 409, resp.text
+        assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["replyState"] == "conversation_not_ensured"
-        assert data["error"] == "conversationNotEnsured"
-        assert data["clientMessageId"] == CLIENT_MSG
-        assert data["jobId"] is None
-        # No message_request row was created — the FK is never satisfied.
-        assert get_delivery_store().get_message_request(CLIENT_MSG) is None
-        # Critically: no fabricated UUID was inserted into the binding table.
-        assert get_delivery_store().get_binding(CONV) is None
+        assert data["replyState"] == "pending"
+        assert data["jobId"] is not None
+        # A binding was auto-created for the unbound conversation.
+        binding = get_delivery_store().get_binding(CONV)
+        assert binding is not None
 
     def test_job_status_durable_fallback_after_restart(self, app_env, client):
         """A job accepted by a previous connector process still answers polls."""

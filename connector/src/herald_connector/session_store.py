@@ -601,7 +601,20 @@ def session_messages(
     finally:
         conn.close()
 
-    messages = [_message_to_dict(r, include_reasoning=want_reasoning) for r in rows]
+    messages = []
+    for r in rows:
+        d = _message_to_dict(r, include_reasoning=want_reasoning)
+        if d.get("role") == "user" and d.get("text"):
+            # Clean system context from user message content
+            import re
+            cleaned_text = re.sub(
+                r'^(?:\s*\[(?:System context|Timezone|Local user time)[^\]]*\])+',
+                '',
+                d["text"],
+                flags=re.IGNORECASE
+            ).strip()
+            d["text"] = cleaned_text if cleaned_text else d["text"]
+        messages.append(d)
     return _apply_reasoning_budget(messages) if want_reasoning else messages
 
 
@@ -1029,8 +1042,12 @@ def session_list(
             # api_server row, so a session whose generated title hadn't landed
             # in the sidecar yet (or was written under a different id) showed
             # the placeholder permanently.
+            raw_sidecar_title = meta.get("title")
+            if raw_sidecar_title and raw_sidecar_title.startswith(("[System context", "[Timezone:", "[Local user time:")):
+                raw_sidecar_title = None
+
             title = (
-                meta.get("title")
+                raw_sidecar_title
                 or r["title"]
                 or r["display_name"]
                 or _derived_title(hermes_id, conn=title_conn)

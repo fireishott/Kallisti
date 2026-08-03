@@ -1350,7 +1350,8 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                                 # LLM title runs used the full tool-capable agent
                                 # and raced the app's own generator.  Keep title
                                 # generation deterministic, immediate and side-effect free.
-                                cleaned = text.strip().split("\n", 1)[0].strip()
+                                cleaned_text = _clean_title_text(text)
+                                cleaned = cleaned_text.strip().split("\n", 1)[0].strip() if cleaned_text else ""
                                 derived = cleaned[:47].rstrip() + ("..." if len(cleaned) > 50 else "")
                                 derived = derived or "New Chat"
                                 for i in title_ids:
@@ -3062,6 +3063,12 @@ async def send_message(request: Request) -> JSONResponse:
             app_conversation_id[:12],
         )
 
+    # Ensure hermes_session_id is resolved for delivery_store binding.
+    # Without this, follow-up sends on an unbound conversation get a
+    # 409 conversation_not_ensured because get_binding returns None.
+    if hermes_session_id is None and app_conversation_id:
+        hermes_session_id = _resolve_hermes_id(app_conversation_id) or _app_uuid(app_conversation_id)
+
     job_id = str(uuid.uuid4())
     # Build 30: echo attachment metadata in the user acknowledgement so the
     # server-projected user row preserves attachment identity.  Without this,
@@ -3118,7 +3125,9 @@ async def send_message(request: Request) -> JSONResponse:
     # conversation (legacy nil-conversationId path) proceed untracked rather
     # than 500.
     canonical_user = None  # Phase 3A: set by create_user_message_atomically
-    if hermes_session_id:
+    # Always persist delivery bindings so follow-up sends on an unbound
+    # conversation don't get a 409 conversation_not_ensured.
+    if hermes_session_id and app_conversation_id:
         _persist_delivery_bindings(
             [app_conversation_id], hermes_session_id, installation_id
         )
@@ -3906,6 +3915,17 @@ async def session_conversation(request: Request) -> JSONResponse:
         or _now_iso()
     )
     messages = [_canonical_message_to_relay(m) for m in snapshot["messages"]]
+    # Fallback to state.db session_messages if canonical snapshot has no message rows
+    if not messages:
+        try:
+            from .session_store import _resolve_hermes_id, session_messages
+            hermes_id = _resolve_hermes_id(conv_id) or conv_id
+            fallback_msgs = session_messages(hermes_id, limit=500, include_reasoning=True)
+            if fallback_msgs:
+                messages = fallback_msgs
+        except Exception:
+            pass  # graceful degradation — return empty conversation
+
     envelope = _conversation_envelope_canonical(
         conv_id,
         fallback_title=fallback_title,
@@ -3960,6 +3980,17 @@ async def current_conversation(request: Request) -> JSONResponse:
         or _now_iso()
     )
     messages = [_canonical_message_to_relay(m) for m in snapshot["messages"]]
+    # Fallback to state.db session_messages if canonical snapshot has no message rows
+    if not messages:
+        try:
+            from .session_store import _resolve_hermes_id, session_messages
+            hermes_id = _resolve_hermes_id(conv_id) or conv_id
+            fallback_msgs = session_messages(hermes_id, limit=500, include_reasoning=True)
+            if fallback_msgs:
+                messages = fallback_msgs
+        except Exception:
+            pass
+
     envelope = _conversation_envelope_canonical(
         conv_id,
         fallback_title=fallback_title,

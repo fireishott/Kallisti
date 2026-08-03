@@ -290,6 +290,9 @@ final class ChatStore {
             from: cachedConversation,
             into: refreshed
         )
+        if sendPhase == .idle {
+            streamingPhase = .idle
+        }
         autoTitleAttempted = false
         if let latestUsage = conversation?.latestUsage {
             lastTokenUsage = latestUsage
@@ -318,6 +321,9 @@ final class ChatStore {
         do {
             let refreshed = try await heraldClient.loadConversation(id: id)
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+            if sendPhase == .idle {
+                streamingPhase = .idle
+            }
             persistence.currentSessionId = conversation?.id
             if let conversation {
                 var cacheCopy = conversation
@@ -1356,6 +1362,9 @@ final class ChatStore {
                 case .finished(let finalMessage, let usage, let diff, let context):
                     guard self.activeAttemptID == attemptID else { break }
                     progressContinuation?.yield(())
+                    self.heraldClient.connectionStatus = .connected
+                    self.activeStreams.removeAll()
+                    self.streamingPhase = .idle
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)

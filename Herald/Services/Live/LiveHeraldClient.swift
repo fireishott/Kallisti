@@ -645,6 +645,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         }
                         resolvedFinal.content = visibleText
                         let context: ContextInfo? = donePayload?.context
+                        self.connectionStatus = .connected
                         continuation.yield(.finished(resolvedFinal, usage, nil, context))
                     case .failed:
                         // Coordinator already yielded .failed StreamingUpdate
