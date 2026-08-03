@@ -1026,6 +1026,11 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         except Exception:                             # noqa: BLE001
             conv_rev = 0
         event_type = (event or {}).get("type") or "progress"
+        # B116: canonicalize internal underscore event types to the v3 wire
+        # form. TextDeltaEvent is Literal["text.delta"]; a raw "text_delta"
+        # from the producer failed validation and every reply token was
+        # dropped ("no reply"). Normalize before envelope build + validate.
+        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta"}.get(event_type, event_type)
         payload = (event or {}).get("data") or {}
         # If the payload is itself shaped as an envelope (a v3 envelope
         # that we are forwarding), pass the payload through; otherwise
