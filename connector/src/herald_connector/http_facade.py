@@ -4994,6 +4994,20 @@ async def create_session(request: Request) -> JSONResponse:
 
     if title:
         set_session_meta(session_id, title=title)
+
+    # B112: Provision the Hermes session immediately so loadConversation
+    # returns non-empty.  Without this the iOS New Chat button creates a
+    # sidecar-only entry; the user types into a void until the first
+    # message hits ensureConversation.
+    try:
+        from .session_store import _create_hermes_session_via_api
+        _create_hermes_session_via_api(session_id, title=title or "New Chat")
+    except Exception as exc:
+        logger.warning(
+            "create_session: Hermes provisioning deferred for %s: %s",
+            session_id, exc,
+        )
+
     return JSONResponse({"session": {
         "id": session_id,
         # This is an optimistic response only; placeholders still must not be

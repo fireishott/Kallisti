@@ -188,7 +188,14 @@ final class GatewayHeraldClient: HeraldClientProtocol {
             throw ClientError.serverError(error.message)
         }
 
-        return SessionSummary(title: title)
+        // B112: Extract server-assigned session ID from the gateway response.
+        // Previously this returned a local-only UUID that was never registered
+        // anywhere, causing loadConversation to return empty.
+        let resultDict = response.result as? [String: Any]
+        let serverID = (resultDict?["session_id"] as? String).flatMap { UUID(uuidString: $0) } ?? UUID()
+        let serverTitle = (resultDict?["title"] as? String) ?? title
+
+        return SessionSummary(id: serverID, title: serverTitle)
     }
 
     func deleteSession(id: UUID) async throws {

@@ -211,6 +211,14 @@ final class SessionListStore {
         do {
             let session = try await heraldClient.createSession(title: title)
             recentSessions.insert(session, at: 0)
+            // Bind the session to Hermes BEFORE switching.
+            // Without this, loadConversation returns empty because no
+            // state.db row exists yet — the connector's POST /v1/sessions
+            // only creates a sidecar entry.
+            let established = await heraldClient.ensureConversation(id: session.id)
+            if !established {
+                Logger.app.warning("createNewSession: ensureConversation deferred, will bind on first send")
+            }
             await switchToSession(session)
             saveCachedSessions()
         } catch {
