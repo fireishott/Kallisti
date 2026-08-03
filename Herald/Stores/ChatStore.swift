@@ -1456,12 +1456,16 @@ final class ChatStore {
                         isCredibleCompletion = !resolvedText.isEmpty
                             || !resolved.attachments.isEmpty
                         self.conversation?.messages[idx] = resolved
-                        // Mark user message as delivered if it's still in sending state
-                        if isCredibleCompletion,
-                           let userIdx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }),
-                           self.conversation?.messages[userIdx].status == .sending {
-                            self.conversation?.messages[userIdx].status = .delivered
-                        }
+                        // Build 117 fix: do NOT mark the user message as
+                        // .delivered here.  The user message's delivery status
+                        // is managed by the outbox lifecycle
+                        // (terminalizeOutboxItem), not by the assistant's
+                        // content arrival.  Marking it .delivered here defeated
+                        // hasPendingDuplicateMessage when the user retried
+                        // after a stream drop — the guard checked for
+                        // status == .sending, found .delivered, and let a
+                        // second optimistic row with the same clientMessageID
+                        // through, producing two "Hey homie" bubbles.
                     }
                     let oldTitle = self.conversation?.title
                     // Build 26: the terminal message is authoritative in the
@@ -2367,6 +2371,18 @@ final class ChatStore {
 
             // Only remove the failed assistant placeholder — keep the user message.
             conversation?.messages.removeAll { $0.id == message.id }
+
+            // Build 117 fix: also remove any existing message with the same
+            // clientMessageID, regardless of status.  Without this, a user
+            // message that was marked .delivered by a stale code path (or by
+            // the merge preserving .sending → .delivered transition) would
+            // survive the hasPendingDuplicateMessage guard in enqueueMessage,
+            // which only blocks on status == .sending.  The retry would then
+            // create a SECOND optimistic row with the same id, and SwiftUI
+            // ForEach would render both as separate bubbles.
+            if let existingClientID = sourceMessage.clientMessageID {
+                conversation?.messages.removeAll { $0.clientMessageID == existingClientID && $0.id != message.id }
+            }
 
             // Build 31 (fix): continuation context is transport metadata.
             // The tail snippet helps Hermes resume, but must never appear as
