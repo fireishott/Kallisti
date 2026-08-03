@@ -200,7 +200,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Tailscale mode stays honest: messages arrive while the app is in the foreground or reconnected on your tailnet. No official background push."
         case .selfHostedRelay:
-            return "Self-hosted relays don't receive official push credentials. Background delivery depends on your relay's own notification channel."
+            return "Your connector sends push notifications directly to Apple when your host is online."
         }
     }
 }

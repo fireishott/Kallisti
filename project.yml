@@ -110,8 +110,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
         PRODUCT_NAME: Herald
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -194,8 +194,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
         PRODUCT_NAME: HeraldWidgets
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -231,8 +231,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
         PRODUCT_NAME: HeraldNotificationService
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -273,8 +273,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
         PRODUCT_NAME: HeraldIntents
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -301,8 +301,8 @@ targets:
         INFOPLIST_FILE: HeraldControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.controlsWidget
         PRODUCT_NAME: HeraldControls
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -357,8 +357,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.watchkitapp
         PRODUCT_NAME: HeraldWatch
-        MARKETING_VERSION: "2.4.1"
-        CURRENT_PROJECT_VERSION: "112"
+        MARKETING_VERSION: "2.4.3"
+        CURRENT_PROJECT_VERSION: "116"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

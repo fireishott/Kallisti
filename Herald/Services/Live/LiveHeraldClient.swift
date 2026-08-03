@@ -137,8 +137,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         //
         // Every new field uses ``decodeIfPresent`` so the decoder does
         // not crash on legacy responses that pre-date the v3 contract.
-        // Phase 3B's TranscriptReducer will treat absent values as
-        // "pre-ledger row, do not reconcile against this id".
+        // Absent values indicate a pre-ledger row; do not reconcile against this id.
         let canonicalMessageId: UUID?
         let conversationId: UUID?
         let sequence: Int?
