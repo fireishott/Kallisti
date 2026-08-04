@@ -9,14 +9,14 @@ set -euo pipefail
 cd ~/Herald
 
 # Gate 1: file must be git-clean (no unstaged changes)
-if ! git diff --quiet Herald/Herald.entitlements; then
+if ! git diff --quiet Herald/Kallisti.entitlements; then
     echo "FATAL: Herald.entitlements is dirty — unstaged changes detected:"
-    git diff Herald/Herald.entitlements
+    git diff Herald/Kallisti.entitlements
     exit 1
 fi
-if ! git diff --cached --quiet Herald/Herald.entitlements; then
+if ! git diff --cached --quiet Herald/Kallisti.entitlements; then
     echo "FATAL: Herald.entitlements is dirty — staged changes detected:"
-    git diff --cached Herald/Herald.entitlements
+    git diff --cached Herald/Kallisti.entitlements
     exit 1
 fi
 
@@ -31,10 +31,10 @@ REQUIRED_KEYS=(
 )
 
 for key in "${REQUIRED_KEYS[@]}"; do
-    if ! plutil -p Herald/Herald.entitlements | grep -q "$key"; then
-        echo "FATAL: '$key' missing from source entitlements file Herald/Herald.entitlements"
+    if ! plutil -p Herald/Kallisti.entitlements | grep -q "$key"; then
+        echo "FATAL: '$key' missing from source entitlements file Herald/Kallisti.entitlements"
         echo "Current contents:"
-        plutil -p Herald/Herald.entitlements
+        plutil -p Herald/Kallisti.entitlements
         exit 1
     fi
 done
@@ -43,8 +43,8 @@ echo "SOURCE ENTITLEMENTS OK"
 
 # ── Build 31: signed artifact verification ───────────────────────────────────
 # Gate 3: if a .xcarchive exists, verify the signed binary retains all keys.
-ARCHIVE_PATH="${ARCHIVE_PATH:-${HOME}/Hermes-iOS-Builds/archives/Herald_2.4.1_b31.xcarchive}"
-ARCHIVE_APP="${ARCHIVE_PATH}/Products/Applications/Herald.app"
+ARCHIVE_PATH="${ARCHIVE_PATH:-${HOME}/Hermes-iOS-Builds/archives/Kallisti_0.1.0_b4.xcarchive}"
+ARCHIVE_APP="${ARCHIVE_PATH}/Products/Applications/Kallisti.app"
 
 if [ -d "$ARCHIVE_APP" ]; then
     echo ""
@@ -86,7 +86,7 @@ fi
 # Gate 4: if an .ipa path is set, unzip and verify the exported app.
 IPA_PATH="${IPA_PATH:-}"
 if [ -n "$IPA_PATH" ] && [ -f "$IPA_PATH" ]; then
-    TMP_IPA_DIR=$(mktemp -d /tmp/herald-ipa-verify-XXXXXX)
+    TMP_IPA_DIR=$(mktemp -d /tmp/kallisti-ipa-verify-XXXXXX)
     unzip -q "$IPA_PATH" -d "$TMP_IPA_DIR"
     IPA_APP=$(find "$TMP_IPA_DIR" -name "*.app" -type d | head -1)
 
