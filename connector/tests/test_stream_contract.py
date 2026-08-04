@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from herald_connector.stream_contract import (
+from kallisti_connector.stream_contract import (
     JobEventEnvelope,
     TERMINAL_TYPES,
     RunStartedEvent,

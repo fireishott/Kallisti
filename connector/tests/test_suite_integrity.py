@@ -3,8 +3,8 @@
 A file that raises on import contributes zero tests and zero failures, so a
 green run says nothing about it.  That is exactly how the connector lost
 coverage of ``test_connector.py``, ``test_stream_contract.py`` and
-``test_streaming.py``: they referenced ``herald_connector.hermes_runner`` and
-``herald_connector.stream_contract``, both deleted in Herald 2.0 (4873920),
+``test_streaming.py``: they referenced ``kallisti_connector.hermes_runner`` and
+``kallisti_connector.stream_contract``, both deleted in Herald 2.0 (4873920),
 and stayed broken long enough for five reply-path regressions to land in
 Build 41 without a single red test.
 

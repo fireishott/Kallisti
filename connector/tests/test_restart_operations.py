@@ -27,9 +27,9 @@ import pytest
 from starlette.exceptions import HTTPException
 from starlette.testclient import TestClient
 
-import herald_connector.http_facade as facade
-from herald_connector.http_facade import FacadeContext, app
-from herald_connector.restart_operations import (
+import kallisti_connector.http_facade as facade
+from kallisti_connector.http_facade import FacadeContext, app
+from kallisti_connector.restart_operations import (
     RestartConflictError,
     RestartOperationStore,
     get_restart_store,
@@ -89,7 +89,7 @@ def client():
 
 @pytest.fixture(autouse=True)
 def auth():
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -104,7 +104,7 @@ def ctx(env):
 @pytest.fixture
 def app_env(env, ctx):
     """ctx patched as the live facade context for the whole test."""
-    with patch("herald_connector.http_facade.get_context", return_value=ctx):
+    with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
         yield ctx
 
 
@@ -311,7 +311,7 @@ class TestRestartOperationStore:
 class TestPreflight:
     def test_preflight_shape_matches_fixture(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props(pid="12345")),
         ):
             resp = client.get("/v1/gw/restart/preflight?target=hermes")
@@ -334,7 +334,7 @@ class TestPreflight:
         })
         try:
             with patch(
-                "herald_connector.http_facade._run_subprocess",
+                "kallisti_connector.http_facade._run_subprocess",
                 side_effect=fake_systemctl(show_props=standard_props()),
             ):
                 resp = client.get("/v1/gw/restart/preflight?target=hermes")
@@ -350,7 +350,7 @@ class TestPreflight:
         props = standard_props()
         props["ActiveState"] = "inactive"
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=props),
         ):
             resp = client.get("/v1/gw/restart/preflight?target=hermes")
@@ -364,7 +364,7 @@ class TestPreflight:
         def missing(argv, **kwargs):  # noqa: ARG001
             return MagicMock(returncode=1, stdout="", stderr="Unit not found")
 
-        with patch("herald_connector.http_facade._run_subprocess", side_effect=missing):
+        with patch("kallisti_connector.http_facade._run_subprocess", side_effect=missing):
             resp = client.get("/v1/gw/restart/preflight?target=hermes")
 
         assert resp.status_code == 200
@@ -384,7 +384,7 @@ class TestPreflight:
 class TestRestartEndpoint:
     def test_restart_accepts_and_matches_operation_fixture(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ):
             version = preflight_version(client)
@@ -408,7 +408,7 @@ class TestRestartEndpoint:
 
     def test_restart_same_idempotency_key_returns_same_operation(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ):
             version = preflight_version(client)
@@ -424,10 +424,10 @@ class TestRestartEndpoint:
     def test_restart_different_key_while_active_returns_409(self, app_env, client):
         slow_health = AsyncMock(side_effect=lambda: _slow_healthy(5.0))
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ), patch(
-            "herald_connector.http_facade._probe_dashboard_health", slow_health
+            "kallisti_connector.http_facade._probe_dashboard_health", slow_health
         ):
             version = preflight_version(client)
             first = client.post(
@@ -456,7 +456,7 @@ class TestRestartEndpoint:
     def test_restart_stale_preflight_returns_409(self, app_env, client):
         props = standard_props(pid="12345")
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=props),
         ):
             version = preflight_version(client)
@@ -519,7 +519,7 @@ class TestRestartEndpoint:
 
     def test_restart_requires_auth(self, env, client):
         with patch(
-            "herald_connector.http_facade.require_auth",
+            "kallisti_connector.http_facade.require_auth",
             new_callable=AsyncMock,
             side_effect=HTTPException(status_code=401, detail="Invalid or missing access token"),
         ):
@@ -556,10 +556,10 @@ class TestBackgroundExecution:
         })
         app_env.session_canary = AsyncMock(return_value=(True, "ok"))
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=_evolving_props()),
         ), patch(
-            "herald_connector.http_facade._probe_dashboard_health",
+            "kallisti_connector.http_facade._probe_dashboard_health",
             AsyncMock(return_value=(True, "detail health ok")),
         ):
             version = preflight_version(client)
@@ -590,12 +590,12 @@ class TestBackgroundExecution:
         app_env.session_canary = AsyncMock(return_value=(True, "ok"))
         journal_line = "Jul 31 19:30:30 hermes-gateway[12456]: ERROR config.yaml parse failed"
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(
                 show_props=_evolving_props(), journal_lines=[journal_line],
             ),
         ), patch(
-            "herald_connector.http_facade._probe_dashboard_health",
+            "kallisti_connector.http_facade._probe_dashboard_health",
             AsyncMock(return_value=(False, "health endpoint returned 503 after 30s")),
         ):
             version = preflight_version(client)
@@ -629,7 +629,7 @@ class TestBackgroundExecution:
 
     def test_failed_restart_on_restart_command(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props(), restart_rc=1),
         ):
             version = preflight_version(client)
@@ -649,8 +649,8 @@ class TestBackgroundExecution:
         assert [c["name"] for c in op["checks"]] == facade._RESTART_STEP_NAMES
 
     def test_connector_self_restart_durable_and_reconciled(self, app_env, client):
-        with patch("herald_connector.http_facade._schedule_connector_exit") as schedule, patch(
-            "herald_connector.http_facade._run_subprocess",
+        with patch("kallisti_connector.http_facade._schedule_connector_exit") as schedule, patch(
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ):
             version = preflight_version(client, target="connector")
@@ -682,7 +682,7 @@ class TestBackgroundExecution:
 class TestOperationStatus:
     def test_status_returns_operation(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ):
             version = preflight_version(client)
@@ -709,7 +709,7 @@ class TestOperationStatus:
     def test_preflight_route_is_not_captured_as_operation_id(self, app_env, client):
         """/v1/gw/restart/preflight must win over the {operationId} route."""
         with patch(
-            "herald_connector.http_facade._run_subprocess",
+            "kallisti_connector.http_facade._run_subprocess",
             side_effect=fake_systemctl(show_props=standard_props()),
         ):
             resp = client.get("/v1/gw/restart/preflight?target=hermes")
@@ -735,13 +735,13 @@ class TestGatewayStatus:
         facade._last_canary_result = True
         try:
             with patch(
-                "herald_connector.http_facade._query_unit_observed",
+                "kallisti_connector.http_facade._query_unit_observed",
                 return_value=observed,
             ), patch(
-                "herald_connector.http_facade._probe_dashboard_health",
+                "kallisti_connector.http_facade._probe_dashboard_health",
                 AsyncMock(return_value=(True, "detail health ok")),
             ), patch(
-                "herald_connector.http_facade._port_open",
+                "kallisti_connector.http_facade._port_open",
                 return_value=True,
             ):
                 resp = client.get("/v1/gw/status")
@@ -784,13 +784,13 @@ class TestGatewayStatus:
 
     def test_health_report_partial_data_when_probes_fail(self, app_env, client):
         with patch(
-            "herald_connector.http_facade._query_unit_observed",
+            "kallisti_connector.http_facade._query_unit_observed",
             return_value=None,
         ), patch(
-            "herald_connector.http_facade._probe_dashboard_health",
+            "kallisti_connector.http_facade._probe_dashboard_health",
             AsyncMock(return_value=(False, "health endpoint unreachable")),
         ), patch(
-            "herald_connector.http_facade._port_open",
+            "kallisti_connector.http_facade._port_open",
             return_value=False,
         ):
             resp = client.get("/v1/gw/status")

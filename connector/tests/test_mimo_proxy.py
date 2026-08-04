@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import herald_connector.mimo_proxy as mimo
+import kallisti_connector.mimo_proxy as mimo
 
 
 # ── Key loading ───────────────────────────────────────────────────────────

@@ -357,7 +357,20 @@ def _display_app_id(hermes_id: str, sidecar: dict) -> str:
     same content.  Prefer the originating draft alias when it exists: it is the
     ID held by the device, works on another device when explicitly selected,
     and still resolves to the Hermes id through the sidecar.
+
+    T1.3: the delivery store's binding is the single source of truth.
+    When a real app conversation is bound to this session, emit that id
+    instead of the derived v5 alias — one id per session, ever.
     """
+    # T1.3: prefer the delivery-store binding (canonical v4 id) over
+    # the derived v5 alias.
+    try:
+        from .delivery_store import get_delivery_store
+        bound = get_delivery_store().get_binding_for_hermes(hermes_id)
+        if bound:
+            return bound["appConversationId"]
+    except Exception:
+        pass
     canonical = _app_uuid(hermes_id)
     aliases = sorted(
         key for key, value in sidecar.items()

@@ -28,14 +28,14 @@ import asyncio
 import json
 from unittest.mock import patch
 
-from herald_connector.client import (
+from kallisti_connector.client import (
     HermesMobileConnector,
     StructuredJobError,
     _estimate_payload_tokens,
 )
-from herald_connector.hermes_api_executor import StreamEvent
-from herald_connector.runtime_adapter import RuntimeTurnResult
-from herald_connector.state import ConnectorState, ConnectorStateStore
+from kallisti_connector.hermes_api_executor import StreamEvent
+from kallisti_connector.runtime_adapter import RuntimeTurnResult
+from kallisti_connector.state import ConnectorState, ConnectorStateStore
 
 
 def make_enrolled_state() -> ConnectorState:
@@ -200,7 +200,7 @@ def test_preflight_blocks_over_limit_job(tmp_path):
     }
 
     # Mock _estimate_payload_tokens to return a large number
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=200):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=200):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     # Should have: job.started + job.failed, and the model is never called
@@ -238,7 +238,7 @@ def test_preflight_does_not_warn_near_limit(tmp_path):
     }
 
     # 950 tokens = 95% of 1000: near the limit but not over it.
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=950):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=950):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(adapter.calls) == 1
@@ -263,7 +263,7 @@ def test_streaming_path_emits_text_deltas(tmp_path):
         "contextWindow": 100000,
     }
 
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=100):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     types = [m["type"] for m in ws.sent]
@@ -287,7 +287,7 @@ def test_handle_job_streaming_uses_streaming_adapter(tmp_path):
     ws = FakeWebSocket()
     job = {"id": "job-delegate", "latestUserMessage": "Hello", "history": []}
 
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=10):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=10):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(adapter.calls) == 1
@@ -311,8 +311,8 @@ def test_preflight_uses_context_window_from_job(tmp_path):
 
     # 400 is under the job's 500 limit, but over the resolver's 300 — the
     # job value must win, so the request goes through.
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=400), \
-            patch("herald_connector.client._context_window_for", return_value=300) as resolver:
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=400), \
+            patch("kallisti_connector.client._context_window_for", return_value=300) as resolver:
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     resolver.assert_not_called()
@@ -334,8 +334,8 @@ def test_preflight_proceeds_when_window_unresolvable(tmp_path):
     ws = FakeWebSocket()
     job = {"id": "job-nowindow", "latestUserMessage": "Hello", "history": []}
 
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=999_999), \
-            patch("herald_connector.client._context_window_for", return_value=None):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=999_999), \
+            patch("kallisti_connector.client._context_window_for", return_value=None):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     assert len(adapter.calls) == 1
@@ -359,7 +359,7 @@ def test_preflight_logs_estimate(tmp_path, caplog):
     }
 
     with caplog.at_level(logging.INFO, logger="herald.connector"):
-        with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
+        with patch("kallisti_connector.client._estimate_payload_tokens", return_value=100):
             asyncio.run(connector._handle_job_streaming(ws, job, FakeAdapter("OK")))
 
     assert any("Pre-flight estimate" in record.message for record in caplog.records)
@@ -521,7 +521,7 @@ def test_job_result_omits_fabricated_context_block(tmp_path):
         "contextWindow": 200000,
     }
 
-    with patch("herald_connector.client._estimate_payload_tokens", return_value=100):
+    with patch("kallisti_connector.client._estimate_payload_tokens", return_value=100):
         asyncio.run(connector._handle_job_streaming(ws, job, adapter))
 
     result_messages = [m for m in ws.sent if m.get("type") == "job.result"]

@@ -38,6 +38,7 @@ Config/*.local.xcconfig
 
 # Claude
 .claude/task-output/
+.claude/settings.local.json
 
 # Python / relay
 .venv/

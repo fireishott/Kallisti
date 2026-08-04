@@ -5,20 +5,20 @@ import base64
 import json
 import sys
 
-from herald_connector.client import HermesMobileConnector
-from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
-from herald_connector.mcp_registration import (
+from kallisti_connector.client import HermesMobileConnector
+from kallisti_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
+from kallisti_connector.mcp_registration import (
     MCPRegistrationStatus,
     native_mcp_readiness_message,
     register_native_mcp_server,
 )
-from herald_connector.setup_code import decode_host_setup_code
-from herald_connector.runtime_adapter import (
+from kallisti_connector.setup_code import decode_host_setup_code
+from kallisti_connector.runtime_adapter import (
     HermesAPIRuntimeAdapter,
     HermesRuntimeAdapter,
     RuntimeConversationMessage,
 )
-from herald_connector.state import (
+from kallisti_connector.state import (
     ConnectorSecrets,
     ConnectorState,
     ConnectorStateStore,
@@ -91,7 +91,7 @@ def test_setup_creates_connector_state(monkeypatch, tmp_path):
     monkeypatch.setattr(HeraldCLIExecutor, "detect_version", lambda self: "Hermes 1.2.3")
     monkeypatch.setattr(HeraldCLIExecutor, "resolved_command_path", lambda self: "/usr/local/bin/hermes")
     monkeypatch.setattr(
-        "herald_connector.client.register_native_mcp_server",
+        "kallisti_connector.client.register_native_mcp_server",
         lambda state_dir: MCPRegistrationStatus(
             server_name="hermes_mobile",
             hermes_home=tmp_path / ".hermes",
@@ -100,8 +100,8 @@ def test_setup_creates_connector_state(monkeypatch, tmp_path):
             registered=True,
         ),
     )
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_tools", lambda server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_tools", lambda server_name: None)
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -123,7 +123,7 @@ def test_setup_creates_connector_state(monkeypatch, tmp_path):
         assert "connector" in json
         return FakeResponse()
 
-    monkeypatch.setattr("herald_connector.client.httpx.post", fake_post)
+    monkeypatch.setattr("kallisti_connector.client.httpx.post", fake_post)
 
     state = connector.setup(relay_url="https://relay.example.com/v1")
 
@@ -160,9 +160,9 @@ def test_setup_includes_installation_secret_from_env(monkeypatch, tmp_path):
         assert json["installationSecret"] == "setup-secret"
         return FakeResponse()
 
-    monkeypatch.setattr("herald_connector.client.httpx.post", fake_post)
+    monkeypatch.setattr("kallisti_connector.client.httpx.post", fake_post)
     monkeypatch.setattr(
-        "herald_connector.client.register_native_mcp_server",
+        "kallisti_connector.client.register_native_mcp_server",
         lambda state_dir: MCPRegistrationStatus(
             server_name="hermes_mobile",
             hermes_home=tmp_path / ".hermes",
@@ -171,8 +171,8 @@ def test_setup_includes_installation_secret_from_env(monkeypatch, tmp_path):
             registered=True,
         ),
     )
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_tools", lambda server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_tools", lambda server_name: None)
 
     connector.setup(relay_url="https://relay.example.com/v1")
 
@@ -321,7 +321,7 @@ def _resolve_config_gates():
         stdout = "manim-video  Render short manim clips from prompts\nshell-helper  Misc shell support\n"
 
     monkeypatch.setattr(
-        "herald_connector.client.subprocess.run",
+        "kallisti_connector.client.subprocess.run",
         lambda *args, **kwargs: FakeCompletedProcess(),
     )
 
@@ -417,7 +417,7 @@ def test_runtime_adapter_falls_back_to_cli_without_explicit_api_config(monkeypat
 
     monkeypatch.delenv("HERMES_API_SERVER_URL", raising=False)
     monkeypatch.delenv("HERMES_API_SERVER_KEY", raising=False)
-    monkeypatch.setattr("herald_connector.client.HermesAPIExecutor.health_check", fail_health_check)
+    monkeypatch.setattr("kallisti_connector.client.HermesAPIExecutor.health_check", fail_health_check)
 
     adapter = asyncio.run(connector.runtime_adapter_for_state_async(state))
     assert isinstance(adapter, HermesRuntimeAdapter)
@@ -448,9 +448,9 @@ def test_setup_can_skip_native_mcp_configuration(monkeypatch, tmp_path):
         assert url == "https://relay.example.com/v1/connector/setup"
         return FakeResponse()
 
-    monkeypatch.setattr("herald_connector.client.httpx.post", fake_post)
+    monkeypatch.setattr("kallisti_connector.client.httpx.post", fake_post)
     monkeypatch.setattr(
-        "herald_connector.client.register_native_mcp_server",
+        "kallisti_connector.client.register_native_mcp_server",
         lambda state_dir: (_ for _ in ()).throw(AssertionError("register_native_mcp_server should not be called")),
     )
 
@@ -477,7 +477,7 @@ def test_configure_mcp_updates_existing_connector_state(monkeypatch, tmp_path):
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
     monkeypatch.setattr(connector.executor, "detect_version", lambda: "Hermes 1.2.3")
     monkeypatch.setattr(
-        "herald_connector.client.register_native_mcp_server",
+        "kallisti_connector.client.register_native_mcp_server",
         lambda state_dir: MCPRegistrationStatus(
             server_name="hermes_mobile",
             hermes_home=tmp_path / ".hermes",
@@ -486,8 +486,8 @@ def test_configure_mcp_updates_existing_connector_state(monkeypatch, tmp_path):
             registered=True,
         ),
     )
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
-    monkeypatch.setattr("herald_connector.client.validate_native_mcp_tools", lambda server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_server", lambda hermes_command, server_name: None)
+    monkeypatch.setattr("kallisti_connector.client.validate_native_mcp_tools", lambda server_name: None)
 
     state = connector.configure_mcp()
 
@@ -532,7 +532,7 @@ def test_pair_phone_uses_stored_connector_credential(monkeypatch, tmp_path):
         assert json is None
         return FakeResponse()
 
-    monkeypatch.setattr("herald_connector.client.httpx.post", fake_post)
+    monkeypatch.setattr("kallisti_connector.client.httpx.post", fake_post)
 
     pairing = connector.create_phone_pairing_code()
     assert pairing.code == "ABCDEFGH"
@@ -635,7 +635,7 @@ def test_realtime_session_creation_falls_back_to_secondary_model(monkeypatch, tm
             },
         )
 
-    monkeypatch.setattr("herald_connector.client.httpx.post", fake_post)
+    monkeypatch.setattr("kallisti_connector.client.httpx.post", fake_post)
 
     payload, selected_model = connector._create_openai_realtime_session(  # noqa: SLF001
         api_key="sk-test-realtime",
@@ -716,7 +716,7 @@ def test_register_native_mcp_server_updates_existing_hermes_config(monkeypatch, 
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(
-        "herald_connector.mcp_registration.resolve_mcp_command_path",
+        "kallisti_connector.mcp_registration.resolve_mcp_command_path",
         lambda: tmp_path / "bin" / "herald-mcp",
     )
 
@@ -958,7 +958,7 @@ def test_native_mcp_readiness_requires_reload_when_chat_process_is_running(monke
         stdout = " 123 /usr/local/bin/hermes chat\n"
 
     monkeypatch.setattr(
-        "herald_connector.mcp_registration.subprocess.run",
+        "kallisti_connector.mcp_registration.subprocess.run",
         lambda *args, **kwargs: FakeProcess(),
     )
 
@@ -972,7 +972,7 @@ def test_native_mcp_readiness_reports_ready_when_no_chat_process_is_running(monk
         stdout = " 123 /usr/bin/python something-else\n"
 
     monkeypatch.setattr(
-        "herald_connector.mcp_registration.subprocess.run",
+        "kallisti_connector.mcp_registration.subprocess.run",
         lambda *args, **kwargs: FakeProcess(),
     )
 

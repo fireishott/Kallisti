@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from herald_connector.http_facade import _auto_title, _auto_title_and_persist
+from kallisti_connector.http_facade import _auto_title, _auto_title_and_persist
 
 
 class FakeHandler:
@@ -76,7 +76,7 @@ async def test_auto_title_and_persist_uses_throwaway_session():
     user_session = "20260728_204452_5ffc8e"  # Real session format
 
     # set_session_meta is imported at call time from session_store
-    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+    with patch("kallisti_connector.session_store.set_session_meta") as mock_set_meta:
         await _auto_title_and_persist(
             handler,
             text="Sup G",
@@ -107,7 +107,7 @@ async def test_no_title_prompt_leaks_to_session_store():
     handler = FakeHandler()
     user_session = "api-testsession-leakcheck"
 
-    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+    with patch("kallisti_connector.session_store.set_session_meta") as mock_set_meta:
         await _auto_title_and_persist(
             handler,
             text="User's real message",
@@ -208,7 +208,7 @@ def _make_mock_job(job_id: str, text: str, session_id: str) -> dict:
 @pytest.mark.asyncio
 async def test_same_session_jobs_serialize():
     """Two concurrent jobs on the same session must not overlap in the handler."""
-    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+    from kallisti_connector.http_facade import _session_locks, _http_jobs, _run_http_job
 
     session = "serialize-test-session"
     handler = SlowRecordingHandler(delay=0.05)
@@ -257,7 +257,7 @@ async def test_same_session_jobs_serialize():
 @pytest.mark.asyncio
 async def test_different_sessions_run_concurrently():
     """Jobs on different sessions should be able to run in parallel."""
-    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+    from kallisti_connector.http_facade import _session_locks, _http_jobs, _run_http_job
 
     session_a = "parallel-session-A"
     session_b = "parallel-session-B"
@@ -298,7 +298,7 @@ async def test_different_sessions_run_concurrently():
 @pytest.mark.asyncio
 async def test_job_with_null_session_skips_lock():
     """Jobs with session_id=None should not acquire a lock (cold-start path)."""
-    from herald_connector.http_facade import _session_locks, _http_jobs, _run_http_job
+    from kallisti_connector.http_facade import _session_locks, _http_jobs, _run_http_job
 
     handler = SlowRecordingHandler(delay=0.02)
     _http_jobs["job-null"] = _make_mock_job("job-null", "Hello", "none")
@@ -330,7 +330,7 @@ async def test_auto_title_persists_under_every_app_id():
     canonical = "9aed5edd-5d03-58bb-bd2c-781737ec34ff"
     app_sent = "62ccd628-9d71-491e-96c5-fed98658b0a4"
 
-    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+    with patch("kallisti_connector.session_store.set_session_meta") as mock_set_meta:
         await _auto_title_and_persist(
             handler,
             text="Sup homie.",
@@ -351,7 +351,7 @@ async def test_auto_title_still_accepts_a_single_id():
     """The string form stays supported — callers outside _run_http_job use it."""
     handler = FakeHandler()
 
-    with patch("herald_connector.session_store.set_session_meta") as mock_set_meta:
+    with patch("kallisti_connector.session_store.set_session_meta") as mock_set_meta:
         await _auto_title_and_persist(
             handler,
             text="Sup homie.",

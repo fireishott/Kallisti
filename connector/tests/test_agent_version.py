@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from herald_connector.client import HeraldConnector
+from kallisti_connector.client import HeraldConnector
 
 
 @pytest.fixture

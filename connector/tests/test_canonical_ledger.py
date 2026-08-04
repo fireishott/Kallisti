@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from herald_connector.delivery_store import (
+from kallisti_connector.delivery_store import (
     DeliveryStore,
     DuplicateConflictError,
     _EXPECTED_SCHEMA_VERSION,

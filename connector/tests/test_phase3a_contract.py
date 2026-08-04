@@ -53,16 +53,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.testclient import TestClient
 
-import herald_connector as connector
-import herald_connector.http_facade as facade
-from herald_connector import session_store
-from herald_connector.delivery_store import (
+import kallisti_connector as connector
+import kallisti_connector.http_facade as facade
+from kallisti_connector import session_store
+from kallisti_connector.delivery_store import (
     DeliveryStore,
     DuplicateConflictError,
     get_delivery_store,
     reset_delivery_store,
 )
-from herald_connector.http_facade import FacadeContext, app
+from kallisti_connector.http_facade import FacadeContext, app
 
 
 CONV = "660e8400-e29b-41d4-a716-446655440001"
@@ -121,7 +121,7 @@ def store(env):
 
 @pytest.fixture(autouse=True)
 def auth():
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -183,7 +183,7 @@ class TestUserMessageCanonicalIdentity:
         self, client, ctx, store, no_session_lookups,
     ):
         _seed_binding(store)
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.post("/v1/messages", json=_post_body())
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -209,7 +209,7 @@ class TestUserMessageCanonicalIdentity:
         """The canonical id emitted in the user-ack is the one stored in
         conversation_messages and get_message_by_client_id resolves it."""
         _seed_binding(store)
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.post("/v1/messages", json=_post_body())
         data = resp.json()
         user = data["userMessage"]
@@ -239,12 +239,12 @@ class TestClientMessageIdempotency:
         self, client, ctx, store, no_session_lookups,
     ):
         _seed_binding(store)
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.post("/v1/messages", json=_post_body())
         assert first.status_code == 200
         # Second send with the same id + same content: connector returns
         # replyState="duplicate" without re-running the job.
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             second = client.post("/v1/messages", json=_post_body())
         assert second.status_code == 200
         second_data = second.json()
@@ -258,13 +258,13 @@ class TestClientMessageIdempotency:
         content is a 409 conflict (replay protection) — the canonical
         row count must not increase."""
         _seed_binding(store)
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.post(
                 "/v1/messages",
                 json=_post_body(text="First version"),
             )
         assert first.status_code == 200
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             # Same id, different text — must 409
             second = client.post(
                 "/v1/messages",
@@ -305,7 +305,7 @@ class TestSnapshotUniqueness:
             ],
             "title": "Herald",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
@@ -325,7 +325,7 @@ class TestSnapshotUniqueness:
             "messages": [],
             "title": "New Chat",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get(f"/v1/sessions/{CONV}/conversation")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
@@ -461,7 +461,7 @@ class TestSystemContextInvisibility:
             text="What's the weather?",
             clientContext={"localTime": "2026-08-01T18:00:00Z"},
         )
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.post("/v1/messages", json=body)
         assert resp.status_code == 200, resp.text
         user = resp.json()["userMessage"]
@@ -508,7 +508,7 @@ class TestSameTextDifferentIds:
         distinct message_requests rows."""
         _seed_binding(store)
         for new_cmid in (str(uuid.uuid4()), str(uuid.uuid4())):
-            with patch("herald_connector.http_facade.get_context", return_value=ctx):
+            with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
                 resp = client.post(
                     "/v1/messages",
                     json=_post_body(
@@ -551,13 +551,13 @@ class TestReconnectReplay:
         different text is rejected as a 409 (a real 'conflict') — never
         silently rewritten."""
         _seed_binding(store)
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.post(
                 "/v1/messages",
                 json=_post_body(text="original"),
             )
         assert first.status_code == 200
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             replay = client.post(
                 "/v1/messages",
                 json=_post_body(text="tampered"),
@@ -628,7 +628,7 @@ class TestStreamContractWiring:
     exposes the 12 expected event types."""
 
     def test_stream_contract_module_importable(self):
-        from herald_connector import stream_contract
+        from kallisti_connector import stream_contract
         # Phase 3A v2 correction: bumped to v3.
         assert stream_contract.CONTRACT_VERSION == 3
         # Twelve event types
@@ -642,7 +642,7 @@ class TestStreamContractWiring:
         assert set(stream_contract.EVENT_TYPE_TO_MODEL) == expected
 
     def test_terminal_types(self):
-        from herald_connector.stream_contract import TERMINAL_TYPES
+        from kallisti_connector.stream_contract import TERMINAL_TYPES
         assert TERMINAL_TYPES == frozenset({
             "run.completed", "run.failed", "run.cancelled",
         })

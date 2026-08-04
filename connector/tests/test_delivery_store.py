@@ -30,17 +30,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.testclient import TestClient
 
-import herald_connector as connector
-import herald_connector.http_facade as facade
-from herald_connector import session_store
-from herald_connector.delivery_store import (
+import kallisti_connector as connector
+import kallisti_connector.http_facade as facade
+from kallisti_connector import session_store
+from kallisti_connector.delivery_store import (
     DeliveryStore,
     DuplicateConflictError,
     get_delivery_store,
     request_sha256,
     reset_delivery_store,
 )
-from herald_connector.http_facade import FacadeContext, app
+from kallisti_connector.http_facade import FacadeContext, app
 
 FIXTURES = Path(__file__).parent / "fixtures" / "delivery"
 
@@ -86,7 +86,7 @@ def store(env):
 
 @pytest.fixture(autouse=True)
 def auth():
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -100,7 +100,7 @@ def ctx(env):
 @pytest.fixture
 def app_env(env, ctx):
     """ctx patched as the live facade context for the whole test."""
-    with patch("herald_connector.http_facade.get_context", return_value=ctx):
+    with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
         yield ctx
 
 

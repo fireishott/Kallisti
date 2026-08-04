@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from herald_connector.runtime_adapter import _run_blocking
+from kallisti_connector.runtime_adapter import _run_blocking
 
 
 def test_run_blocking_works_off_the_loop():

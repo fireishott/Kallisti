@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import tempfile
@@ -60,6 +61,14 @@ TERMINAL_OR_MUTATING_EVENT_TYPES = frozenset({
     "run.completed",
     "run.failed",
     "run.cancelled",
+})
+# T1.4: event types valid on the v3 wire. Producer lifecycle events
+# like "started", "finish", "done" are filtered before seq allocation.
+WIRE_EVENT_TYPES = frozenset({
+    "text.delta", "reasoning.delta", "tool.started",
+    "tool.progress", "tool.completed", "commentary",
+    "approval.required", "run.completed", "run.failed",
+    "run.cancelled", "run.requeued",
 })
 
 # ── Process lifetime ──────────────────────────────────────────────────────
@@ -707,8 +716,20 @@ def _bind_conversation_early(job: dict, text: str, job_started_at: float,
     # ConflictError), we still consider the binding set in the sidecar; the
     # caller logs the outcome based on the *sidecar* state, not on the
     # mirror succeeding.
+    # T1.3: only mirror the real conversation id; skip the derived v5 alias
+    # when a binding already exists to avoid shadow rows and "binding conflict"
+    # warnings on every turn.
+    app_uuids_to_mirror: list[str] = [conv_id or canonical]
+    if canonical not in app_uuids_to_mirror:
+        try:
+            from .delivery_store import get_delivery_store
+            existing = get_delivery_store().get_binding_for_hermes(hermes_sid)
+            if not existing:
+                app_uuids_to_mirror.append(canonical)
+        except Exception:
+            app_uuids_to_mirror.append(canonical)
     mirrored = _persist_delivery_bindings(
-        [conv_id or canonical, canonical], hermes_sid,
+        app_uuids_to_mirror, hermes_sid,
         job.get("installationId"),
     )
     # Build 102 P0-B.2: only emit the "Bound conversation …" success log
@@ -1022,6 +1043,20 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             )
             return
         attempt = int(job.get("attempt", 1) or 1)
+        event_type = (event or {}).get("type") or "progress"
+        # B116: canonicalize internal underscore event types to the v3 wire
+        # form. TextDeltaEvent is Literal["text.delta"]; a raw "text_delta"
+        # from the producer failed validation and every reply token was
+        # dropped ("no reply"). Normalize before envelope build + validate.
+        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta"}.get(event_type, event_type)
+        # T1.4: filter producer lifecycle events that have no wire
+        # equivalent BEFORE allocating a sequence number.
+        if event_type not in WIRE_EVENT_TYPES:
+            logger.debug(
+                "_publish: filtering non-wire event %s for job %s",
+                event_type, job_id,
+            )
+            return
         # Allocate the next sequence from the ledger (or fall back to
         # the per-attempt counter if the ledger is unavailable).  The
         # builder refuses to publish an envelope whose seq is < 1.
@@ -1043,12 +1078,6 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             conv_rev = get_delivery_store().get_conversation_revision(conv_id)
         except Exception:                             # noqa: BLE001
             conv_rev = 0
-        event_type = (event or {}).get("type") or "progress"
-        # B116: canonicalize internal underscore event types to the v3 wire
-        # form. TextDeltaEvent is Literal["text.delta"]; a raw "text_delta"
-        # from the producer failed validation and every reply token was
-        # dropped ("no reply"). Normalize before envelope build + validate.
-        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta"}.get(event_type, event_type)
         payload = (event or {}).get("data") or {}
         # If the payload is itself shaped as an envelope (a v3 envelope
         # that we are forwarding), pass the payload through; otherwise
@@ -1315,9 +1344,12 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                             # binding row (hermes_session_id is UNIQUE); the
                             # compose UUID resolves through the sidecar if it
                             # loses the race.
+                            # T1.3: only mirror the real client UUID; the
+                            # v5 derived id is an internal alias that never
+                            # claims a binding row.
+                            _mirror_id = response_conv_id or canonical_app_id
                             _persist_delivery_bindings(
-                                [canonical_app_id, response_conv_id],
-                                hermes_sid, device_id,
+                                [_mirror_id], hermes_sid, device_id,
                             )
 
                             # B38 P1-1: auto-generate a title if the session
@@ -4142,6 +4174,30 @@ async def ensure_conversation(request: Request) -> JSONResponse:
                             "hermesSessionState": "ready",
                             "created": False,
                         })
+                    # T1.2: if the client presented the derived v5 alias of
+                    # a session that already has a real app conversation,
+                    # redirect to the canonical identity instead of refusing.
+                    bound = None
+                    try:
+                        bound = store.get_binding_for_hermes(sidecar_hermes)
+                    except Exception:
+                        logger.debug(
+                            "ensure: reverse lookup failed", exc_info=True,
+                        )
+                    if bound and cid == _app_uuid(sidecar_hermes):
+                        logger.info(
+                            "ensure_conversation: alias %s resolved to "
+                            "canonical %s",
+                            cid, bound["appConversationId"],
+                        )
+                        return JSONResponse({
+                            "$schema": "conversation-ensured-v1",
+                            "conversationId": bound["appConversationId"],
+                            "aliasedFrom": cid,
+                            "sessionId": sidecar_hermes,
+                            "hermesSessionState": "ready",
+                            "created": False,
+                        })
                     logger.warning(
                         "ensure_conversation: legacy sidecar %s collides on "
                         "promote — %s", cid, exc,
@@ -5274,23 +5330,27 @@ async def stub_note_runs_events(request: Request) -> JSONResponse:
 
 
 async def stub_talk_readiness(request: Request) -> JSONResponse:
-    """GET /v1/talk/readiness — Build 104: real readiness probe.
+    """GET /v1/talk/readiness — Kallisti 0.1.0: hermes-native speech worker.
 
-    Uses the paired phone's Keychain-held MiMo key when supplied in the
-    authenticated request header (with an optional host-key fallback) and
-    pings Xiaomi's `/v1/models` endpoint. Also checks Hermes liveness. Returns
-    `ready: true` only when all three preconditions hold:
-
-    1. A MiMo API key is supplied by the authenticated device or configured
-       for a headless connector client.
-    2. The Xiaomi upstream answered (any HTTP code, including
-       401/404, is "reachable enough"; only network errors fail it).
-    3. The Hermes gateway is active (per the live systemd unit).
+    Checks speech worker status + Hermes unit liveness. Returns flat
+    JSON (no `{"data": …}` wrapper) with stt/tts provider strings.
     """
     await require_auth(request)
-    from .mimo_proxy import probe_upstream_reachable
-    request_api_key = request.headers.get("X-Herald-MiMo-API-Key", "").strip() or None
-    upstream_ok, upstream_reason = await probe_upstream_reachable(request_api_key)
+    from .hermes_speech import SpeechError, get_speech_client
+    # Speech worker status
+    speech_configured = False
+    stt_provider = None
+    tts_provider = None
+    blocked_reason = None
+    try:
+        status = await get_speech_client().status()
+        speech_configured = bool(status.get("success"))
+        stt_provider = status.get("stt_provider")
+        tts_provider = status.get("tts_provider")
+    except SpeechError as exc:
+        blocked_reason = exc.message
+    except Exception as exc:  # noqa: BLE001
+        blocked_reason = f"Speech worker error: {exc!r}"
     # Hermes liveness
     hermes_unit = _hermes_unit()
     hermes_observed = await asyncio.to_thread(
@@ -5301,121 +5361,76 @@ async def stub_talk_readiness(request: Request) -> JSONResponse:
         and hermes_observed.get("active_state") == "active"
         and hermes_observed.get("main_pid")
     )
-    blocked: list[str] = []
-    if not upstream_ok:
-        blocked.append(upstream_reason)
     if not hermes_active:
-        blocked.append(f"Hermes unit {hermes_unit} is not active.")
-    ready = not blocked
-    blocked_reason = " ".join(blocked) if blocked else None
+        blocked_reason = f"Hermes unit {hermes_unit} is not active."
+    ready = speech_configured and hermes_active
     return JSONResponse({
         "ready": ready,
         "hostOnline": hermes_active,
-        "configured": upstream_ok,
+        "configured": speech_configured,
         "blockedReason": blocked_reason,
-        "preferredModels": (
-            [{"id": "mimo-v2.5-asr", "label": "MiMo V2.5 ASR"}]
-            if upstream_ok else None
-        ),
-        "selectedModel": "mimo-v2.5-asr" if upstream_ok else None,
-        "voice": None,
-        "voiceContextUpdatedAt": None,
+        "stt": stt_provider,
+        "tts": tts_provider,
     })
 
 
 # ── Mimo proxy handlers (Build 104) ──────────────────────────────────────
 
 
-async def mimo_asr(request: Request) -> Response:
-    """POST /v1/mimo/asr — server-side Xiaomi ASR proxy.
-
-    Accepts ``multipart/form-data`` with the WAV body in the ``file``
-    field (the iOS client posts via ``URLSession.upload(for:from:)``)
-    plus form fields ``model`` and ``language``.  Streams NDJSON
-    ``{"type":"delta|final","text":…}`` back to the client.
-
-    The paired iOS device supplies its Keychain-held Xiaomi key in an
-    authenticated request header. It is used only for this upstream call.
-    """
+async def talk_transcribe(request: Request) -> Response:
+    """POST /v1/talk/transcribe — hermes-native STT (Kallisti 0.1.0)."""
     await require_auth(request)
-    from .mimo_proxy import (
-        MimoProxyError,
-        proxy_error_payload,
-        transcribe_audio,
-    )
+    from .hermes_speech import SpeechError, get_speech_client
     form = await request.form()
     upload = form.get("file")
     if upload is None or not hasattr(upload, "read"):
-        return JSONResponse(
-            status_code=400,
-            content=proxy_error_payload(MimoProxyError(
-                "mimoBadRequest",
-                "Missing 'file' field in multipart upload.",
-                status_code=400,
-            )),
-        )
+        return JSONResponse(status_code=400, content={
+            "$schema": "talk-error-v1", "error": "speechBadRequest",
+            "message": "Missing 'file' field in multipart upload.",
+        })
     audio_bytes = await upload.read()
-    mime_type = getattr(upload, "content_type", None) or "audio/wav"
-    model = str(form.get("model") or "mimo-v2.5-asr")
+    if len(audio_bytes) < 320:
+        return JSONResponse(status_code=400, content={
+            "$schema": "talk-error-v1", "error": "speechBadRequest",
+            "message": f"Audio too short ({len(audio_bytes)} bytes).",
+        })
     language = str(form.get("language") or "auto")
-    stream = str(form.get("stream") or "true").lower() in (
-        "1", "true", "yes", "on",
-    )
-    request_api_key = request.headers.get("X-Herald-MiMo-API-Key", "").strip() or None
-
-    async def _event_stream() -> AsyncIterator[bytes]:
+    with tempfile.TemporaryDirectory(prefix="talk-stt-") as tmp:
+        wav_path = os.path.join(tmp, "utterance.wav")
+        with open(wav_path, "wb") as fh:
+            fh.write(audio_bytes)
         try:
-            async for event in transcribe_audio(
-                audio_bytes=audio_bytes,
-                mime_type=mime_type,
-                language=language,
-                model=model,
-                request_api_key=request_api_key,
-            ):
-                yield (json.dumps(event) + "\n").encode("utf-8")
-        except MimoProxyError as exc:
-            err = proxy_error_payload(exc)
-            yield (json.dumps({"type": "error", **err}) + "\n").encode("utf-8")
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("mimo: asr stream raised unexpectedly")
-            err = proxy_error_payload(MimoProxyError(
-                "mimoInternalError",
-                f"Internal proxy failure: {exc!r}",
-                status_code=500,
-            ))
-            yield (json.dumps({"type": "error", **err}) + "\n").encode("utf-8")
+            text = await get_speech_client().transcribe(wav_path)
+        except SpeechError as exc:
+            return JSONResponse(status_code=exc.status_code, content=exc.payload())
+    return JSONResponse({"$schema": "talk-transcript-v1", "text": text, "language": language})
 
-    if stream:
-        return StreamingResponse(
-            _event_stream(),
-            media_type="application/x-ndjson",
-        )
-    # Non-streaming: collect all deltas + final into a single JSON body.
-    text_parts: list[str] = []
-    final_text = ""
+
+async def talk_speak(request: Request) -> Response:
+    """POST /v1/talk/speak — hermes-native TTS (Kallisti 0.1.0). Returns audio/wav."""
+    await require_auth(request)
+    from .hermes_speech import SpeechError, get_speech_client
     try:
-        async for event in transcribe_audio(
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
-            language=language,
-            model=model,
-            request_api_key=request_api_key,
-        ):
-            if event.get("type") == "delta" and event.get("text"):
-                text_parts.append(event["text"])
-            elif event.get("type") == "final":
-                final_text = event.get("text", "")
-    except MimoProxyError as exc:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=proxy_error_payload(exc),
-        )
-    return JSONResponse({
-        "$schema": "mimo-asr-v1",
-        "text": final_text or "".join(text_parts),
-        "language": language,
-        "model": model,
-    })
+        body = await request.json()
+        text = str(body.get("text") or "").strip()
+    except Exception:
+        text = ""
+    if not text:
+        return JSONResponse(status_code=400, content={
+            "$schema": "talk-error-v1", "error": "speechBadRequest",
+            "message": "Body must be JSON with a non-empty 'text'.",
+        })
+    tmp = tempfile.mkdtemp(prefix="talk-tts-")
+    try:
+        try:
+            wav_path = await get_speech_client().speak(text, output_dir=tmp)
+        except SpeechError as exc:
+            return JSONResponse(status_code=exc.status_code, content=exc.payload())
+        with open(wav_path, "rb") as fh:
+            wav_bytes = fh.read()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return Response(content=wav_bytes, media_type="audio/wav")
 
 
 async def stub_talk_session(request: Request) -> JSONResponse:
@@ -5958,6 +5973,8 @@ routes = [
     Route("/v1/note-runs/{id}/cancel", stub_note_runs_cancel, methods=["POST"]),
     Route("/v1/note-runs/{id}/events", stub_note_runs_events, methods=["GET"]),
     Route("/v1/talk/readiness", stub_talk_readiness, methods=["GET"]),
+    Route("/v1/talk/transcribe", talk_transcribe, methods=["POST"]),
+    Route("/v1/talk/speak", talk_speak, methods=["POST"]),
     Route("/v1/talk/session", stub_talk_session, methods=["POST"]),
     Route("/v1/talk/session/{id}/end", stub_talk_session_end, methods=["POST"]),
     Route("/v1/talk/session/{id}/inject", stub_talk_session_inject, methods=["POST"]),
@@ -5965,7 +5982,6 @@ routes = [
     # Build 104: server-side Xiaomi MiMo ASR proxy.  The iOS client
     # posts a multipart audio upload here; the connector forwards
     # the request to api.xiaomimimo.com using its own key.
-    Route("/v1/mimo/asr", mimo_asr, methods=["POST"]),
     Route("/v1/gw/update", gateway_update_apply, methods=["GET", "POST"]),
     Route("/v1/gw/update/check", gateway_update_check, methods=["POST"]),
     Route("/v1/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31

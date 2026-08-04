@@ -26,8 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
-from herald_connector import session_store
-from herald_connector.herald_api_executor import _is_interrupt_sentinel
+from kallisti_connector import session_store
+from kallisti_connector.herald_api_executor import _is_interrupt_sentinel
 
 
 def _make_db(db_path: Path) -> sqlite3.Connection:
@@ -112,16 +112,16 @@ def env():
 
 def _patched(db_path: Path, sidecar_path: Path):
     return (
-        patch("herald_connector.session_store._db_path", return_value=db_path),
-        patch("herald_connector.session_store._sidecar_path", return_value=sidecar_path),
-        patch("herald_connector.session_store._profile_name", return_value=None),
+        patch("kallisti_connector.session_store._db_path", return_value=db_path),
+        patch("kallisti_connector.session_store._sidecar_path", return_value=sidecar_path),
+        patch("kallisti_connector.session_store._profile_name", return_value=None),
     )
 
 
 def test_recent_message_lookup_ignores_older_duplicate(env):
     """A `since` bound must exclude an identical message from an old session."""
     db_path, _ = env
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         assert session_store._find_session_by_recent_message(
             "Sup homie.", since=4000.0
         ) == "api-live"
@@ -133,7 +133,7 @@ def test_recent_message_lookup_ignores_older_duplicate(env):
 def test_recent_message_lookup_returns_none_when_nothing_is_recent(env):
     """No match inside the window means 'unknown', never a stale session."""
     db_path, _ = env
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         assert session_store._find_session_by_recent_message(
             "Sup homie.", since=9000.0
         ) is None
@@ -228,7 +228,7 @@ def test_normal_reply_mentioning_interruption_is_not_a_sentinel():
 def test_derived_title_is_none_for_an_empty_session(env):
     """A session with no user messages has nothing to derive from."""
     db_path, _ = env
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         assert session_store._derived_title("api-does-not-exist") is None
 
 
@@ -244,7 +244,7 @@ def test_derived_title_truncates_long_openers(env):
     conn.commit()
     conn.close()
 
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         title = session_store._derived_title("api-long")
 
     assert title is not None

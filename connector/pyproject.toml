@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "herald-connector"
-version = "0.9.5"
-description = "Connector process that bridges a local Herald CLI to Herald relay."
+name = "kallisti-connector"
+version = "0.1.0"
+description = "Connector process that bridges a local Kallisti CLI to Hermes relay."
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.28.0,<1.0.0",
@@ -16,13 +16,13 @@ dependencies = [
 ]
 
 [project.scripts]
-herald = "herald_connector.cli:main"
-herald-mcp = "herald_connector.mcp_server:main"
-# Compatibility entrypoints for Hermes configs created before the Herald rename.
-# Keeping these aliases prevents a cached gateway command from crashing while
-# configure-mcp rewrites the config to the canonical herald-mcp executable.
-hermes-mobile = "herald_connector.cli:main"
-hermes-mobile-mcp = "herald_connector.mcp_server:main"
+kallisti = "kallisti_connector.cli:main"
+kallisti-mcp = "kallisti_connector.mcp_server:main"
+# Legacy entrypoints for backward compatibility during transition.
+herald = "kallisti_connector.cli:main"
+herald-mcp = "kallisti_connector.mcp_server:main"
+hermes-mobile = "kallisti_connector.cli:main"
+hermes-mobile-mcp = "kallisti_connector.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -35,4 +35,4 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["herald_connector*"]
+include = ["kallisti_connector*"]

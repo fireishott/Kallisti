@@ -31,16 +31,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.testclient import TestClient
 
-import herald_connector as connector
-import herald_connector.http_facade as facade
-from herald_connector import session_store
-from herald_connector.delivery_store import (
+import kallisti_connector as connector
+import kallisti_connector.http_facade as facade
+from kallisti_connector import session_store
+from kallisti_connector.delivery_store import (
     DeliveryStore,
     DuplicateConflictError,
     get_delivery_store,
     reset_delivery_store,
 )
-from herald_connector.http_facade import FacadeContext, app
+from kallisti_connector.http_facade import FacadeContext, app
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ def store(env):
 
 @pytest.fixture(autouse=True)
 def auth():
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -87,7 +87,7 @@ def ctx(env):
 
 @pytest.fixture
 def app_env(env, ctx):
-    with patch("herald_connector.http_facade.get_context", return_value=ctx):
+    with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
         yield ctx
 
 
@@ -113,7 +113,7 @@ def no_session_lookups(monkeypatch):
 
 class TestSchemaVersion2:
     def test_schema_version_is_3(self):
-        from herald_connector.delivery_store import _EXPECTED_SCHEMA_VERSION
+        from kallisti_connector.delivery_store import _EXPECTED_SCHEMA_VERSION
         assert _EXPECTED_SCHEMA_VERSION == 3
 
     def test_archived_columns_exist(self, store):
