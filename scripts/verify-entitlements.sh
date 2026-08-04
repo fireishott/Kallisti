@@ -110,8 +110,8 @@ if [ -n "$IPA_PATH" ] && [ -f "$IPA_PATH" ]; then
             fi
         done
 
-        # Profile check in exported IPA
-        IPA_PROFILE=$(find "$TMP_IPA_DIR" -name "embedded.mobileprovision" -type f | head -1)
+        # Profile check in exported IPA (main app only, not extensions)
+        IPA_PROFILE=$(find "$TMP_IPA_DIR/Payload" -maxdepth 2 -name "embedded.mobileprovision" -type f | head -1)
         if [ -f "$IPA_PROFILE" ]; then
             PROFILE_DUMP=$(security cms -D -i "$IPA_PROFILE" 2>/dev/null)
             if ! echo "$PROFILE_DUMP" | grep -q "com.apple.developer.healthkit"; then
