@@ -8,7 +8,7 @@ final class ToolNameSanitizerTests: XCTestCase {
     }
 
     func testShellCommandsNeverLeak() {
-        let leak = "sed -n '340,420p' /home/agent/hermes-ios-work/connector/src/x.py"
+        let leak = "sed -n '340,420p' /home/user/project/connector/src/x.py"
         XCTAssertEqual(ToolNameSanitizer.displayLabel(for: leak), "Running a command")
         XCTAssertFalse(ToolNameSanitizer.displayLabel(for: leak).contains("/home"))
         XCTAssertEqual(ToolNameSanitizer.displayLabel(for: "cat foo | grep bar"), "Running a command")
