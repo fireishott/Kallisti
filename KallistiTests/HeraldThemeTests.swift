@@ -3,14 +3,12 @@ import Testing
 import UIKit
 @testable import Kallisti
 
-/// Herald 2.1 rebrand contract tests.
+/// Kallisti rebrand contract tests.
 ///
 /// These lock the design tokens to the values in the rebrand package
-/// (`palette/herald-palette.json` + BUILDER_THEME_PROMPT.md) so a future edit
-/// can't silently drift the brand, and assert the accessibility behaviors the
-/// spec requires (Dynamic Type, Reduce Motion, Reduce Transparency, contrast).
+/// (BUILDER_PROMPT.md) so a future edit can't silently drift the brand.
 @Suite
-struct HeraldThemeTests {
+struct KallistiThemeTests {
 
     // MARK: - Helpers
 
@@ -50,127 +48,105 @@ struct HeraldThemeTests {
 
     // MARK: - Token fidelity
 
-    @Test("Herald cobalt tokens match the published brand palette")
-    func cobaltTokens() {
-        #expect(hex(HeraldTheme.Cobalt.deepInk) == 0x020813)
-        #expect(hex(HeraldTheme.Cobalt.background) == 0x030C1C)
-        #expect(hex(HeraldTheme.Cobalt.templeBlue) == 0x071C3D)
-        #expect(hex(HeraldTheme.Cobalt.surface) == 0x0C3569)
-        #expect(hex(HeraldTheme.Cobalt.surfaceRaised) == 0x123F78)
-        #expect(hex(HeraldTheme.Cobalt.royalBlue) == 0x1A4F97)
-        #expect(hex(HeraldTheme.Cobalt.signalBlue) == 0x306FD6)
-        #expect(hex(HeraldTheme.Cobalt.signalBlueHot) == 0x5797F1)
-        #expect(hex(HeraldTheme.Cobalt.bone) == 0xF1F5F3)
-        #expect(hex(HeraldTheme.Cobalt.mist) == 0xBCCDDA)
-        #expect(hex(HeraldTheme.Cobalt.steel) == 0x789AB8)
-        #expect(hex(HeraldTheme.Cobalt.divider) == 0x466C96)
+    @Test("Kallisti obsidian tokens match the published brand palette")
+    func obsidianTokens() {
+        #expect(hex(KallistiTheme.Obsidian.deepInk) == 0x000000)
+        #expect(hex(KallistiTheme.Obsidian.background) == 0x0C0C10)
+        #expect(hex(KallistiTheme.Obsidian.panel) == 0x16181C)
+        #expect(hex(KallistiTheme.Obsidian.surface) == 0x1C1D22)
+        #expect(hex(KallistiTheme.Obsidian.surfaceRaised) == 0x22232A)
+        #expect(hex(KallistiTheme.Obsidian.selected) == 0x2A2B33)
+        #expect(hex(KallistiTheme.Obsidian.accent) == 0xC8CCD2)
+        #expect(hex(KallistiTheme.Obsidian.accentHot) == 0xE5E8EC)
+        #expect(hex(KallistiTheme.Obsidian.bone) == 0xF0F2F5)
+        #expect(hex(KallistiTheme.Obsidian.mist) == 0xA8ADB5)
+        #expect(hex(KallistiTheme.Obsidian.pewter) == 0x6B7078)
+        #expect(hex(KallistiTheme.Obsidian.divider) == 0x2A2B33)
     }
 
-    @Test("Herald OLED tokens match the published brand palette")
+    @Test("Kallisti OLED tokens match the published brand palette")
     func oledTokens() {
-        #expect(hex(HeraldTheme.OLED.black) == 0x000000)
-        #expect(hex(HeraldTheme.OLED.nearBlack) == 0x05070B)
-        #expect(hex(HeraldTheme.OLED.surface) == 0x0A1220)
-        #expect(hex(HeraldTheme.OLED.surfaceRaised) == 0x0F1C30)
-        #expect(hex(HeraldTheme.OLED.accent) == 0x3D7BFF)
-        #expect(hex(HeraldTheme.OLED.accentHot) == 0x7AB0FF)
-        #expect(hex(HeraldTheme.OLED.foreground) == 0xF5F7FA)
-        #expect(hex(HeraldTheme.OLED.secondary) == 0xA8B7CC)
-        #expect(hex(HeraldTheme.OLED.tertiary) == 0x6F84A0)
-        #expect(hex(HeraldTheme.OLED.divider) == 0x24344D)
+        #expect(hex(KallistiTheme.OLED.background) == 0x050507)
+        #expect(hex(KallistiTheme.OLED.surface) == 0x0A0A0E)
+        #expect(hex(KallistiTheme.OLED.surfaceRaised) == 0x0F0F14)
+        #expect(hex(KallistiTheme.OLED.accent) == 0xC8CCD2)
+        #expect(hex(KallistiTheme.OLED.accentHot) == 0xE5E8EC)
+        #expect(hex(KallistiTheme.OLED.foreground) == 0xF0F2F5)
+        #expect(hex(KallistiTheme.OLED.secondary) == 0xA8ADB5)
+        #expect(hex(KallistiTheme.OLED.tertiary) == 0x6B7078)
+        #expect(hex(KallistiTheme.OLED.divider) == 0x1C1D22)
     }
 
-    @Test("Herald Light tokens match the published brand palette")
+    @Test("Kallisti Light tokens match the published brand palette")
     func lightTokens() {
-        #expect(hex(HeraldTheme.Light.background) == 0xE9EEF2)
-        #expect(hex(HeraldTheme.Light.surface) == 0xDCE5EC)
-        #expect(hex(HeraldTheme.Light.foreground) == 0x061A38)
-        #expect(hex(HeraldTheme.Light.secondary) == 0x355A7D)
-        #expect(hex(HeraldTheme.Light.accent) == 0x1A4F97)
-        #expect(hex(HeraldTheme.Light.divider) == 0x789AB8)
+        #expect(hex(KallistiTheme.Light.background) == 0xFAFAFA)
+        #expect(hex(KallistiTheme.Light.surface) == 0xFFFFFF)
+        #expect(hex(KallistiTheme.Light.foreground) == 0x0C0C10)
+        #expect(hex(KallistiTheme.Light.secondary) == 0x4A4D55)
+        #expect(hex(KallistiTheme.Light.tertiary) == 0x8A909A)
+        #expect(hex(KallistiTheme.Light.accent) == 0x0C0C10)
+        #expect(hex(KallistiTheme.Light.accentHot) == 0x1C1D22)
+        #expect(hex(KallistiTheme.Light.divider) == 0xE0E0E0)
     }
 
     @Test("Semantic signal colors match the published brand palette")
     func signalTokens() {
-        #expect(hex(HeraldTheme.Signal.success) == 0x41C98E)
-        #expect(hex(HeraldTheme.Signal.warning) == 0xD9AF53)
-        #expect(hex(HeraldTheme.Signal.danger) == 0xCF4D57)
+        #expect(hex(KallistiTheme.Signal.success) == 0x41C98E)
+        #expect(hex(KallistiTheme.Signal.warning) == 0xD9AF53)
+        #expect(hex(KallistiTheme.Signal.danger) == 0xCF4D57)
     }
 
     // MARK: - Preset wiring
 
-    @Test("Herald default dark palette is wired to the cobalt tokens")
-    func heraldDarkPalette() {
-        let p = ThemePreset.herald.darkColors
-        #expect(hex(p.background) == 0x030C1C)
-        #expect(hex(p.deepInk) == 0x020813)
-        #expect(hex(p.panel) == 0x071C3D)
-        #expect(hex(p.surface) == 0x0C3569)
-        #expect(hex(p.surfaceRaised) == 0x123F78)
-        #expect(hex(p.surfaceSelected) == 0x1A4F97)
-        #expect(hex(p.foreground) == 0xF1F5F3)
-        #expect(hex(p.secondaryForeground) == 0xBCCDDA)
-        #expect(hex(p.tertiaryForeground) == 0x789AB8)
-        #expect(hex(p.accent) == 0x306FD6)
-        #expect(hex(p.accentHot) == 0x5797F1)
+    @Test("Kallisti default dark palette is wired to the obsidian tokens")
+    func kallistiDarkPalette() {
+        let p = ThemePreset.kallisti.darkColors
+        #expect(hex(p.background) == 0x0C0C10)
+        #expect(hex(p.deepInk) == 0x000000)
+        #expect(hex(p.panel) == 0x16181C)
+        #expect(hex(p.surface) == 0x1C1D22)
+        #expect(hex(p.surfaceRaised) == 0x22232A)
+        #expect(hex(p.surfaceSelected) == 0x2A2B33)
+        #expect(hex(p.foreground) == 0xF0F2F5)
+        #expect(hex(p.secondaryForeground) == 0xA8ADB5)
+        #expect(hex(p.tertiaryForeground) == 0x6B7078)
+        #expect(hex(p.accent) == 0xC8CCD2)
+        #expect(hex(p.accentHot) == 0xE5E8EC)
         #expect(p.prefersSharpEdges == false)
     }
 
-    @Test("Herald OLED palette is wired to the OLED tokens, with true-black deep ink")
-    func heraldOLEDPalette() {
-        let p = ThemePreset.heraldOLED.darkColors
+    @Test("Kallisti OLED palette is wired to the OLED tokens, with true-black deep ink")
+    func kallistiOLEDPalette() {
+        let p = ThemePreset.kallistiOLED.darkColors
         #expect(hex(p.deepInk) == 0x000000, "OLED deepest layer must be true black")
-        #expect(hex(p.background) == 0x05070B)
-        #expect(hex(p.surface) == 0x0A1220)
-        #expect(hex(p.surfaceRaised) == 0x0F1C30)
-        #expect(hex(p.accent) == 0x3D7BFF)
-        #expect(hex(p.accentHot) == 0x7AB0FF)
+        #expect(hex(p.background) == 0x050507)
+        #expect(hex(p.surface) == 0x0A0A0E)
+        #expect(hex(p.surfaceRaised) == 0x0F0F14)
+        #expect(hex(p.accent) == 0xC8CCD2)
+        #expect(hex(p.accentHot) == 0xE5E8EC)
         #expect(p.prefersSharpEdges == true, "OLED presentation uses sharper edges")
     }
 
-    @Test("Herald light palette is wired to the light tokens")
-    func heraldLightPalette() {
-        let p = ThemePreset.herald.lightColors
-        #expect(hex(p.background) == 0xE9EEF2)
-        #expect(hex(p.surface) == 0xDCE5EC)
-        #expect(hex(p.foreground) == 0x061A38)
-        #expect(hex(p.accent) == 0x1A4F97)
+    @Test("Kallisti light palette is wired to the light tokens")
+    func kallistiLightPalette() {
+        let p = ThemePreset.kallisti.lightColors
+        #expect(hex(p.background) == 0xFAFAFA)
+        #expect(hex(p.surface) == 0xFFFFFF)
+        #expect(hex(p.foreground) == 0x0C0C10)
+        #expect(hex(p.accent) == 0x0C0C10)
     }
 
-    @Test("Herald OLED resolves to the shared light counterpart in light mode")
-    func oledLightFallsBackToHeraldLight() {
-        #expect(hex(ThemePreset.heraldOLED.lightColors.background) == 0xE9EEF2)
-    }
-
-    // MARK: - Orange is retired
-
-    @Test("No Herald preset uses the retired orange accents")
-    func orangeIsRetired() {
-        let retired: Set<UInt> = [0xFF6B00, 0xFF3F00, 0xFF3D00, 0xFEB47B, 0xFF7E5F]
-        for preset in ThemePreset.heraldPresets {
-            #expect(!retired.contains(hex(preset.accent)),
-                    "\(preset.rawValue) accent must not be orange")
-            for palette in [preset.darkColors, preset.lightColors] {
-                #expect(!retired.contains(hex(palette.accent)))
-                #expect(!retired.contains(hex(palette.accentHot)))
-                #expect(!retired.contains(hex(palette.foreground)))
-                #expect(!retired.contains(hex(palette.background)))
-            }
-        }
-    }
-
-    @Test("Herald accents are the signal blues")
-    func heraldAccentsAreBlue() {
-        #expect(hex(ThemePreset.herald.accent) == 0x306FD6)
-        #expect(hex(ThemePreset.heraldOLED.accent) == 0x3D7BFF)
+    @Test("Kallisti OLED resolves to the shared light counterpart in light mode")
+    func oledLightFallsBackToKallistiLight() {
+        #expect(hex(ThemePreset.kallistiOLED.lightColors.background) == 0xFAFAFA)
     }
 
     // MARK: - Appearance mapping
 
-    @Test("Every Herald appearance round-trips through its stored axes")
+    @Test("Every Kallisti appearance round-trips through its stored axes")
     func appearanceRoundTrip() {
-        for appearance in HeraldAppearance.allCases {
-            let resolved = HeraldAppearance.resolve(
+        for appearance in KallistiAppearance.allCases {
+            let resolved = KallistiAppearance.resolve(
                 preset: appearance.preset,
                 colorScheme: appearance.colorScheme
             )
@@ -179,58 +155,58 @@ struct HeraldThemeTests {
         }
     }
 
-    @Test("Appearance list is exactly System, Herald, Herald OLED, Herald Light")
+    @Test("Appearance list is exactly System, Kallisti, Kallisti OLED, Kallisti Light")
     func appearanceRoster() {
-        #expect(HeraldAppearance.allCases.map(\.label) ==
-                ["System", "Herald", "Herald OLED", "Herald Light"])
+        #expect(KallistiAppearance.allCases.map(\.label) ==
+                ["System", "Kallisti", "Kallisti OLED", "Kallisti Light"])
     }
 
-    @Test("A pre-2.1 preset resolves to no Herald appearance")
+    @Test("A pre-2.1 preset resolves to no Kallisti appearance")
     func legacyPresetHasNoAppearance() {
-        #expect(HeraldAppearance.resolve(preset: .slate, colorScheme: .dark) == nil)
-        #expect(HeraldAppearance.resolve(preset: .cyberpunk, colorScheme: .light) == nil)
+        #expect(KallistiAppearance.resolve(preset: .slate, colorScheme: .dark) == nil)
+        #expect(KallistiAppearance.resolve(preset: .cyberpunk, colorScheme: .light) == nil)
     }
 
     @Test("Pre-2.1 presets are retained as secondary options")
     func legacyPresetsRetained() {
         #expect(ThemePreset.legacyPresets == [.midnight, .ember, .mono, .cyberpunk, .slate])
         // All presets remain selectable/decodable — no case was removed.
-        for raw in ["midnight", "ember", "mono", "cyberpunk", "slate", "herald"] {
+        for raw in ["midnight", "ember", "mono", "cyberpunk", "slate", "kallisti"] {
             #expect(ThemePreset(rawValue: raw) != nil)
         }
     }
 
     // MARK: - Persistence
 
-    @Test("themePreset default is Herald and legacy 'nous' still migrates")
+    @Test("themePreset default is Kallisti and legacy 'nous'/'herald' still migrate")
     func presetPersistence() throws {
-        // Absent key -> Herald default.
+        // Absent key -> Kallisti default.
         let empty = try JSONDecoder().decode(UserSettings.self, from: Data("{}".utf8))
-        #expect(empty.themePreset == .herald)
+        #expect(empty.themePreset == .kallisti)
 
-        // The 1.0.0 rename migration must survive the 2.1 rebrand.
+        // The 1.0.0 rename migration must survive the rebrand.
         let legacy = try JSONDecoder().decode(
             UserSettings.self,
             from: Data(#"{"themePreset":"nous"}"#.utf8)
         )
-        #expect(legacy.themePreset == .herald)
+        #expect(legacy.themePreset == .kallisti)
 
         // The new OLED preset persists.
         let oled = try JSONDecoder().decode(
             UserSettings.self,
-            from: Data(#"{"themePreset":"heraldOLED"}"#.utf8)
+            from: Data(#"{"themePreset":"kallistiOLED"}"#.utf8)
         )
-        #expect(oled.themePreset == .heraldOLED)
+        #expect(oled.themePreset == .kallistiOLED)
     }
 
-    @Test("Herald OLED survives an encode/decode round-trip")
+    @Test("Kallisti OLED survives an encode/decode round-trip")
     func oledRoundTrip() throws {
         var settings = UserSettings()
-        settings.themePreset = .heraldOLED
+        settings.themePreset = .kallistiOLED
         settings.colorSchemePreference = .dark
         let data = try JSONEncoder().encode(settings)
         let decoded = try JSONDecoder().decode(UserSettings.self, from: data)
-        #expect(decoded.themePreset == .heraldOLED)
+        #expect(decoded.themePreset == .kallistiOLED)
         #expect(decoded.colorSchemePreference == .dark)
     }
 
@@ -238,20 +214,20 @@ struct HeraldThemeTests {
 
     @Test("Texture opacity stays inside the specified bands")
     func textureBands() {
-        // Default theme: 3–8% in-app.
-        #expect(HeraldTheme.Texture.cobalt >= 0.03 && HeraldTheme.Texture.cobalt <= 0.08)
+        // Default theme: 4%.
+        #expect(KallistiTheme.Texture.dark >= 0.03 && KallistiTheme.Texture.dark <= 0.08)
         // OLED: 0–3%.
-        #expect(HeraldTheme.Texture.oled >= 0 && HeraldTheme.Texture.oled <= 0.03)
+        #expect(KallistiTheme.Texture.oled >= 0 && KallistiTheme.Texture.oled <= 0.03)
         // OLED must carry less grain than the default theme.
-        #expect(HeraldTheme.Texture.oled < HeraldTheme.Texture.cobalt)
+        #expect(KallistiTheme.Texture.oled < KallistiTheme.Texture.dark)
         // Marketing is allowed to be much heavier (15–45%).
-        #expect(HeraldTheme.Texture.marketing >= 0.15 && HeraldTheme.Texture.marketing <= 0.45)
+        #expect(KallistiTheme.Texture.marketing >= 0.15 && KallistiTheme.Texture.marketing <= 0.45)
     }
 
     @Test("OLED watermark is more restrained than the default theme")
     func watermarkWeights() {
-        #expect(ThemePreset.heraldOLED.darkColors.watermarkOpacity
-                < ThemePreset.herald.darkColors.watermarkOpacity)
+        #expect(ThemePreset.kallistiOLED.darkColors.watermarkOpacity
+                < ThemePreset.kallisti.darkColors.watermarkOpacity)
     }
 
     // MARK: - Shape language
@@ -265,8 +241,6 @@ struct HeraldThemeTests {
 
     @Test("Hairline borders never exceed full opacity")
     func hairlineBorders() {
-        // Pre-2.1 these were `.opacity(1.5)` / `.opacity(2.75)`, which clamped
-        // and flattened the whole border hierarchy.
         #expect(alpha(Design.Colors.border) <= 1.0)
         #expect(alpha(Design.Colors.borderStrong) <= 1.0)
         #expect(alpha(Design.Colors.divider) < alpha(Design.Colors.borderStrong))
@@ -276,11 +250,9 @@ struct HeraldThemeTests {
 
     @Test("Typography separates display, body, and mono roles")
     func typographyRoles() {
-        // Distinct roles must not collapse onto one another.
         #expect(Design.Typography.body != Design.Typography.code)
         #expect(Design.Typography.heroTitle != Design.Typography.body)
         #expect(Design.Typography.eyebrow != Design.Typography.body)
-        // Body copy is no longer monospaced (pre-2.1 it was).
         #expect(Design.Typography.body != Design.Typography.caption)
     }
 
@@ -301,18 +273,18 @@ struct HeraldThemeTests {
 
     @Test("Reduce Transparency suppresses texture and solidifies surfaces")
     func reduceTransparency() {
-        #expect(Design.A11y.textureOpacity(0.055, reduceTransparency: true) == 0)
-        #expect(Design.A11y.textureOpacity(0.055, reduceTransparency: false) == 0.055)
+        #expect(Design.A11y.textureOpacity(0.04, reduceTransparency: true) == 0)
+        #expect(Design.A11y.textureOpacity(0.04, reduceTransparency: false) == 0.04)
         #expect(Design.A11y.surfaceOpacity(reduceTransparency: true) == 1.0)
         #expect(Design.A11y.surfaceOpacity(reduceTransparency: false) < 1.0)
     }
 
-    @Test("Body text meets WCAG AA contrast in every Herald appearance")
+    @Test("Body text meets WCAG AA contrast in every Kallisti appearance")
     func bodyTextContrast() {
         let cases: [(String, ThemePalette)] = [
-            ("Herald dark", ThemePreset.herald.darkColors),
-            ("Herald light", ThemePreset.herald.lightColors),
-            ("Herald OLED", ThemePreset.heraldOLED.darkColors)
+            ("Kallisti dark", ThemePreset.kallisti.darkColors),
+            ("Kallisti light", ThemePreset.kallisti.lightColors),
+            ("Kallisti OLED", ThemePreset.kallistiOLED.darkColors)
         ]
         for (name, p) in cases {
             let primary = contrastRatio(p.foreground, p.background)
@@ -322,10 +294,10 @@ struct HeraldThemeTests {
         }
     }
 
-    @Test("Cards separate from the background in every Herald appearance")
+    @Test("Cards separate from the background in every Kallisti appearance")
     func cardSeparation() {
         // OLED especially: cards must still read against true black.
-        for p in [ThemePreset.herald.darkColors, ThemePreset.heraldOLED.darkColors] {
+        for p in [ThemePreset.kallisti.darkColors, ThemePreset.kallistiOLED.darkColors] {
             #expect(hex(p.surface) != hex(p.background),
                     "card surface must differ from the ground")
             #expect(hex(p.surfaceRaised) != hex(p.surface),
@@ -335,10 +307,10 @@ struct HeraldThemeTests {
 
     // MARK: - Default appearance
 
-    @Test("Herald is the launch default preset")
+    @Test("Kallisti is the launch default preset")
     @MainActor
-    func heraldIsDefault() {
-        #expect(ThemeManager().preset == .herald)
-        #expect(UserSettings().themePreset == .herald)
+    func kallistiIsDefault() {
+        #expect(ThemeManager().preset == .kallisti)
+        #expect(UserSettings().themePreset == .kallisti)
     }
 }
