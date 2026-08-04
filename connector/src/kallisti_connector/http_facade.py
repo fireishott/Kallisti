@@ -3799,7 +3799,7 @@ async def host_current(request: Request) -> JSONResponse:
     return JSONResponse({
         "host": {
             "id": host_id,
-            "displayName": "Herald Host",
+            "displayName": "Kallisti Host",
             "isOnline": True,
             # RelayHost decodes these as optional String? — LiveHeraldHostService
             # RelayHost / HeraldHostStatus.swift:8,10. Omitting them rendered

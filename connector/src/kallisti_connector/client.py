@@ -2599,10 +2599,12 @@ class HeraldConnector:
             else:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
-        # Restart hermes-agent to pick up the new default model.
-        # Without this, the running process keeps its cached startup model.
-        self._rpc_hermes_restart()
-
+        # No gateway restart here: the executor sends the selected model on
+        # every request (active_model_name), so the running process never
+        # needs a bounce. The restart this used to do took :8642 down for
+        # 60-90s per switch (2026-08-04 15:08 outage) and killed every
+        # in-flight chat. Explicit restarts remain available via the
+        # Settings "Restart Hermes Agent" RPC.
         return {"activeModel": self._read_active_model(hermes_home)}
 
     AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
