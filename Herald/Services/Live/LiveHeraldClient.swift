@@ -164,8 +164,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
             role = (try? container.decode(MessageSender.self, forKey: .role)) ?? .herald
             // text defaults to empty string if missing
             text = (try? container.decode(String.self, forKey: .text)) ?? ""
-            // timestamp defaults to now if missing (shouldn't happen but prevents a crash)
-            timestamp = (try? container.decode(Date.self, forKey: .timestamp)) ?? Date()
+            // The server emits `createdAt`; `timestamp` is the legacy key.
+            // Try createdAt first, then timestamp; only fall back to now
+            // if both are absent (shouldn't happen on real server rows).
+            timestamp = (try? container.decode(Date.self, forKey: .createdAt))
+                ?? (try? container.decode(Date.self, forKey: .timestamp))
+                ?? Date()
             clientMessageId = try container.decodeIfPresent(UUID.self, forKey: .clientMessageId)
             deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
             jobId = try container.decodeIfPresent(UUID.self, forKey: .jobId)
