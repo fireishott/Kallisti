@@ -1,0 +1,14 @@
+{
+  "$schema": "restart-operation-v1",
+  "operationId": "660e8400-e29b-41d4-a716-446655440001",
+  "target": "hermes",
+  "unit": "hermes-gateway-ignyte.service",
+  "phase": "verifying",
+  "acceptedAt": "2026-07-31T19:29:00Z",
+  "completedAt": null,
+  "checks": [
+    {"name": "systemctl-is-active", "passed": true, "detail": "active"},
+    {"name": "pid-changed", "passed": true, "detail": "12345 → 12399"}
+  ],
+  "error": null
+}

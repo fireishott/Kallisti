@@ -1,0 +1,17 @@
+{
+  "$schema": "restart-operation-v1",
+  "operationId": "550e8400-e29b-41d4-a716-446655440000",
+  "target": "hermes",
+  "unit": "hermes-gateway-ignyte.service",
+  "phase": "healthy",
+  "acceptedAt": "2026-07-31T19:30:00Z",
+  "completedAt": "2026-07-31T19:30:15Z",
+  "checks": [
+    {"name": "systemctl-is-active", "passed": true, "detail": "active"},
+    {"name": "pid-changed", "passed": true, "detail": "12345 → 12456"},
+    {"name": "hermes-ready", "passed": true, "detail": "detail health ok"},
+    {"name": "model-catalog", "passed": true, "detail": "12 models loaded"},
+    {"name": "session-roundtrip", "passed": true, "detail": "ok"}
+  ],
+  "error": null
+}

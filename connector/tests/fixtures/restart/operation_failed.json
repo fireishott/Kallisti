@@ -1,0 +1,23 @@
+{
+  "$schema": "restart-operation-v1",
+  "operationId": "550e8400-e29b-41d4-a716-446655440000",
+  "target": "hermes",
+  "unit": "hermes-gateway-ignyte.service",
+  "phase": "failed",
+  "acceptedAt": "2026-07-31T19:30:00Z",
+  "completedAt": "2026-07-31T19:30:45Z",
+  "checks": [
+    {"name": "systemctl-is-active", "passed": true, "detail": "active"},
+    {"name": "pid-changed", "passed": true, "detail": "12345 → 12456"},
+    {"name": "hermes-ready", "passed": false, "detail": "health endpoint returned 503 after 30s"},
+    {"name": "model-catalog", "passed": false, "detail": "skipped: hermes not ready"}
+  ],
+  "error": {
+    "stage": "verifying",
+    "unit": "hermes-gateway-ignyte.service",
+    "exitStatus": null,
+    "journalExcerpt": "Jul 31 19:30:30 hermes-gateway[12456]: ERROR config.yaml parse failed",
+    "retryable": true,
+    "action": "Check Hermes gateway logs on the host for configuration errors."
+  }
+}

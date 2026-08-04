@@ -1,0 +1,178 @@
+import Foundation
+
+/// A lightweight attachment reference stored on a message for display.
+struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    let kind: String       // "image" or "file"
+    let fileName: String
+    let mimeType: String
+    /// Base64-encoded thumbnail (for images) — small enough to cache/persist.
+    let thumbnailBase64: String?
+    let localStoragePath: String?
+    /// Server message this attachment belongs to, and its position in that
+    /// message's attachment list. Together they address the relay endpoint
+    /// `messages/{messageID}/attachments/{remoteIndex}` for full-resolution
+    /// bytes. Nil for locally-composed (not-yet-sent) attachments.
+    let messageID: UUID?
+    let remoteIndex: Int?
+
+    var isImage: Bool { kind == "image" || mimeType.hasPrefix("image/") }
+
+    init(
+        id: UUID = UUID(),
+        kind: String,
+        fileName: String,
+        mimeType: String,
+        thumbnailBase64: String? = nil,
+        localStoragePath: String? = nil,
+        messageID: UUID? = nil,
+        remoteIndex: Int? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.fileName = fileName
+        self.mimeType = mimeType
+        self.thumbnailBase64 = thumbnailBase64
+        self.localStoragePath = localStoragePath
+        self.messageID = messageID
+        self.remoteIndex = remoteIndex
+    }
+
+    init(from pending: PendingAttachment) {
+        self.id = pending.id
+        self.kind = pending.kind.rawValue
+        self.fileName = pending.fileName
+        self.mimeType = pending.mimeType
+        self.thumbnailBase64 = pending.thumbnailBase64
+        self.localStoragePath = pending.localStoragePath
+        self.messageID = nil
+        self.remoteIndex = nil
+    }
+}
+
+struct Message: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    let clientMessageID: UUID?
+    let sender: MessageSender
+    var content: String
+    let timestamp: Date
+    /// The relay job ID that produced this message. Mutable so the streaming
+    /// placeholder (initialised nil) can acquire its job identity when
+    /// `.messageSent` arrives — without this, the conversation refresh merge
+    /// can't match a persisted assistant row to the live placeholder by jobID.
+    var jobID: UUID?
+    var status: MessageStatus
+    var toolActivity: String?
+    var toolActivities: [ToolActivity]
+    var codeDiff: CodeDiff?
+    var isStreaming: Bool
+    var voiceSessionDuration: TimeInterval?
+    var attachments: [MessageAttachment]
+    /// Streamed chain-of-thought / reasoning text, shown dimmed while the answer
+    /// is being generated and collapsed to a summary once it completes.
+    var reasoning: String
+    /// How long reasoning streamed for, in seconds — used for the collapsed
+    /// "Thought for Xs" label. Set when the final answer arrives.
+    var reasoningDuration: TimeInterval?
+    /// Error category from the connector (e.g. "context_exceeded", "timeout").
+    /// Non-persisted — only set for in-memory failed messages.
+    var errorCategory: String?
+
+    /// Whether this message was transcribed from a voice session.
+    var isVoiceTranscript: Bool {
+        sender == .voiceUser || sender == .voiceHerald
+    }
+
+    /// Composite ID that changes when content length changes during streaming.
+    /// Used by LazyVStack to force layout recalculation as streaming text grows,
+    /// preventing the "content expands but scroll doesn't track" issue.
+    var streamingCompositeID: String {
+        if isStreaming {
+            return "\(id.uuidString)-c\(content.count)-r\(reasoning.count)"
+        }
+        return id.uuidString
+    }
+
+    init(
+        id: UUID = UUID(),
+        clientMessageID: UUID? = nil,
+        sender: MessageSender,
+        content: String,
+        timestamp: Date = .now,
+        jobID: UUID? = nil,
+        status: MessageStatus = .sent,
+        toolActivity: String? = nil,
+        toolActivities: [ToolActivity] = [],
+        codeDiff: CodeDiff? = nil,
+        isStreaming: Bool = false,
+        voiceSessionDuration: TimeInterval? = nil,
+        attachments: [MessageAttachment] = [],
+        reasoning: String = "",
+        reasoningDuration: TimeInterval? = nil,
+        errorCategory: String? = nil
+    ) {
+        self.id = id
+        self.clientMessageID = clientMessageID
+        self.sender = sender
+        self.content = content
+        self.timestamp = timestamp
+        self.jobID = jobID
+        self.status = status
+        self.toolActivity = toolActivity
+        self.toolActivities = toolActivities
+        self.codeDiff = codeDiff
+        self.isStreaming = isStreaming
+        self.voiceSessionDuration = voiceSessionDuration
+        self.attachments = attachments
+        self.reasoning = reasoning
+        self.reasoningDuration = reasoningDuration
+        self.errorCategory = errorCategory
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, clientMessageID, sender, content, timestamp, jobID, status, attachments
+        case reasoning, reasoningDuration
+        case toolActivities
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        clientMessageID = try container.decodeIfPresent(UUID.self, forKey: .clientMessageID)
+        sender = try container.decode(MessageSender.self, forKey: .sender)
+        content = try container.decode(String.self, forKey: .content)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        jobID = try container.decodeIfPresent(UUID.self, forKey: .jobID)
+        status = try container.decode(MessageStatus.self, forKey: .status)
+        attachments = try container.decodeIfPresent([MessageAttachment].self, forKey: .attachments) ?? []
+        reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning) ?? ""
+        reasoningDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .reasoningDuration)
+        toolActivities = try container.decodeIfPresent([ToolActivity].self, forKey: .toolActivities) ?? []
+        toolActivity = nil
+        codeDiff = nil
+        isStreaming = false
+        voiceSessionDuration = nil
+        errorCategory = nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(clientMessageID, forKey: .clientMessageID)
+        try container.encode(sender, forKey: .sender)
+        try container.encode(content, forKey: .content)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(jobID, forKey: .jobID)
+        try container.encode(status, forKey: .status)
+        if !attachments.isEmpty {
+            try container.encode(attachments, forKey: .attachments)
+        }
+        if !reasoning.isEmpty {
+            try container.encode(reasoning, forKey: .reasoning)
+        }
+        try container.encodeIfPresent(reasoningDuration, forKey: .reasoningDuration)
+        if !toolActivities.isEmpty {
+            try container.encode(toolActivities, forKey: .toolActivities)
+        }
+    }
+}

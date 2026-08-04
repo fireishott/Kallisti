@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import AsyncIterator, Protocol
+
+from .herald_runner import HeraldCLIExecutor, HeraldConversationMessage
+
+
+@dataclass(frozen=True)
+class RuntimeConversationMessage:
+    role: str
+    text: str
+
+
+@dataclass(frozen=True)
+class RuntimeTurnResult:
+    text: str
+    session_id: str | None = None
+    usage: dict | None = None
+
+
+class HostRuntimeAdapter(Protocol):
+    def send_text_message(
+        self,
+        *,
+        latest_user_message: str,
+        history: list[RuntimeConversationMessage],
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult: ...
+
+    def delegate_talk_turn(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult: ...
+
+
+class HeraldRuntimeAdapter:
+    """CLI subprocess adapter (original implementation)."""
+
+    def __init__(self, executor: HeraldCLIExecutor) -> None:
+        self.executor = executor
+
+    def send_text_message(
+        self,
+        *,
+        latest_user_message: str,
+        history: list[RuntimeConversationMessage],
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult:
+        result = self.executor.send_message(
+            latest_user_message=latest_user_message,
+            history=[
+                HeraldConversationMessage(role=message.role, text=message.text)
+                for message in history
+            ],
+            session_id=session_id,
+        )
+        return RuntimeTurnResult(text=result.text, session_id=result.session_id)
+
+    def delegate_talk_turn(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult:
+        result = self.executor.send_message(
+            latest_user_message=prompt,
+            history=[],
+            session_id=session_id,
+        )
+        return RuntimeTurnResult(text=result.text, session_id=result.session_id)
+
+
+def _run_blocking(coro):
+    """Drive a coroutine to completion from synchronous code.
+
+    These adapter methods are sync by contract and own their event loop, so
+    callers on the connector's loop thread must wrap them in
+    asyncio.to_thread(). Detect that mistake here and say so, instead of
+    surfacing the opaque "asyncio.run() cannot be called from a running
+    event loop" to the user's chat window.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    coro.close()
+    raise RuntimeError(
+        "HeraldAPIRuntimeAdapter sync methods cannot run on the event loop "
+        "thread. Wrap the call in `await asyncio.to_thread(...)`."
+    )
+
+
+class HeraldAPIRuntimeAdapter:
+    """HTTP API adapter — talks to the Herald API server with streaming support."""
+
+    def __init__(self, executor) -> None:  # HeraldAPIExecutor
+        self.executor = executor
+        self.supports_streaming = True
+
+    def send_text_message(
+        self,
+        *,
+        latest_user_message: str,
+        history: list[RuntimeConversationMessage],
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult:
+        """Synchronous non-streaming send (used by talk delegation and fallback)."""
+        result = _run_blocking(
+            self.executor.send_message(
+                latest_user_message=latest_user_message,
+                history=[
+                    HeraldConversationMessage(role=message.role, text=message.text)
+                    for message in history
+                ],
+                session_id=session_id,
+            )
+        )
+        return RuntimeTurnResult(
+            text=result.text,
+            session_id=result.session_id,
+            usage=result.usage,
+        )
+    async def send_text_message_streaming(
+        self,
+        *,
+        latest_user_message: str,
+        history: list[RuntimeConversationMessage],
+        session_id: str | None = None,
+        attachments: list[dict] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator:
+        """Async streaming send — yields StreamEvent objects."""
+        async for event in self.executor.stream_message(
+            latest_user_message=latest_user_message,
+            history=[
+                HeraldConversationMessage(role=message.role, text=message.text)
+                for message in history
+            ],
+            session_id=session_id,
+            attachments=attachments,
+            reasoning_effort=reasoning_effort,
+        ):
+            yield event
+
+    def delegate_talk_turn(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+    ) -> RuntimeTurnResult:
+        result = _run_blocking(
+            self.executor.send_message(
+                latest_user_message=prompt,
+                history=[],
+                session_id=session_id,
+            )
+        )
+        return RuntimeTurnResult(
+            text=result.text,
+            session_id=result.session_id,
+            usage=result.usage,
+        )
+
+
+# Compatibility names for pre-Herald connector integrations.
+HermesRuntimeAdapter = HeraldRuntimeAdapter
+HermesAPIRuntimeAdapter = HeraldAPIRuntimeAdapter

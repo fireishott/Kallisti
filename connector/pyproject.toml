@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kallisti-connector"
+version = "0.1.0"
+description = "Connector process that bridges the Kallisti iOS app to your Hermes agent."
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28.0,<1.0.0",
+  "mcp>=1.0.0,<2.0.0",
+  "qrcode>=8.2,<9.0",
+  "ruamel.yaml>=0.18.0,<0.19.0",
+  "websockets>=15.0,<16.0",
+]
+
+[project.scripts]
+kallisti = "kallisti_connector.cli:main"
+kallisti-mcp = "kallisti_connector.mcp_server:main"
+# Legacy entrypoints for backward compatibility during transition.
+herald = "kallisti_connector.cli:main"
+herald-mcp = "kallisti_connector.mcp_server:main"
+hermes-mobile = "kallisti_connector.cli:main"
+hermes-mobile-mcp = "kallisti_connector.mcp_server:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kallisti_connector*"]

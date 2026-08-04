@@ -1,0 +1,92 @@
+[
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:40:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    },
+    "conversationRevision": 1
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 2,
+    "type": "tool.started",
+    "timestamp": "2026-07-20T14:40:00.500Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "name": "run_command",
+      "args": "{\"command\": \"rm -rf /tmp/cache\"}"
+    },
+    "conversationRevision": 1
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 3,
+    "type": "approval.required",
+    "timestamp": "2026-07-20T14:40:01.000Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "prompt": "This will permanently delete the cache directory. Allow?"
+    },
+    "conversationRevision": 1
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 4,
+    "type": "tool.completed",
+    "timestamp": "2026-07-20T14:40:02.000Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "output": "Cache directory removed successfully."
+    },
+    "conversationRevision": 1
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 5,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:40:02.500Z",
+    "payload": {
+      "delta": "Cache cleared successfully.",
+      "segmentId": "seg-005"
+    },
+    "conversationRevision": 1
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "conversationId": "f0e1d2c3-b4a5-4968-8716-2a3b4c5d6e7f",
+    "attempt": 1,
+    "seq": 6,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:40:03.000Z",
+    "payload": {
+      "messageId": "msg-005",
+      "text": "Cache cleared successfully.",
+      "usage": {
+        "prompt_tokens": 120,
+        "completion_tokens": 15,
+        "total_tokens": 135
+      }
+    },
+    "conversationRevision": 1
+  }
+]

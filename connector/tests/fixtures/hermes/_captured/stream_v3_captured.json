@@ -1,0 +1,63 @@
+[
+  {
+    "contractVersion": 3,
+    "jobId": "11111111-2222-3333-4444-555555555555",
+    "conversationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "attempt": 1,
+    "seq": 1,
+    "conversationRevision": 1,
+    "type": "text.delta",
+    "timestamp": "2026-08-01T18:00:00Z",
+    "payload": {
+      "delta": "sanitized-chunk-1",
+      "segmentId": "seg-1"
+    }
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "11111111-2222-3333-4444-555555555555",
+    "conversationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "attempt": 1,
+    "seq": 2,
+    "conversationRevision": 1,
+    "type": "text.delta",
+    "timestamp": "2026-08-01T18:00:00Z",
+    "payload": {
+      "delta": "sanitized-chunk-2",
+      "segmentId": "seg-1"
+    }
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "11111111-2222-3333-4444-555555555555",
+    "conversationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "attempt": 1,
+    "seq": 3,
+    "conversationRevision": 1,
+    "type": "text.delta",
+    "timestamp": "2026-08-01T18:00:00Z",
+    "payload": {
+      "delta": "sanitized-chunk-3",
+      "segmentId": "seg-1"
+    }
+  },
+  {
+    "contractVersion": 3,
+    "jobId": "11111111-2222-3333-4444-555555555555",
+    "conversationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "attempt": 1,
+    "seq": 4,
+    "conversationRevision": 1,
+    "type": "run.completed",
+    "timestamp": "2026-08-01T18:00:01Z",
+    "payload": {
+      "messageId": "99999999-aaaa-bbbb-cccc-dddddddddddd",
+      "text": "sanitized reply",
+      "usage": {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "total_tokens": 2
+      }
+    }
+  }
+]

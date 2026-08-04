@@ -1,0 +1,86 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:50:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 2,
+    "type": "tool.started",
+    "timestamp": "2026-07-20T14:50:00.400Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "name": "run_command",
+      "args": "{\"command\": \"rm -rf /tmp/cache\"}"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 3,
+    "type": "approval.required",
+    "timestamp": "2026-07-20T14:50:00.600Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "prompt": "This will permanently delete the cache directory. Allow?"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 4,
+    "type": "tool.completed",
+    "timestamp": "2026-07-20T14:50:05.000Z",
+    "payload": {
+      "toolCallId": "tc-100",
+      "output": "Cache directory removed successfully."
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 5,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:50:05.300Z",
+    "payload": {
+      "delta": "Cache cleared successfully.",
+      "segmentId": "seg-005"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8091",
+    "conversationId": "3210f1e2-d3c4-4910-0130-6e7f80910213",
+    "attempt": 1,
+    "seq": 6,
+    "type": "run.completed",
+    "timestamp": "2026-07-20T14:50:05.700Z",
+    "payload": {
+      "messageId": "msg-005",
+      "text": "Cache cleared successfully.",
+      "usage": {
+        "prompt_tokens": 120,
+        "completion_tokens": 15,
+        "total_tokens": 135
+      }
+    }
+  }
+]

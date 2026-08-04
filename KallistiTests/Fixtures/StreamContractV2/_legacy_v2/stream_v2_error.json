@@ -1,0 +1,41 @@
+[
+  {
+    "contractVersion": 2,
+    "jobId": "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f809102",
+    "conversationId": "43210f1e-2d3c-4021-1241-7f8091021324",
+    "attempt": 1,
+    "seq": 1,
+    "type": "run.started",
+    "timestamp": "2026-07-20T14:55:00.000Z",
+    "payload": {
+      "phase": "thinking",
+      "attempt": 1
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f809102",
+    "conversationId": "43210f1e-2d3c-4021-1241-7f8091021324",
+    "attempt": 1,
+    "seq": 2,
+    "type": "text.delta",
+    "timestamp": "2026-07-20T14:55:00.500Z",
+    "payload": {
+      "delta": "I was able to start processing your request...",
+      "segmentId": "seg-006"
+    }
+  },
+  {
+    "contractVersion": 2,
+    "jobId": "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f809102",
+    "conversationId": "43210f1e-2d3c-4021-1241-7f8091021324",
+    "attempt": 1,
+    "seq": 3,
+    "type": "run.failed",
+    "timestamp": "2026-07-20T14:55:01.000Z",
+    "payload": {
+      "error": "Connection to upstream model provider timed out after 30s",
+      "retryable": true
+    }
+  }
+]

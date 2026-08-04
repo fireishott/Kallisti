@@ -1,0 +1,21 @@
+{
+  "$schema": "message-accepted-v1",
+  "replyState": "duplicate",
+  "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+  "jobId": "770e8400-e29b-41d4-a716-446655440002",
+  "state": "accepted",
+  "existingState": "running",
+  "conversation": {
+    "id": "660e8400-e29b-41d4-a716-446655440001",
+    "title": "New Chat",
+    "updatedAt": "2026-07-31T20:00:00Z",
+    "messages": [],
+    "latestUsage": null,
+    "latestContext": null
+  },
+  "userMessage": null,
+  "message": null,
+  "usage": null,
+  "context": null,
+  "diff": null
+}

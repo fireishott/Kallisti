@@ -1,0 +1,20 @@
+{
+  "$schema": "restart-preflight-v1",
+  "target": "hermes",
+  "profile": "ignyte",
+  "unit": "hermes-gateway-ignyte.service",
+  "preflightVersion": "1",
+  "activeWork": {
+    "running": 2,
+    "queued": 1,
+    "voice": 0,
+    "tools": 1
+  },
+  "canRestart": true,
+  "blocker": null,
+  "observed": {
+    "mainPid": 12345,
+    "execMainStartTimestamp": "2026-07-31T18:00:00Z",
+    "gatewayState": "running"
+  }
+}

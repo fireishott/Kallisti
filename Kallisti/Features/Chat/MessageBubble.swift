@@ -1,0 +1,450 @@
+import SwiftUI
+import UIKit
+
+struct MessageBubble: View, Equatable {
+    let message: Message
+    var onRetry: ((Message) -> Void)? = nil
+    var onStartNewSession: (() -> Void)? = nil
+    @Environment(TalkStore.self) private var talkStore
+    @Environment(SettingsStore.self) private var settingsStore
+    var onDelete: ((Message) -> Void)? = nil
+    var onOpenCanvas: ((Message) -> Void)? = nil
+    @State private var showReactionPicker = false
+    @State private var reactions: [String] = []
+
+    /// Only the message itself affects the rendered bubble — the retry closure
+    /// is captured fresh per parent render but is functionally stable. Comparing
+    /// messages lets `.equatable()` in the list skip re-rendering unchanged
+    /// bubbles while the streaming tail appends.
+    nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
+        // Always re-render streaming messages — the equatable optimization
+        // must not skip the active streaming tail, whose content mutates
+        // at 30fps via delta coalescing.
+        guard !lhs.message.isStreaming && !rhs.message.isStreaming else { return false }
+        return lhs.message == rhs.message
+    }
+
+    private var isUser: Bool { message.sender == .user || message.sender == .voiceUser }
+    private var isHermes: Bool { message.sender == .herald || message.sender == .voiceHerald }
+    private var isCompactionMessage: Bool { message.content.hasPrefix("[CONTEXT COMPACTION]") }
+    private var isBudgetWarning: Bool { message.content.contains("[BUDGET WARNING:") }
+
+    var body: some View {
+        contentView
+            .contextMenu {
+                // Copy text — always
+                Button {
+                    UIPasteboard.general.string = message.content
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                }
+
+                // Copy first code block — only if message contains one
+                let segments = parseMarkdownSegments(message.content)
+                if let codeBlock = segments.first(where: {
+                    if case .codeBlock = $0 { return true }
+                    return false
+                }), case .codeBlock(_, _, let code) = codeBlock {
+                    Button {
+                        UIPasteboard.general.string = code
+                    } label: {
+                        Label("Copy Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                }
+
+                // Open in Canvas — only if extractable content exists
+                let hasCanvas = segments.contains(where: {
+                    if case .codeBlock = $0 { return true }
+                    return false
+                })
+                if hasCanvas {
+                    Button {
+                        onOpenCanvas?(message)
+                    } label: {
+                        Label("Open in Canvas", systemImage: "rectangle.on.rectangle")
+                    }
+                }
+
+                // React
+                Button {
+                    showReactionPicker = true
+                } label: {
+                    Label("React", systemImage: "face.smiling")
+                }
+
+                Divider()
+
+                // Retry — assistant messages only
+                if isHermes {
+                    Button {
+                        onRetry?(message)
+                    } label: {
+                        Label("Retry", systemImage: "arrow.counterclockwise")
+                    }
+                }
+
+                // Share
+                Button {
+                    let av = UIActivityViewController(activityItems: [message.content], applicationActivities: nil)
+                    if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let root = scene.windows.first?.rootViewController {
+                        root.present(av, animated: true)
+                    }
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+
+                Divider()
+
+                // Delete — destructive
+                Button(role: .destructive) {
+                    onDelete?(message)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .sheet(isPresented: $showReactionPicker) {
+                MessageReactionPicker { reaction in
+                    addReaction(reaction, to: message)
+                }
+                .presentationDetents([.height(120)])
+                .presentationDragIndicator(.hidden)
+            }
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
+        if message.sender == .system && message.content.contains("[Voice session ended]") {
+            VoiceSessionBanner(duration: message.voiceSessionDuration)
+        } else if message.sender == .system {
+            systemMessage
+        } else if isCompactionMessage {
+            compactionBanner
+        } else if isUser {
+            HStack(alignment: .top, spacing: Design.Spacing.xs) {
+                Spacer(minLength: Design.Spacing.xxl)
+                userBubble
+            }
+            .padding(.horizontal, Design.Spacing.md)
+        } else {
+            HStack(alignment: .top, spacing: Design.Spacing.xs) {
+                hermesMessage
+                Spacer(minLength: Design.Spacing.xxl)
+            }
+            .padding(.horizontal, Design.Spacing.md)
+        }
+    }
+
+    // MARK: - System Message
+
+    private var systemMessage: some View {
+        VStack(spacing: Design.Spacing.xs) {
+            Text(message.content)
+                .brandEyebrow()
+                .multilineTextAlignment(.center)
+
+            if message.status == .failed, let category = message.errorCategory {
+                errorGuidanceChip(for: category)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.xxs)
+    }
+
+    @ViewBuilder
+    private func errorGuidanceChip(for category: String) -> some View {
+        switch category {
+        case "context_exceeded":
+            Button { onStartNewSession?() } label: {
+                Label("Start New Session", systemImage: "plus.message")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        case "rate_limited":
+            Button { onRetry?(message) } label: {
+                Label("Wait & Retry", systemImage: "clock.arrow.circlepath")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.warning.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        case "timeout":
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        case "empty_response":
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.warning.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        default:
+            Button { onRetry?(message) } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Colors.surface))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: - User Bubble
+
+    private var userBubble: some View {
+        VStack(alignment: .trailing, spacing: Design.Spacing.xxs) {
+            if message.isVoiceTranscript {
+                voiceTranscriptText(message.content)
+                    .padding(.horizontal, Design.Spacing.md)
+                    .padding(.vertical, Design.Spacing.sm)
+                    .background(Design.Colors.surface2)
+                    .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
+
+                voiceModeLabel
+            } else {
+                VStack(alignment: .trailing, spacing: Design.Spacing.xxs) {
+                    // Attachment thumbnails
+                    if !message.attachments.isEmpty {
+                        MessageAttachmentsView(attachments: message.attachments, alignment: .trailing)
+                    }
+
+                    // Text content (skip if it's just the auto-generated attachment placeholder)
+                    let isAttachmentPlaceholder = !message.attachments.isEmpty
+                        && message.content.range(of: #"^\[\d+ attachment"#, options: .regularExpression) != nil
+                    if !message.content.isEmpty && !isAttachmentPlaceholder {
+                        MarkdownContentView(content: message.content, isStreaming: false)
+                            .foregroundStyle(Design.Colors.foreground)
+                            .padding(.horizontal, Design.Spacing.md)
+                            .padding(.vertical, Design.Spacing.sm)
+                            .background(Design.Colors.surface2)
+                            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
+                    }
+                }
+
+                HStack(spacing: Design.Spacing.xs) {
+                    Text(message.timestamp, style: .time)
+                        .brandEyebrow()
+
+                    Image(systemName: message.status.displayIcon)
+                        .font(.system(size: Design.Size.iconTiny))
+                        .foregroundStyle(message.status.displayColor)
+                        .accessibilityLabel(message.status.rawValue)
+                }
+            }
+
+            if message.status == .failed {
+                Button { onRetry?(message) } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .brandEyebrow(Design.Colors.danger)
+                }
+            }
+
+            reactionBadge
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(message.isVoiceTranscript ? "Voice" : "You"): \(message.content). \(message.status.rawValue)")
+    }
+
+    // MARK: - Herald Message
+
+    private var hermesMessage: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+            if message.isVoiceTranscript {
+                voiceTranscriptText(message.content)
+                    .padding(.vertical, Design.Spacing.xxs)
+
+                voiceModeLabel
+            } else if message.isStreaming && message.content.isEmpty && message.toolActivities.isEmpty && message.reasoning.isEmpty {
+                streamingPlaceholder
+            } else {
+                if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
+                    ReasoningView(
+                        reasoning: message.reasoning,
+                        isStreaming: message.isStreaming,
+                        duration: message.reasoningDuration
+                    )
+                    .transition(.opacity)
+                }
+
+                if !message.content.isEmpty {
+                    streamingText
+                } else if message.isStreaming && message.reasoning.isEmpty {
+                    // Content still empty but tool activities exist — show a subtle placeholder
+                    streamingPlaceholder
+                }
+
+                if !message.toolActivities.isEmpty {
+                    ToolActivityRail(
+                        activities: message.toolActivities,
+                        isStreaming: message.isStreaming
+                    )
+                } else if let activity = message.toolActivity {
+                    toolActivityPill(activity)
+                }
+
+                if let diff = message.codeDiff, !diff.isEmpty {
+                    InlineDiffView(diff: diff)
+                }
+
+                if !message.attachments.isEmpty {
+                    MessageAttachmentsView(attachments: message.attachments, alignment: .leading)
+                }
+
+                if !message.isStreaming {
+                    Text(message.timestamp, style: .time)
+                        .brandEyebrow()
+                }
+
+                if message.status == .failed {
+                    Button { onRetry?(message) } label: {
+                        Label("Regenerate", systemImage: "arrow.counterclockwise")
+                            .brandEyebrow(Design.Brand.accent)
+                    }
+                }
+
+                reactionBadge
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Kallisti: \(message.content)")
+        .accessibilityAddTraits(message.isStreaming ? .updatesFrequently : [])
+    }
+
+    // MARK: - Voice Transcript Components
+
+    private func voiceTranscriptText(_ content: String) -> some View {
+        Text("\u{201C}\(content)\u{201D}")
+            .font(Design.Typography.editorialItalicSmall)
+            .foregroundStyle(Design.Colors.foreground.opacity(0.88))
+    }
+
+    private var voiceModeLabel: some View {
+        Text("Voice Mode")
+            .brandEyebrow(Design.Colors.tertiaryForeground)
+    }
+
+    // MARK: - Streaming Components
+
+    @ViewBuilder
+    private var streamingText: some View {
+        let displayContent = isBudgetWarning
+            ? Self.strippingBudgetWarnings(from: message.content)
+            : message.content
+
+        MarkdownContentView(
+            content: displayContent,
+            isStreaming: message.isStreaming,
+            showCursor: message.isStreaming,
+            showReasoning: settingsStore.settings.showReasoning,
+            hasStreamedReasoning: !message.reasoning.isEmpty
+        )
+        .foregroundStyle(Design.Colors.foreground)
+        .textSelection(.enabled)
+        .padding(.vertical, Design.Spacing.xxs)
+    }
+
+    private var streamingPlaceholder: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+            TypingDotsView()
+            TimelineView(.periodic(from: message.timestamp, by: 1)) { context in
+                let elapsed = context.date.timeIntervalSince(message.timestamp)
+                Text("Thinking… \(formatElapsed(elapsed))")
+                    .brandEyebrow(Design.Colors.tertiaryForeground)
+            }
+        }
+        .padding(.vertical, Design.Spacing.sm)
+    }
+
+    private func formatElapsed(_ interval: TimeInterval) -> String {
+        let seconds = Int(interval)
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    private func toolActivityPill(_ label: String) -> some View {
+        Text(label)
+            .brandEyebrow()
+            .padding(.horizontal, Design.Spacing.sm)
+            .padding(.vertical, Design.Spacing.xxs)
+            .background(Design.Colors.surface)
+            .overlay(
+                Capsule().stroke(Design.Colors.border, lineWidth: 1)
+            )
+            .clipShape(Capsule())
+    }
+
+    // MARK: - Context Compaction Banner
+
+    private var compactionBanner: some View {
+        HStack(spacing: Design.Spacing.xs) {
+            Rectangle()
+                .fill(Design.Colors.border)
+                .frame(height: 1)
+            Text("Context compacted")
+                .brandEyebrow()
+                .fixedSize()
+            Rectangle()
+                .fill(Design.Colors.border)
+                .frame(height: 1)
+        }
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.sm)
+    }
+
+    // MARK: - Reactions
+
+    @ViewBuilder
+    private var reactionBadge: some View {
+        if !reactions.isEmpty {
+            HStack(spacing: 2) {
+                ForEach(Array(reactions.enumerated()), id: \.offset) { _, reaction in
+                    Text(reaction)
+                        .font(.system(size: 14))
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Design.Colors.surface)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 0.5))
+        }
+    }
+
+    private func addReaction(_ reaction: String, to message: Message) {
+        reactions.append(reaction)
+    }
+
+    // MARK: - Budget Warning Stripping
+
+    /// Strips `[BUDGET WARNING: ...]` lines injected by the Herald agent into
+    /// tool result messages.  These are internal agent housekeeping and should
+    /// not be shown to the user verbatim.
+    static func strippingBudgetWarnings(from text: String) -> String {
+        text.replacingOccurrences(
+            of: #"\[BUDGET WARNING:[^\]]*\]"#,
+            with: "",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

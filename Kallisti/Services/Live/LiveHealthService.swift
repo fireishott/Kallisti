@@ -1,0 +1,707 @@
+import Foundation
+import HealthKit
+
+struct HealthSnapshot: Sendable {
+    struct Sample: Sendable {
+        let metric: String
+        let value: Double
+        let unit: String
+        let startAt: Date
+        let endAt: Date?
+    }
+
+    let samples: [Sample]
+    let collectedAt: Date
+}
+
+@MainActor
+@Observable
+final class LiveHealthService: HealthServiceProtocol {
+    internal struct SleepInterval: Sendable {
+        let value: Int
+        let startDate: Date
+        let endDate: Date
+    }
+
+    private struct HealthMetricDescriptor {
+        let metric: String
+        let sampleType: HKSampleType
+        let startDateProvider: () -> Date
+        let builder: @MainActor (LiveHealthService, Date) async -> HealthSnapshot.Sample?
+    }
+
+    private struct AnchoredChangeResult {
+        let didChange: Bool
+        let newAnchor: HKQueryAnchor?
+    }
+
+    nonisolated private static let healthAuthRequestedKey = "herald.healthkit.authorizationRequested"
+
+    private(set) var authorizationStatus: PermissionStatus
+    private(set) var backgroundDeliveryEnabled = false
+    /// Sanitized diagnostic for the Logs tab when authorization fails.
+    /// Nil when the last request succeeded or hasn't been attempted.
+    private(set) var lastAuthorizationError: String?
+    var onHealthUpdate: (@MainActor (Set<String>) -> Void)?
+
+    private let store: HKHealthStore?
+    private let persistence: (any AppPersistenceStoreProtocol)?
+    private let metricDescriptors: [String: HealthMetricDescriptor]
+    private var observerQueries: [HKObserverQuery] = []
+
+    /// Tracks whether we've verified HealthKit entitlements are present in this build.
+    /// `nil` means not yet checked; `true` means entitlements verified; `false` means missing.
+    /// Internal for testing.
+    var entitlementsVerified: Bool?
+
+    init(persistence: (any AppPersistenceStoreProtocol)? = nil) {
+        self.persistence = persistence
+
+        guard HKHealthStore.isHealthDataAvailable() else {
+            self.store = nil
+            self.metricDescriptors = [:]
+            self.authorizationStatus = .unsupported
+            self.entitlementsVerified = false
+            return
+        }
+
+        let store = HKHealthStore()
+        self.store = store
+        self.metricDescriptors = LiveHealthService.makeMetricDescriptors()
+        self.authorizationStatus = .notDetermined
+    }
+
+    /// Check whether HealthKit is available on this device.
+    /// Uses the system framework's own availability check rather than probing
+    /// Info.plist (which never contains entitlement keys — those live in the
+    /// code signature, not Info.plist).
+    private static func bundleHasHealthKitEntitlement() -> Bool {
+        return HKHealthStore.isHealthDataAvailable()
+    }
+
+    func requestAuthorization() async -> PermissionStatus {
+        guard let store else {
+            authorizationStatus = .unsupported
+            return .unsupported
+        }
+
+        // Verify entitlements before attempting full authorization.
+        // If the build lacks HealthKit entitlements, report unavailable
+        // immediately rather than showing a misleading system dialog.
+        guard await verifyEntitlements(store: store) else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
+            return .unsupported
+        }
+
+        let readTypes = Set(metricDescriptors.values.map { $0.sampleType as HKObjectType })
+        // Defensive: never call requestAuthorization with empty type sets.
+        // Apple's validation layer crashes (SIGABRT) on iOS 26.6+ when both
+        // toShare and read are empty. If the metric descriptors somehow produce
+        // no types, treat it the same as missing entitlements.
+        guard !readTypes.isEmpty else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
+            return .unsupported
+        }
+
+        do {
+            try await store.requestAuthorization(
+                toShare: [],
+                read: readTypes
+            )
+            authorizationStatus = .authorized
+            lastAuthorizationError = nil
+            UserDefaults.standard.set(true, forKey: Self.healthAuthRequestedKey)
+            await configureBackgroundDeliveryIfNeeded()
+        } catch {
+            // requestAuthorization throws for real system errors — most commonly
+            // missing HealthKit entitlements in the code signature. Do NOT trust
+            // stale UserDefaults from a prior build that had entitlements.
+            authorizationStatus = .unsupported
+            entitlementsVerified = false
+            backgroundDeliveryEnabled = false
+            lastAuthorizationError = "HealthKit authorization request failed: \(error.localizedDescription). Verify signed com.apple.developer.healthkit entitlement."
+        }
+
+        return authorizationStatus
+    }
+
+    func refreshAuthorizationStatus() async {
+        guard let store else {
+            authorizationStatus = .unsupported
+            return
+        }
+
+        // Verify entitlements are present before trusting any cached state.
+        // A build without HealthKit entitlements (e.g., some TestFlight configs)
+        // must report unavailable regardless of UserDefaults flags from prior builds.
+        guard await verifyEntitlements(store: store) else {
+            authorizationStatus = .unsupported
+            backgroundDeliveryEnabled = false
+            return
+        }
+
+        // Apple's privacy model: authorizationStatus(for:) only works for
+        // write (share) access. For read access, the system always returns
+        // .notDetermined to prevent apps from learning what the user denied.
+        // We persist a flag in UserDefaults when the user grants access so
+        // we remember across app launches.
+        // See: https://developer.apple.com/documentation/healthkit/hkhealthstore/authorizationstatus(for:)
+        let previouslyRequested = UserDefaults.standard.bool(forKey: Self.healthAuthRequestedKey)
+
+        if previouslyRequested {
+            // User previously granted access — keep it authorized.
+            // Apple does not revoke read access programmatically; the user
+            // must go to Settings to revoke, which we cannot detect for
+            // read-only types. Trust the persisted state.
+            authorizationStatus = .authorized
+        } else {
+            // Never requested — we cannot infer read authorization.
+            // Apple intentionally limits read-authorization disclosure:
+            // authorizationStatus(for:) only reflects write access, and
+            // a query returning no samples does NOT mean the user granted
+            // read access. Stay at .notDetermined until the user explicitly
+            // triggers the authorization dialog.
+            authorizationStatus = .notDetermined
+        }
+    }
+
+    // MARK: - Entitlement Verification
+
+    /// Verifies that HealthKit is available on this device.
+    ///
+    /// Prior to iOS 26.6, this method probed entitlements by calling
+    /// `requestAuthorization(toShare: [], read: [])` with empty type sets —
+    /// which never triggered the system permission dialog but allowed the
+    /// framework to validate the code-signature entitlement and throw if it
+    /// was missing.
+    ///
+    /// As of iOS 26.6, Apple's validation layer **crashes** (SIGABRT) when
+    /// both type sets are empty, so we can no longer use the empty-set probe.
+    /// Instead we rely on `HKHealthStore.isHealthDataAvailable()` at init
+    /// time and defer entitlement validation to the real `requestAuthorization`
+    /// call in `requestAuthorization()`, which passes non-empty read types
+    /// and throws a catchable error if entitlements are absent.
+    ///
+    /// The result is cached so subsequent calls are free.
+    /// Internal access for testing.
+    func verifyEntitlements(store: HKHealthStore) async -> Bool {
+        if let verified = entitlementsVerified {
+            return verified
+        }
+
+        // HealthKit availability was already confirmed in init() when the
+        // store was created. Re-check here as belt-and-suspenders.
+        guard HKHealthStore.isHealthDataAvailable() else {
+            entitlementsVerified = false
+            return false
+        }
+
+        // The store exists and isHealthDataAvailable is true. This does NOT
+        // confirm the code-signature entitlement — that validation is deferred
+        // to requestAuthorization(), which passes non-empty type sets and
+        // safely throws (rather than crashing) if entitlements are missing.
+        entitlementsVerified = true
+        return true
+    }
+
+    func startMonitoring() {
+        guard let store, observerQueries.isEmpty, authorizationStatus == .authorized else { return }
+
+        for (identifier, descriptor) in metricDescriptors.sorted(by: { $0.key < $1.key }) {
+            let query = HKObserverQuery(sampleType: descriptor.sampleType, predicate: nil) { [weak self] _, completionHandler, error in
+                defer { completionHandler() }
+                guard error == nil else { return }
+                Task { @MainActor in
+                    self?.onHealthUpdate?([identifier])
+                }
+            }
+            observerQueries.append(query)
+            store.execute(query)
+        }
+
+        if authorizationStatus == .authorized {
+            Task { @MainActor in
+                await configureBackgroundDeliveryIfNeeded()
+            }
+        }
+    }
+
+    func stopMonitoring() {
+        guard let store else { return }
+        for query in observerQueries {
+            store.stop(query)
+        }
+        observerQueries.removeAll()
+    }
+
+    func collectSnapshot(
+        forceFullRefresh: Bool = false,
+        changedIdentifiers: Set<String>? = nil
+    ) async -> HealthSnapshot? {
+        guard store != nil else { return nil }
+        guard authorizationStatus == .authorized else { return nil }
+
+        let changedMetrics = await resolveChangedMetrics(
+            forceFullRefresh: forceFullRefresh,
+            requestedIdentifiers: changedIdentifiers
+        )
+        guard !changedMetrics.isEmpty else { return nil }
+
+        let now = Date()
+        var samples: [HealthSnapshot.Sample] = []
+
+        for identifier in changedMetrics.sorted() {
+            guard let descriptor = metricDescriptors[identifier] else { continue }
+            let startDate = descriptor.startDateProvider()
+            if let sample = await descriptor.builder(self, startDate) {
+                samples.append(sample)
+            }
+        }
+
+        guard !samples.isEmpty else { return nil }
+        return HealthSnapshot(samples: samples, collectedAt: now)
+    }
+
+    // MARK: - Background Delivery
+
+    private func configureBackgroundDeliveryIfNeeded() async {
+        guard let store, authorizationStatus == .authorized else { return }
+
+        var allSucceeded = true
+        for descriptor in metricDescriptors.values {
+            do {
+                try await store.enableBackgroundDelivery(
+                    for: descriptor.sampleType,
+                    frequency: .immediate
+                )
+            } catch {
+                allSucceeded = false
+            }
+        }
+        backgroundDeliveryEnabled = allSucceeded
+    }
+
+    // MARK: - Incremental Anchors
+
+    private func resolveChangedMetrics(
+        forceFullRefresh: Bool,
+        requestedIdentifiers: Set<String>?
+    ) async -> Set<String> {
+        let identifiersToCheck: Set<String>
+        if forceFullRefresh {
+            identifiersToCheck = Set(metricDescriptors.keys)
+        } else if let requestedIdentifiers, !requestedIdentifiers.isEmpty {
+            identifiersToCheck = requestedIdentifiers.intersection(metricDescriptors.keys)
+        } else {
+            identifiersToCheck = Set(metricDescriptors.keys)
+        }
+
+        var changed: Set<String> = []
+        for identifier in identifiersToCheck {
+            guard let descriptor = metricDescriptors[identifier] else { continue }
+            let startDate = descriptor.startDateProvider()
+            let result = await fetchAnchoredChanges(
+                for: identifier,
+                sampleType: descriptor.sampleType,
+                startDate: startDate
+            )
+            if forceFullRefresh || result.didChange {
+                changed.insert(identifier)
+            }
+        }
+        return changed
+    }
+
+    private func fetchAnchoredChanges(
+        for identifier: String,
+        sampleType: HKSampleType,
+        startDate: Date
+    ) async -> AnchoredChangeResult {
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: nil)
+        let anchor = loadAnchor(for: identifier)
+
+        return await withCheckedContinuation { continuation in
+            let query = HKAnchoredObjectQuery(
+                type: sampleType,
+                predicate: predicate,
+                anchor: anchor,
+                limit: HKObjectQueryNoLimit
+            ) { [weak self] _, sampleObjects, deletedObjects, newAnchor, _ in
+                if let newAnchor {
+                    Task { @MainActor in
+                        self?.saveAnchor(newAnchor, for: identifier)
+                    }
+                }
+                continuation.resume(
+                    returning: AnchoredChangeResult(
+                        didChange: !(sampleObjects ?? []).isEmpty || !(deletedObjects ?? []).isEmpty,
+                        newAnchor: newAnchor
+                    )
+                )
+            }
+            store?.execute(query)
+        }
+    }
+
+    private func loadAnchor(for identifier: String) -> HKQueryAnchor? {
+        guard
+            let data = persistence?.loadHealthQueryAnchorData(for: identifier),
+            let anchor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
+        else {
+            return nil
+        }
+        return anchor
+    }
+
+    private func saveAnchor(_ anchor: HKQueryAnchor, for identifier: String) {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true) else {
+            return
+        }
+        persistence?.saveHealthQueryAnchorData(data, for: identifier)
+    }
+
+    // MARK: - Metric Queries
+
+    private func queryCumulativeSum(
+        _ identifier: HKQuantityTypeIdentifier,
+        unit: HKUnit,
+        from startDate: Date,
+        to endDate: Date
+    ) async -> Double? {
+        guard let quantityType = HKQuantityType.quantityType(forIdentifier: identifier) else { return nil }
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate)
+
+        return await withCheckedContinuation { continuation in
+            let query = HKStatisticsQuery(
+                quantityType: quantityType,
+                quantitySamplePredicate: predicate,
+                options: .cumulativeSum
+            ) { _, result, _ in
+                continuation.resume(returning: result?.sumQuantity()?.doubleValue(for: unit))
+            }
+            store?.execute(query)
+        }
+    }
+
+    private func queryLatestSample(
+        _ identifier: HKQuantityTypeIdentifier,
+        unit: HKUnit,
+        from startDate: Date? = nil
+    ) async -> (Double, Date)? {
+        guard let quantityType = HKQuantityType.quantityType(forIdentifier: identifier) else { return nil }
+        let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+        let predicate = startDate.map { HKQuery.predicateForSamples(withStart: $0, end: nil) }
+
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: quantityType,
+                predicate: predicate,
+                limit: 1,
+                sortDescriptors: [sort]
+            ) { _, results, _ in
+                guard let sample = results?.first as? HKQuantitySample else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(
+                    returning: (
+                        sample.quantity.doubleValue(for: unit),
+                        sample.startDate
+                    )
+                )
+            }
+            store?.execute(query)
+        }
+    }
+
+    nonisolated internal static func sleepBucketDay(
+        for referenceDate: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Date {
+        calendar.startOfDay(for: referenceDate)
+    }
+
+    nonisolated internal static func aggregateSleepDuration(
+        intervals: [SleepInterval],
+        attributedTo bucketDay: Date,
+        calendar: Calendar = .current
+    ) -> Double? {
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: bucketDay) else {
+            return nil
+        }
+
+        let asleepValues: Set<Int> = [
+            HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+            HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+            HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
+            HKCategoryValueSleepAnalysis.asleepREM.rawValue,
+        ]
+
+        let totalSeconds = intervals
+            .filter { asleepValues.contains($0.value) }
+            .filter { $0.endDate >= bucketDay && $0.endDate < nextDay }
+            .reduce(0.0) { $0 + $1.endDate.timeIntervalSince($1.startDate) }
+
+        let hours = totalSeconds / 3600.0
+        return hours > 0 ? hours : nil
+    }
+
+    private static func makeMetricDescriptors() -> [String: HealthMetricDescriptor] {
+        var descriptors: [String: HealthMetricDescriptor] = [:]
+
+        if let steps = HKQuantityType.quantityType(forIdentifier: .stepCount) {
+            descriptors["steps"] = HealthMetricDescriptor(
+                metric: "steps",
+                sampleType: steps,
+                startDateProvider: { Calendar.current.startOfDay(for: Date()) },
+                builder: { service, startDate in
+                    guard
+                        let value = await service.queryCumulativeSum(
+                            .stepCount,
+                            unit: .count(),
+                            from: startDate,
+                            to: Date()
+                        )
+                    else {
+                        return nil
+                    }
+                    return .init(
+                        metric: "steps",
+                        value: value,
+                        unit: "count",
+                        startAt: startDate,
+                        endAt: Date()
+                    )
+                }
+            )
+        }
+
+        if let calories = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) {
+            descriptors["active_calories"] = HealthMetricDescriptor(
+                metric: "active_calories",
+                sampleType: calories,
+                startDateProvider: { Calendar.current.startOfDay(for: Date()) },
+                builder: { service, startDate in
+                    guard
+                        let value = await service.queryCumulativeSum(
+                            .activeEnergyBurned,
+                            unit: .kilocalorie(),
+                            from: startDate,
+                            to: Date()
+                        )
+                    else {
+                        return nil
+                    }
+                    return .init(
+                        metric: "active_calories",
+                        value: value,
+                        unit: "kcal",
+                        startAt: startDate,
+                        endAt: Date()
+                    )
+                }
+            )
+        }
+
+        if let distance = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning) {
+            descriptors["distance_walking"] = HealthMetricDescriptor(
+                metric: "distance_walking",
+                sampleType: distance,
+                startDateProvider: { Calendar.current.startOfDay(for: Date()) },
+                builder: { service, startDate in
+                    guard
+                        let value = await service.queryCumulativeSum(
+                            .distanceWalkingRunning,
+                            unit: .meter(),
+                            from: startDate,
+                            to: Date()
+                        )
+                    else {
+                        return nil
+                    }
+                    return .init(
+                        metric: "distance_walking",
+                        value: value,
+                        unit: "meters",
+                        startAt: startDate,
+                        endAt: Date()
+                    )
+                }
+            )
+        }
+
+        if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            descriptors["heart_rate"] = HealthMetricDescriptor(
+                metric: "heart_rate",
+                sampleType: heartRate,
+                startDateProvider: { Date().addingTimeInterval(-86_400) },
+                builder: { service, startDate in
+                    guard
+                        let (value, date) = await service.queryLatestSample(
+                            .heartRate,
+                            unit: .count().unitDivided(by: .minute()),
+                            from: startDate
+                        )
+                    else {
+                        return nil
+                    }
+                    return .init(
+                        metric: "heart_rate",
+                        value: value,
+                        unit: "bpm",
+                        startAt: date,
+                        endAt: nil
+                    )
+                }
+            )
+        }
+
+        // Resting heart rate — latest sample in last 24h
+        if let restingHR = HKQuantityType.quantityType(forIdentifier: .restingHeartRate) {
+            descriptors["resting_heart_rate"] = HealthMetricDescriptor(
+                metric: "resting_heart_rate",
+                sampleType: restingHR,
+                startDateProvider: { Date().addingTimeInterval(-86_400) },
+                builder: { service, startDate in
+                    guard let (value, date) = await service.queryLatestSample(
+                        .restingHeartRate, unit: .count().unitDivided(by: .minute()), from: startDate
+                    ) else { return nil }
+                    return .init(metric: "resting_heart_rate", value: value, unit: "bpm", startAt: date, endAt: nil)
+                }
+            )
+        }
+
+        // Blood oxygen — latest sample in last 24h
+        if let spo2 = HKQuantityType.quantityType(forIdentifier: .oxygenSaturation) {
+            descriptors["blood_oxygen"] = HealthMetricDescriptor(
+                metric: "blood_oxygen",
+                sampleType: spo2,
+                startDateProvider: { Date().addingTimeInterval(-86_400) },
+                builder: { service, startDate in
+                    guard let (value, date) = await service.queryLatestSample(
+                        .oxygenSaturation, unit: .percent(), from: startDate
+                    ) else { return nil }
+                    return .init(metric: "blood_oxygen", value: value * 100, unit: "%", startAt: date, endAt: nil)
+                }
+            )
+        }
+
+        // Respiratory rate — latest sample in last 24h
+        if let respRate = HKQuantityType.quantityType(forIdentifier: .respiratoryRate) {
+            descriptors["respiratory_rate"] = HealthMetricDescriptor(
+                metric: "respiratory_rate",
+                sampleType: respRate,
+                startDateProvider: { Date().addingTimeInterval(-86_400) },
+                builder: { service, startDate in
+                    guard let (value, date) = await service.queryLatestSample(
+                        .respiratoryRate, unit: .count().unitDivided(by: .minute()), from: startDate
+                    ) else { return nil }
+                    return .init(metric: "respiratory_rate", value: value, unit: "breaths/min", startAt: date, endAt: nil)
+                }
+            )
+        }
+
+        // Body mass — latest sample in last 7 days
+        if let bodyMass = HKQuantityType.quantityType(forIdentifier: .bodyMass) {
+            descriptors["body_mass"] = HealthMetricDescriptor(
+                metric: "body_mass",
+                sampleType: bodyMass,
+                startDateProvider: { Date().addingTimeInterval(-7 * 86_400) },
+                builder: { service, startDate in
+                    guard let (value, date) = await service.queryLatestSample(
+                        .bodyMass, unit: .gramUnit(with: .kilo), from: startDate
+                    ) else { return nil }
+                    return .init(metric: "body_mass", value: value, unit: "kg", startAt: date, endAt: nil)
+                }
+            )
+        }
+
+        // Exercise time — cumulative sum today
+        if let exercise = HKQuantityType.quantityType(forIdentifier: .appleExerciseTime) {
+            descriptors["workout_minutes"] = HealthMetricDescriptor(
+                metric: "workout_minutes",
+                sampleType: exercise,
+                startDateProvider: { Calendar.current.startOfDay(for: Date()) },
+                builder: { service, startDate in
+                    guard let value = await service.queryCumulativeSum(
+                        .appleExerciseTime, unit: .minute(), from: startDate, to: Date()
+                    ) else { return nil }
+                    return .init(metric: "workout_minutes", value: value, unit: "minutes", startAt: startDate, endAt: Date())
+                }
+            )
+        }
+
+        // Stand hours — cumulative sum today
+        if let stand = HKQuantityType.quantityType(forIdentifier: .appleStandTime) {
+            descriptors["stand_hours"] = HealthMetricDescriptor(
+                metric: "stand_hours",
+                sampleType: stand,
+                startDateProvider: { Calendar.current.startOfDay(for: Date()) },
+                builder: { service, startDate in
+                    guard let value = await service.queryCumulativeSum(
+                        .appleStandTime, unit: .minute(), from: startDate, to: Date()
+                    ) else { return nil }
+                    return .init(metric: "stand_hours", value: value / 60.0, unit: "hours", startAt: startDate, endAt: Date())
+                }
+            )
+        }
+
+        // Sleep duration — stable day bucket keyed by the day the sleep ends.
+        // This keeps the sample startAt fixed for the current day so the
+        // connector-side dedupe and daily rollup remain correct.
+        let sleepType = HKCategoryType(.sleepAnalysis)
+        descriptors["sleep_duration"] = HealthMetricDescriptor(
+            metric: "sleep_duration",
+            sampleType: sleepType,
+            startDateProvider: { sleepBucketDay() },
+            builder: { service, bucketDay in
+                guard let hours = await service.querySleepDuration(attributedTo: bucketDay) else { return nil }
+                return .init(metric: "sleep_duration", value: hours, unit: "hours", startAt: bucketDay, endAt: Date())
+            }
+        )
+
+        return descriptors
+    }
+
+    // MARK: - Sleep Query
+
+    private func querySleepDuration(attributedTo bucketDay: Date) async -> Double? {
+        let sleepType = HKCategoryType(.sleepAnalysis)
+        let calendar = Calendar.current
+        guard
+            let queryStart = calendar.date(byAdding: .hour, value: -18, to: bucketDay),
+            let queryEnd = calendar.date(byAdding: .day, value: 1, to: bucketDay)
+        else {
+            return nil
+        }
+        let predicate = HKQuery.predicateForSamples(withStart: queryStart, end: queryEnd)
+        let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: sleepType,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: [sort]
+            ) { _, results, _ in
+                guard let samples = results as? [HKCategorySample] else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let intervals = samples.map {
+                    SleepInterval(value: $0.value, startDate: $0.startDate, endDate: $0.endDate)
+                }
+                continuation.resume(
+                    returning: Self.aggregateSleepDuration(
+                        intervals: intervals,
+                        attributedTo: bucketDay,
+                        calendar: calendar
+                    )
+                )
+            }
+            store?.execute(query)
+        }
+    }
+}
