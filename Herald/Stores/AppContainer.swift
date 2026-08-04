@@ -1361,7 +1361,7 @@ final class AppContainer {
     /// Persist relay URL and access token to the cross-process support
     /// module (`HeraldSupport`) so the HeraldControls extension can make
     /// authenticated gateway calls without launching the main app.  The
-    /// legacy `HeraldAppState` UserDefaults entry is mirrored for backward
+    /// legacy `KallistiAppState` UserDefaults entry is mirrored for backward
     /// compatibility with widget binaries that still read it.
     private func updateSharedAppState() {
         guard let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
@@ -1375,7 +1375,7 @@ final class AppContainer {
             // Legacy widget/control binaries still read the App-Group
             // UserDefaults entry for the URL; mirror it so they don't
             // see an empty value after upgrade.
-            HeraldAppState.shared.update(relayBaseURL: relayURL, accessToken: nil)
+            KallistiAppState.shared.update(relayBaseURL: relayURL, accessToken: nil)
         }
     }
 
