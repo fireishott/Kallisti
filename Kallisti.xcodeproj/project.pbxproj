@@ -53,7 +53,6 @@
 		23D9D4D169F71A97D34C08D9 /* LivePairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15CA31F23C1B5DBEC4D16CB1 /* LivePairingService.swift */; };
 		23F340ABC8296C5B3B26217F /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 446430C165B32DA4157B82CF /* ProfileStore.swift */; };
 		24A167F9D470FB345AC9D851 /* ToolNameSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8095020B043B3F3C06898638 /* ToolNameSanitizer.swift */; };
-		2746A783A0149B9ABDF00038 /* MockHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A64A3600CC7901CE364B9986 /* MockHeraldHostService.swift */; };
 		277F727970581A6363BB084B /* ToolNameSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F58990A4377952437E7DA9EA /* ToolNameSanitizerTests.swift */; };
 		27C3138BA1FCD8A6B9DF6BF7 /* TalkModeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43C29890C990843A8E6A6C03 /* TalkModeScreen.swift */; };
 		27D9D3FB53236FFCBAE8A316 /* MessageReactionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF509FD32A7D366D5F0F1724 /* MessageReactionPicker.swift */; };
@@ -167,6 +166,7 @@
 		8410014043B452938D3687AD /* MockInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C0E0B2E6A24F8E798C3D4D /* MockInboxService.swift */; };
 		84777DE8D357F809E1C1D9D6 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCEEDE3EF41C88C35AB1466 /* Message.swift */; };
 		847A683093E4770105A0656B /* ReasoningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 587CE96927A26B149F68A436 /* ReasoningView.swift */; };
+		84ADF37EE287E4E49918B5F9 /* LiveKallistiHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B78F7C61F72153AFCB4EAA0 /* LiveKallistiHostService.swift */; };
 		8593BCE04169ED09B07E5AE7 /* LiveCameraOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B467D36024F6902A3AE3DA /* LiveCameraOverlay.swift */; };
 		86F033E106818D40864D34BA /* NoteRecognitionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F995EF60577787D883323F0 /* NoteRecognitionCoordinatorTests.swift */; };
 		87C77BCD3CDF02BBE9459918 /* TokenBatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D7FF50EDFDE8CFE4D1FCB4 /* TokenBatcher.swift */; };
@@ -204,6 +204,7 @@
 		A2E44E1E936104ED5B1361FA /* stream_v3_text_only.json in Resources */ = {isa = PBXBuildFile; fileRef = 8611FA02663E4C19C39CE122 /* stream_v3_text_only.json */; };
 		A4278A0B901292B4063F8BF8 /* VoiceOverlayScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C9C68CA2CFA10CE9ACAF449 /* VoiceOverlayScreen.swift */; };
 		A4490AC5E3052A6134CF6BE5 /* MockVoiceSessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E84E2365E5ABD9B6FBD900 /* MockVoiceSessionService.swift */; };
+		A4A6B74F039717A44895EF39 /* MockKallistiHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E03C4C7A9EA9A67446995EF /* MockKallistiHostService.swift */; };
 		A544F283B3973704D7C03E37 /* NotificationCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D67879701AEA7A031C92D40 /* NotificationCategories.swift */; };
 		A5B2921D87C79F95B05E8209 /* LiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A786388A4D1DD01FA12CEB9D /* LiveActivityPreviews.swift */; };
 		A681238178121457A861CACE /* InboxItemStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAD4693D4554E9AC78A7A08 /* InboxItemStatus.swift */; };
@@ -261,7 +262,6 @@
 		CA29FC917B209561ED7A9FC5 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E72F95B53AAF045ECA20D81 /* ChatStore.swift */; };
 		CA3173524A84B65ED9699DDB /* GatewayLogsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA9556D916E731BD3EB6E66 /* GatewayLogsScreen.swift */; };
 		CA91C89C6A77D620E6DC52A6 /* libKallistiSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ED20DC8CAA5D29C5557D3BC8 /* libKallistiSupport.a */; };
-		CC1EBE80025D62687E944390 /* LiveHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81758D91C39D22EFE2A2AAE2 /* LiveHeraldHostService.swift */; };
 		CC6CF3CDAEBEA074756EEF7B /* KallistiActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA13E7EF5BD5F24A9C0E16B /* KallistiActivityAttributes.swift */; };
 		CCB432865818CCCFB073365A /* VoiceSessionServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F8B03B3E8ECF9C4829D010 /* VoiceSessionServiceProtocol.swift */; };
 		CCD843CF2869129C46469FD2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ECCA4E5384DA8BCD3CDBA37 /* Theme.swift */; };
@@ -461,6 +461,7 @@
 		17D71FA2958E209F4E68848E /* NoteDirective.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteDirective.swift; sourceTree = "<group>"; };
 		19AF12495FD467A10C5726DC /* CronManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CronManagerView.swift; sourceTree = "<group>"; };
 		1C9C68CA2CFA10CE9ACAF449 /* VoiceOverlayScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOverlayScreen.swift; sourceTree = "<group>"; };
+		1E03C4C7A9EA9A67446995EF /* MockKallistiHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockKallistiHostService.swift; sourceTree = "<group>"; };
 		1EE08D7CB13754F43FE764C8 /* stream_v3_reasoning.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_reasoning.json; sourceTree = "<group>"; };
 		1FB93AEF715FA93E81C24611 /* stream_v2_cancelled.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_cancelled.json; sourceTree = "<group>"; };
 		2031EE52C3150D0436D29E09 /* LiveInboxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInboxService.swift; sourceTree = "<group>"; };
@@ -601,6 +602,7 @@
 		7994B9C4EECAE829BDD4E1A1 /* SharedTokenBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTokenBridge.swift; sourceTree = "<group>"; };
 		79CA90B7668F1F9EF214A61D /* GatewayFrameContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayFrameContractTests.swift; sourceTree = "<group>"; };
 		7B2CAD2A9C9DD91A451D77F9 /* EnrichmentResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrichmentResult.swift; sourceTree = "<group>"; };
+		7B78F7C61F72153AFCB4EAA0 /* LiveKallistiHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveKallistiHostService.swift; sourceTree = "<group>"; };
 		7BA7F62E6DFDCCF7ACAA7382 /* IntentHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentHandler.swift; sourceTree = "<group>"; };
 		7C68D00986F64B8BD04A5E69 /* AppSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSessionStore.swift; sourceTree = "<group>"; };
 		7D07303B84478FE6A4B98094 /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
@@ -614,7 +616,6 @@
 		80706C307BB977984996CA09 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
 		8095020B043B3F3C06898638 /* ToolNameSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolNameSanitizer.swift; sourceTree = "<group>"; };
 		8132BF0200B1255BBB2D4C71 /* ChatInputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInputBar.swift; sourceTree = "<group>"; };
-		81758D91C39D22EFE2A2AAE2 /* LiveHeraldHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHeraldHostService.swift; sourceTree = "<group>"; };
 		82016ADFAF943767ED272A71 /* MockSessionBootstrapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockSessionBootstrapService.swift; sourceTree = "<group>"; };
 		821CE39CFFA504EDDB62D905 /* SyncCoordinatorProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCoordinatorProtocol.swift; sourceTree = "<group>"; };
 		8301770F5A40A27522C863AD /* WatchNotificationScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchNotificationScene.swift; sourceTree = "<group>"; };
@@ -665,7 +666,6 @@
 		A41C5819666DE4267A39601F /* MockMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockMediaService.swift; sourceTree = "<group>"; };
 		A4974687359AD76B4E03B03A /* ChatOutboxRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatOutboxRecord.swift; sourceTree = "<group>"; };
 		A645B8F37A43F62E540BB412 /* AppSessionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSessionState.swift; sourceTree = "<group>"; };
-		A64A3600CC7901CE364B9986 /* MockHeraldHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHeraldHostService.swift; sourceTree = "<group>"; };
 		A688A071A07B2B4457157325 /* B18TranscriptOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = B18TranscriptOrderTests.swift; sourceTree = "<group>"; };
 		A73203F0B2BA648DA55383EE /* TranscriptIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdentity.swift; sourceTree = "<group>"; };
 		A73ABF9C03A1BEB78345ED62 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -1264,8 +1264,8 @@
 			children = (
 				05FA977BC37A1D41EF089A40 /* MockHealthService.swift */,
 				40F3F5F0D4985A62B88F1A30 /* MockHeraldClient.swift */,
-				A64A3600CC7901CE364B9986 /* MockHeraldHostService.swift */,
 				C5C0E0B2E6A24F8E798C3D4D /* MockInboxService.swift */,
+				1E03C4C7A9EA9A67446995EF /* MockKallistiHostService.swift */,
 				511ADCAA9503D2485CF80205 /* MockLocationService.swift */,
 				A41C5819666DE4267A39601F /* MockMediaService.swift */,
 				6ED17BC90420CD30E85ACFC9 /* MockNotificationService.swift */,
@@ -1305,8 +1305,8 @@
 				A1F1BA04F9B9209C7309516D /* LiveActivityService.swift */,
 				472F20D312B2907B43D3221C /* LiveHealthService.swift */,
 				274F993A7551F02A3C138417 /* LiveHeraldClient.swift */,
-				81758D91C39D22EFE2A2AAE2 /* LiveHeraldHostService.swift */,
 				2031EE52C3150D0436D29E09 /* LiveInboxService.swift */,
+				7B78F7C61F72153AFCB4EAA0 /* LiveKallistiHostService.swift */,
 				F01B9A682CD76F4AAFC3CB17 /* LiveLocationService.swift */,
 				ACD794F9590B57D869D81691 /* LiveMediaService.swift */,
 				C0DB1BF4F88668B3F9BAD660 /* LiveMotionService.swift */,
@@ -2016,8 +2016,8 @@
 				8593BCE04169ED09B07E5AE7 /* LiveCameraOverlay.swift in Sources */,
 				3E89B80D1B9EBAD82CEB0382 /* LiveHealthService.swift in Sources */,
 				36A88249AEADB1C888D75E4B /* LiveHeraldClient.swift in Sources */,
-				CC1EBE80025D62687E944390 /* LiveHeraldHostService.swift in Sources */,
 				AE92F001AD47604A29C1B9DC /* LiveInboxService.swift in Sources */,
+				84ADF37EE287E4E49918B5F9 /* LiveKallistiHostService.swift in Sources */,
 				1354484176A4573A72AA7C11 /* LiveLocationService.swift in Sources */,
 				94B97FAF1F918CA700F713E2 /* LiveLogView.swift in Sources */,
 				E6F0029FD6C82809BCB0D502 /* LiveMediaService.swift in Sources */,
@@ -2042,8 +2042,8 @@
 				313FBFC1CC55BAA002E10BC8 /* MimoTTSService.swift in Sources */,
 				9646ED0F8DE2E1DC78B15D2D /* MockHealthService.swift in Sources */,
 				2803A80197585C9690C2E547 /* MockHeraldClient.swift in Sources */,
-				2746A783A0149B9ABDF00038 /* MockHeraldHostService.swift in Sources */,
 				8410014043B452938D3687AD /* MockInboxService.swift in Sources */,
+				A4A6B74F039717A44895EF39 /* MockKallistiHostService.swift in Sources */,
 				F887518F151E6A9ED94C21AE /* MockLocationService.swift in Sources */,
 				BD50CE6600545F41CAE52FAF /* MockMediaService.swift in Sources */,
 				D62BAF81FF72A55F8971B28D /* MockNotificationService.swift in Sources */,

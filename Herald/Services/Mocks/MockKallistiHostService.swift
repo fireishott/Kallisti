@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class MockHeraldHostService: KallistiHostServiceProtocol {
+final class MockKallistiHostService: KallistiHostServiceProtocol {
     var currentHost: HeraldHostStatus? = HeraldHostStatus(
         id: UUID(),
         displayName: "Mock Herald Host",
