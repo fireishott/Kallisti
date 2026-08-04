@@ -1,5 +1,5 @@
 import XCTest
-@testable import Herald
+@testable import Kallisti
 
 /// Tests for content separation — system context, transport metadata,
 /// and staging paths must never appear as display content.

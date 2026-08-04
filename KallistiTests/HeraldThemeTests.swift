@@ -1,7 +1,7 @@
 import SwiftUI
 import Testing
 import UIKit
-@testable import Herald
+@testable import Kallisti
 
 /// Herald 2.1 rebrand contract tests.
 ///

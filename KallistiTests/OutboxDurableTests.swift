@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// Build 33 Workstream B: durable outbox + visible attempt ownership.
 ///

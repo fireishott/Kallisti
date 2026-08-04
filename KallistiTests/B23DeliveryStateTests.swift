@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// Build 23: delivery-state semantics and terminal message projection.
 ///

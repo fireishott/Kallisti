@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 // MARK: - Terminal Parsing Tests
 

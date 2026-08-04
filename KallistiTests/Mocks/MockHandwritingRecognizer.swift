@@ -1,5 +1,5 @@
 import Foundation
-@testable import Herald
+@testable import Kallisti
 
 /// Mock handwriting recognizer for testing.
 struct MockHandwritingRecognizer: HandwritingRecognizing {

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @Suite("Mimo voice catalog covers every offered voice")
 struct MimoVoiceCatalogTests {

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @MainActor
 @Suite("B18 transcript ordering — local-only anchoring and identity-map resolution")

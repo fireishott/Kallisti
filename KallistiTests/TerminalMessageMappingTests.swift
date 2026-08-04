@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @MainActor
 @Suite("Terminal text maps to the final message")

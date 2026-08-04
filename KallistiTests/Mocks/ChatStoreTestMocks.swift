@@ -1,5 +1,5 @@
 import Foundation
-@testable import Herald
+@testable import Kallisti
 
 // MARK: - Minimal mocks for ChatStore testing
 

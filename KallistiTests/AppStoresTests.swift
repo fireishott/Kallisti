@@ -2,7 +2,7 @@ import Foundation
 import HealthKit
 import Testing
 import UIKit
-@testable import Herald
+@testable import Kallisti
 
 @Suite(.serialized)
 struct AppStoresTests {

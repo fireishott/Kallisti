@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// B21 — the follow-up prompt renders *below* the reply it produced.
 ///

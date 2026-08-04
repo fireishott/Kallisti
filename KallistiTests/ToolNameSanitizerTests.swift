@@ -1,5 +1,5 @@
 import XCTest
-@testable import Herald
+@testable import Kallisti
 
 final class ToolNameSanitizerTests: XCTestCase {
     func testBareToolIdentifierPassesThrough() {
