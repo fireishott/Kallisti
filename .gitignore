@@ -86,3 +86,7 @@ local-ops/
 docs/screenshots/
 docs/social-preview.png
 docs/assets/rebrand/screenshots/ui/
+HERALD_*.md
+DEPLOY_*.md
+scripts/ship-*.sh
+*.xcarchive
