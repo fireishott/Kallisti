@@ -346,7 +346,7 @@ private struct WelcomeStepView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Brand row — mono eyebrow, per the 2.1 type hierarchy.
                 HStack(alignment: .center, spacing: Design.Spacing.xs) {
-                    Text("HERALD · SELF-HOSTED")
+                    Text("KALLISTI · SELF-HOSTED")
                         .brandEyebrow(Design.Colors.foreground)
                     Spacer()
                     let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
@@ -635,7 +635,7 @@ private struct PairingStepView: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .lineSpacing(-4)
 
-                Text("printed by `herald-connector pair-phone`.")
+                Text("printed by `kallisti pair-phone`.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }
@@ -671,7 +671,7 @@ private struct PairingStepView: View {
                             ProgressView().tint(Design.Colors.background)
                         } else {
                             HStack(spacing: Design.Spacing.xs) {
-                                Text("Connect Herald")
+                                Text("Connect Kallisti")
                                 Text("→").accessibilityHidden(true)
                             }
                             .font(Design.Typography.headline)
@@ -687,7 +687,7 @@ private struct PairingStepView: View {
                 .clipShape(Capsule())
                 .disabled(isWorking || !isValid)
                 .opacity(isWorking || !isValid ? 0.5 : 1)
-                .accessibilityLabel("Connect Herald")
+                .accessibilityLabel("Connect Kallisti")
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)
