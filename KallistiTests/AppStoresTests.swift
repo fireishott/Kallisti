@@ -2097,7 +2097,7 @@ struct AppStoresTests {
             isOnline: false
         )
 
-        let hostStore = HeraldHostStore(
+        let hostStore = KallistiHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )
@@ -2118,7 +2118,7 @@ struct AppStoresTests {
         let service = RecordingKallistiHostService()
         service.fetchError = RelayAPIClient.ClientError.requestFailed("Relay unreachable.")
 
-        let hostStore = HeraldHostStore(
+        let hostStore = KallistiHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )
@@ -2147,7 +2147,7 @@ struct AppStoresTests {
             isOnline: true
         )
 
-        let hostStore = HeraldHostStore(
+        let hostStore = KallistiHostStore(
             hostService: service,
             accessTokenProvider: { "access-token" }
         )
