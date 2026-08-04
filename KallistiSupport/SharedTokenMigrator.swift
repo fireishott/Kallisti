@@ -64,8 +64,8 @@ public struct SharedTokenMigrator {
 
     public init(
         destination: SharedCredentialProvider = .shared,
-        appGroupSuite: String = HeraldSupportConfiguration.appGroupIdentifier,
-        legacyServiceName: String = HeraldSupportConfiguration.keychainServiceName
+        appGroupSuite: String = KallistiSupportConfiguration.appGroupIdentifier,
+        legacyServiceName: String = KallistiSupportConfiguration.keychainServiceName
     ) {
         self.destination = destination
         self.appGroupSuite = appGroupSuite
@@ -131,7 +131,7 @@ public struct SharedTokenMigrator {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: legacyServiceName,
-            kSecAttrAccount as String: HeraldSupportConfiguration.keychainAccessTokenAccount,
+            kSecAttrAccount as String: KallistiSupportConfiguration.keychainAccessTokenAccount,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -154,7 +154,7 @@ public struct SharedTokenMigrator {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: legacyServiceName,
-                kSecAttrAccount as String: HeraldSupportConfiguration.keychainAccessTokenAccount,
+                kSecAttrAccount as String: KallistiSupportConfiguration.keychainAccessTokenAccount,
             ]
             SecItemDelete(query as CFDictionary)
         }

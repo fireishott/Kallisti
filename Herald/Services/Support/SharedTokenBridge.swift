@@ -18,7 +18,7 @@
 //
 
 import Foundation
-import HeraldSupport
+import KallistiSupport
 import os
 
 /// One-stop helper the main app calls after authentication and on
@@ -50,7 +50,7 @@ enum SharedTokenBridge {
         if accessToken == nil {
             // Clear the legacy App-Group plaintext entry if it still exists;
             // the migrator already handles the Keychain side.
-            let defaults = UserDefaults(suiteName: HeraldSupportConfiguration.appGroupIdentifier)
+            let defaults = UserDefaults(suiteName: KallistiSupportConfiguration.appGroupIdentifier)
             defaults?.removeObject(forKey: legacyAppGroupTokenDefaultsKey)
         }
     }

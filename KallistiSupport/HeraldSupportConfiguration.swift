@@ -1,5 +1,5 @@
 //
-//  HeraldSupportConfiguration.swift
+//  KallistiSupportConfiguration.swift
 //  HeraldSupport
 //
 //  Single source of truth for the cross-process identifiers used by the
@@ -18,7 +18,7 @@ import Foundation
 /// controls, intents, notification service). Changing them after a release
 /// would orphan previously persisted App Group data and Keychain items, so
 /// they are intentionally hard-coded constants rather than build settings.
-public enum HeraldSupportConfiguration {
+public enum KallistiSupportConfiguration {
     /// App Group that all Herald binaries share. Both the URL (non-secret)
     /// and the cached gateway status (non-secret) live here.
     public static let appGroupIdentifier = "group.net.fihonline.herald"

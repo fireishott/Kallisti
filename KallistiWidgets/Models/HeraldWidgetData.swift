@@ -3,7 +3,7 @@ import Foundation
 /// Snapshot of app state shared between the main app and widget extension
 /// via App Group UserDefaults. Updated by the main app whenever state changes;
 /// read by widget timeline providers to render Home Screen and CarPlay widgets.
-struct HeraldWidgetData: Codable, Sendable {
+struct KallistiWidgetData: Codable, Sendable {
     var hostName: String?
     var hostOnline: Bool = false
     var lastMessagePreview: String?
@@ -18,5 +18,5 @@ struct HeraldWidgetData: Codable, Sendable {
     /// Relay base URL for the Intents Extension to communicate with the relay.
     var relayBaseURL: String?
 
-    static let empty = HeraldWidgetData()
+    static let empty = KallistiWidgetData()
 }

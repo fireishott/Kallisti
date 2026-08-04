@@ -15,7 +15,7 @@ enum KallistiBrand {
 struct KallistiBrandIcon: View {
     let size: CGFloat
     var fallbackSymbol: String = "waveform"
-    var fallbackTint: Color = HeraldBrand.accent
+    var fallbackTint: Color = KallistiBrand.accent
     var backgroundTint: Color? = nil
     var cornerRadius: CGFloat? = nil
 
@@ -99,7 +99,7 @@ struct KallistiLiveActivity: Widget {
                             .font(.system(.caption2, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .foregroundStyle(HeraldBrand.accent.opacity(0.8))
+                            .foregroundStyle(KallistiBrand.accent.opacity(0.8))
                     }
                 }
             } compactLeading: {
@@ -133,7 +133,7 @@ struct KallistiLiveActivity: Widget {
         HStack(spacing: 12) {
             KallistiBrandIcon(
                 size: 44,
-                backgroundTint: HeraldBrand.surface,
+                backgroundTint: KallistiBrand.surface,
                 cornerRadius: 12
             )
 
@@ -159,7 +159,7 @@ struct KallistiLiveActivity: Widget {
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .foregroundStyle(HeraldBrand.accent)
+                        .foregroundStyle(KallistiBrand.accent)
                 }
             }
 

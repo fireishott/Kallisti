@@ -1,5 +1,5 @@
 import AppIntents
-import HeraldSupport
+import KallistiSupport
 import SwiftUI
 import WidgetKit
 

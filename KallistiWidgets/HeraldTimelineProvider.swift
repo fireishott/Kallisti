@@ -4,12 +4,12 @@ import WidgetKit
 /// Timeline entry backed by the App Group shared data snapshot.
 struct KallistiWidgetEntry: TimelineEntry {
     let date: Date
-    let data: HeraldWidgetData
+    let data: KallistiWidgetData
 
     static let placeholder = KallistiWidgetEntry(
         date: .now,
-        data: HeraldWidgetData(
-            hostName: "Herald",
+        data: KallistiWidgetData(
+            hostName: "Kallisti",
             hostOnline: true,
             lastMessagePreview: "Good morning! How can I help?",
             lastMessageSender: "assistant",
@@ -51,10 +51,10 @@ struct KallistiTimelineProvider: TimelineProvider {
         completion(timeline)
     }
 
-    private func readData() -> HeraldWidgetData {
+    private func readData() -> KallistiWidgetData {
         guard let defaults = UserDefaults(suiteName: Self.appGroupID),
               let raw = defaults.data(forKey: Self.dataKey),
-              let decoded = try? JSONDecoder().decode(HeraldWidgetData.self, from: raw)
+              let decoded = try? JSONDecoder().decode(KallistiWidgetData.self, from: raw)
         else {
             return .empty
         }
