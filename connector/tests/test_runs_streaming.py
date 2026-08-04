@@ -35,6 +35,17 @@ class TestRunsReasoningAvailableHandling:
         )
         assert "session_id" not in payload
 
+    def test_runs_payload_uses_active_model_name(self):
+        """The runs payload must use the executor's active_model_name,
+        not a hardcoded default."""
+        executor = HeraldAPIExecutor()
+        executor.active_model_name = "cc/claude-sonnet-4-6"
+        payload = executor._runs_request_payload(
+            latest_user_message="hello",
+            session_id=None,
+        )
+        assert payload["model"] == "cc/claude-sonnet-4-6"
+
     @pytest.mark.asyncio
     async def test_reasoning_available_is_suppressed(self):
         """Provider preamble is not duplicated into the thought bubble."""
