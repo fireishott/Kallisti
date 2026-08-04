@@ -95,7 +95,7 @@ struct HeraldLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if let tool = context.state.toolName {
-                        Text(tool)
+                        Text(_ToolNameSanitizer.displayLabel(for: tool))
                             .font(.system(.caption2, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -155,7 +155,7 @@ struct HeraldLiveActivity: Widget {
                     .foregroundStyle(.primary)
 
                 if let tool = context.state.toolName {
-                    Text(tool)
+                    Text(_ToolNameSanitizer.displayLabel(for: tool))
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -186,6 +186,27 @@ struct HeraldLiveActivity: Widget {
         let m = seconds / 60
         let s = seconds % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// KEEP IN SYNC with HeraldSupport/ToolNameSanitizer.swift
+// (Widget extension cannot import HeraldSupport module, so a private copy lives here.)
+private enum _ToolNameSanitizer {
+    static func displayLabel(for raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Working" }
+        let identifier = trimmed.range(of: #"^[A-Za-z][A-Za-z0-9_.\-]{0,63}$"#, options: .regularExpression) != nil
+        if identifier {
+            switch trimmed.lowercased() {
+            case "view_file", "read_file", "cat": return "Reading a file"
+            case "search", "grep", "find": return "Searching"
+            case "date": return "Checking the time"
+            default:
+                if trimmed.count > 25 { return String(trimmed.prefix(25)) + "\u{2026}" }
+                return trimmed
+            }
+        }
+        return "Running a command"
     }
 }
 
