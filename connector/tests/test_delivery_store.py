@@ -582,6 +582,29 @@ class TestSendMessageIdempotency:
         assert body["error"] == "sameClientIdDifferentHash"
         assert len(facade._http_jobs) == 0
 
+    def test_recycled_terminal_id_with_different_text_creates_new_job(self, app_env, client):
+        """A new message reusing a terminal clientMessageId with different
+        content is NOT a conflict — it's a recycled id.  The connector must
+        mint a fresh server-side canonical id and run it as a new turn."""
+        store = get_delivery_store()
+        store.get_or_create_binding(CONV, HERMES_SID, "", DEVICE)
+        store.create_message_request(
+            CLIENT_MSG, CONV, DEVICE, "What is the weather?",
+            request_sha256("What is the weather?", None),
+        )
+        store.accept_message_request(CLIENT_MSG, JOB1)
+        store.complete_message_request(CLIENT_MSG)
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, text="A totally different question"),
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["replyState"] == "pending"  # accepted as new, not duplicate/conflict
+        assert data["jobId"] is not None
+        assert data["jobId"] != JOB1  # new job, not the old one
+
     def test_happy_path_lifecycle_through_handler(self, app_env, client, no_session_lookups):
         app_env.message_handler = completed_handler
         get_delivery_store().get_or_create_binding(CONV, HERMES_SID, "", DEVICE)

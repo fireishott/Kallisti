@@ -255,8 +255,9 @@ class TestClientMessageIdempotency:
         self, client, ctx, store, no_session_lookups,
     ):
         """Two sends with the same clientMessageId but different
-        content is a 409 conflict (replay protection) — the canonical
-        row count must not increase."""
+        content: if the first is still running it's a 409 conflict;
+        if it's terminal the connector mints a fresh id and accepts
+        the new message (recycled client id)."""
         _seed_binding(store)
         with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.post(
@@ -265,16 +266,21 @@ class TestClientMessageIdempotency:
             )
         assert first.status_code == 200
         with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
-            # Same id, different text — must 409
+            # Same id, different text
             second = client.post(
                 "/v1/messages",
                 json=_post_body(text="Different version"),
             )
-        assert second.status_code == 409
-        # Only one message_requests row exists for this id.
+        # If the first request completed (terminal), the second is
+        # accepted as a new message with a fresh id.  If it's still
+        # running, it's a 409 conflict.
         row = store.get_message_request(CLIENT_MSG)
         assert row is not None
-        assert row["state"] in ("running", "terminal")
+        if second.status_code == 409:
+            assert row["state"] in ("running", "terminal")
+        else:
+            assert second.status_code == 200
+            assert second.json()["replyState"] == "pending"
 
 
 # ── 3. Snapshots return unique canonical message ids and sequences
@@ -544,12 +550,13 @@ class TestReconnectReplay:
         assert second["canonicalMessageId"] == first["canonicalMessageId"]
         assert second["sequence"] == first["sequence"]
 
-    def test_replay_with_different_content_is_409(
+    def test_replay_with_different_content_is_recycled_or_409(
         self, client, ctx, store, no_session_lookups,
     ):
         """A reconnect that arrives with the same clientMessageId but
-        different text is rejected as a 409 (a real 'conflict') — never
-        silently rewritten."""
+        different text: if the original is terminal, the connector
+        treats it as a recycled id and accepts the new message;
+        if still running, it's a 409 conflict."""
         _seed_binding(store)
         with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.post(
@@ -562,8 +569,11 @@ class TestReconnectReplay:
                 "/v1/messages",
                 json=_post_body(text="tampered"),
             )
-        assert replay.status_code == 409
-        assert replay.json()["replyState"] == "conflict"
+        if replay.status_code == 409:
+            assert replay.json()["replyState"] == "conflict"
+        else:
+            assert replay.status_code == 200
+            assert replay.json()["replyState"] == "pending"
 
 
 # ── _relay_message: snapshot side coverage

@@ -3231,31 +3231,44 @@ async def send_message(request: Request) -> JSONResponse:
             if existing_req.get("requestSha256"):
                 new_sha = request_sha256(display_text, attachments)
                 if new_sha != existing_req["requestSha256"]:
-                    logger.warning(
-                        "Message %s rejected: clientMessageId already "
-                        "used with different content",
-                        client_message_id,
-                    )
-                    return JSONResponse(status_code=409, content={
-                        "$schema": "message-accepted-v1",
-                        "replyState": "conflict",
-                        "clientMessageId": client_message_id,
-                        "jobId": None,
-                        "state": None,
-                        "error": "sameClientIdDifferentHash",
-                        "message": (
-                            "This clientMessageId was already submitted "
-                            "with different content."
-                        ),
-                        "conversation": None,
-                        "userMessage": None,
-                        "usage": None,
-                        "context": None,
-                        "diff": None,
-                    })
+                    if existing_req["state"] == "terminal":
+                        # Recycled client id: the old request is done, this
+                        # is a genuinely new message that happens to reuse
+                        # the same clientMessageId.  Mint a fresh server-
+                        # side canonical id and treat it as a new turn.
+                        logger.info(
+                            "recycled client id %s: sha mismatch, "
+                            "treating as new message",
+                            client_message_id,
+                        )
+                        client_message_id = str(uuid.uuid4())
+                        existing_req = None  # skip duplicate check below
+                    else:
+                        logger.warning(
+                            "Message %s rejected: clientMessageId already "
+                            "used with different content",
+                            client_message_id,
+                        )
+                        return JSONResponse(status_code=409, content={
+                            "$schema": "message-accepted-v1",
+                            "replyState": "conflict",
+                            "clientMessageId": client_message_id,
+                            "jobId": None,
+                            "state": None,
+                            "error": "sameClientIdDifferentHash",
+                            "message": (
+                                "This clientMessageId was already submitted "
+                                "with different content."
+                            ),
+                            "conversation": None,
+                            "userMessage": None,
+                            "usage": None,
+                            "context": None,
+                            "diff": None,
+                        })
             # Duplicate: same content, request already in progress or
             # terminal — return the existing job without resubmitting.
-            if existing_req["state"] in ("running", "terminal"):
+            if existing_req is not None and existing_req["state"] in ("running", "terminal"):
                 logger.info(
                     "Message %s is a duplicate (state=%s, job=%s) — "
                     "returning the existing job without resubmitting",
