@@ -1,0 +1,14 @@
+{
+  "$schema": "message-accepted-v1",
+  "replyState": "conflict",
+  "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+  "jobId": null,
+  "state": null,
+  "error": "sameClientIdDifferentHash",
+  "message": "This clientMessageId was already submitted with different content.",
+  "conversation": null,
+  "userMessage": null,
+  "usage": null,
+  "context": null,
+  "diff": null
+}

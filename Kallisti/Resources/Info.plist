@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>APP_HOSTED_RELAY_ENABLED</key>
+	<true/>
+	<key>APP_HOSTED_RELAY_URL</key>
+	<string>https://your-relay.example.com/v1</string>
+	<key>APP_PRIVACY_URL</key>
+	<string>https://kallisti.fihonline.net/privacy.html</string>
+	<key>APP_TERMS_URL</key>
+	<string>https://herald.fihonline.net/terms.html</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>net.fihonline.kallisti.refresh</string>
+		<string>net.fihnews.HeraldBGProcessing</string>
+	</array>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Kallisti</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INSendMessageIntent</string>
+		<string>INSearchForMessagesIntent</string>
+		<string>INSetMessageAttributeIntent</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Kallisti uses the camera to capture photos and documents for analysis.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Kallisti reads your health data to offer personalized wellness insights.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Kallisti does not write health data, but this permission is required by the system.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Kallisti uses your location in the background to provide contextual awareness and proactive suggestions.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Kallisti uses your location to provide contextual recommendations and nearby suggestions.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Kallisti uses the microphone for voice conversations in Talk Mode.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Kallisti uses motion data to understand your current activity for contextual awareness.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Kallisti uses Siri to send and read messages on CarPlay and with voice commands.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Kallisti uses speech recognition for voice commands and local transcription.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>net.fihonline.kallisti.viewNote</string>
+	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>CarPlay</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>processing</string>
+		<string>location</string>
+		<string>remote-notification</string>
+		<string>audio</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

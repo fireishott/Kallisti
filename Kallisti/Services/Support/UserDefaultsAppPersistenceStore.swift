@@ -1,0 +1,173 @@
+import Foundation
+
+@MainActor
+final class UserDefaultsAppPersistenceStore: AppPersistenceStoreProtocol {
+    private enum Keys {
+        static let userSettings = "herald.userSettings"
+        static let sessionState = "herald.sessionState"
+        static let inboxState = "herald.inboxState"
+        static let pairedRelayConfiguration = "herald.pairedRelayConfiguration"
+        static let sensorOutboxState = "herald.sensorOutboxState"
+        static let conversationCache = "herald.conversationCache"
+        static let healthAnchorPrefix = "herald.healthAnchor."
+        static let sessionCache = "herald.sessionCache"
+    }
+
+    private let defaults: UserDefaults
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        self.encoder = encoder
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        self.decoder = decoder
+    }
+
+    func loadUserSettings() -> UserSettings? {
+        load(UserSettings.self, key: Keys.userSettings)
+    }
+
+    func saveUserSettings(_ settings: UserSettings) {
+        save(settings, key: Keys.userSettings)
+    }
+
+    func loadSessionState() -> AppSessionState? {
+        load(AppSessionState.self, key: Keys.sessionState)
+    }
+
+    func saveSessionState(_ state: AppSessionState) {
+        save(state, key: Keys.sessionState)
+    }
+
+    func clearSessionState() {
+        defaults.removeObject(forKey: Keys.sessionState)
+    }
+
+    func loadInboxState() -> InboxLocalState {
+        load(InboxLocalState.self, key: Keys.inboxState) ?? InboxLocalState()
+    }
+
+    func saveInboxState(_ state: InboxLocalState) {
+        save(state, key: Keys.inboxState)
+    }
+
+    func clearInboxState() {
+        defaults.removeObject(forKey: Keys.inboxState)
+    }
+
+    func loadPairedRelayConfiguration() -> PairedRelayConfiguration? {
+        load(PairedRelayConfiguration.self, key: Keys.pairedRelayConfiguration)
+    }
+
+    func savePairedRelayConfiguration(_ configuration: PairedRelayConfiguration) {
+        save(configuration, key: Keys.pairedRelayConfiguration)
+    }
+
+    func clearPairedRelayConfiguration() {
+        defaults.removeObject(forKey: Keys.pairedRelayConfiguration)
+    }
+
+    func loadSensorOutboxState() -> SensorOutboxState {
+        load(SensorOutboxState.self, key: Keys.sensorOutboxState) ?? SensorOutboxState()
+    }
+
+    func saveSensorOutboxState(_ state: SensorOutboxState) {
+        save(state, key: Keys.sensorOutboxState)
+    }
+
+    func clearSensorOutboxState() {
+        defaults.removeObject(forKey: Keys.sensorOutboxState)
+    }
+
+    /// Session-scoped conversation cache key.
+    /// When switching sessions, set this to the new session's ID so the cache
+    /// reads/writes are isolated per session rather than sharing a single
+    /// global cache entry (which caused session B to load session A's history).
+    var currentSessionId: UUID? {
+        get {
+            guard let raw = defaults.string(forKey: "herald.activeSessionId") else { return nil }
+            return UUID(uuidString: raw)
+        }
+        set {
+            if let id = newValue {
+                defaults.set(id.uuidString, forKey: "herald.activeSessionId")
+            } else {
+                defaults.removeObject(forKey: "herald.activeSessionId")
+            }
+        }
+    }
+
+    private var scopedConversationKey: String {
+        if let sid = currentSessionId {
+            return "\(Keys.conversationCache).\(sid.uuidString)"
+        }
+        return Keys.conversationCache
+    }
+
+    func loadConversationCache() -> Conversation? {
+        load(Conversation.self, key: scopedConversationKey)
+    }
+
+    func saveConversationCache(_ conversation: Conversation) {
+        save(conversation, key: scopedConversationKey)
+    }
+
+    func clearConversationCache() {
+        defaults.removeObject(forKey: scopedConversationKey)
+        // Also clean the legacy unscoped key for migration
+        defaults.removeObject(forKey: Keys.conversationCache)
+    }
+
+    func loadHealthQueryAnchorData(for identifier: String) -> Data? {
+        defaults.data(forKey: Keys.healthAnchorPrefix + identifier)
+    }
+
+    func saveHealthQueryAnchorData(_ data: Data?, for identifier: String) {
+        let key = Keys.healthAnchorPrefix + identifier
+        if let data {
+            defaults.set(data, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    func clearHealthQueryAnchorData() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Keys.healthAnchorPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    func loadSessionCache(key: String = Keys.sessionCache) -> [SessionSummary]? {
+        load([SessionSummary].self, key: key)
+    }
+
+    func saveSessionCache(_ sessions: [SessionSummary], key: String = Keys.sessionCache) {
+        save(sessions, key: key)
+    }
+
+    private static let logEntriesKey = "herald.logEntries"
+
+    func loadLogEntries() -> [LogEntry]? {
+        load([LogEntry].self, key: Self.logEntriesKey)
+    }
+
+    func saveLogEntries(_ entries: [LogEntry]) {
+        save(entries, key: Self.logEntriesKey)
+    }
+
+    private func load<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? decoder.decode(type, from: data)
+    }
+
+    private func save<T: Encodable>(_ value: T, key: String) {
+        guard let data = try? encoder.encode(value) else { return }
+        defaults.set(data, forKey: key)
+    }
+}

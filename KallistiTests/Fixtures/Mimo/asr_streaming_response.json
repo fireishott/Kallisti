@@ -1,0 +1,7 @@
+{
+  "stream": [
+    {"type": "delta", "text": "Hello", "is_final": false},
+    {"type": "delta", "text": " world", "is_final": false},
+    {"type": "final", "text": "Hello world", "is_final": true, "language": "en", "duration_ms": 1500}
+  ]
+}

@@ -1,0 +1,92 @@
+# Xcode
+*.xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# Build
+build/
+.build/
+
+# Dependencies
+Pods/
+Carthage/Build/
+.package.resolved
+uv.lock
+
+# OS
+.DS_Store
+*.swp
+*~.nib
+
+# Secrets
+.env
+*.env.local
+*.key
+credentials.json
+relay/fly.local.toml
+Config/*.local.xcconfig
+
+# Claude
+.claude/task-output/
+
+# Python / relay
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+*.db
+
+# Deploy scripts & build automation (internal only)
+deploy/
+
+# Internal planning & operational docs
+hermes-mobile-plans/
+build-log.md
+build-evidence.json
+DEPLOY_*.md
+HERALD_REMEDY_PLAN.md
+docs/pairing-props/
+docs/superpowers/
+docs/assets/rebrand-source/
+docs/TESTFLIGHT_PIPELINE.md
+docs/bug-remedy-build-*.md
+AuthKey_*.p8
+*.p8
+relay/relay.db-shm
+relay/relay.db-wal
+main
+
+# Internal release/ops material — this repo is PUBLIC.
+# These carry internal hostnames, the fihadmin account, ASC key + issuer IDs and
+# keychain-variable references. Keep them local; never track them.
+*MARCHING-ORDERS*.md
+*MARCHING_ORDERS*.md
+*DEPLOYMENT*.md
+*_FOR_CLAUDE_CODE.md
+HERALD_*_BUILD_*.md
+tf-build-*.sh
+deploy/
+
+# Local-only recovered ops docs (contain credentials). Never track.
+local-ops/
+
+# Screenshots — never track app screenshots in a public repo (PII risk)
+docs/screenshots/
+docs/social-preview.png
+docs/assets/rebrand/screenshots/ui/
+HERALD_*.md
+DEPLOY_*.md
+scripts/ship-*.sh
+*.xcarchive
