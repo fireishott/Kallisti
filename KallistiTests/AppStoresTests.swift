@@ -171,7 +171,7 @@ struct AppStoresTests {
     }
 
     @MainActor
-    private final class RecordingHeraldHostService: HeraldHostServiceProtocol {
+    private final class RecordingKallistiHostService: KallistiHostServiceProtocol {
         var currentHost: HeraldHostStatus?
         var fetchError: Error?
 
@@ -1558,7 +1558,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let hostService = LiveHeraldHostService(
+        let hostService = LiveKallistiHostService(
             apiClient: apiClient,
             accessTokenRefresher: {
                 refreshCallCount.value += 1
@@ -2082,7 +2082,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreGeneratesEnrollmentCodeAndClearsOnRevoke() async throws {
-        let service = RecordingHeraldHostService()
+        let service = RecordingKallistiHostService()
         service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
@@ -2115,7 +2115,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreMarksReachabilityErrorsWithoutPretendingHostIsOffline() async throws {
-        let service = RecordingHeraldHostService()
+        let service = RecordingKallistiHostService()
         service.fetchError = RelayAPIClient.ClientError.requestFailed("Relay unreachable.")
 
         let hostStore = HeraldHostStore(
@@ -2132,7 +2132,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreKeepsKnownOnlineHostDuringRefreshErrors() async throws {
-        let service = RecordingHeraldHostService()
+        let service = RecordingKallistiHostService()
         service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
@@ -2705,8 +2705,8 @@ struct NotificationReplyTests {
     func notesStoreActiveExcludesDeleted() {
         let store = NotesStore()
         store.notes = [
-            HeraldNote(title: "Active"),
-            HeraldNote(title: "Deleted", deletedAt: .now),
+            KallistiNote(title: "Active"),
+            KallistiNote(title: "Deleted", deletedAt: .now),
         ]
         #expect(store.activeNotes.count == 1)
         #expect(store.activeNotes.first?.title == "Active")
@@ -2717,8 +2717,8 @@ struct NotificationReplyTests {
     func notesStorePinnedFirst() {
         let store = NotesStore()
         store.notes = [
-            HeraldNote(title: "Normal"),
-            HeraldNote(title: "Pinned", pinned: true),
+            KallistiNote(title: "Normal"),
+            KallistiNote(title: "Pinned", pinned: true),
         ]
         #expect(store.activeNotes.first?.title == "Pinned")
     }

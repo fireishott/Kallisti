@@ -318,9 +318,9 @@ final class AppContainer {
 
         let hostService: any KallistiHostServiceProtocol
         if usesMockPairingService {
-            hostService = MockHeraldHostService()
+            hostService = MockKallistiHostService()
         } else {
-            hostService = LiveHeraldHostService(
+            hostService = LiveKallistiHostService(
                 apiClient: apiClient,
                 accessTokenRefresher: {
                     await sessionStore.refreshAccessTokenIfNeeded()

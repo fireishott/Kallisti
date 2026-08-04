@@ -23,7 +23,7 @@ final class NotesStoreTests: XCTestCase {
     func test_recentNotes_returnsLast10NotesSortedByUpdatedAt() async {
         // Given: 15 notes with different updatedAt dates
         let notes = (0..<15).map { i in
-            HeraldNote(
+            KallistiNote(
                 id: UUID(),
                 title: "Note \(i)",
                 updatedAt: Date().addingTimeInterval(Double(i) * 60)
@@ -44,7 +44,7 @@ final class NotesStoreTests: XCTestCase {
     func test_recentNotes_returnsAllNotesWhenLessThan10() async {
         // Given: 5 notes
         let notes = (0..<5).map { i in
-            HeraldNote(id: UUID(), title: "Note \(i)")
+            KallistiNote(id: UUID(), title: "Note \(i)")
         }
         await mockRepository.setNotes(notes)
         
@@ -59,10 +59,10 @@ final class NotesStoreTests: XCTestCase {
     func test_recentNotes_excludesDeletedNotes() async {
         // Given: 3 active notes and 2 deleted notes
         let activeNotes = (0..<3).map { i in
-            HeraldNote(id: UUID(), title: "Active \(i)")
+            KallistiNote(id: UUID(), title: "Active \(i)")
         }
         let deletedNotes = (0..<2).map { i in
-            HeraldNote(id: UUID(), title: "Deleted \(i)", deletedAt: .now)
+            KallistiNote(id: UUID(), title: "Deleted \(i)", deletedAt: .now)
         }
         await mockRepository.setNotes(activeNotes + deletedNotes)
         

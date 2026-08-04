@@ -253,7 +253,7 @@ struct NotesIntegrationTests {
         let (repo, tempDir) = try makeRepo()
         try await repo.ensureDirectories()
 
-        let note = HeraldNote(title: "Stale Test")
+        let note = KallistiNote(title: "Stale Test")
         try await repo.saveNotes([note])
 
         // Enrich at revision 1

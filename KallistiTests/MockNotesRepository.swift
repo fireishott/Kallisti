@@ -3,11 +3,11 @@ import Foundation
 
 /// Mock notes repository for testing.
 actor MockNotesRepository: NotesRepositoryProtocol {
-    var notes: [HeraldNote] = []
+    var notes: [KallistiNote] = []
     var recognitions: [UUID: [NoteRecognition]] = [:]
     var error: Error?
     
-    func setNotes(_ notes: [HeraldNote]) {
+    func setNotes(_ notes: [KallistiNote]) {
         self.notes = notes
     }
     
@@ -15,19 +15,19 @@ actor MockNotesRepository: NotesRepositoryProtocol {
         if let error { throw error }
     }
     
-    func loadNotes() async throws -> [HeraldNote] {
+    func loadNotes() async throws -> [KallistiNote] {
         if let error { throw error }
         return notes
     }
     
-    func createNote(title: String, folderId: UUID? = nil) async throws -> HeraldNote {
+    func createNote(title: String, folderId: UUID? = nil) async throws -> KallistiNote {
         if let error { throw error }
-        let note = HeraldNote(title: title, folderId: folderId)
+        let note = KallistiNote(title: title, folderId: folderId)
         notes.append(note)
         return note
     }
     
-    func updateNote(_ note: HeraldNote) async throws {
+    func updateNote(_ note: KallistiNote) async throws {
         if let error { throw error }
         if let index = notes.firstIndex(where: { $0.id == note.id }) {
             notes[index] = note

@@ -163,13 +163,13 @@ struct NotesRepositoryTests {
 
     @Test("Note daysUntilPurge calculation")
     func daysUntilPurge() {
-        let note = HeraldNote(deletedAt: Calendar.current.date(byAdding: .day, value: -10, to: .now))
+        let note = KallistiNote(deletedAt: Calendar.current.date(byAdding: .day, value: -10, to: .now))
         #expect(note.daysUntilPurge == 20)
     }
 
     @Test("Active note has no purge date")
     func activeNotePurge() {
-        let note = HeraldNote(title: "Active")
+        let note = KallistiNote(title: "Active")
         #expect(note.daysUntilPurge == nil)
         #expect(note.isDeleted == false)
     }
@@ -239,7 +239,7 @@ struct NotesRepositoryTests {
 
     @Test("Note sync state transitions")
     func syncStateTransitions() {
-        var note = HeraldNote(title: "Sync Test")
+        var note = KallistiNote(title: "Sync Test")
         #expect(note.syncState == .local)
 
         note.syncState = .syncing
@@ -257,26 +257,26 @@ struct NotesRepositoryTests {
 
     // MARK: - Note Model Contract
 
-    @Test("HeraldNote has currentRevision monotonic field")
+    @Test("KallistiNote has currentRevision monotonic field")
     func heraldNoteCurrentRevision() {
-        var note = HeraldNote(title: "Revision Contract")
+        var note = KallistiNote(title: "Revision Contract")
         #expect(note.currentRevision == 0)
         note.currentRevision = 5
         #expect(note.currentRevision == 5)
     }
 
-    @Test("HeraldNote has currentDrawingRevisionId")
+    @Test("KallistiNote has currentDrawingRevisionId")
     func heraldNoteDrawingRevisionId() {
-        var note = HeraldNote(title: "Drawing Rev ID")
+        var note = KallistiNote(title: "Drawing Rev ID")
         #expect(note.currentDrawingRevisionId == nil)
         let revId = UUID()
         note.currentDrawingRevisionId = revId
         #expect(note.currentDrawingRevisionId == revId)
     }
 
-    @Test("HeraldNote isPinned alias works")
+    @Test("KallistiNote isPinned alias works")
     func heraldNoteIsPinned() {
-        var note = HeraldNote(title: "Pin Test")
+        var note = KallistiNote(title: "Pin Test")
         #expect(note.isPinned == false)
         note.pinned = true
         #expect(note.isPinned == true)
