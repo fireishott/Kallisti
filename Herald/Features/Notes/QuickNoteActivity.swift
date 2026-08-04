@@ -3,7 +3,7 @@ import Foundation
 /// Constants for Quick Note NSUserActivity integration.
 enum QuickNoteConstants {
     /// Activity type for viewing a note (registered in Info.plist NSUserActivityTypes).
-    static let activityType = "net.fihonline.herald.viewNote"
+    static let activityType = "net.fihonline.kallisti.viewNote"
 
     /// Prefix for content identifiers — a note with UUID `X` maps to `"note-X"`.
     static let contentIdentifierPrefix = "note-"
@@ -30,7 +30,7 @@ struct SharedContentParams: Equatable {
 /// Parses `herald://share?text=...&title=...` URLs for receiving shared content.
 enum ShareURLParser {
     static func parse(_ url: URL) -> SharedContentParams? {
-        guard url.scheme == "herald", url.host == "share" else { return nil }
+        guard url.scheme == "kallisti", url.host == "share" else { return nil }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let queryItems = components.queryItems else { return nil }
 

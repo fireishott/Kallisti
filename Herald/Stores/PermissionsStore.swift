@@ -211,5 +211,5 @@ final class PermissionsStore {
 extension Notification.Name {
     /// Posted when the user grants notification permission so that
     /// AppContainer can trigger APNs token registration immediately.
-    static let heraldPushPermissionGranted = Notification.Name("HeraldPushPermissionGranted")
+    static let heraldPushPermissionGranted = Notification.Name("KallistiPushPermissionGranted")
 }

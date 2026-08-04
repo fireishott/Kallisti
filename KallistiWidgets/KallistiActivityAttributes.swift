@@ -7,7 +7,7 @@ import Foundation
 /// IMPORTANT: This file is compiled into BOTH the Herald app target and the HeraldWidgets
 /// extension target. Keep ActivityAttributes and ContentState identical between the two —
 /// mismatched fields cause silent decode failures in the widget extension.
-struct HeraldActivityAttributes: ActivityAttributes, Sendable {
+struct KallistiActivityAttributes: ActivityAttributes, Sendable {
     /// Dynamic data — updated throughout the activity's lifetime.
     struct ContentState: Codable, Hashable, Sendable {
         // ── Session state ──────────────────────────────────────────────

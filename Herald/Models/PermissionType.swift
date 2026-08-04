@@ -60,9 +60,9 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .notifications:
             "Receive timely reminders, task updates, and important alerts from Herald."
         case .microphone:
-            "Voice conversations with Herald in Talk Mode."
+            "Voice conversations with Kallisti in Talk Mode."
         case .camera:
-            "Capture photos and documents for Herald to analyze, annotate, or organize."
+            "Capture photos and documents for Kallisti to analyze, annotate, or organize."
         case .photos:
             "Access your photo library to help organize, search, and create albums based on your preferences."
         case .motion:

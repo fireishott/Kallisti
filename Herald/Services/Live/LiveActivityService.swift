@@ -187,7 +187,7 @@ final class LiveActivityService {
 
     /// Notification posted when a new Live Activity push token is available.
     /// AppContainer observes this to register the token with the relay.
-    static let pushTokenDidUpdateNotification = Notification.Name("HeraldLiveActivityPushTokenDidUpdate")
+    static let pushTokenDidUpdateNotification = Notification.Name("KallistiLiveActivityPushTokenDidUpdate")
 
     /// Observe push token updates from the current activity and deliver them
     /// to the relay for remote activity updates.
@@ -205,7 +205,7 @@ final class LiveActivityService {
     /// Store the push token and notify AppContainer to register it with the relay.
     private static func registerLiveActivityPushToken(_ token: String) {
         // Store for cross-process access (widget extension can also read this)
-        if let defaults = UserDefaults(suiteName: "group.net.fihonline.herald") {
+        if let defaults = UserDefaults(suiteName: "group.net.fihonline.kallisti") {
             defaults.set(token, forKey: "herald.liveActivity.pushToken")
         }
         // Notify AppContainer to send the token to the relay

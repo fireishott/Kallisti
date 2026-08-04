@@ -235,11 +235,11 @@ actor NotesRepository: NotesRepositoryProtocol {
 
     /// Get the current device identifier (stable per install).
     private var deviceIdentifier: String {
-        if let id = UserDefaults.standard.string(forKey: "herald.deviceId") {
+        if let id = UserDefaults.standard.string(forKey: "kallisti.deviceId") {
             return id
         }
         let id = UUID().uuidString
-        UserDefaults.standard.set(id, forKey: "herald.deviceId")
+        UserDefaults.standard.set(id, forKey: "kallisti.deviceId")
         return id
     }
 

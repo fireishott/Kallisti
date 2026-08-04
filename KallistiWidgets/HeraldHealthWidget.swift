@@ -2,17 +2,17 @@ import SwiftUI
 import WidgetKit
 
 /// Health metrics grid — steps, calories, sleep, heart rate.
-struct HeraldHealthWidget: Widget {
+struct KallistiHealthWidget: Widget {
     let kind = "HeraldHealth"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: HeraldTimelineProvider()) { entry in
-            HeraldHealthView(entry: entry)
+        StaticConfiguration(kind: kind, provider: KallistiTimelineProvider()) { entry in
+            KallistiHealthView(entry: entry)
                 .containerBackground(for: .widget) {
                     Color(.systemBackground)
                 }
         }
-        .configurationDisplayName("Herald Health")
+        .configurationDisplayName("Kallisti Health")
         .description("Daily health metrics at a glance.")
         .supportedFamilies([.systemMedium])
     }
@@ -20,13 +20,13 @@ struct HeraldHealthWidget: Widget {
 
 // MARK: - Views
 
-private struct HeraldHealthView: View {
-    let entry: HeraldWidgetEntry
+private struct KallistiHealthView: View {
+    let entry: KallistiWidgetEntry
 
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                HeraldBrandIcon(size: 16)
+                KallistiBrandIcon(size: 16)
                 Text("Health · Today")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
@@ -68,7 +68,7 @@ private struct HeraldHealthView: View {
         VStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.title3)
-                .foregroundStyle(HeraldBrand.foreground)
+                .foregroundStyle(KallistiBrand.foreground)
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.primary)
@@ -92,8 +92,8 @@ private struct HeraldHealthView: View {
 // MARK: - Previews
 
 #Preview("Medium", as: .systemMedium) {
-    HeraldHealthWidget()
+    KallistiHealthWidget()
 } timeline: {
-    HeraldWidgetEntry.placeholder
-    HeraldWidgetEntry(date: .now, data: .empty)
+    KallistiWidgetEntry.placeholder
+    KallistiWidgetEntry(date: .now, data: .empty)
 }

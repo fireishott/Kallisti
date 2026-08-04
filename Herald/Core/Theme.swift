@@ -15,11 +15,11 @@ enum ColorSchemePreference: String, Codable, CaseIterable, Identifiable {
 
 /// Resolved color set for one theme in one color scheme.
 ///
-/// The first five fields are the original (pre-2.1) contract. Herald 2.1 needs a
+/// The first five fields are the original (pre-2.1) contract. Kallisti needs a
 /// richer vocabulary — layered surfaces, a real accent pair, semantic signals,
 /// texture weight — so those are appended with defaults derived from the core
 /// five. That keeps every pre-2.1 preset constructing exactly as before while
-/// letting the Herald presets supply full fidelity.
+/// letting the Kallisti presets supply full fidelity.
 struct ThemePalette {
     let background: Color
     let foreground: Color
@@ -27,11 +27,11 @@ struct ThemePalette {
     let surface: Color
     let divider: Color
 
-    // MARK: Herald 2.1 additions
+    // MARK: Kallisti additions
 
     /// Deepest ground, behind `background`. Used for gutters and scrims.
     let deepInk: Color
-    /// Large dark fields and panels (Herald: templeBlue).
+    /// Large dark fields and panels.
     let panel: Color
     /// Elevated card surface, one step above `surface`.
     let surfaceRaised: Color
@@ -97,22 +97,22 @@ struct ThemePalette {
 }
 
 enum ThemePreset: String, Codable, CaseIterable, Identifiable {
-    /// `herald` is the Herald 2.1 branded default (deep cobalt "Temple Blue").
-    /// `heraldOLED` is the premium true-black variant. The remaining presets are
+    /// `kallisti` is the Kallisti branded default (deep obsidian).
+    /// `kallistiOLED` is the premium true-black variant. The remaining presets are
     /// pre-2.1 and kept intact as secondary options.
-    case herald, heraldOLED, midnight, ember, mono, cyberpunk, slate
+    case kallisti, kallistiOLED, midnight, ember, mono, cyberpunk, slate
     var id: String { rawValue }
 
-    /// The two first-class Herald 2.1 appearances, in Settings display order.
-    static let heraldPresets: [ThemePreset] = [.herald, .heraldOLED]
+    /// The two first-class Kallisti appearances, in Settings display order.
+    static let kallistiPresets: [ThemePreset] = [.kallisti, .kallistiOLED]
 
     /// Pre-2.1 presets, retained as secondary options.
     static let legacyPresets: [ThemePreset] = [.midnight, .ember, .mono, .cyberpunk, .slate]
 
     var label: String {
         switch self {
-        case .herald: "Kallisti"
-        case .heraldOLED: "Kallisti OLED"
+        case .kallisti: "Kallisti"
+        case .kallistiOLED: "Kallisti OLED"
         case .midnight: "Midnight"
         case .ember: "Ember"
         case .mono: "Mono"
@@ -124,8 +124,8 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
     /// Short description shown beneath the option in the Appearance section.
     var appearanceDescription: String {
         switch self {
-        case .herald: "Deep cobalt. The Herald default."
-        case .heraldOLED: "True black. Sharper edges, less texture."
+        case .kallisti: "Deep obsidian. The Kallisti default."
+        case .kallistiOLED: "True black. Sharper edges, less texture."
         case .midnight: "Violet on near-black."
         case .ember: "Warm red on brown-black."
         case .mono: "Neutral greyscale."
@@ -134,17 +134,15 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// True for the Herald 2.1 brand themes, which carry the full token set.
-    var isHeraldBrand: Bool {
-        self == .herald || self == .heraldOLED
+    /// True for the Kallisti brand themes, which carry the full token set.
+    var isKallistiBrand: Bool {
+        self == .kallisti || self == .kallistiOLED
     }
 
     var accent: Color {
         switch self {
-        // Herald 2.1: signal blue. Orange is retired — it was never part of
-        // the Herald identity, only the pre-2.1 placeholder accent.
-        case .herald: HeraldTheme.Cobalt.signalBlue
-        case .heraldOLED: HeraldTheme.OLED.accent
+        case .kallisti: KallistiTheme.Obsidian.accent
+        case .kallistiOLED: KallistiTheme.OLED.accent
         case .midnight: Color(hex: 0x8B5CF6)
         case .ember: Color(hex: 0xEF4444)
         case .mono: Color(hex: 0xA1A1AA)
@@ -155,50 +153,46 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var darkColors: ThemePalette {
         switch self {
-        case .herald:
-            // Herald 2.1 default — deep cobalt. Controlled contrast on purpose:
-            // the ground is a material, not a void.
+        case .kallisti:
             return ThemePalette(
-                background: HeraldTheme.Cobalt.background,
-                foreground: HeraldTheme.Cobalt.bone,
-                secondaryForeground: HeraldTheme.Cobalt.mist,
-                surface: HeraldTheme.Cobalt.surface,
-                divider: HeraldTheme.Cobalt.divider,
-                deepInk: HeraldTheme.Cobalt.deepInk,
-                panel: HeraldTheme.Cobalt.templeBlue,
-                surfaceRaised: HeraldTheme.Cobalt.surfaceRaised,
-                surfaceSelected: HeraldTheme.Cobalt.royalBlue,
-                tertiaryForeground: HeraldTheme.Cobalt.steel,
-                accent: HeraldTheme.Cobalt.signalBlue,
-                accentHot: HeraldTheme.Cobalt.signalBlueHot,
-                success: HeraldTheme.Signal.success,
-                warning: HeraldTheme.Signal.warning,
-                danger: HeraldTheme.Signal.danger,
-                textureOpacity: HeraldTheme.Texture.cobalt,
-                watermarkOpacity: HeraldTheme.Mark.watermarkOpacity,
+                background: KallistiTheme.Obsidian.background,
+                foreground: KallistiTheme.Obsidian.bone,
+                secondaryForeground: KallistiTheme.Obsidian.mist,
+                surface: KallistiTheme.Obsidian.surface,
+                divider: KallistiTheme.Obsidian.divider,
+                deepInk: KallistiTheme.Obsidian.deepInk,
+                panel: KallistiTheme.Obsidian.panel,
+                surfaceRaised: KallistiTheme.Obsidian.surfaceRaised,
+                surfaceSelected: KallistiTheme.Obsidian.selected,
+                tertiaryForeground: KallistiTheme.Obsidian.pewter,
+                accent: KallistiTheme.Obsidian.accent,
+                accentHot: KallistiTheme.Obsidian.accentHot,
+                success: KallistiTheme.Signal.success,
+                warning: KallistiTheme.Signal.warning,
+                danger: KallistiTheme.Signal.danger,
+                textureOpacity: KallistiTheme.Texture.dark,
+                watermarkOpacity: KallistiTheme.Mark.watermarkOpacity,
                 prefersSharpEdges: false
             )
-        case .heraldOLED:
-            // Premium black. Near-black ground rather than #000 so cards can
-            // still separate; true black is reserved for the deepest layer.
+        case .kallistiOLED:
             return ThemePalette(
-                background: HeraldTheme.OLED.nearBlack,
-                foreground: HeraldTheme.OLED.foreground,
-                secondaryForeground: HeraldTheme.OLED.secondary,
-                surface: HeraldTheme.OLED.surface,
-                divider: HeraldTheme.OLED.divider,
-                deepInk: HeraldTheme.OLED.black,
-                panel: HeraldTheme.OLED.surface,
-                surfaceRaised: HeraldTheme.OLED.surfaceRaised,
-                surfaceSelected: HeraldTheme.OLED.surfaceRaised,
-                tertiaryForeground: HeraldTheme.OLED.tertiary,
-                accent: HeraldTheme.OLED.accent,
-                accentHot: HeraldTheme.OLED.accentHot,
-                success: HeraldTheme.Signal.success,
-                warning: HeraldTheme.Signal.warning,
-                danger: HeraldTheme.Signal.danger,
-                textureOpacity: HeraldTheme.Texture.oled,
-                watermarkOpacity: HeraldTheme.Mark.watermarkOpacityOLED,
+                background: KallistiTheme.OLED.background,
+                foreground: KallistiTheme.OLED.foreground,
+                secondaryForeground: KallistiTheme.OLED.secondary,
+                surface: KallistiTheme.OLED.surface,
+                divider: KallistiTheme.OLED.divider,
+                deepInk: Color(hex: 0x000000),
+                panel: KallistiTheme.OLED.surface,
+                surfaceRaised: KallistiTheme.OLED.surfaceRaised,
+                surfaceSelected: KallistiTheme.OLED.surfaceRaised,
+                tertiaryForeground: KallistiTheme.OLED.tertiary,
+                accent: KallistiTheme.OLED.accent,
+                accentHot: KallistiTheme.OLED.accentHot,
+                success: KallistiTheme.Signal.success,
+                warning: KallistiTheme.Signal.warning,
+                danger: KallistiTheme.Signal.danger,
+                textureOpacity: KallistiTheme.Texture.oled,
+                watermarkOpacity: KallistiTheme.Mark.watermarkOLED,
                 prefersSharpEdges: true
             )
         case .midnight:
@@ -246,29 +240,26 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var lightColors: ThemePalette {
         switch self {
-        // Both Herald brand themes share one light counterpart: cool paper,
-        // cobalt ink. "OLED light" is a contradiction, so heraldOLED resolves
-        // here too rather than inventing a washed-out black theme.
-        case .herald, .heraldOLED:
+        case .kallisti, .kallistiOLED:
             return ThemePalette(
-                background: HeraldTheme.Light.background,
-                foreground: HeraldTheme.Light.foreground,
-                secondaryForeground: HeraldTheme.Light.secondary,
-                surface: HeraldTheme.Light.surface,
-                divider: HeraldTheme.Light.divider,
-                deepInk: HeraldTheme.Light.surface,
-                panel: HeraldTheme.Light.surface,
-                surfaceRaised: HeraldTheme.Light.surfaceRaised,
-                surfaceSelected: HeraldTheme.Light.accentHot.opacity(0.16),
-                tertiaryForeground: HeraldTheme.Light.tertiary,
-                accent: HeraldTheme.Light.accent,
-                accentHot: HeraldTheme.Light.accentHot,
-                success: HeraldTheme.Signal.success,
-                warning: HeraldTheme.Signal.warning,
-                danger: HeraldTheme.Signal.danger,
-                textureOpacity: HeraldTheme.Texture.light,
-                watermarkOpacity: 0.10,
-                prefersSharpEdges: self == .heraldOLED
+                background: KallistiTheme.Light.background,
+                foreground: KallistiTheme.Light.foreground,
+                secondaryForeground: KallistiTheme.Light.secondary,
+                surface: KallistiTheme.Light.surface,
+                divider: KallistiTheme.Light.divider,
+                deepInk: KallistiTheme.Light.surface,
+                panel: KallistiTheme.Light.surface,
+                surfaceRaised: KallistiTheme.Light.surfaceRaised,
+                surfaceSelected: KallistiTheme.Light.accentHot.opacity(0.16),
+                tertiaryForeground: KallistiTheme.Light.tertiary,
+                accent: KallistiTheme.Light.accent,
+                accentHot: KallistiTheme.Light.accentHot,
+                success: KallistiTheme.Signal.success,
+                warning: KallistiTheme.Signal.warning,
+                danger: KallistiTheme.Signal.danger,
+                textureOpacity: KallistiTheme.Texture.light,
+                watermarkOpacity: KallistiTheme.Mark.watermarkLight,
+                prefersSharpEdges: self == .kallistiOLED
             )
         case .mono:
             return ThemePalette(
@@ -279,13 +270,11 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
                 divider: Color.black.opacity(0.1)
             )
         default:
-            // Auto-synthesize from dark colors
             return synthesizeLight(from: darkColors)
         }
     }
 
     private func synthesizeLight(from dark: ThemePalette) -> ThemePalette {
-        // Invert luminance: dark BG -> light BG, dark FG -> light FG
         return ThemePalette(
             background: Color(hex: 0xF5F5F5),
             foreground: Color(hex: 0x1A1A1A),
@@ -300,74 +289,74 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Herald Appearance (Settings-facing)
+// MARK: - Kallisti Appearance (Settings-facing)
 
 /// The four first-class appearances offered in Settings → Appearance.
 ///
-/// Herald has always had two independent axes: a `ThemePreset` (color identity)
+/// Kallisti has two independent axes: a `ThemePreset` (color identity)
 /// and a `ColorSchemePreference` (light/dark/system). Rather than add a redundant
-/// `heraldLight` preset, this type presents the sanctioned *combinations* as
+/// `kallistiLight` preset, this type presents the sanctioned *combinations* as
 /// single choices, and writes through to both stored axes — so existing
 /// UserDefaults keys and their migrations are untouched.
-enum HeraldAppearance: String, CaseIterable, Identifiable {
-    /// Herald identity, following the iOS system light/dark setting.
+enum KallistiAppearance: String, CaseIterable, Identifiable {
+    /// Kallisti identity, following the iOS system light/dark setting.
     case system
-    /// Herald branded dark — deep cobalt. The 2.1 default.
-    case herald
-    /// Herald OLED — premium true black.
-    case heraldOLED
-    /// Herald Light — cool paper, cobalt ink.
-    case heraldLight
+    /// Kallisti branded dark — deep obsidian. The default.
+    case kallisti
+    /// Kallisti OLED — premium true black.
+    case kallistiOLED
+    /// Kallisti Light — clean paper, dark ink.
+    case kallistiLight
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .system: "System"
-        case .herald: "Kallisti"
-        case .heraldOLED: "Kallisti OLED"
-        case .heraldLight: "Kallisti Light"
+        case .kallisti: "Kallisti"
+        case .kallistiOLED: "Kallisti OLED"
+        case .kallistiLight: "Kallisti Light"
         }
     }
 
     var detail: String {
         switch self {
         case .system: "Follows your iOS appearance setting."
-        case .herald: "Deep cobalt. The Herald default."
-        case .heraldOLED: "True black. Sharper edges, less texture."
-        case .heraldLight: "Cool paper with cobalt ink."
+        case .kallisti: "Deep obsidian. The Kallisti default."
+        case .kallistiOLED: "True black. Sharper edges, less texture."
+        case .kallistiLight: "Clean paper with dark ink."
         }
     }
 
     var symbol: String {
         switch self {
         case .system: "circle.lefthalf.filled"
-        case .herald: "moon.stars.fill"
-        case .heraldOLED: "circle.fill"
-        case .heraldLight: "sun.max.fill"
+        case .kallisti: "moon.stars.fill"
+        case .kallistiOLED: "circle.fill"
+        case .kallistiLight: "sun.max.fill"
         }
     }
 
     /// The stored axes this appearance corresponds to.
     var preset: ThemePreset {
-        self == .heraldOLED ? .heraldOLED : .herald
+        self == .kallistiOLED ? .kallistiOLED : .kallisti
     }
 
     var colorScheme: ColorSchemePreference {
         switch self {
         case .system: .system
-        case .herald, .heraldOLED: .dark
-        case .heraldLight: .light
+        case .kallisti, .kallistiOLED: .dark
+        case .kallistiLight: .light
         }
     }
 
     /// Swatch color representing the appearance in the picker.
     var swatch: Color {
         switch self {
-        case .system: HeraldTheme.Cobalt.royalBlue
-        case .herald: HeraldTheme.Cobalt.surface
-        case .heraldOLED: HeraldTheme.OLED.black
-        case .heraldLight: HeraldTheme.Light.background
+        case .system: KallistiTheme.Obsidian.selected
+        case .kallisti: KallistiTheme.Obsidian.surface
+        case .kallistiOLED: Color(hex: 0x000000)
+        case .kallistiLight: KallistiTheme.Light.background
         }
     }
 
@@ -377,15 +366,15 @@ enum HeraldAppearance: String, CaseIterable, Identifiable {
     static func resolve(
         preset: ThemePreset,
         colorScheme: ColorSchemePreference
-    ) -> HeraldAppearance? {
+    ) -> KallistiAppearance? {
         switch preset {
-        case .heraldOLED:
-            return .heraldOLED
-        case .herald:
+        case .kallistiOLED:
+            return .kallistiOLED
+        case .kallisti:
             switch colorScheme {
             case .system: return .system
-            case .dark: return .herald
-            case .light: return .heraldLight
+            case .dark: return .kallisti
+            case .light: return .kallistiLight
             }
         default:
             return nil
@@ -396,21 +385,11 @@ enum HeraldAppearance: String, CaseIterable, Identifiable {
 // MARK: - Chat Wallpaper Rendering
 
 /// Renders the background content for a given `ChatWallpaper` selection.
-///
-/// This is the single rendering primitive the chat wallpaper feature (screen
-/// background + picker thumbnails) should consume: every style is drawn
-/// procedurally — gradients via `LinearGradient`/`RadialGradient`, textures via
-/// `Canvas` — instead of shipped as baked PNG assets, so the same view scales
-/// cleanly from a full-screen background down to a small swatch.
 struct ChatWallpaperBackground: View {
     let wallpaper: ChatWallpaper
 
-    /// Tint used for `.solid` and for the `.default` placeholder mark. Defaults
-    /// to the system accent color; callers may pass the active `ThemePreset`'s
-    /// `accent` to keep the wallpaper in sync with the selected theme.
     var tint: Color = .accentColor
 
-    /// Cache decoded custom image to avoid re-decoding on every render.
     @State private var cachedCustomImage: UIImage?
 
     var body: some View {
@@ -453,13 +432,11 @@ struct ChatWallpaperBackground: View {
         }
     }
 
-    /// Herald 2.1 default wallpaper: deep ink ground, restrained blue field, and
-    /// a low-opacity icon watermark. Resolves per theme — cobalt under Herald,
-    /// near-black with a pulled-back glow under Herald OLED — so the single
-    /// `.default` selection is correct in every appearance.
+    /// Kallisti default wallpaper: deep ink ground, restrained field, and
+    /// a low-opacity icon watermark. Resolves per theme.
     @ViewBuilder
     private var defaultBackground: some View {
-        HeraldBrandField(isReadingSurface: true)
+        KallistiBrandField(isReadingSurface: true)
     }
 
     @ViewBuilder
@@ -477,10 +454,7 @@ struct ChatWallpaperBackground: View {
     }
 }
 
-/// Procedurally-drawn texture backgrounds (`.texture1` "Paper", `.texture2`
-/// "Noise"). Dots are placed with a seeded PRNG so the pattern is stable across
-/// re-renders instead of resampling — and visually flickering — every time
-/// SwiftUI re-invokes the `Canvas` closure.
+/// Procedurally-drawn texture backgrounds.
 private struct ChatWallpaperTexture: View {
     enum Style {
         case paper
@@ -527,7 +501,7 @@ private struct ChatWallpaperTexture: View {
 }
 
 /// Small deterministic PRNG (xorshift64) used only to keep texture wallpaper
-/// dot patterns stable across redraws. Not for cryptographic or gameplay use.
+/// dot patterns stable across redraws.
 private struct ChatWallpaperSeededGenerator: RandomNumberGenerator {
     private var state: UInt64
 

@@ -133,11 +133,11 @@ enum HeraldTheme {
 ///
 /// This snapshot is written on the main actor whenever the theme changes and read
 /// without isolation, so a color lookup can never take the process down. The
-/// initial value is the Herald 2.1 default, which is also the launch default —
+/// initial value is the Kallisti default, which is also the launch default —
 /// so a read that races ahead of the first sync still gets correct branding.
 enum ThemeSnapshot {
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var stored: ThemePalette = ThemePreset.herald.darkColors
+    nonisolated(unsafe) private static var stored: ThemePalette = ThemePreset.kallisti.darkColors
 
     /// The active palette. Safe from any thread or actor.
     static var current: ThemePalette {

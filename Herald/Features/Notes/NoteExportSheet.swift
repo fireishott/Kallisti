@@ -234,7 +234,7 @@ struct ShareToNotesSheet: View {
     }
 
     private func shareToNotes() {
-        let text = "\(result.title)\n\n\(result.markdown)\n\n— Shared from Herald (static copy)"
+        let text = "\(result.title)\n\n\(result.markdown)\n\n— Shared from Kallisti (static copy)"
         let activityVC = UIActivityViewController(
             activityItems: [text],
             applicationActivities: nil

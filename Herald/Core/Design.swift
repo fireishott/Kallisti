@@ -6,7 +6,7 @@ import SwiftUI
 // display, mono for status/code/metadata, system sans for body copy.
 // All visual constants for Herald. No magic numbers in view code.
 //
-// Raw hex values live in `HeraldTheme`; per-theme resolution lives in
+// Raw hex values live in `KallistiTheme`; per-theme resolution lives in
 // `ThemePalette`. This file is the semantic layer view code should consume.
 
 enum Design {

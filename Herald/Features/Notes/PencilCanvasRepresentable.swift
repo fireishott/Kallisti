@@ -40,7 +40,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         let picker = PKToolPicker()
         picker.setVisible(true, forFirstResponder: canvas)
         picker.addObserver(canvas)
-        picker.stateAutosaveName = "herald.canvas"
+        picker.stateAutosaveName = "kallisti.canvas"
         context.coordinator.toolPicker = picker
 
         // Pencil interactions — honor system preferred actions for double-tap and squeeze

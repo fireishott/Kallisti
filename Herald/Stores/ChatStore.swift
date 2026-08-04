@@ -677,7 +677,7 @@ final class ChatStore {
         guard sessionEstablished else {
             // Session could not be established — fail the user-visible
             // message rather than submitting to a non-existent session.
-            let error = "Could not reach the Herald host to start a conversation. Check your connection and try again."
+            let error = "Could not reach the Kallisti host to start a conversation. Check your connection and try again."
             markOptimisticRowFailed(item, error: error)
             failOutboxItem(
                 item,

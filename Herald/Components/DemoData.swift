@@ -193,7 +193,7 @@ nonisolated enum DemoData {
                 title: "Morning briefing",
                 previewText: "Good morning! Here's your schedule and priorities...",
                 lastActivity: cal.date(byAdding: .hour, value: -3, to: now) ?? now,
-                source: "herald-ios"
+                source: "kallisti-ios"
             ),
             SessionSummary(
                 title: "Grocery list update",

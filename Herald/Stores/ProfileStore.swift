@@ -32,7 +32,7 @@ final class ProfileStore {
     private var lastLoadedAt: Date?
 
     private static let refreshInterval: TimeInterval = 60
-    private static let activeProfileKey = "herald.activeProfileName"
+    private static let activeProfileKey = "kallisti.activeProfileName"
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?

@@ -80,7 +80,7 @@ struct iPadRightPanelView: View {
             let entries = filteredLogEntries
             if entries.isEmpty {
                 emptyState(icon: "terminal", message: "No log entries yet",
-                           detail: "Logs appear here when Herald processes messages, runs tools, or executes commands.")
+                           detail: "Logs appear here when Kallisti processes messages, runs tools, or executes commands.")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -179,7 +179,7 @@ struct iPadRightPanelView: View {
 
             if chatStore.conversation?.latestUsage == nil {
                 emptyState(icon: "chart.bar", message: "No usage data yet",
-                           detail: "Token usage from the latest Herald response appears here.")
+                           detail: "Token usage from the latest Kallisti response appears here.")
             } else if let usage = chatStore.conversation?.latestUsage {
                 VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                     usageRow("Prompt tokens", value: usage.promptTokens)

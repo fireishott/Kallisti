@@ -7,12 +7,12 @@
 	<key>APP_HOSTED_RELAY_URL</key>
 	<string>https://your-relay.example.com/v1</string>
 	<key>APP_PRIVACY_URL</key>
-	<string>https://herald.fihonline.net/privacy.html</string>
+	<string>https://kallisti.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
 	<string>https://kallisti.app/terms.html</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>net.fihonline.herald.refresh</string>
+		<string>net.fihonline.kallisti.refresh</string>
 		<string>net.fihonline.KallistiBGProcessing</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
@@ -42,32 +42,32 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Herald uses the camera to capture photos and documents for analysis.</string>
+	<string>Kallisti uses the camera to capture photos and documents for analysis.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Herald reads your health data to offer personalized wellness insights.</string>
+	<string>Kallisti reads your health data to offer personalized wellness insights.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Herald does not write health data, but this permission is required by the system.</string>
+	<string>Kallisti does not write health data, but this permission is required by the system.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Herald uses your location in the background to provide contextual awareness and proactive suggestions.</string>
+	<string>Kallisti uses your location in the background to provide contextual awareness and proactive suggestions.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Herald uses your location to provide contextual recommendations and nearby suggestions.</string>
+	<string>Kallisti uses your location to provide contextual recommendations and nearby suggestions.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Herald uses the microphone for voice conversations in Talk Mode.</string>
+	<string>Kallisti uses the microphone for voice conversations in Talk Mode.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>Herald uses motion data to understand your current activity for contextual awareness.</string>
+	<string>Kallisti uses motion data to understand your current activity for contextual awareness.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Herald accesses your photo library to help organize and search your photos.</string>
+	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>
-	<string>Herald uses Siri to send and read messages on CarPlay and with voice commands.</string>
+	<string>Kallisti uses Siri to send and read messages on CarPlay and with voice commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Herald uses speech recognition for voice commands and local transcription.</string>
+	<string>Kallisti uses speech recognition for voice commands and local transcription.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
 	<true/>
 	<key>NSUserActivityTypes</key>
 	<array>
-		<string>net.fihonline.herald.viewNote</string>
+		<string>net.fihonline.kallisti.viewNote</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

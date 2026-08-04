@@ -3,16 +3,16 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
-// Brand palette mirrored from Design.swift — widget target doesn't link the
+// Brand palette mirrored from KallistiTheme — widget target doesn't link the
 // main app's Design module, so we keep a minimal palette inline.
-enum HeraldBrand {
-    static let accent = Color(red: 1.0, green: 0.247, blue: 0.0)       // signal-orange #FF3F00
-    static let foreground = Color(red: 0.757, green: 0.753, blue: 0.714) // bone #C1C0B6
-    static let surface = Color(red: 0.11, green: 0.12, blue: 0.13)     // surface
-    static let border = Color(red: 0.27, green: 0.27, blue: 0.26, opacity: 0.35)
+enum KallistiBrand {
+    static let accent = Color(red: 0.784, green: 0.800, blue: 0.824)    // platinum #C8CCD2
+    static let foreground = Color(red: 0.941, green: 0.949, blue: 0.961) // bone #F0F2F5
+    static let surface = Color(red: 0.110, green: 0.114, blue: 0.133)   // surface #1C1D22
+    static let border = Color(red: 0.165, green: 0.169, blue: 0.200, opacity: 0.35)
 }
 
-struct HeraldBrandIcon: View {
+struct KallistiBrandIcon: View {
     let size: CGFloat
     var fallbackSymbol: String = "waveform"
     var fallbackTint: Color = HeraldBrand.accent
@@ -69,16 +69,16 @@ extension View {
     }
 }
 
-struct HeraldLiveActivity: Widget {
+struct KallistiLiveActivity: Widget {
     var body: some WidgetConfiguration {
-        ActivityConfiguration(for: HeraldActivityAttributes.self) { context in
+        ActivityConfiguration(for: KallistiActivityAttributes.self) { context in
             // Lock Screen layout
             lockScreenView(context: context)
         } dynamicIsland: { context in
             DynamicIsland {
                 // Expanded view (long press on Dynamic Island)
                 DynamicIslandExpandedRegion(.leading) {
-                    HeraldBrandIcon(size: 28)
+                    KallistiBrandIcon(size: 28)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -107,7 +107,7 @@ struct HeraldLiveActivity: Widget {
                 if let emoji = context.state.emoji {
                     Text(emoji).font(.system(size: 14))
                 } else {
-                    HeraldBrandIcon(size: 14)
+                    KallistiBrandIcon(size: 14)
                 }
             } compactTrailing: {
                 // Compact right side
@@ -121,7 +121,7 @@ struct HeraldLiveActivity: Widget {
                 if let emoji = context.state.emoji {
                     Text(emoji).font(.system(size: 16))
                 } else {
-                    HeraldBrandIcon(size: 16)
+                    KallistiBrandIcon(size: 16)
                 }
             }
         }
@@ -129,9 +129,9 @@ struct HeraldLiveActivity: Widget {
     }
 
     @ViewBuilder
-    private func lockScreenView(context: ActivityViewContext<HeraldActivityAttributes>) -> some View {
+    private func lockScreenView(context: ActivityViewContext<KallistiActivityAttributes>) -> some View {
         HStack(spacing: 12) {
-            HeraldBrandIcon(
+            KallistiBrandIcon(
                 size: 44,
                 backgroundTint: HeraldBrand.surface,
                 cornerRadius: 12

@@ -5,7 +5,7 @@ import Speech
 import UserNotifications
 
 extension Logger {
-    static let app = Logger(subsystem: "net.fihonline.herald", category: "app")
+    static let app = Logger(subsystem: "net.fihonline.kallisti", category: "app")
 }
 
 /// Thread-safe cached holder for the MiMo API key.
@@ -43,8 +43,8 @@ final class AppContainer {
     // Pre-1.1.1 releases stored the raw APNs token in UserDefaults.standard under
     // this key. We now keep the token in Keychain (ThisDeviceOnly). The legacy
     // key is read once on first launch after upgrade to migrate + delete.
-    private static let legacyAPNsTokenDefaultsKey = "herald.apns.deviceToken"
-    static let apnsTokenKeychainKey = "herald.apns.deviceToken"
+    private static let legacyAPNsTokenDefaultsKey = "kallisti.apns.deviceToken"
+    static let apnsTokenKeychainKey = "kallisti.apns.deviceToken"
     private static let sharedDefaultContainer = AppContainer.makeDefault()
 
     let router = TabRouter()
@@ -234,7 +234,7 @@ final class AppContainer {
         let persistence = UserDefaultsAppPersistenceStore(defaults: resolvedDefaults)
         let buildConfiguration = AppBuildConfiguration.current()
         let secureStore = KeychainSecureStore(
-            serviceName: processEnvironment["UITEST_KEYCHAIN_SERVICE"] ?? "net.fihonline.herald.session"
+            serviceName: processEnvironment["UITEST_KEYCHAIN_SERVICE"] ?? "net.fihonline.kallisti.session"
         )
         let settingsStore = SettingsStore(
             persistence: persistence,
@@ -916,7 +916,7 @@ final class AppContainer {
 
     func handleBackgroundRefresh(_ task: BGAppRefreshTask) async {
         // Schedule the next background refresh before we start
-        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.herald.refresh")
+        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.kallisti.refresh")
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
 
@@ -1019,7 +1019,7 @@ final class AppContainer {
                 accessToken: accessToken,
                 deviceID: deviceID,
                 installationID: sessionStore.state.installationID,
-                bundleID: Bundle.main.bundleIdentifier ?? "net.fihonline.herald",
+                bundleID: Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
                 appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0",
                 pushEnvironment: pushEnvironment
             )
@@ -1108,7 +1108,7 @@ final class AppContainer {
             transport: "direct",
             apnsToken: token,
             pushEnvironment: "production",
-            bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.herald"
+            bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti"
         )
         do {
             let _: RegisterResponse = try await client.post(

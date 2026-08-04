@@ -82,7 +82,7 @@ struct HeraldSelectorSheet: View {
                 }
             }
             .background(Design.Colors.background)
-            .navigationTitle("Herald Hub")
+            .navigationTitle("Kallisti Hub")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

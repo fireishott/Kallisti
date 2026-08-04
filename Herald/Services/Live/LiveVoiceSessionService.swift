@@ -402,7 +402,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     private func friendlyStatusMessage(for error: Error) -> String {
         if case RelayAPIClient.ClientError.unauthorized = error {
-            return "Your Herald session expired. Reconnect or try again."
+            return "Your Kallisti session expired. Reconnect or try again."
         }
         return "Could not reach the relay."
     }
@@ -702,7 +702,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 statusMessage = "Kallisti has the answer\u{2026}"
             }
         case "response.mcp_call.failed":
-            statusMessage = "A tool call failed — Herald will try another way."
+            statusMessage = "A tool call failed — Kallisti will try another way."
         case "response.done":
             let doneResponse = payload["response"] as? [String: Any]
             let status = doneResponse?["status"] as? String

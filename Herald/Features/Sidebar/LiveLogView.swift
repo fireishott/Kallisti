@@ -208,7 +208,7 @@ struct LiveLogView: View {
                 Text("Dashboard Disconnected")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.secondaryForeground)
-                Text("Connect to view live logs from the Herald dashboard.")
+                Text("Connect to view live logs from the Kallisti dashboard.")
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.7))
                     .multilineTextAlignment(.center)

@@ -680,7 +680,7 @@ struct ChatScreen: View {
                             .font(.system(size: 24, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Design.Colors.foreground)
 
-                        Text("Total window available now. Usage appears after the first Herald response.")
+                        Text("Total window available now. Usage appears after the first Kallisti response.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }

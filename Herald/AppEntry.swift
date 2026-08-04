@@ -27,7 +27,7 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
         // Register background refresh task
         BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: "net.fihonline.herald.refresh",
+            forTaskWithIdentifier: "net.fihonline.kallisti.refresh",
             using: nil
         ) { task in
             Task { @MainActor in
@@ -167,7 +167,7 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
     }
 
     private func scheduleBackgroundRefresh() {
-        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.herald.refresh")
+        let request = BGAppRefreshTaskRequest(identifier: "net.fihonline.kallisti.refresh")
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
     }
@@ -261,7 +261,7 @@ struct HeraldApp: App {
     }
 
     private func handleDeeplink(_ url: URL) {
-        guard url.scheme == "herald" else { return }
+        guard url.scheme == "kallisti" else { return }
         switch url.host {
         case "chat":
             container.router.activeSheet = nil

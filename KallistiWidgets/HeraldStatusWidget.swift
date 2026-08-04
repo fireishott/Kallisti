@@ -2,17 +2,17 @@ import SwiftUI
 import WidgetKit
 
 /// Glanceable Herald status — connection state, last message, voice indicator.
-struct HeraldStatusWidget: Widget {
+struct KallistiStatusWidget: Widget {
     let kind = "HeraldStatus"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: HeraldTimelineProvider()) { entry in
-            HeraldStatusView(entry: entry)
+        StaticConfiguration(kind: kind, provider: KallistiTimelineProvider()) { entry in
+            KallistiStatusView(entry: entry)
                 .containerBackground(for: .widget) {
                     Color(.systemBackground)
                 }
         }
-        .configurationDisplayName("Herald Status")
+        .configurationDisplayName("Kallisti Status")
         .description("Connection status and recent messages.")
         .supportedFamilies([
             .systemSmall,
@@ -24,8 +24,8 @@ struct HeraldStatusWidget: Widget {
 
 // MARK: - Views
 
-private struct HeraldStatusView: View {
-    let entry: HeraldWidgetEntry
+private struct KallistiStatusView: View {
+    let entry: KallistiWidgetEntry
     @Environment(\.widgetFamily) var family
 
     var body: some View {
@@ -46,7 +46,7 @@ private struct HeraldStatusView: View {
     private var systemSmallView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                HeraldBrandIcon(size: 22)
+                KallistiBrandIcon(size: 22)
                 Text("Herald")
                     .font(.system(.caption, design: .monospaced))
                     .textCase(.uppercase)
@@ -54,7 +54,7 @@ private struct HeraldStatusView: View {
                     .foregroundStyle(.primary)
                 Spacer()
                 Circle()
-                    .fill(entry.data.hostOnline ? HeraldBrand.accent : .gray)
+                    .fill(entry.data.hostOnline ? KallistiBrand.accent : .gray)
                     .frame(width: 8, height: 8)
             }
 
@@ -63,7 +63,7 @@ private struct HeraldStatusView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.0)
-                    .foregroundStyle(HeraldBrand.accent)
+                    .foregroundStyle(KallistiBrand.accent)
             }
 
             Spacer()
@@ -100,10 +100,10 @@ private struct HeraldStatusView: View {
                     .font(.title3)
                     .widgetAccentable()
             } else {
-                HeraldBrandIcon(size: 18)
+                KallistiBrandIcon(size: 18)
             }
             Circle()
-                .fill(entry.data.hostOnline ? HeraldBrand.accent : .gray)
+                .fill(entry.data.hostOnline ? KallistiBrand.accent : .gray)
                 .frame(width: 5, height: 5)
         }
         .widgetURL(URL(string: "herald://chat"))
@@ -114,7 +114,7 @@ private struct HeraldStatusView: View {
     private var rectangularView: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                HeraldBrandIcon(size: 14)
+                KallistiBrandIcon(size: 14)
                 Text("Herald")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
@@ -148,20 +148,20 @@ private struct HeraldStatusView: View {
 // MARK: - Previews
 
 #Preview("Small", as: .systemSmall) {
-    HeraldStatusWidget()
+    KallistiStatusWidget()
 } timeline: {
-    HeraldWidgetEntry.placeholder
-    HeraldWidgetEntry(date: .now, data: .empty)
+    KallistiWidgetEntry.placeholder
+    KallistiWidgetEntry(date: .now, data: .empty)
 }
 
 #Preview("Circular", as: .accessoryCircular) {
-    HeraldStatusWidget()
+    KallistiStatusWidget()
 } timeline: {
-    HeraldWidgetEntry.placeholder
+    KallistiWidgetEntry.placeholder
 }
 
 #Preview("Rectangular", as: .accessoryRectangular) {
-    HeraldStatusWidget()
+    KallistiStatusWidget()
 } timeline: {
-    HeraldWidgetEntry.placeholder
+    KallistiWidgetEntry.placeholder
 }

@@ -7,8 +7,8 @@ import os
 ///
 /// UserDefaults is documented as thread-safe by Apple, so the shared singleton is
 /// safe despite Swift 6 not having a Sendable conformance for it.
-final class HeraldAppState: @unchecked Sendable {
-    static let shared = HeraldAppState()
+final class KallistiAppState: @unchecked Sendable {
+    static let shared = KallistiAppState()
 
     private let defaults: UserDefaults = {
         guard let suite = UserDefaults(suiteName: "group.net.fihonline.herald") else {

@@ -53,7 +53,7 @@ struct AppRootView: View {
                         .padding(.top, Design.Spacing.sm)
 
                     if showLongWait {
-                        Text("This is taking longer than usual.\nCheck that your Herald host is online.")
+                        Text("This is taking longer than usual.\nCheck that your Kallisti host is online.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .multilineTextAlignment(.center)

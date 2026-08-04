@@ -12,14 +12,14 @@ enum SharedWidgetDataStore {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
         }
-        return "group.net.fihonline.herald"
+        return "group.net.fihonline.kallisti"
     }()
     private static let dataKey = "herald.widget.data"
 
     // Coalesce bursts of reloads. During chat streaming the caller can write
     // widget data dozens of times per second; `reloadAllTimelines` is an
     // expensive IPC boundary and the widget only needs the latest state.
-    private static let reloadQueue = DispatchQueue(label: "net.fihonline.herald.widgetReload")
+    private static let reloadQueue = DispatchQueue(label: "net.fihonline.kallisti.widgetReload")
     nonisolated(unsafe) private static var pendingReload = false
     nonisolated(unsafe) private static var lastReloadAt: Date?
     private static let reloadMinInterval: TimeInterval = 2.0

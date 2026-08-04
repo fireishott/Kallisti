@@ -2,11 +2,11 @@ import Foundation
 import WidgetKit
 
 /// Timeline entry backed by the App Group shared data snapshot.
-struct HeraldWidgetEntry: TimelineEntry {
+struct KallistiWidgetEntry: TimelineEntry {
     let date: Date
     let data: HeraldWidgetData
 
-    static let placeholder = HeraldWidgetEntry(
+    static let placeholder = KallistiWidgetEntry(
         date: .now,
         data: HeraldWidgetData(
             hostName: "Herald",
@@ -25,7 +25,7 @@ struct HeraldWidgetEntry: TimelineEntry {
 }
 
 /// Reads the latest snapshot from the App Group shared container.
-struct HeraldTimelineProvider: TimelineProvider {
+struct KallistiTimelineProvider: TimelineProvider {
     private static let appGroupID: String = {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
@@ -34,16 +34,16 @@ struct HeraldTimelineProvider: TimelineProvider {
     }()
     private static let dataKey = "herald.widget.data"
 
-    func placeholder(in context: Context) -> HeraldWidgetEntry {
+    func placeholder(in context: Context) -> KallistiWidgetEntry {
         .placeholder
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (HeraldWidgetEntry) -> Void) {
-        completion(HeraldWidgetEntry(date: .now, data: readData()))
+    func getSnapshot(in context: Context, completion: @escaping (KallistiWidgetEntry) -> Void) {
+        completion(KallistiWidgetEntry(date: .now, data: readData()))
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<HeraldWidgetEntry>) -> Void) {
-        let entry = HeraldWidgetEntry(date: .now, data: readData())
+    func getTimeline(in context: Context, completion: @escaping (Timeline<KallistiWidgetEntry>) -> Void) {
+        let entry = KallistiWidgetEntry(date: .now, data: readData())
         // Refresh every 15 minutes; immediate refreshes are triggered by
         // WidgetCenter.shared.reloadAllTimelines() in the main app.
         let nextRefresh = Calendar.current.date(byAdding: .minute, value: 15, to: .now) ?? .now

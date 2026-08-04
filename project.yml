@@ -67,7 +67,7 @@ targets:
     type: application
     platform: iOS
     entitlements:
-      path: Herald/Herald.entitlements
+      path: Herald/Kallisti.entitlements
       properties:
         com.apple.developer.siri: true
         com.apple.developer.healthkit: true
@@ -87,9 +87,9 @@ targets:
           # yet integrated into the iOS build.
           - "Services/Live/PhoneWatchConnectivityCoordinator.swift"
           - "Services/Live/WatchActionBridge.swift"
-      - path: HeraldWidgets/HeraldAppState.swift
-      - path: HeraldWidgets/GatewayState.swift
-      - path: HeraldWidgets/HeraldActivityAttributes.swift
+      - path: KallistiWidgets/KallistiAppState.swift
+      - path: KallistiWidgets/GatewayState.swift
+      - path: KallistiWidgets/KallistiActivityAttributes.swift
       - path: Herald/Services/Protocols/NotificationCategories.swift
     resources:
       - path: Herald/Resources
@@ -117,23 +117,23 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
-        NSLocationWhenInUseUsageDescription: "Herald uses your location to provide contextual recommendations and nearby suggestions."
-        NSHealthShareUsageDescription: "Herald reads your health data to offer personalized wellness insights."
-        NSHealthUpdateUsageDescription: "Herald does not write health data, but this permission is required by the system."
-        NSCameraUsageDescription: "Herald uses the camera to capture photos and documents for analysis."
-        NSPhotoLibraryUsageDescription: "Herald accesses your photo library to help organize and search your photos."
-        NSMicrophoneUsageDescription: "Herald uses the microphone for voice conversations in Talk Mode."
-        NSSiriUsageDescription: "Herald uses Siri to send and read messages on CarPlay and with voice commands."
+        NSLocationWhenInUseUsageDescription: "Kallisti uses your location to provide contextual recommendations and nearby suggestions."
+        NSHealthShareUsageDescription: "Kallisti reads your health data to offer personalized wellness insights."
+        NSHealthUpdateUsageDescription: "Kallisti does not write health data, but this permission is required by the system."
+        NSCameraUsageDescription: "Kallisti uses the camera to capture photos and documents for analysis."
+        NSPhotoLibraryUsageDescription: "Kallisti accesses your photo library to help organize and search your photos."
+        NSMicrophoneUsageDescription: "Kallisti uses the microphone for voice conversations in Talk Mode."
+        NSSiriUsageDescription: "Kallisti uses Siri to send and read messages on CarPlay and with voice commands."
         INIntentsSupported:
           - INSendMessageIntent
           - INSearchForMessagesIntent
           - INSetMessageAttributeIntent
-        NSLocationAlwaysAndWhenInUseUsageDescription: "Herald uses your location in the background to provide contextual awareness and proactive suggestions."
-        NSMotionUsageDescription: "Herald uses motion data to understand your current activity for contextual awareness."
-        NSSpeechRecognitionUsageDescription: "Herald uses speech recognition for voice commands and local transcription."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Kallisti uses your location in the background to provide contextual awareness and proactive suggestions."
+        NSMotionUsageDescription: "Kallisti uses motion data to understand your current activity for contextual awareness."
+        NSSpeechRecognitionUsageDescription: "Kallisti uses speech recognition for voice commands and local transcription."
         APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
         APP_HOSTED_RELAY_ENABLED: true
-        APP_PRIVACY_URL: "https://herald.fihonline.net/privacy.html"
+        APP_PRIVACY_URL: "https://kallisti.fihonline.net/privacy.html"
         APP_TERMS_URL: "https://kallisti.app/terms.html"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
@@ -144,7 +144,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         BGTaskSchedulerPermittedIdentifiers:
-          - net.fihonline.herald.refresh
+          - net.fihonline.kallisti.refresh
           - net.fihonline.KallistiBGProcessing
         UIBackgroundModes:
           - processing
@@ -154,7 +154,7 @@ targets:
         UIRequiredDeviceCapabilities:
           - arm64
         NSUserActivityTypes:
-          - net.fihonline.herald.viewNote
+          - net.fihonline.kallisti.viewNote
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
@@ -167,16 +167,16 @@ targets:
     type: app-extension
     platform: iOS
     sources:
-      - path: HeraldWidgets
+      - path: KallistiWidgets
     entitlements:
-      path: HeraldWidgets/HeraldWidgets.entitlements
+      path: KallistiWidgets/KallistiWidgets.entitlements
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
-      path: HeraldWidgets/Info.plist
+      path: KallistiWidgets/Info.plist
       properties:
         CFBundleDisplayName: KallistiWidgets
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -186,7 +186,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
-        PRODUCT_NAME: HeraldWidgets
+        PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
@@ -201,10 +201,10 @@ targets:
     type: app-extension
     platform: iOS
     sources:
-      - path: HeraldNotificationService
+      - path: KallistiNotificationService
       - path: Herald/Services/Protocols/NotificationCategories.swift
     entitlements:
-      path: HeraldNotificationService/HeraldNotificationService.entitlements
+      path: KallistiNotificationService/KallistiNotificationService.entitlements
       properties:
         aps-environment: development
         com.apple.security.application-groups:
@@ -212,7 +212,7 @@ targets:
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
-      path: HeraldNotificationService/Info.plist
+      path: KallistiNotificationService/Info.plist
       properties:
         CFBundleDisplayName: KallistiNotificationService
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -223,7 +223,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
-        PRODUCT_NAME: HeraldNotificationService
+        PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
@@ -238,16 +238,16 @@ targets:
     type: app-extension
     platform: iOS
     sources:
-      - path: HeraldIntents
+      - path: KallistiIntents
     entitlements:
-      path: HeraldIntents/HeraldIntents.entitlements
+      path: KallistiIntents/KallistiIntents.entitlements
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
-      path: HeraldIntents/Info.plist
+      path: KallistiIntents/Info.plist
       properties:
         CFBundleDisplayName: KallistiIntents
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -264,7 +264,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
-        PRODUCT_NAME: HeraldIntents
+        PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
@@ -280,9 +280,9 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources:
-      - path: HeraldControls
+      - path: KallistiControls
     entitlements:
-      path: HeraldControls/HeraldControls.entitlements
+      path: KallistiControls/KallistiControls.entitlements
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
@@ -290,9 +290,9 @@ targets:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     settings:
       base:
-        INFOPLIST_FILE: HeraldControls/Info.plist
+        INFOPLIST_FILE: KallistiControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
-        PRODUCT_NAME: HeraldControls
+        PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
@@ -309,10 +309,10 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources:
-      - path: HeraldSupport
+      - path: KallistiSupport
     settings:
       base:
-        PRODUCT_NAME: HeraldSupport
+        PRODUCT_NAME: KallistiSupport
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.support
         SWIFT_VERSION: "6.2"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -329,15 +329,15 @@ targets:
     platform: watchOS
     deploymentTarget: "11.0"
     sources:
-      - path: HeraldWatch
+      - path: KallistiWatch
       - path: Herald/Services/Protocols/NotificationCategories.swift
     entitlements:
-      path: HeraldWatch/HeraldWatch.entitlements
+      path: KallistiWatch/KallistiWatch.entitlements
       properties:
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
     info:
-      path: HeraldWatch/Info.plist
+      path: KallistiWatch/Info.plist
       properties:
         CFBundleDisplayName: KallistiWatch
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -348,7 +348,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
-        PRODUCT_NAME: HeraldWatch
+        PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
@@ -363,13 +363,13 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: HeraldTests
+      - path: KallistiTests
     dependencies:
       - target: Kallisti
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.tests
-        PRODUCT_NAME: HeraldTests
+        PRODUCT_NAME: KallistiTests
         TEST_TARGET_NAME: Kallisti
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
@@ -379,13 +379,13 @@ targets:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - path: HeraldUITests
+      - path: KallistiUITests
     dependencies:
       - target: Kallisti
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.uitests
-        PRODUCT_NAME: HeraldUITests
+        PRODUCT_NAME: KallistiUITests
         TEST_TARGET_NAME: Kallisti
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

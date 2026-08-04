@@ -18,7 +18,7 @@ struct SettingsScreen: View {
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
     @State private var showSafari = false
-    private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.herald.session")
+    private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GatewayControlService.self) private var gatewayControl
 
@@ -219,7 +219,7 @@ struct SettingsScreen: View {
                         title: "Base URL",
                         value: pairingStore.pairedRelayConfiguration?.baseURLString ?? relayConfiguration.activeBaseURLString ?? "Not configured"
                     )
-                    Text("Disconnect Herald before changing the relay configuration.")
+                    Text("Disconnect Kallisti before changing the relay configuration.")
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                         .padding(.top, Design.Spacing.xs)
@@ -1175,11 +1175,11 @@ struct SettingsScreen: View {
         SettingsSectionView(title: "Appearance") {
             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 // Herald 2.1 appearances. Each writes both stored axes
-                // (preset + color scheme) via HeraldAppearance.
+                // (preset + color scheme) via KallistiAppearance.
                 VStack(spacing: 0) {
-                    ForEach(HeraldAppearance.allCases) { appearance in
+                    ForEach(KallistiAppearance.allCases) { appearance in
                         appearanceRow(appearance)
-                        if appearance != HeraldAppearance.allCases.last {
+                        if appearance != KallistiAppearance.allCases.last {
                             Divider()
                                 .overlay(Design.Colors.divider)
                                 .padding(.leading, 34)
@@ -1206,7 +1206,7 @@ struct SettingsScreen: View {
 
                 // The light/dark/system control only applies to the pre-2.1
                 // presets — the Herald appearances above already encode it.
-                if !themeManager.preset.isHeraldBrand {
+                if !themeManager.preset.isKallistiBrand {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Light / Dark")
                             .brandEyebrow()
@@ -1254,14 +1254,14 @@ struct SettingsScreen: View {
     }
 
     /// Currently selected Herald appearance, or `nil` when a pre-2.1 preset is active.
-    private var selectedAppearance: HeraldAppearance? {
-        HeraldAppearance.resolve(
+    private var selectedAppearance: KallistiAppearance? {
+        KallistiAppearance.resolve(
             preset: themeManager.preset,
             colorScheme: themeManager.colorSchemePreference
         )
     }
 
-    private func appearanceRow(_ appearance: HeraldAppearance) -> some View {
+    private func appearanceRow(_ appearance: KallistiAppearance) -> some View {
         let isSelected = selectedAppearance == appearance
         return Button {
             withAnimation(Design.Motion.quickResponse) {
@@ -1927,9 +1927,9 @@ struct SettingsScreen: View {
             case .whenInUse:
                 return "Kallisti receives background location updates. A blue indicator appears at the top of the screen when active."
             case .notDetermined:
-                return "Enabling this will request location access so Herald can sync while backgrounded."
+                return "Enabling this will request location access so Kallisti can sync while backgrounded."
             case .denied, .restricted:
-                return "Location is blocked at the system level. Open Settings to allow Herald to request background updates."
+                return "Location is blocked at the system level. Open Settings to allow Kallisti to request background updates."
             }
         }
 

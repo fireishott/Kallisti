@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 @Observable
 final class PairingStore {
-    private static let onboardingKey = "herald.needsPermissionsOnboarding"
+    private static let onboardingKey = "kallisti.needsPermissionsOnboarding"
 
     var pairedRelayConfiguration: PairedRelayConfiguration?
     var isWorking = false
