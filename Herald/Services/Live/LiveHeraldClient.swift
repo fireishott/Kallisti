@@ -490,11 +490,17 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         if let jobId = response.jobId {
                             Self.logger.info("Reattaching to duplicate job \(jobId.uuidString.prefix(8)) (existingState=\(response.existingState?.rawValue ?? "nil"))")
                             continuation.yield(.messageSent(jobID: jobId))
-                            // Continue to the poll/stream path below so the
-                            // assistant placeholder ties to the original job.
-                            // We deliberately do NOT yield .finished here —
-                            // the original job will deliver its own terminal
-                            // event through the SSE/poll/foreground channel.
+                            // If the existing job is already terminal, the
+                            // reply already exists in the transcript.  Finish
+                            // the stream immediately so the outbox FIFO can
+                            // drain the next queued item in the same pass.
+                            if response.existingState == .terminal {
+                                continuation.finish()
+                                return
+                            }
+                            // Otherwise continue to the poll/stream path
+                            // below so the assistant placeholder ties to the
+                            // original job.
                         } else {
                             // Duplicate without a jobId: query the durable
                             // request status to recover the server lease,

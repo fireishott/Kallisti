@@ -570,13 +570,36 @@ final class ChatStore {
         // Retryable failures whose backoff elapsed are promoted back to
         // .queued so the chain can attempt them again — visible attempt
         // ownership without waiting for the next foreground.
+        // Guard: never promote ahead of a newer queued item without first
+        // settling against the relay (if terminal → terminalize, don't
+        // resubmit).
         let now = Date.now
         var promoted = false
+        let newestQueuedSeq = outboxItems
+            .filter { $0.conversationID == targetID && $0.state == .queued }
+            .map(\.sequence)
+            .max()
         for idx in outboxItems.indices
             where outboxItems[idx].conversationID == targetID
                 && outboxItems[idx].state == .retryableFailure {
             guard let nextAttemptAt = outboxItems[idx].nextAttemptAt,
                   nextAttemptAt <= now else { continue }
+            // If there's a newer queued item, settle this retryable
+            // against the relay before promoting — it may already be
+            // terminal.
+            if let maxSeq = newestQueuedSeq,
+               outboxItems[idx].sequence < maxSeq,
+               let jobID = outboxItems[idx].jobID {
+                if let status = await heraldClient.getJobStatus(jobID),
+                   status.status == "terminal" {
+                    terminalizeOutboxItem(
+                        outboxItems[idx],
+                        canonicalUserMessageID: outboxItems[idx].clientMessageID,
+                        terminalMessageID: status.message?.id
+                    )
+                    continue
+                }
+            }
             outboxItems[idx].state = .queued
             promoted = true
         }
@@ -898,7 +921,7 @@ final class ChatStore {
         let item = outboxItems[idx]
         guard let status = await heraldClient.getJobStatus(jobID) else { return }
         switch status.status {
-        case "completed", "delivered", "succeeded", "success":
+        case "completed", "delivered", "succeeded", "success", "terminal":
             var updated = item
             updated.state = .terminal
             updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
@@ -991,7 +1014,7 @@ final class ChatStore {
                 continue
             }
             switch status.status {
-            case "completed", "delivered", "succeeded", "success":
+            case "completed", "delivered", "succeeded", "success", "terminal":
                 var updated = item
                 updated.state = .terminal
                 updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
