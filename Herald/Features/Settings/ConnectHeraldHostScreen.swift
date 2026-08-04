@@ -1,7 +1,7 @@
 import SwiftUI
 
-struct ConnectHeraldHostScreen: View {
-    @Environment(HeraldHostStore.self) private var hostStore
+struct ConnectKallistiHostScreen: View {
+    @Environment(KallistiHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(\.dismiss) private var dismiss
 

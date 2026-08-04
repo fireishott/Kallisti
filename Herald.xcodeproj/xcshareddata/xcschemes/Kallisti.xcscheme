@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "2EDF6331E478FC25A257950E"
-               BuildableName = "Herald.app"
-               BlueprintName = "Herald"
+               BlueprintIdentifier = "686AE8A63BCF6445A1BFF4E5"
+               BuildableName = "Kallisti.app"
+               BlueprintName = "Kallisti"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -29,9 +29,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "E92254BC81A0B16BACBDF97E"
-               BuildableName = "HeraldIntents.appex"
-               BlueprintName = "HeraldIntents"
+               BlueprintIdentifier = "9378087654464AF9183AB315"
+               BuildableName = "KallistiIntents.appex"
+               BlueprintName = "KallistiIntents"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -43,9 +43,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F9FC8FDC9517504A2312E58A"
-               BuildableName = "HeraldWidgets.appex"
-               BlueprintName = "HeraldWidgets"
+               BlueprintIdentifier = "04D07E970B525F5FAC61A68F"
+               BuildableName = "KallistiWidgets.appex"
+               BlueprintName = "KallistiWidgets"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -60,9 +60,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "2EDF6331E478FC25A257950E"
-            BuildableName = "Herald.app"
-            BlueprintName = "Herald"
+            BlueprintIdentifier = "686AE8A63BCF6445A1BFF4E5"
+            BuildableName = "Kallisti.app"
+            BlueprintName = "Kallisti"
             ReferencedContainer = "container:Herald.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -72,9 +72,9 @@
             parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F598A1159A52AEBCAEAC741D"
-               BuildableName = "HeraldTests.xctest"
-               BlueprintName = "HeraldTests"
+               BlueprintIdentifier = "2BD1B4F1ADCDAF178C006E63"
+               BuildableName = "KallistiTests.xctest"
+               BlueprintName = "KallistiTests"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -83,20 +83,9 @@
             parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "4B7C32DE8E967AE5A16A9764"
-               BuildableName = "HeraldUITests.xctest"
-               BlueprintName = "HeraldUITests"
-               ReferencedContainer = "container:Herald.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "1D1CBFCD2981FD701075ADA4"
-               BuildableName = "HeraldControlsTests.xctest"
-               BlueprintName = "HeraldControlsTests"
+               BlueprintIdentifier = "91F319DB127274E3F650794C"
+               BuildableName = "KallistiUITests.xctest"
+               BlueprintName = "KallistiUITests"
                ReferencedContainer = "container:Herald.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -118,9 +107,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "2EDF6331E478FC25A257950E"
-            BuildableName = "Herald.app"
-            BlueprintName = "Herald"
+            BlueprintIdentifier = "686AE8A63BCF6445A1BFF4E5"
+            BuildableName = "Kallisti.app"
+            BlueprintName = "Kallisti"
             ReferencedContainer = "container:Herald.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -137,9 +126,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "2EDF6331E478FC25A257950E"
-            BuildableName = "Herald.app"
-            BlueprintName = "Herald"
+            BlueprintIdentifier = "686AE8A63BCF6445A1BFF4E5"
+            BuildableName = "Kallisti.app"
+            BlueprintName = "Kallisti"
             ReferencedContainer = "container:Herald.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

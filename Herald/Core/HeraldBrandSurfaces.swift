@@ -150,9 +150,9 @@ struct HeraldSeededGenerator: RandomNumberGenerator {
 
 // MARK: - Brand mark
 
-/// The Herald seal, for onboarding and About. Transparent PNG so it sits on any
+/// The Kallisti seal, for onboarding and About. Transparent PNG so it sits on any
 /// theme ground without a plate behind it.
-struct HeraldSealMark: View {
+struct KallistiSealMark: View {
     var size: CGFloat = 96
     var opacity: Double = 1.0
 

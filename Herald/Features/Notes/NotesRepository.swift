@@ -14,7 +14,7 @@ actor NotesRepository: NotesRepositoryProtocol {
 
     private var baseDirectory: URL {
         customBaseDirectory ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Herald", isDirectory: true)
+            .appendingPathComponent("Kallisti", isDirectory: true)
     }
 
     init(baseDirectory: URL? = nil) {
@@ -38,18 +38,18 @@ actor NotesRepository: NotesRepositoryProtocol {
     // MARK: - Note CRUD
 
     /// Load all notes from the metadata index.
-    func loadNotes() throws -> [HeraldNote] {
+    func loadNotes() throws -> [KallistiNote] {
         guard fileManager.fileExists(atPath: metadataURL.path) else {
             return []
         }
         let data = try Data(contentsOf: metadataURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([HeraldNote].self, from: data)
+        return try decoder.decode([KallistiNote].self, from: data)
     }
 
     /// Save the full notes index. Atomic write.
-    func saveNotes(_ notes: [HeraldNote]) throws {
+    func saveNotes(_ notes: [KallistiNote]) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(notes)
@@ -57,8 +57,8 @@ actor NotesRepository: NotesRepositoryProtocol {
     }
 
     /// Create a new note and persist the updated index.
-    func createNote(title: String = "", folderId: UUID? = nil) throws -> HeraldNote {
-        let note = HeraldNote(title: title, folderId: folderId)
+    func createNote(title: String = "", folderId: UUID? = nil) throws -> KallistiNote {
+        let note = KallistiNote(title: title, folderId: folderId)
         var notes = try loadNotes()
         notes.append(note)
         try saveNotes(notes)
@@ -66,7 +66,7 @@ actor NotesRepository: NotesRepositoryProtocol {
     }
 
     /// Update an existing note in the index.
-    func updateNote(_ note: HeraldNote) throws {
+    func updateNote(_ note: KallistiNote) throws {
         var notes = try loadNotes()
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else {
             throw NotesRepositoryError.noteNotFound(note.id)

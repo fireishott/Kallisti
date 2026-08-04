@@ -45,7 +45,7 @@ final class LiveActivityService {
         lockScreenPhase = .thinking  // voice starts in thinking/model-loading
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Herald")
+        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "voice"
         )
@@ -83,7 +83,7 @@ final class LiveActivityService {
         lockScreenPhase = .thinking
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Herald")
+        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "chat"
         )
@@ -126,7 +126,7 @@ final class LiveActivityService {
         lockScreenPhase = .usingTools
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Herald")
+        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .usingTools, elapsedSeconds: 0, startDate: now, sessionType: "tool"
         )

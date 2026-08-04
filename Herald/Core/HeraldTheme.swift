@@ -110,8 +110,8 @@ enum HeraldTheme {
     // MARK: - Brand mark
 
     enum Mark {
-        /// Transparent herald seal, used for onboarding / about brand moments.
-        static let seal = "HeraldSeal"
+        /// Transparent Kallisti seal, used for onboarding / about brand moments.
+        static let seal = "KallistiSeal"
         /// Full-bleed icon art, used as a low-opacity wallpaper watermark.
         static let iconImage = "AppIconImage"
         /// Watermark opacity for chat wallpaper / empty states.

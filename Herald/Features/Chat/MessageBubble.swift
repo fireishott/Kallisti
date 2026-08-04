@@ -325,7 +325,7 @@ struct MessageBubble: View, Equatable {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Herald: \(message.content)")
+        .accessibilityLabel("Kallisti: \(message.content)")
         .accessibilityAddTraits(message.isStreaming ? .updatesFrequently : [])
     }
 

@@ -13,6 +13,6 @@ struct HeraldAvatar: View {
                 Circle().stroke(Design.Colors.border, lineWidth: 1)
             )
             .clipShape(Circle())
-            .accessibilityLabel("Herald")
+            .accessibilityLabel("Kallisti")
     }
 }

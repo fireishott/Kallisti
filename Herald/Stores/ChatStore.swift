@@ -18,6 +18,9 @@ enum StreamingPhase: Sendable {
 @Observable
 final class ChatStore {
     private static let logger = Logger(subsystem: "net.fihonline.herald", category: "ChatStore")
+    /// Closure to check user haptic preference — wired by ChatScreen
+    /// to avoid ChatStore depending on SettingsStore directly.
+    var hapticFeedbackEnabled: () -> Bool = { true }
     var conversation: Conversation? {
         didSet {
             // Reset auto-title guard only when switching to a different conversation,
@@ -221,7 +224,7 @@ final class ChatStore {
         if let persisted = persistence.loadLogEntries(), !persisted.isEmpty {
             logEntries = persisted
         } else {
-            logEntries = [LogEntry(level: .info, message: "Herald started — waiting for activity")]
+            logEntries = [LogEntry(level: .info, message: "Kallisti started — waiting for activity")]
         }
         // Restore the durable outbox manifest. Items are NOT submitted here —
         // recovery runs from ChatScreen appear / app foreground
@@ -726,7 +729,7 @@ final class ChatStore {
                 // the optimistic row and classify: size/format rejections are
                 // permanent (the user must change the input); transport and
                 // relay failures are retryable with backoff.
-                let error = response.content.isEmpty ? "Herald rejected the message" : response.content
+                let error = response.content.isEmpty ? "Kallisti rejected the message" : response.content
                 if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
                     conversation?.messages[idx].status = .failed
                 }
@@ -830,6 +833,13 @@ final class ChatStore {
         outboxItems[idx] = updated
         persistOutbox()
         outboxStore.removeStagedAttachments(for: updated)
+        // Mark the corresponding user message as delivered in the conversation
+        // so the green checkmark dot appears.
+        if var conv = conversation,
+           let msgIdx = conv.messages.firstIndex(where: { $0.clientMessageID == updated.clientMessageID && $0.sender == .user }) {
+            conv.messages[msgIdx].status = .delivered
+            conversation = conv
+        }
     }
 
     /// Outbox state → retryable/permanent failure, persisted. When
@@ -899,7 +909,7 @@ final class ChatStore {
             outboxStore.removeStagedAttachments(for: updated)
             sendPhase = .completed
         case "failed":
-            let error = status.error ?? status.errorCategory ?? "Herald reported the job failed"
+            let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed"
             failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
             sendPhase = .failed(error)
         case "cancelled":
@@ -993,7 +1003,7 @@ final class ChatStore {
                 persistOutbox()
                 outboxStore.removeStagedAttachments(for: updated)
             case "failed":
-                let error = status.error ?? status.errorCategory ?? "Herald reported the job failed while the app was away"
+                let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
                 failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
             case "cancelled":
                 failOutboxItem(item, state: .cancelled, error: status.error ?? "Cancelled")
@@ -1281,24 +1291,65 @@ final class ChatStore {
                     self.sendPhase = .streaming
                     Self.logger.info("stream textDelta bytes=\(delta.utf8.count) placeholder=\(placeholderID.uuidString.prefix(8))")
                     self.chatLiveActivity.updatePhase("Responding")
-                    // If this delta opens an inline <think>/<thinking> block and
-                    // no separate reasoning_delta stream has started, route to the
-                    // reasoning buffer so it appears in the collapsible thought
-                    // bubble rather than the visible answer content.
-                    let hasOpenThinkTag = delta.range(
-                        of: #"<think(?:ing)?>"#, options: .regularExpression
-                    ) != nil
-                    if hasOpenThinkTag && reasoningStartedAt == nil {
-                        reasoningStartedAt = .now
-                        self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
-                    } else {
-                        // Stream to TTS only for non-reasoning content
-                        if let settings = self.ttsSettingsProvider?(),
-                           settings.enabled,
-                           settings.autoSpeakDuringStreaming {
-                            self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                    // Route content to reasoning vs visible text.
+                    // If a reasoning stream is already active, check if this
+                    // delta closes the block; otherwise check if it opens one.
+                    if reasoningStartedAt != nil {
+                        // We're inside reasoning — check if the delta closes it
+                        let hasCloseTag = delta.range(
+                            of: #"</think(?:ing)?>"#, options: .regularExpression
+                        ) != nil
+                        if hasCloseTag {
+                            // Split at the close tag — reasoning before, visible after
+                            if let closeRange = delta.range(of: #"</think(?:ing)?>"#, options: .regularExpression) {
+                                let reasoningPart = String(delta[delta.startIndex..<closeRange.lowerBound])
+                                let visiblePart = String(delta[closeRange.upperBound...])
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !reasoningPart.isEmpty {
+                                    self.enqueueReasoningDelta(reasoningPart, placeholderID: placeholderID)
+                                }
+                                if !visiblePart.isEmpty {
+                                    if let settings = self.ttsSettingsProvider?(),
+                                       settings.enabled,
+                                       settings.autoSpeakDuringStreaming {
+                                        self.ttsService?.speakStreaming(visiblePart, voice: settings.voice)
+                                    }
+                                    self.enqueueDelta(visiblePart, placeholderID: placeholderID)
+                                }
+                            }
+                        } else {
+                            self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
                         }
-                        self.enqueueDelta(delta, placeholderID: placeholderID)
+                    } else {
+                        // Check if this delta opens a reasoning block
+                        let hasOpenThinkTag = delta.range(
+                            of: #"<think(?:ing)?>"#, options: .regularExpression
+                        ) != nil
+                        if hasOpenThinkTag {
+                            reasoningStartedAt = .now
+                            // Split at the open tag — visible before (unlikely), reasoning after
+                            if let openRange = delta.range(of: #"<think(?:ing)?>"#, options: .regularExpression) {
+                                let beforeTag = String(delta[delta.startIndex..<openRange.lowerBound])
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                let afterTag = String(delta[openRange.upperBound...])
+                                if !beforeTag.isEmpty {
+                                    self.enqueueDelta(beforeTag, placeholderID: placeholderID)
+                                }
+                                if !afterTag.isEmpty {
+                                    self.enqueueReasoningDelta(afterTag, placeholderID: placeholderID)
+                                }
+                            } else {
+                                self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
+                            }
+                        } else {
+                            // Normal visible content
+                            if let settings = self.ttsSettingsProvider?(),
+                               settings.enabled,
+                               settings.autoSpeakDuringStreaming {
+                                self.ttsService?.speakStreaming(delta, voice: settings.voice)
+                            }
+                            self.enqueueDelta(delta, placeholderID: placeholderID)
+                        }
                     }
 
                 case .reasoningDelta(let delta):
@@ -1495,9 +1546,9 @@ final class ChatStore {
                     let refreshed = self.heraldClient.currentConversation
                     if var conv = self.conversation {
                         // Accept server-derived title only when local is a default.
-                        if conv.title == "New Chat" || conv.title == "Herald",
+                        if conv.title == "New Chat" || conv.title == "Kallisti",
                            let serverTitle = refreshed?.title,
-                           serverTitle != "New Chat", serverTitle != "Herald" {
+                           serverTitle != "New Chat", serverTitle != "Kallisti" {
                             conv.title = serverTitle
                         }
                         conv.latestUsage = refreshed?.latestUsage ?? conv.latestUsage
@@ -1550,7 +1601,7 @@ final class ChatStore {
                     // Haptic feedback on response completion — fired immediately
                     // in the stream handler so it's synchronous with the content
                     // appearing, not delayed by the ChatScreen's onChange observer.
-                    if isCredibleCompletion {
+                    if isCredibleCompletion, self.hapticFeedbackEnabled() {
                         HapticEngine.responseReceived()
                     }
 
@@ -1571,7 +1622,7 @@ final class ChatStore {
                     // Post local notification if app is in background
                     if UIApplication.shared.applicationState == .background {
                         let content = UNMutableNotificationContent()
-                        content.title = "Herald"
+                        content.title = "Kallisti"
                         content.body = String(finalMessage.content.prefix(100))
                         content.sound = .default
                         content.categoryIdentifier = NotificationCategoryID.messageReady.rawValue
@@ -1690,11 +1741,11 @@ final class ChatStore {
                     case "context_exceeded":
                         guidance = "This session is too long for the current model. Start a new session or switch models."
                     case "rate_limited":
-                        guidance = "Herald is rate-limited. Please wait and try again."
+                        guidance = "Kallisti is rate-limited. Please wait and try again."
                     case "timeout":
                         guidance = "The request timed out. Check your connection and retry."
                     case "empty_response":
-                        guidance = "Herald returned an empty response. Try again or start a new session."
+                        guidance = "Kallisti returned an empty response. Try again or start a new session."
                     case "upstream_interrupted":
                         guidance = "The model was interrupted upstream. Please retry."
                     default:
@@ -1905,9 +1956,9 @@ final class ChatStore {
     }
 
     /// The user-facing failure copy, using the active profile name when
-    /// available and falling back to "Herald".
+    /// available and falling back to "Kallisti".
     func failureMessage(for category: String? = nil) -> String {
-        let name = profileStore?.activeProfile?.name ?? "Herald"
+        let name = profileStore?.activeProfile?.name ?? "Kallisti"
         switch category {
         case "context_exceeded":
             return "Session too long. Start a new chat."
@@ -2307,7 +2358,7 @@ final class ChatStore {
     // D5: autoCompress() and autoCompressAttempted deleted.
 
     private func autoTitleIfNeeded() async {
-        let defaultTitles: Set<String> = ["New Chat", "Herald"]
+        let defaultTitles: Set<String> = ["New Chat", "Kallisti"]
         guard let conv = conversation,
               defaultTitles.contains(conv.title),
               !autoTitleAttempted,
@@ -2742,7 +2793,7 @@ final class ChatStore {
         // Preserve user-set titles — only accept the server's title if the local
         // title is still a default placeholder. This prevents a late server-derived
         // title from overwriting a user rename.
-        let defaultTitles: Set<String> = ["New Chat", "Herald"]
+        let defaultTitles: Set<String> = ["New Chat", "Kallisti"]
         if !defaultTitles.contains(localConversation.title) {
             refreshedConversation.title = localConversation.title
         }

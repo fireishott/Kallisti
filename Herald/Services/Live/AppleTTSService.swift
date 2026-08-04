@@ -169,7 +169,7 @@ final class AppleTTSService: NSObject, TTSServiceProtocol, AVSpeechSynthesizerDe
     private func updateNowPlaying(title: String) {
         let info: [String: Any] = [
             MPMediaItemPropertyTitle: title,
-            MPMediaItemPropertyArtist: "Herald",
+            MPMediaItemPropertyArtist: "Kallisti",
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
             MPNowPlayingInfoPropertyPlaybackRate: isSpeaking ? 1.0 : 0.0,
         ]

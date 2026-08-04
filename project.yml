@@ -1,4 +1,4 @@
-name: Herald
+name: Kallisti
 options:
   # Public-safe defaults. Replace locally if you regenerate the project
   # for a private deployment with your own signing/bundle identifiers.
@@ -27,22 +27,20 @@ settings:
     ENABLE_PREVIEWS: true
 
 schemes:
-  Herald:
+  Kallisti:
     build:
       targets:
-        Herald: all
-        HeraldWidgets: all
-        HeraldIntents: all
+        Kallisti: all
+        KallistiWidgets: all
+        KallistiIntents: all
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - name: HeraldTests
+        - name: KallistiTests
           parallelizable: true
-        - name: HeraldUITests
-          parallelizable: true
-        - name: HeraldControlsTests
+        - name: KallistiUITests
           parallelizable: true
     profile:
       config: Release
@@ -51,17 +49,12 @@ schemes:
     archive:
       config: Release
 
-  HeraldWatch:
+  KallistiWatch:
     build:
       targets:
-        HeraldWatch: all
+        KallistiWatch: all
     run:
       config: Debug
-    test:
-      config: Debug
-      targets:
-        - name: HeraldWatchTests
-          parallelizable: true
     profile:
       config: Release
     analyze:
@@ -70,7 +63,7 @@ schemes:
       config: Release
 
 targets:
-  Herald:
+  Kallisti:
     type: application
     platform: iOS
     entitlements:
@@ -82,9 +75,9 @@ targets:
         com.apple.developer.healthkit.background-delivery: true
         aps-environment: production
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     sources:
       - path: Herald
         excludes:
@@ -102,25 +95,25 @@ targets:
       - path: Herald/Resources
         optional: true
     dependencies:
-      - target: HeraldSupport
-      - target: HeraldWidgets
-      - target: HeraldNotificationService
-      - target: HeraldIntents
+      - target: KallistiSupport
+      - target: KallistiWidgets
+      - target: KallistiNotificationService
+      - target: KallistiIntents
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald
-        PRODUCT_NAME: Herald
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
+        PRODUCT_NAME: Kallisti
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
-        INFOPLIST_KEY_CFBundleDisplayName: Herald
+        INFOPLIST_KEY_CFBundleDisplayName: Kallisti
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     info:
       path: Herald/Resources/Info.plist
       properties:
-        CFBundleDisplayName: Herald
+        CFBundleDisplayName: Kallisti
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
@@ -141,7 +134,7 @@ targets:
         APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
         APP_HOSTED_RELAY_ENABLED: true
         APP_PRIVACY_URL: "https://herald.fihonline.net/privacy.html"
-        APP_TERMS_URL: "https://herald.fihonline.net/terms.html"
+        APP_TERMS_URL: "https://kallisti.app/terms.html"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false
@@ -152,7 +145,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         BGTaskSchedulerPermittedIdentifiers:
           - net.fihonline.herald.refresh
-          - net.fihnews.HeraldBGProcessing
+          - net.fihonline.KallistiBGProcessing
         UIBackgroundModes:
           - processing
           - location
@@ -170,7 +163,7 @@ targets:
                 UISceneConfigurationName: CarPlay
                 UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate"
 
-  HeraldWidgets:
+  KallistiWidgets:
     type: app-extension
     platform: iOS
     sources:
@@ -179,32 +172,32 @@ targets:
       path: HeraldWidgets/HeraldWidgets.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
       path: HeraldWidgets/Info.plist
       properties:
-        CFBundleDisplayName: HeraldWidgets
+        CFBundleDisplayName: KallistiWidgets
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Widgets
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: HeraldWidgets
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
-      - target: HeraldSupport
+      - target: KallistiSupport
 
-  HeraldNotificationService:
+  KallistiNotificationService:
     type: app-extension
     platform: iOS
     sources:
@@ -215,13 +208,13 @@ targets:
       properties:
         aps-environment: development
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
       path: HeraldNotificationService/Info.plist
       properties:
-        CFBundleDisplayName: HeraldNotificationService
+        CFBundleDisplayName: KallistiNotificationService
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
@@ -229,19 +222,19 @@ targets:
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.NotificationService
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: HeraldNotificationService
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
-      - target: HeraldSupport
+      - target: KallistiSupport
 
-  HeraldIntents:
+  KallistiIntents:
     type: app-extension
     platform: iOS
     sources:
@@ -249,15 +242,14 @@ targets:
     entitlements:
       path: HeraldIntents/HeraldIntents.entitlements
       properties:
-        com.apple.developer.siri: true
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     info:
       path: HeraldIntents/Info.plist
       properties:
-        CFBundleDisplayName: HeraldIntents
+        CFBundleDisplayName: KallistiIntents
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
@@ -271,19 +263,19 @@ targets:
             IntentsRestrictedWhileLocked: []
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.Intents
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: HeraldIntents
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
-      - target: HeraldSupport
+      - target: KallistiSupport
 
-  HeraldControls:
+  KallistiControls:
     type: app-extension
     platform: iOS
     deploymentTarget: "18.0"
@@ -293,16 +285,16 @@ targets:
       path: HeraldControls/HeraldControls.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.net.fihonline.herald.shared
+          - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     settings:
       base:
         INFOPLIST_FILE: HeraldControls/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.controlsWidget
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: HeraldControls
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -310,9 +302,9 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
-      - target: HeraldSupport
+      - target: KallistiSupport
 
-  HeraldSupport:
+  KallistiSupport:
     type: library.static
     platform: iOS
     deploymentTarget: "18.0"
@@ -321,7 +313,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: HeraldSupport
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.support
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.support
         SWIFT_VERSION: "6.2"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
@@ -332,7 +324,7 @@ targets:
         BUILD_LIBRARY_FOR_DISTRIBUTION: NO
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
-  HeraldWatch:
+  KallistiWatch:
     type: application
     platform: watchOS
     deploymentTarget: "11.0"
@@ -343,22 +335,22 @@ targets:
       path: HeraldWatch/HeraldWatch.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.net.fihonline.herald
+          - group.net.fihonline.kallisti
     info:
       path: HeraldWatch/Info.plist
       properties:
-        CFBundleDisplayName: HeraldWatch
+        CFBundleDisplayName: KallistiWatch
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         WKApplication: true
-        WKCompanionAppBundleIdentifier: net.fihonline.herald
+        WKCompanionAppBundleIdentifier: net.fihonline.kallisti
         WKWatchOnly: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.watchkitapp
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: HeraldWatch
-        MARKETING_VERSION: "2.4.4"
-        CURRENT_PROJECT_VERSION: "126"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -367,71 +359,34 @@ targets:
         SDKROOT: watchos
         WATCHOS_DEPLOYMENT_TARGET: "11.0"
 
-  HeraldWatchTests:
-    type: bundle.unit-test
-    platform: watchOS
-    deploymentTarget: "11.0"
-    sources:
-      - path: HeraldWatchTests
-      - path: HeraldWatch/WatchNotificationPayload.swift
-      - path: HeraldWatch/WatchConnectivityCoordinator.swift
-      - path: Herald/Services/Protocols/NotificationCategories.swift
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.watchkitapp.tests
-        PRODUCT_NAME: HeraldWatchTests
-        SWIFT_VERSION: "6.2"
-        TARGETED_DEVICE_FAMILY: "4"
-        SDKROOT: watchos
-        WATCHOS_DEPLOYMENT_TARGET: "11.0"
-        GENERATE_INFOPLIST_FILE: true
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/HeraldWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch"
-        BUNDLE_LOADER: "$(TEST_HOST)"
-
-  HeraldTests:
+  KallistiTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: HeraldTests
     dependencies:
-      - target: Herald
+      - target: Kallisti
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.tests
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.tests
         PRODUCT_NAME: HeraldTests
-        TEST_TARGET_NAME: Herald
+        TEST_TARGET_NAME: Kallisti
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
-  HeraldUITests:
+  KallistiUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
       - path: HeraldUITests
     dependencies:
-      - target: Herald
+      - target: Kallisti
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.uitests
         PRODUCT_NAME: HeraldUITests
-        TEST_TARGET_NAME: Herald
+        TEST_TARGET_NAME: Kallisti
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
-  HeraldControlsTests:
-    type: bundle.unit-test
-    platform: iOS
-    deploymentTarget: "18.0"
-    sources:
-      - path: HeraldControlsTests
-    dependencies:
-      - target: HeraldSupport
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.herald.controlstests
-        PRODUCT_NAME: HeraldControlsTests
-        SWIFT_VERSION: "6.2"
-        TARGETED_DEVICE_FAMILY: "1,2"
-        GENERATE_INFOPLIST_FILE: true
-        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

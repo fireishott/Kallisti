@@ -65,7 +65,7 @@ final class MockVoiceSessionService: VoiceSessionServiceProtocol {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             voiceState = .thinking
-            statusMessage = "Herald is thinking."
+            statusMessage = "Kallisti is thinking."
 
             transcriptItems.append(
                 TranscriptItem(
@@ -78,7 +78,7 @@ final class MockVoiceSessionService: VoiceSessionServiceProtocol {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             voiceState = .speaking
-            statusMessage = "Herald is speaking."
+            statusMessage = "Kallisti is speaking."
             transcriptItems[transcriptItems.count - 1].isPartial = false
 
             try? await Task.sleep(for: .seconds(2))

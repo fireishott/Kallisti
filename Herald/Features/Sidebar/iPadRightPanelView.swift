@@ -5,7 +5,7 @@ import SwiftUI
 /// similar to the right panel in Herald Desktop.
 /// Width is owned by the parent workspace; this view fills its allocation.
 struct iPadRightPanelView: View {
-    @Environment(HeraldHostStore.self) private var hostStore
+    @Environment(KallistiHostStore.self) private var hostStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(HeraldCanvasStore.self) private var canvasStore
     @Binding var isOpen: Bool

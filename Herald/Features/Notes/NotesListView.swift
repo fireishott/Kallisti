@@ -6,7 +6,7 @@ struct NotesListView: View {
     @State private var searchQuery = ""
     @State private var sortOrder: NoteSortOrder = .updatedAt
     @State private var showDeleted = false
-    @State private var noteToRename: HeraldNote?
+    @State private var noteToRename: KallistiNote?
     @State private var newTitle = ""
 
     var body: some View {
@@ -114,9 +114,9 @@ struct NotesListView: View {
 
     // MARK: - Filtering & Sorting
 
-    private var filteredNotes: [HeraldNote] {
+    private var filteredNotes: [KallistiNote] {
         let notes = notesStore.activeNotes
-        let filtered: [HeraldNote]
+        let filtered: [KallistiNote]
         if searchQuery.isEmpty {
             filtered = notes
         } else {
@@ -138,7 +138,7 @@ struct NotesListView: View {
     // MARK: - Context Menu
 
     @ViewBuilder
-    private func noteContextMenu(_ note: HeraldNote) -> some View {
+    private func noteContextMenu(_ note: KallistiNote) -> some View {
         Button {
             Task { await notesStore.togglePin(id: note.id) }
         } label: {
@@ -165,7 +165,7 @@ struct NotesListView: View {
 // MARK: - Note Row
 
 struct NoteRowView: View {
-    let note: HeraldNote
+    let note: KallistiNote
     var showDeleted: Bool = false
 
     var body: some View {

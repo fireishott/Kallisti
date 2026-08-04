@@ -362,10 +362,10 @@ private struct WelcomeStepView: View {
             // editorial serif wordmark; the old 64pt uppercase mono lockup read
             // as a terminal banner and still said "Hermes on iOS".
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
-                HeraldSealMark(size: 88)
+                KallistiSealMark(size: 88)
                     .padding(.bottom, Design.Spacing.xxs)
 
-                Text("Herald")
+                Text("Kallisti")
                     .font(Design.Typography.display)
                     .foregroundStyle(Design.Colors.foreground)
                     .minimumScaleFactor(0.6)

@@ -54,7 +54,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     var explanation: String {
         switch self {
         case .location:
-            "Herald uses your location to provide contextual recommendations, weather updates, and nearby suggestions."
+            "Kallisti uses your location to provide contextual recommendations, weather updates, and nearby suggestions."
         case .health:
             "Access your health data to offer personalized wellness insights, activity tracking, and sleep recommendations."
         case .notifications:
@@ -66,7 +66,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .photos:
             "Access your photo library to help organize, search, and create albums based on your preferences."
         case .motion:
-            "Herald uses motion data to understand your current activity for contextual awareness."
+            "Kallisti uses motion data to understand your current activity for contextual awareness."
         case .speechRecognition:
             "On-device speech recognition for dictation in the chat composer."
         }

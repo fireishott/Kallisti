@@ -111,8 +111,8 @@ enum ThemePreset: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .herald: "Herald"
-        case .heraldOLED: "Herald OLED"
+        case .herald: "Kallisti"
+        case .heraldOLED: "Kallisti OLED"
         case .midnight: "Midnight"
         case .ember: "Ember"
         case .mono: "Mono"
@@ -324,9 +324,9 @@ enum HeraldAppearance: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .system: "System"
-        case .herald: "Herald"
-        case .heraldOLED: "Herald OLED"
-        case .heraldLight: "Herald Light"
+        case .herald: "Kallisti"
+        case .heraldOLED: "Kallisti OLED"
+        case .heraldLight: "Kallisti Light"
         }
     }
 

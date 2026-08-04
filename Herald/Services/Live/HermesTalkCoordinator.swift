@@ -342,7 +342,7 @@ final class HermesTalkCoordinator {
             if toolBoundarySeen {
                 let item = TranscriptItem(
                     speaker: .system,
-                    text: "Herald used tools to process your request.",
+                    text: "Kallisti used tools to process your request.",
                     isPartial: false
                 )
                 onTranscript?(item)
@@ -351,7 +351,7 @@ final class HermesTalkCoordinator {
             } else {
                 let item = TranscriptItem(
                     speaker: .system,
-                    text: "Herald didn't produce a response. Try again.",
+                    text: "Kallisti didn't produce a response. Try again.",
                     isPartial: false
                 )
                 onTranscript?(item)

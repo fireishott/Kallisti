@@ -3,7 +3,7 @@ import SwiftUI
 /// Real-time gateway telemetry dashboard.
 /// Polls the relay's /gw/status endpoint and displays system health.
 struct GatewayStatusScreen: View {
-    @Environment(HeraldHostStore.self) private var hostStore
+    @Environment(KallistiHostStore.self) private var hostStore
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore

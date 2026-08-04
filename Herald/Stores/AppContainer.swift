@@ -50,7 +50,7 @@ final class AppContainer {
     let router = TabRouter()
     let sessionStore: AppSessionStore
     let pairingStore: PairingStore
-    let hostStore: HeraldHostStore
+    let hostStore: KallistiHostStore
     let chatStore: ChatStore
     let inboxStore: InboxStore
     let permissionsStore: PermissionsStore
@@ -97,7 +97,7 @@ final class AppContainer {
     init(
         sessionStore: AppSessionStore,
         pairingStore: PairingStore,
-        hostStore: HeraldHostStore,
+        hostStore: KallistiHostStore,
         chatStore: ChatStore,
         inboxStore: InboxStore,
         permissionsStore: PermissionsStore,
@@ -316,7 +316,7 @@ final class AppContainer {
         )
         activePairingStore = runtimePairingStore
 
-        let hostService: any HeraldHostServiceProtocol
+        let hostService: any KallistiHostServiceProtocol
         if usesMockPairingService {
             hostService = MockHeraldHostService()
         } else {
@@ -329,7 +329,7 @@ final class AppContainer {
             )
         }
 
-        let hostStore = HeraldHostStore(
+        let hostStore = KallistiHostStore(
             hostService: hostService,
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
@@ -385,6 +385,7 @@ final class AppContainer {
             }
         )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
+        chatStore.hapticFeedbackEnabled = { [settingsStore] in settingsStore.settings.hapticFeedbackEnabled }
 
         let permissionsStore = PermissionsStore(
             locationService: liveLocationService,
@@ -796,7 +797,7 @@ final class AppContainer {
         case NotificationActionID.remindLater.rawValue:
             // Schedule a reminder notification for 1 hour from now
             let content = UNMutableNotificationContent()
-            content.title = "Herald"
+            content.title = "Kallisti"
             content.body = "You asked to be reminded about this conversation."
             content.sound = .default
             content.categoryIdentifier = NotificationCategoryID.sessionReminder.rawValue

@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class LiveHeraldHostService: HeraldHostServiceProtocol {
+final class LiveHeraldHostService: KallistiHostServiceProtocol {
     private struct EmptyBody: Encodable {}
 
     private struct EnrollmentResponse: Decodable {

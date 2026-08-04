@@ -2599,6 +2599,10 @@ class HeraldConnector:
             else:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
+        # Restart hermes-agent to pick up the new default model.
+        # Without this, the running process keeps its cached startup model.
+        self._rpc_hermes_restart()
+
         return {"activeModel": self._read_active_model(hermes_home)}
 
     AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
@@ -4057,6 +4061,14 @@ You MUST return a JSON object with exactly these fields:
                 api_server_url=api_url or "http://localhost:8642",
                 api_server_key=api_key,
             )
+            # Set the active model from config so chat payloads use the
+            # user's chosen model instead of the hardcoded default.
+            try:
+                model_info = self._read_active_model(self._resolve_hermes_home())
+                if model_info and model_info.get("name"):
+                    executor.active_model_name = model_info["name"]
+            except Exception:
+                pass  # Fall back to default if config read fails
             if await executor.health_check():
                 logger.info("Runtime adapter: HeraldAPI (streaming) — api_server=%s", api_url or "http://localhost:8642")
                 adapter = HeraldAPIRuntimeAdapter(executor)

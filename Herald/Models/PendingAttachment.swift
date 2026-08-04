@@ -173,7 +173,7 @@ struct PendingAttachment: Identifiable, Sendable {
         }
 
         let attachmentDirectory = baseDirectory
-            .appendingPathComponent("Herald", isDirectory: true)
+            .appendingPathComponent("Kallisti", isDirectory: true)
             .appendingPathComponent("Attachments", isDirectory: true)
 
         do {

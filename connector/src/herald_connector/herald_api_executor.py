@@ -196,6 +196,7 @@ class HeraldAPIExecutor:
 
     api_server_url: str = DEFAULT_API_SERVER_URL
     api_server_key: str | None = None
+    active_model_name: str = "hermes-agent"
 
     def _base_url(self) -> str:
         return self.api_server_url.rstrip("/")
@@ -331,7 +332,7 @@ class HeraldAPIExecutor:
             headers["X-Hermes-Session-Id"] = session_id
 
         payload = {
-            "model": "hermes-agent",
+            "model": self.active_model_name,
             "messages": self._messages_payload(
                 latest_user_message=latest_user_message,
                 history=history,
@@ -434,7 +435,7 @@ class HeraldAPIExecutor:
             headers["X-Hermes-Session-Id"] = session_id
 
         payload = {
-            "model": "hermes-agent",
+            "model": self.active_model_name,
             "messages": self._messages_payload(
                 latest_user_message=latest_user_message,
                 history=history,
@@ -816,7 +817,7 @@ class HeraldAPIExecutor:
         polluting the canonical user text that gets written to state.db.
         """
         payload: dict = {
-            "model": "hermes-agent",
+            "model": self.active_model_name,
             "input": latest_user_message,
             "stream": True,
         }

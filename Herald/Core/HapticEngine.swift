@@ -6,18 +6,38 @@ import UIKit
 /// must be used from the main thread.
 @MainActor
 enum HapticEngine {
+    // Pre-warmed generators for reliable haptic delivery.
+    // Calling prepare() spins up the Taptic Engine so it's ready
+    // when impactOccurred() fires — prevents dropped haptics during
+    // heavy UI layout passes.
+    private static let lightGenerator: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .light)
+        gen.prepare()
+        return gen
+    }()
+
+    private static let mediumGenerator: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .medium)
+        gen.prepare()
+        return gen
+    }()
+
+    private static let notificationGenerator = UINotificationFeedbackGenerator()
+
     /// Light impact when a message is sent.
     static func messageSent() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        lightGenerator.impactOccurred()
+        lightGenerator.prepare()  // Re-prepare for next use
     }
 
     /// Medium impact when a streaming response completes.
     static func responseReceived() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        mediumGenerator.impactOccurred()
+        mediumGenerator.prepare()  // Re-prepare for next use
     }
 
     /// Error notification for failed operations.
     static func error() {
-        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        notificationGenerator.notificationOccurred(.error)
     }
 }

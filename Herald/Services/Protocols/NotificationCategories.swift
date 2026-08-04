@@ -30,9 +30,9 @@ enum NotificationCategoryID: String, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .messageReady: return "Herald Reply"
-        case .jobActive: return "Herald Job"
-        case .sessionReminder: return "Herald Reminder"
+        case .messageReady: return "Kallisti Reply"
+        case .jobActive: return "Kallisti Job"
+        case .sessionReminder: return "Kallisti Reminder"
         }
     }
 }

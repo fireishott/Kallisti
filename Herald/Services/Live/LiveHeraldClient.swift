@@ -17,7 +17,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
     ///   * `.duplicate`   — a prior request with this clientMessageId was
     ///                       already accepted; `existingState` + `jobId` carry
     ///                       the durable identity.  Reattach to the same job;
-    ///                       NEVER render a synthetic "Herald did not return
+    ///                       NEVER render a synthetic "Kallisti did not return
     ///                       a message" row.
     ///   * `.conflict`    — same clientMessageId with different content;
     ///                       permanent typed error.
@@ -332,7 +332,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 return await pollForJobCompletion(jobId: jobId)
             }
 
-            return Message(sender: .system, content: "Herald did not return a message.", status: .failed)
+            return Message(sender: .system, content: "Kallisti did not return a message.", status: .failed)
         } catch {
             connectionStatus = .error
             return Message(sender: .system, content: failureMessage(for: error), status: .failed)
@@ -366,7 +366,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 if let message = status.message {
                     return message
                 }
-                return Message(sender: .system, content: "Herald completed but returned no message.", status: .failed)
+                return Message(sender: .system, content: "Kallisti completed but returned no message.", status: .failed)
             case "failed":
                 let errorText = status.error ?? "An error occurred."
                 return Message(sender: .system, content: errorText, status: .failed)
@@ -395,7 +395,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             mappedMsg = self.mapMessage(msg)
         } else if let userMsg = response.userMessage {
             // Defensive: a `.complete` response that lacks a `message` is
-            // unusual but should not produce the old "Herald did not return
+            // unusual but should not produce the old "Kallisti did not return
             // a message" synthetic row.  Render the user message as a
             // sent receipt instead — the connector will surface the real
             // terminal assistant row through the conversation fetch.
@@ -472,7 +472,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
 
                     // Build 34 Workstream K: tagged state machine, NOT a
                     // `replyState != "pending"` heuristic.  The old check
-                    // emitted a synthetic "Herald did not return a message"
+                    // emitted a synthetic "Kallisti did not return a message"
                     // row for the .duplicate case (10:22→10:31 incident)
                     // because the duplicate-running response has no `message`.
                     switch response.replyState {
@@ -485,7 +485,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         // The connector reuses the durable request by
                         // clientMessageId.  Reattach to the existing job;
                         // never allocate a synthetic user row, thinking row,
-                        // haptic, notification, or "Herald did not return
+                        // haptic, notification, or "Kallisti did not return
                         // a message" control row.
                         if let jobId = response.jobId {
                             Self.logger.info("Reattaching to duplicate job \(jobId.uuidString.prefix(8)) (existingState=\(response.existingState?.rawValue ?? "nil"))")
@@ -1012,14 +1012,14 @@ final class LiveHeraldClient: HeraldClientProtocol {
             if rawError.contains("413") || rawError.lowercased().contains("too large") {
                 text = "The attachment was too large for Herald to process. Try a smaller image."
             } else if rawError.isEmpty {
-                text = "Herald could not process this message."
+                text = "Kallisti could not process this message."
             } else {
                 // Strip URLs and technical details for a cleaner message
                 let cleaned = rawError
                     .replacingOccurrences(of: #"For more information check: \S+"#, with: "", options: .regularExpression)
                     .replacingOccurrences(of: #"for url '\S+'"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                text = "Herald could not process this message: \(cleaned)"
+                text = "Kallisti could not process this message: \(cleaned)"
             }
             return Message(sender: .system, content: text, jobID: jobId, status: .failed)
         }
@@ -1029,7 +1029,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         // to produce a non-empty assistant response, surface an explicit
         // failure so the user sees a retryable error instead of a blank reply
         // with a delivered checkmark and haptic.
-        return Message(sender: .system, content: "Herald completed but returned no message.", jobID: jobId, status: .failed)
+        return Message(sender: .system, content: "Kallisti completed but returned no message.", jobID: jobId, status: .failed)
     }
 
     private func validateRequestBodySize(for body: MessageCreateBody) throws {
@@ -1060,7 +1060,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             return "The attachment was too large for Herald to process. Try a smaller image."
         }
         if rawError.isEmpty {
-            return "Herald relay is unavailable right now."
+            return "Kallisti relay is unavailable right now."
         }
         return rawError
     }

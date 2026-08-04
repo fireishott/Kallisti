@@ -1,7 +1,7 @@
 import Foundation
 
 /// The type of artifact displayed in the Canvas.
-enum HeraldArtifactType: Codable, Equatable {
+enum KallistiArtifactType: Codable, Equatable {
     case code(language: String)
     case markdown
     case svg
@@ -45,14 +45,14 @@ enum HeraldArtifactType: Codable, Equatable {
 }
 
 /// A persistent artifact shown in the Canvas panel.
-struct HeraldArtifact: Codable, Identifiable {
+struct KallistiArtifact: Codable, Identifiable {
     var id: UUID
     var sessionID: String
-    var type: HeraldArtifactType
+    var type: KallistiArtifactType
     var content: String
     var updatedAt: Date
 
-    init(sessionID: String, type: HeraldArtifactType, content: String) {
+    init(sessionID: String, type: KallistiArtifactType, content: String) {
         self.id = UUID()
         self.sessionID = sessionID
         self.type = type

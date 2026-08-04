@@ -4,7 +4,7 @@ import Foundation
 
 /// A Herald note — the top-level container for ink, recognition, and enrichment.
 /// Metadata-only; drawing blobs live on disk as atomic `.pkdrawing` files.
-struct HeraldNote: Codable, Identifiable, Hashable, Sendable {
+struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     var title: String
     var folderId: UUID?

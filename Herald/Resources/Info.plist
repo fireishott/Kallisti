@@ -9,16 +9,16 @@
 	<key>APP_PRIVACY_URL</key>
 	<string>https://herald.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
-	<string>https://herald.fihonline.net/terms.html</string>
+	<string>https://kallisti.app/terms.html</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>net.fihonline.herald.refresh</string>
-		<string>net.fihnews.HeraldBGProcessing</string>
+		<string>net.fihonline.KallistiBGProcessing</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Herald</string>
+	<string>Kallisti</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

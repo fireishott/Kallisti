@@ -101,13 +101,13 @@ final class MockHeraldClient: HeraldClientProtocol {
     }
 
     func clearConversation() async throws -> Conversation {
-        let fresh = Conversation(title: "Herald")
+        let fresh = Conversation(title: "Kallisti")
         currentConversation = fresh
         return fresh
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
-        return currentConversation ?? Conversation(title: "Herald")
+        return currentConversation ?? Conversation(title: "Kallisti")
     }
 
     private func generateResponse(for input: String) -> String {

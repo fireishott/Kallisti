@@ -9,7 +9,7 @@ enum HeraldHostConnectionState: Equatable, Sendable {
 
 @MainActor
 @Observable
-final class HeraldHostStore {
+final class KallistiHostStore {
     var currentHost: HeraldHostStatus?
     var activeEnrollmentCode: HostEnrollmentCode?
     var isLoading = false
@@ -17,11 +17,11 @@ final class HeraldHostStore {
     var lastErrorMessage: String?
     var onHostChanged: (@MainActor () -> Void)?
 
-    private let hostService: any HeraldHostServiceProtocol
+    private let hostService: any KallistiHostServiceProtocol
     private let accessTokenProvider: @MainActor () async -> String?
 
     init(
-        hostService: any HeraldHostServiceProtocol,
+        hostService: any KallistiHostServiceProtocol,
         accessTokenProvider: @escaping @MainActor () async -> String?
     ) {
         self.hostService = hostService

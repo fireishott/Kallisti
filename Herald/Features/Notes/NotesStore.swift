@@ -5,9 +5,9 @@ import os
 /// Enables testing by allowing mock implementations.
 protocol NotesRepositoryProtocol: Sendable {
     func ensureDirectories() async throws
-    func loadNotes() async throws -> [HeraldNote]
-    func createNote(title: String, folderId: UUID?) async throws -> HeraldNote
-    func updateNote(_ note: HeraldNote) async throws
+    func loadNotes() async throws -> [KallistiNote]
+    func createNote(title: String, folderId: UUID?) async throws -> KallistiNote
+    func updateNote(_ note: KallistiNote) async throws
     func softDeleteNote(id: UUID) async throws
     func restoreNote(id: UUID) async throws
     func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle) async throws -> (revisionId: UUID, blobPath: String, contentHash: String)
@@ -23,7 +23,7 @@ protocol NotesRepositoryProtocol: Sendable {
 @MainActor
 @Observable
 final class NotesStore {
-    var notes: [HeraldNote] = []
+    var notes: [KallistiNote] = []
     var folders: [NoteFolder] = []
     var selectedNoteId: UUID?
     var isLoading = false
@@ -80,21 +80,21 @@ final class NotesStore {
 
     // MARK: - Computed
 
-    var activeNotes: [HeraldNote] {
+    var activeNotes: [KallistiNote] {
         notes.filter { !$0.isDeleted }
             .sorted { ($0.pinned && !$1.pinned) || ($0.pinned == $1.pinned && $0.updatedAt > $1.updatedAt) }
     }
 
-    var deletedNotes: [HeraldNote] {
+    var deletedNotes: [KallistiNote] {
         notes.filter { $0.isDeleted }
             .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
     }
 
-    var selectedNote: HeraldNote? {
+    var selectedNote: KallistiNote? {
         notes.first { $0.id == selectedNoteId }
     }
     
-    var recentNotes: [HeraldNote] {
+    var recentNotes: [KallistiNote] {
         notes.filter { !$0.isDeleted }
             .sorted { $0.updatedAt > $1.updatedAt }
             .prefix(10)
@@ -118,7 +118,7 @@ final class NotesStore {
 
     // MARK: - CRUD
 
-    func createNote(title: String = "") async -> HeraldNote? {
+    func createNote(title: String = "") async -> KallistiNote? {
         do {
             let note = try await repository.createNote(title: title, folderId: nil)
             notes.append(note)
@@ -131,7 +131,7 @@ final class NotesStore {
         }
     }
 
-    func updateNote(_ note: HeraldNote) async {
+    func updateNote(_ note: KallistiNote) async {
         do {
             try await repository.updateNote(note)
             if let index = notes.firstIndex(where: { $0.id == note.id }) {
@@ -268,7 +268,7 @@ final class NotesStore {
 
     /// Create a note from text shared from another app via the Share Sheet or URL scheme.
     /// Returns `nil` if the text is empty.
-    func createNoteFromSharedText(_ text: String, title: String?) async -> HeraldNote? {
+    func createNoteFromSharedText(_ text: String, title: String?) async -> KallistiNote? {
         guard !text.isEmpty else { return nil }
         guard let note = await createNote(title: title ?? "Shared Note") else { return nil }
 

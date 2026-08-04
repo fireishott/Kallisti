@@ -205,8 +205,8 @@ struct NoteDTO: Decodable {
     let updatedAt: String?
     let deletedAt: String?
 
-    func toLocal() -> HeraldNote {
-        HeraldNote(
+    func toLocal() -> KallistiNote {
+        KallistiNote(
             id: UUID(uuidString: id) ?? UUID(),
             title: title,
             folderId: folderId.flatMap(UUID.init),

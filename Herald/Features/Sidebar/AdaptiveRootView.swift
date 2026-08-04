@@ -165,7 +165,7 @@ struct AdaptiveRootView: View {
         case .permissions:
             PermissionsScreen()
         case .connectHost:
-            ConnectHeraldHostScreen()
+            ConnectKallistiHostScreen()
         case .gatewayStatus:
             GatewayStatusScreen()
         case .gatewayLogs:

@@ -69,7 +69,7 @@ struct MessageAttachmentsView: View {
 
     private func openFile(_ attachment: MessageAttachment) async {
         guard let data = await attachmentService.data(for: attachment) else { return }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HeraldPreview", isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KallistiPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(sanitized(attachment.fileName))
         do {
@@ -423,7 +423,7 @@ private struct FullScreenImageViewer: View {
     private func prepareTempFile() {
         guard tempFileURL == nil else { return }
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("HeraldImageShare", isDirectory: true)
+            .appendingPathComponent("KallistiImageShare", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let ext = (fileName as NSString).pathExtension
         let base = (fileName as NSString).deletingPathExtension

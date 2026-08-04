@@ -156,11 +156,11 @@ struct OutboxManifestStore: Sendable {
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         manifestURL = base
-            .appendingPathComponent("Herald", isDirectory: true)
+            .appendingPathComponent("Kallisti", isDirectory: true)
             .appendingPathComponent("Outbox", isDirectory: true)
             .appendingPathComponent("outbox.json", isDirectory: false)
         stagingRootURL = base
-            .appendingPathComponent("Herald", isDirectory: true)
+            .appendingPathComponent("Kallisti", isDirectory: true)
             .appendingPathComponent("AttachmentStaging", isDirectory: true)
     }
 

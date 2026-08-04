@@ -143,7 +143,7 @@ struct ReasoningView: View {
         }
         .buttonStyle(.plain)
         .disabled(isStreaming)
-        .accessibilityLabel(isStreaming ? "Herald is thinking" : headerLabel)
+        .accessibilityLabel(isStreaming ? "Kallisti is thinking" : headerLabel)
     }
 
     /// A gradient sweep across the label.  Falls back to flat colour under

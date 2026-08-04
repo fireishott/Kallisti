@@ -6,7 +6,7 @@ import Foundation
 @Observable
 @MainActor
 final class HeraldCanvasStore {
-    var activeArtifact: HeraldArtifact?
+    var activeArtifact: KallistiArtifact?
 
     private let defaults = UserDefaults.standard
     private let storageKey = "herald.canvas.artifacts"
@@ -14,7 +14,7 @@ final class HeraldCanvasStore {
     /// Load the stored artifact for a given session on startup.
     func loadArtifact(for sessionID: String) {
         guard let data = defaults.data(forKey: storageKey + "." + sessionID),
-              let artifact = try? JSONDecoder().decode(HeraldArtifact.self, from: data)
+              let artifact = try? JSONDecoder().decode(KallistiArtifact.self, from: data)
         else { return }
         activeArtifact = artifact
     }
@@ -27,9 +27,9 @@ final class HeraldCanvasStore {
             return false
         }), case .codeBlock(_, let lang, let code) = codeBlock else { return }
 
-        let type: HeraldArtifactType = (lang?.lowercased() == "svg") ? .svg
+        let type: KallistiArtifactType = (lang?.lowercased() == "svg") ? .svg
             : lang.map { .code(language: $0) } ?? .markdown
-        let artifact = HeraldArtifact(
+        let artifact = KallistiArtifact(
             sessionID: sessionID,
             type: type,
             content: code
@@ -54,7 +54,7 @@ final class HeraldCanvasStore {
         activeArtifact = nil
     }
 
-    private func persist(_ artifact: HeraldArtifact) {
+    private func persist(_ artifact: KallistiArtifact) {
         if let data = try? JSONEncoder().encode(artifact) {
             defaults.set(data, forKey: storageKey + "." + artifact.sessionID)
         }

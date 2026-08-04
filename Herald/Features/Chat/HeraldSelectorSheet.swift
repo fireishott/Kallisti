@@ -14,7 +14,7 @@ struct HeraldSelectorSheet: View {
     @Environment(ModelStore.self) private var modelStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(ProfileStore.self) private var profileStore
-    @Environment(HeraldHostStore.self) private var hostStore
+    @Environment(KallistiHostStore.self) private var hostStore
 
     enum Tab: String, CaseIterable {
         case models

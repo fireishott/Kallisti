@@ -7,7 +7,7 @@ struct SettingsScreen: View {
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(ModelStore.self) private var modelStore
-    @Environment(HeraldHostStore.self) private var hostStore
+    @Environment(KallistiHostStore.self) private var hostStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(PermissionsStore.self) private var permissionsStore
     @Environment(SettingsStore.self) private var settingsStore
@@ -1923,9 +1923,9 @@ struct SettingsScreen: View {
         if settingsStore.settings.locationSyncPreference == .backgroundAllowed {
             switch permissionsStore.locationAuthorizationLevel {
             case .always:
-                return "Herald receives location updates in the background without the blue indicator."
+                return "Kallisti receives location updates in the background without the blue indicator."
             case .whenInUse:
-                return "Herald receives background location updates. A blue indicator appears at the top of the screen when active."
+                return "Kallisti receives background location updates. A blue indicator appears at the top of the screen when active."
             case .notDetermined:
                 return "Enabling this will request location access so Herald can sync while backgrounded."
             case .denied, .restricted:
