@@ -4592,6 +4592,21 @@ async def job_events(request: Request) -> StreamingResponse:
                     break
                 event_type = event.get("type", "progress")
                 payload = event.get("data") or {}
+                # The connector's fallback job-events stream (client.py
+                # _rpc_job_events_stream) emits legacy "job.completed"
+                # lifecycle events whose type is NOT valid on the v3 wire.
+                # Passing them to build_envelope raised
+                # ValueError('unknown relay event type job.completed'),
+                # which was caught below and sent the client an
+                # "event: failed" frame INSTEAD of the terminal event — so a
+                # completed reply looked failed and the turn never settled
+                # (2026-08-04). Normalize to the run.* wire types the iOS
+                # decoder expects, keyed on the job's terminal status.
+                if isinstance(event_type, str) and event_type.startswith("job."):
+                    status = str((payload or {}).get("status") or "").lower()
+                    event_type = ("run.failed"
+                                  if status in ("failed", "error", "not_found")
+                                  else "run.completed")
                 if isinstance(payload, dict) and payload.get("contractVersion") is not None:
                     # Already shaped as a v3 envelope — pass through.
                     envelope = payload
