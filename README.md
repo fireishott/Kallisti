@@ -1,53 +1,44 @@
 # Kallisti
 
-**To the Most Beautiful.**
-
 <p align="center">
-  <img src="docs/assets/kallisti/brand/brand-mark.png" alt="Kallisti" width="200"/>
+  <img src="docs/assets/kallisti/banner-dark.png" alt="Kallisti — To the Most Beautiful." width="100%"/>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-D4A853?style=flat-square&labelColor=0C0C10" alt="version"/>
-  <img src="https://img.shields.io/badge/iOS-18+-D4A853?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
+  <a href="https://kallisti.fihonline.net"><img src="https://img.shields.io/badge/website-kallisti.fihonline.net-C8CCD2?style=flat-square&labelColor=0C0C10" alt="website"/></a>
+  <img src="https://img.shields.io/badge/version-2.5.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
-  <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="license"/>
-  <img src="https://img.shields.io/badge/self--hosted-true-D4A853?style=flat-square&labelColor=0C0C10" alt="self-hosted"/>
+  <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
 
-Native iOS companion for your self-hosted Hermes agent. Every thought, every tool, every answer — streamed live from your server to your hand.
+---
 
-## What is Kallisti?
+**Self-hosted AI companion for iPhone and iPad.** Connects to your [Hermes Agent](https://github.com/nousresearch/hermes-agent) runtime. Streaming chat, voice mode, health sensors, handwriting OCR, gateway control, and widgets — all on your own infrastructure.
 
-Kallisti is a self-hosted iOS app that connects to your [Hermes Agent](https://github.com/nousresearch/hermes-agent) instance. It gives you full access to your AI agent from your phone — chat, voice, device sensors, context dashboards, and more.
-
-No cloud. No subscription. No data harvesting. Just you and your AI.
+No cloud. No subscription. No data leaving your server.
 
 ## Features
 
-- **Rich Chat** — Stream tool calls, reasoning, and responses in real time
-- **Voice Interface** — Talk naturally with on-host STT/TTS (faster-whisper + edge-tts, zero keys)
-- **Device Status** — Health, location, and motion data from your phone
-- **Context Dashboard** — Memory, sessions, and active tasks at a glance
-- **Ink Mode** — Handwriting and sketching with Apple Pencil support
-- **Gateway Control** — Native gateway management from your phone
-- **iPhone Landscape** — Three-panel layout (sidebar + content + inspector) when rotated
+- **Rich Chat** — Streaming markdown, syntax-highlighted code, tool call bubbles, canvas mode
+- **Voice Mode** — MiMo ASR/TTS with Apple TTS fallback, push-to-talk, barge-in
+- **Health & Sensors** — HealthKit, CoreLocation, CoreMotion — all piped to your agent
+- **Handwriting & OCR** — Apple Notes extraction, Vision OCR, PencilKit canvas
+- **Gateway Control** — Restart, monitor, and manage your relay from your phone
+- **Widgets & Live Activities** — Home Screen, Lock Screen, Dynamic Island
+- **Push Notifications** — APNs with silent push, rich notifications, reply actions
+- **Security** — Keychain, App Attest, biometric auth. Data never leaves your relay.
 
 ## Quick Start
 
-### 1. Set Up the Connector
-
-Install the connector on your server alongside your Hermes agent. See [connector/README.md](connector/README.md) for details.
+### 1. Install the Connector
 
 ```bash
-cd connector
-pip install -e .
-kallisti setup
+pip install kallisti-connector
+kallisti-connector start --hermes-url http://your-server:8642 --key YOUR_API_KEY
 ```
 
-### 2. Install Kallisti
-
-- **TestFlight**: [Join Beta](https://testflight.apple.com/...) (link coming soon)
-- **Build from Source**: Clone this repo and open `Kallisti.xcodeproj` in Xcode
+### 2. Build the App
 
 ```bash
 git clone https://github.com/fireishott/Kallisti.git
@@ -56,63 +47,37 @@ xcodegen generate
 open Kallisti.xcodeproj
 ```
 
-### 3. Pair
+Build to your device with your Apple Developer account (Team ID: 58U7UPFS53 or your own).
 
-```bash
-kallisti pair-phone
-```
+### 3. Connect
 
-Scan the QR code from your terminal. Your agent is live.
+Open Kallisti on your iPhone, tap **Connect**, and scan the QR code from your connector terminal.
 
 ## Architecture
 
 ```
-┌─────────────┐     HTTP/WS      ┌──────────────┐
-│   Kallisti   │ ◄──────────────► │  Connector   │
-│   (iOS App)  │                  │  (Python)    │
-└─────────────┘                  └──────┬───────┘
-                                        │
-                                 ┌──────▼───────┐
-                                 │ Hermes Agent │
-                                 │  (Server)    │
-                                 └──────────────┘
+iPhone (Kallisti) → Gateway Connector → Hermes Agent (your server)
 ```
+
+All traffic flows through the connector you run. CFWD operates no backend services.
 
 ## Requirements
 
-- iOS 18.0+
+- iOS 18+
+- Xcode 16+
 - A running [Hermes Agent](https://github.com/nousresearch/hermes-agent) instance
-- The Kallisti connector on your server
-
-## Tech Stack
-
-- **UI**: SwiftUI (Swift 6.2)
-- **Networking**: URLSession + WebSocket
-- **Connector**: Python 3.11+ (Hermes integration)
-- **Speech**: faster-whisper (STT) + edge-tts (TTS), zero API keys
-
-## Brand
-
-<p align="center">
-  <img src="docs/assets/kallisti/brand/social-avatar.png" alt="Kallisti Seal" width="100"/>
-</p>
-
-| Color | Hex | Role |
-|-------|-----|------|
-| Obsidian | #0C0C10 | Background |
-| Platinum | #C8CCD2 | Primary text |
-| Steel Silver | #8A909A | Secondary text |
-| Pewter | #6B7078 | Muted elements |
-| Dark Slate | #16181C | Card surfaces |
-| Gold | #D4A853 | Accent |
-
-- **Tagline:** "To the Most Beautiful."
-- **Brand guide:** [docs/BRAND_SYSTEM.md](docs/BRAND_SYSTEM.md)
-
-## Attribution
-
-Kallisti is built on the foundation of [Herald](https://github.com/fireishott/Herald), which was forked from [Hermes-iOS](https://github.com/dylan-buck/Hermes-iOS) by [Dylan Buck](https://github.com/dylan-buck). Original work licensed under MIT.
+- Apple Developer account (free or paid)
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE). Build it, modify it, distribute it. No gates.
+
+## Links
+
+- **Website:** [kallisti.fihonline.net](https://kallisti.fihonline.net)
+- **Privacy:** [kallisti.fihonline.net/privacy.html](https://kallisti.fihonline.net/privacy.html)
+- **Hermes Agent:** [github.com/nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent)
+
+---
+
+*Built by [CFWD](https://gocfwd.net) · © 2026 CFWD*
