@@ -1160,6 +1160,19 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 event_type, seq, job_id,
             )
             return
+        # Persist the real event JSON to the durable ledger, replacing
+        # the placeholder that allocate_job_seq inserted.  Without this,
+        # GET /v1/jobs/{id}/events returns only {"_placeholder":true},
+        # starving recovery, reattach, and the duplicate path.
+        try:
+            from .delivery_store import get_delivery_store
+            get_delivery_store().append_job_event(
+                job_id=job_id,
+                seq=seq,
+                event_json=json.dumps(envelope),
+            )
+        except Exception:
+            logger.exception("_publish: ledger persist failed for seq=%s job=%s", seq, job_id)
         # Publish the validated v3 envelope.  The legacy {type, data}
         # shape is NEVER constructed downstream — subscribers all see
         # the validated envelope.

@@ -697,6 +697,41 @@ class TestSendMessageIdempotency:
         assert row["state"] == "permanent_failure"
         assert row["errorCategory"] == "upstream_interrupted"
 
+    def test_job_events_persisted_with_real_types_not_placeholders(self, app_env, client, no_session_lookups):
+        """After a job completes, get_job_events must return real event
+        types (text.delta, terminal, etc.), not {"_placeholder":true}."""
+        app_env.message_handler = completed_handler
+        get_delivery_store().get_or_create_binding(CONV, HERMES_SID, "", DEVICE)
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, conversationId=CONV),
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["jobId"]
+
+        # Poll for terminal.
+        store = get_delivery_store()
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            row = store.get_message_request_by_job(job_id)
+            if row is not None and row["state"] == "terminal":
+                break
+            time.sleep(0.02)
+        assert row is not None and row["state"] == "terminal"
+
+        # Verify job events have real types.
+        events = store.get_job_events(job_id)
+        assert len(events) > 0, "no events persisted"
+        for ev in events:
+            event_obj = ev["event"]
+            assert "_placeholder" not in event_obj, (
+                f"placeholder still present: {event_obj}"
+            )
+            assert "type" in event_obj, (
+                f"event missing type: {event_obj}"
+            )
+
     def test_unbound_conversation_send_auto_binds_and_succeeds(self, app_env, client, no_session_lookups):
         """Build 118 Hotfix Bug 2: a send for an unbound conversation with no
         real Hermes session_id now auto-binds via _resolve_hermes_id/_app_uuid
