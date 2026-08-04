@@ -390,6 +390,7 @@ struct ChatWallpaperBackground: View {
 
     var tint: Color = .accentColor
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var cachedCustomImage: UIImage?
 
     var body: some View {
@@ -432,11 +433,23 @@ struct ChatWallpaperBackground: View {
         }
     }
 
-    /// Kallisti default wallpaper: deep ink ground, restrained field, and
-    /// a low-opacity icon watermark. Resolves per theme.
+    /// Kallisti default wallpaper: the seated-Eris relief art on dark
+    /// themes (brand asset), falling back to the procedural brand field
+    /// in light mode where a near-black image would read as broken.
     @ViewBuilder
     private var defaultBackground: some View {
-        KallistiBrandField(isReadingSurface: true)
+        if colorScheme == .dark {
+            GeometryReader { proxy in
+                Image("KallistiWallpaper")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+            }
+            .ignoresSafeArea()
+        } else {
+            KallistiBrandField(isReadingSurface: true)
+        }
     }
 
     @ViewBuilder
