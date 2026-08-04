@@ -5173,7 +5173,7 @@ async def create_session(request: Request) -> JSONResponse:
     (LiveHeraldClient.swift:709-724).  Every key the decoder reads must
     be present and of the declared type.
     """
-    await require_auth(request)
+    token = await require_auth(request)
     try:
         body = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -5202,6 +5202,16 @@ async def create_session(request: Request) -> JSONResponse:
             "create_session: Hermes provisioning deferred for %s: %s",
             session_id, exc,
         )
+
+    # Record device ownership so the session appears in the device-scoped
+    # list (allDevices=false).
+    try:
+        from .session_store import device_id_for_token, record_session_device
+        installation_id = device_id_for_token(token) or ""
+        if installation_id:
+            record_session_device(session_id, installation_id)
+    except Exception:
+        logger.debug("create_session: device record failed (non-fatal)", exc_info=True)
 
     return JSONResponse({"session": {
         "id": session_id,
