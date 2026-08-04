@@ -19,7 +19,8 @@ class TestRunsReasoningAvailableHandling:
 
     def test_runs_payload_carries_session_id(self):
         """A continued Herald turn must bind the existing Hermes transcript."""
-        payload = HeraldAPIExecutor._runs_request_payload(
+        executor = HeraldAPIExecutor()
+        payload = executor._runs_request_payload(
             latest_user_message="continue the existing chat",
             session_id="run-existing-session",
         )
@@ -27,7 +28,8 @@ class TestRunsReasoningAvailableHandling:
         assert payload["input"] == "continue the existing chat"
 
     def test_new_runs_payload_does_not_invent_a_session_id(self):
-        payload = HeraldAPIExecutor._runs_request_payload(
+        executor = HeraldAPIExecutor()
+        payload = executor._runs_request_payload(
             latest_user_message="first turn",
             session_id=None,
         )

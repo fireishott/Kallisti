@@ -794,8 +794,8 @@ class HeraldAPIExecutor:
             yield StreamEvent(type="reasoning_delta", data=remaining)
         yield StreamEvent(type="stream_interrupted")
 
-    @staticmethod
     def _runs_request_payload(
+        self,
         *,
         latest_user_message: str,
         session_id: str | None,
