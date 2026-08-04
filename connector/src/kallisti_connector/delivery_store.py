@@ -788,6 +788,25 @@ class DeliveryStore:
             where="state = 'running'",
         )
 
+    def mark_user_message_terminal(self, client_message_id: str) -> None:
+        """Transition the user row in conversation_messages from 'accepted'
+        to 'terminal' so iOS sees a delivered green dot that persists across
+        refreshes.  Idempotent — no-op if already terminal or missing."""
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE conversation_messages "
+                    "SET state = 'terminal', updated_at = ? "
+                    "WHERE client_message_id = ? AND state = 'accepted'",
+                    (now, client_message_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def fail_message_request(self, client_message_id: str, error_category: str | None = None) -> dict:
         """Transition running → permanent_failure with the error category."""
         return self._transition(

@@ -1564,6 +1564,12 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         canonical_user_message_id=user_msg_id,
                         terminal_message_id=assistant_message_id,
                     )
+                    # Also transition the user row in conversation_messages
+                    # so iOS sees a delivered green dot that persists across
+                    # refreshes (otherwise every poll un-delivers it).
+                    delivery_store.mark_user_message_terminal(
+                        delivery_client_msg_id,
+                    )
                 elif job["status"] == "cancelled":
                     delivery_store.cancel_message_request(delivery_client_msg_id)
                 else:

@@ -637,6 +637,38 @@ class TestSendMessageIdempotency:
         assert row["installationId"] == DEVICE or row["installationId"] == ""
         assert row["errorCategory"] is None
 
+    def test_user_message_transitions_to_terminal_on_reply(self, app_env, client, no_session_lookups):
+        """When the assistant reply reaches terminal, the paired user row
+        in conversation_messages must also transition from 'accepted' to
+        'terminal'.  Otherwise every iOS refresh un-delivers the green dot."""
+        app_env.message_handler = completed_handler
+        get_delivery_store().get_or_create_binding(CONV, HERMES_SID, "", DEVICE)
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, conversationId=CONV),
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["jobId"]
+
+        # Poll for the request to reach terminal.
+        store = get_delivery_store()
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            row = store.get_message_request_by_job(job_id)
+            if row is not None and row["state"] == "terminal":
+                break
+            time.sleep(0.02)
+        assert row is not None and row["state"] == "terminal"
+
+        # The user message in conversation_messages must also be terminal.
+        msgs = store.get_conversation_messages(CONV)
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        assert len(user_msgs) >= 1
+        assert user_msgs[-1]["state"] == "terminal", (
+            f"user message state is {user_msgs[-1]['state']!r}, expected 'terminal'"
+        )
+
     def test_failed_send_marks_request_permanent_failure(self, app_env, client, no_session_lookups):
         async def failing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
             yield {"type": "done", "data": {
