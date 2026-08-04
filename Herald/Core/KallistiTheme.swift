@@ -114,3 +114,51 @@ enum KallistiTheme {
         static let watermarkLight:    Double = 0.10
     }
 }
+
+// MARK: - Thread-safe palette snapshot
+
+/// A lock-guarded copy of the active palette, readable from any thread.
+///
+/// `Design.Colors` / `Design.Brand` are overwhelmingly read from SwiftUI view
+/// bodies on the main actor, but they are plain `static var`s with no isolation
+/// of their own, so nothing stops a non-isolated caller from reading one.
+/// Resolving them through `MainActor.assumeIsolated` makes any such read a hard
+/// crash: `assumeIsolated` calls `dispatch_assert_queue`, which traps with
+/// `EXC_BREAKPOINT` rather than returning an error.
+///
+/// This snapshot is written on the main actor whenever the theme changes and read
+/// without isolation, so a color lookup can never take the process down. The
+/// initial value is the Kallisti default, which is also the launch default —
+/// so a read that races ahead of the first sync still gets correct branding.
+enum ThemeSnapshot {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var stored: ThemePalette = ThemePreset.kallisti.darkColors
+
+    /// The active palette. Safe from any thread or actor.
+    static var current: ThemePalette {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    /// Publish a new active palette. Called by `ThemeManager` on every change.
+    static func update(_ palette: ThemePalette) {
+        lock.lock()
+        stored = palette
+        lock.unlock()
+    }
+
+    /// The palette that design-token lookups should use.
+    ///
+    /// On the main thread this reads `ThemeManager` directly, so a SwiftUI view
+    /// body evaluating `Design.Colors.background` registers an observation
+    /// dependency and re-renders when the theme changes — switching appearance in
+    /// Settings has to repaint live. Off the main thread it returns the snapshot
+    /// instead of trapping.
+    static var activePalette: ThemePalette {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { ThemeManager.shared.currentPalette }
+        }
+        return current
+    }
+}
