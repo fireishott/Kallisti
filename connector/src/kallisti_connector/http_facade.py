@@ -990,6 +990,13 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
     job = _http_jobs[job_id]
     accumulated = ""
     accumulated_reasoning = ""
+    # Resolved from the Hermes response at ~line 1271. Initialized here so the
+    # terminal-state finalizer (clean-text override, message→job mapping) can
+    # run for jobs that are cancelled or fail BEFORE any response arrives —
+    # otherwise referencing it there raises UnboundLocalError and the whole
+    # job task crashes on cancel, leaving no reply and orphaning the session
+    # (2026-08-04: cancel-at-2s crash, http_facade.py:1529).
+    hermes_sid: str | None = None
     # Bounds the state.db lookup that resolves which session this turn landed
     # in, so an identical message sent days ago can never be matched instead.
     # A small skew allowance covers clock jitter between writer and reader.
