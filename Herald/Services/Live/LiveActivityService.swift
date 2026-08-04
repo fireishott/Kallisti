@@ -3,7 +3,7 @@ import Foundation
 
 /// Privacy-safe lock-screen phases.  Never carry raw tool names, commands,
 /// paths, prompts, or model output — only the generic categories below.
-/// These are the ONLY values allowed in HeraldActivityAttributes.ContentState.
+/// These are the ONLY values allowed in KallistiActivityAttributes.ContentState.
 enum LiveActivityPhase: String, Sendable {
     case thinking = "Thinking\u{2026}"           // model loading / reasoning
     case usingTools = "Using tools\u{2026}"      // tool execution in progress
@@ -29,7 +29,7 @@ enum LiveActivityPhase: String, Sendable {
 @MainActor
 @Observable
 final class LiveActivityService {
-    private var currentActivity: Activity<HeraldActivityAttributes>?
+    private var currentActivity: Activity<KallistiActivityAttributes>?
     private var startedAt: Date?
     /// Current lock-screen phase — only these values enter ActivityKit state.
     private var lockScreenPhase: LiveActivityPhase = .thinking
@@ -45,7 +45,7 @@ final class LiveActivityService {
         lockScreenPhase = .thinking  // voice starts in thinking/model-loading
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
+        let attributes = KallistiActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "voice"
         )
@@ -83,7 +83,7 @@ final class LiveActivityService {
         lockScreenPhase = .thinking
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
+        let attributes = KallistiActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .thinking, elapsedSeconds: 0, startDate: now, sessionType: "chat"
         )
@@ -126,7 +126,7 @@ final class LiveActivityService {
         lockScreenPhase = .usingTools
         let now = Date.now
         adoptExistingActivityIfNeeded()
-        let attributes = HeraldActivityAttributes(agentName: "Kallisti")
+        let attributes = KallistiActivityAttributes(agentName: "Kallisti")
         let state = makeContentState(
             phase: .usingTools, elapsedSeconds: 0, startDate: now, sessionType: "tool"
         )
@@ -166,7 +166,7 @@ final class LiveActivityService {
         currentActivity = nil
 
         let finalContent = ActivityContent(
-            state: HeraldActivityAttributes.ContentState(
+            state: KallistiActivityAttributes.ContentState(
                 status: LiveActivityPhase.done.rawValue,
                 toolName: nil,
                 elapsedSeconds: 0,
@@ -177,7 +177,7 @@ final class LiveActivityService {
             staleDate: nil
         )
         Task.detached {
-            for activity in Activity<HeraldActivityAttributes>.activities {
+            for activity in Activity<KallistiActivityAttributes>.activities {
                 await activity.end(finalContent, dismissalPolicy: .immediate)
             }
         }
@@ -219,12 +219,12 @@ final class LiveActivityService {
 
     // MARK: - Private
 
-    private func updateActivity(with state: HeraldActivityAttributes.ContentState) {
+    private func updateActivity(with state: KallistiActivityAttributes.ContentState) {
         guard let activity = currentActivity, activity.activityState == .active else { return }
         let content = ActivityContent(state: state, staleDate: nil)
         let activityID = activity.id
         Task.detached {
-            for activity in Activity<HeraldActivityAttributes>.activities where activity.id == activityID {
+            for activity in Activity<KallistiActivityAttributes>.activities where activity.id == activityID {
                 await activity.update(content)
             }
         }
@@ -240,7 +240,7 @@ final class LiveActivityService {
 
     static func endAllActivities() {
         let finalContent = ActivityContent(
-            state: HeraldActivityAttributes.ContentState(
+            state: KallistiActivityAttributes.ContentState(
                 status: LiveActivityPhase.done.rawValue,
                 toolName: nil,
                 elapsedSeconds: 0,
@@ -251,7 +251,7 @@ final class LiveActivityService {
             staleDate: nil
         )
         Task.detached {
-            for activity in Activity<HeraldActivityAttributes>.activities {
+            for activity in Activity<KallistiActivityAttributes>.activities {
                 await activity.end(finalContent, dismissalPolicy: .default)
             }
         }
@@ -265,8 +265,8 @@ final class LiveActivityService {
         elapsedSeconds: Int = 0,
         startDate: Date? = nil,
         sessionType: String = "chat"
-    ) -> HeraldActivityAttributes.ContentState {
-        return HeraldActivityAttributes.ContentState(
+    ) -> KallistiActivityAttributes.ContentState {
+        return KallistiActivityAttributes.ContentState(
             status: phase.rawValue,
             toolName: phase.detail,
             elapsedSeconds: elapsedSeconds,
@@ -324,7 +324,7 @@ final class LiveActivityService {
 
     private func adoptExistingActivityIfNeeded() {
         guard currentActivity == nil else { return }
-        if let activity = Activity<HeraldActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
+        if let activity = Activity<KallistiActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
             currentActivity = activity
             startedAt = activity.content.state.startDate
         }
