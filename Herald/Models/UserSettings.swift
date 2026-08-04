@@ -644,9 +644,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         // Devices that stored "nous" or "herald" in UserDefaults will decode as .kallisti.
         if var storedRawValue = try container.decodeIfPresent(String.self, forKey: .themePreset) {
             if storedRawValue == "nous" { storedRawValue = "herald" }
-            themePreset = ThemePreset(rawValue: storedRawValue) ?? .herald
+            themePreset = ThemePreset(rawValue: storedRawValue) ?? .kallisti
         } else {
-            themePreset = .herald
+            themePreset = .kallisti
         }
         colorSchemePreference = try container.decodeIfPresent(ColorSchemePreference.self, forKey: .colorSchemePreference) ?? .system
         chatWallpaper = try container.decodeIfPresent(ChatWallpaper.self, forKey: .chatWallpaper) ?? .default
