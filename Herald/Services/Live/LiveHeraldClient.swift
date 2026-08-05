@@ -1309,15 +1309,17 @@ extension LiveHeraldClient {
                 errorAction: data.errorAction
             )
         } catch let decodingError as DecodingError {
-            Self.logger.error("Job status decode failure: \(String(describing: decodingError))")
+            Self.logger.error("Job status decode failure for job \(jobId.uuidString.prefix(8)): \(String(describing: decodingError))")
             if case .keyNotFound(let key, let context) = decodingError {
                 Self.logger.error("  → missing key '\(key.stringValue)' at \(context.codingPath.map(\.stringValue))")
             } else if case .typeMismatch(let type, let context) = decodingError {
                 Self.logger.error("  → type mismatch: expected \(type) at \(context.codingPath.map(\.stringValue))")
+            } else if case .valueNotFound(let type, let context) = decodingError {
+                Self.logger.error("  → valueNotFound: \(type) at \(context.codingPath.map(\.stringValue))")
             }
             return nil
         } catch {
-            Self.logger.warning("Failed to get job status: \(error.localizedDescription)")
+            Self.logger.warning("Failed to get job status for job \(jobId.uuidString.prefix(8)): \(error.localizedDescription)")
             return nil
         }
     }
@@ -1399,8 +1401,11 @@ extension LiveHeraldClient {
 
             if let statusResponse = await self.getJobStatus(jobId) {
                 switch statusResponse.status {
-                case "completed":
-                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) completed during polling")
+                // Match the same terminal strings as settleAcceptedOutboxJob
+                // (ChatStore.swift:938) — the connector may return any of
+                // these depending on which fallback path answered the poll.
+                case "completed", "delivered", "succeeded", "success", "terminal":
+                    Self.logger.info("Job \(jobId.uuidString.prefix(8)) completed during polling (status=\(statusResponse.status))")
                     if let msg = statusResponse.message {
                         continuation.yield(.finished(msg, statusResponse.usage, statusResponse.diff, statusResponse.context))
                     } else {
