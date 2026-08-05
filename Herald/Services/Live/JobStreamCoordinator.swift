@@ -199,7 +199,11 @@ actor JobStreamCoordinator {
                 // Check authoritative job status
                 if let status = await jobStatusProvider(jobId) {
                     switch status.status {
-                    case "completed":
+                    // Match the same terminal strings as settleAcceptedOutboxJob
+                    // (ChatStore.swift:938) and pollJobUntilTerminal — the
+                    // connector may return any of these depending on which
+                    // fallback path answered the poll.
+                    case "completed", "delivered", "succeeded", "success", "terminal":
                         return .completed(nil)
                     case "failed":
                         return .failed(nil)

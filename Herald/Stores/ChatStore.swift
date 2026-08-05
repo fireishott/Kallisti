@@ -926,6 +926,7 @@ final class ChatStore {
             // Cannot confirm job status — move to retryableFailure so the
             // item leaves in-flight and the FIFO can drain. The relay
             // dedupes by clientMessageID on the eventual resubmit.
+            Logger.app.warning("settleAcceptedOutboxJob: getJobStatus returned nil for job \(jobID.uuidString.prefix(8)) — marking retryableFailure")
             failOutboxItem(
                 item,
                 state: .retryableFailure,
@@ -1131,8 +1132,15 @@ final class ChatStore {
             // the server confirms a terminal state, the item is terminalized
             // and we exit — no need to wait for the deadline.
             await settleAcceptedOutboxJob(clientMessageID: clientMessageID)
+            // Exit the stall loop once the item leaves in-flight — whether
+            // that's .terminal (happy path), .retryableFailure (decode or
+            // confirm failure), .permanentFailure, or .cancelled.  Previously
+            // this checked `isTerminal` which excludes .retryableFailure,
+            // causing the loop to spin for the full 180s deadline when
+            // getJobStatus returned nil (decode failure) even though the item
+            // was already settled and the FIFO could drain.
             if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
-               outboxItems[idx].isTerminal {
+               !outboxItems[idx].isInFlight {
                 streamingPhase = .idle
                 activeStreams.removeAll()
                 return
