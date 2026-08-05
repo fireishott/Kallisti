@@ -909,17 +909,31 @@ final class ChatStore {
             || lower.contains("not supported")
     }
 
-    /// Query the relay for the authoritative status of an accepted outbox job
-    /// and settle the record to a terminal state. No-op when the record is
-    /// not `.accepted`, or when the relay cannot identify the job (it is then
-    /// left for `recoverOutbox` on the next foreground — never auto-resubmit).
+    /// Query the relay for the authoritative status of an in-flight outbox
+    /// job and settle the record to a terminal state. Handles items in any
+    /// in-flight state (`.accepted`, `.submitting`, `.materializing`) so
+    /// items stuck pre-acceptance are also freed. When the relay cannot
+    /// identify the job (`getJobStatus` returns nil), the item is moved to
+    /// `.retryableFailure` to free the FIFO — the relay dedupes by
+    /// `clientMessageID` on the eventual resubmit (idempotent).
     private func settleAcceptedOutboxJob(clientMessageID: UUID) async {
         guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
-              outboxItems[idx].state == .accepted,
+              outboxItems[idx].isInFlight,
               let jobID = outboxItems[idx].jobID
         else { return }
         let item = outboxItems[idx]
-        guard let status = await heraldClient.getJobStatus(jobID) else { return }
+        guard let status = await heraldClient.getJobStatus(jobID) else {
+            // Cannot confirm job status — move to retryableFailure so the
+            // item leaves in-flight and the FIFO can drain. The relay
+            // dedupes by clientMessageID on the eventual resubmit.
+            failOutboxItem(
+                item,
+                state: .retryableFailure,
+                error: "Could not confirm job status",
+                retryAfter: backoffInterval(forAttempt: item.attemptCount)
+            )
+            return
+        }
         switch status.status {
         case "completed", "delivered", "succeeded", "success", "terminal":
             var updated = item
@@ -942,7 +956,7 @@ final class ChatStore {
             outboxItems[idx] = updated
             persistOutbox()
         default:
-            // Still running — leave .accepted; the poll loop and the next
+            // Still running — leave in-flight; the poll loop and the next
             // recovery pass reconcile it.
             break
         }
@@ -1112,7 +1126,19 @@ final class ChatStore {
         // behavior.
         var pollCount = 0
         while !Task.isCancelled {
-            // Check absolute deadline first
+            // Before checking the deadline, try to settle the outbox item
+            // by querying the relay for the job's authoritative status. If
+            // the server confirms a terminal state, the item is terminalized
+            // and we exit — no need to wait for the deadline.
+            await settleAcceptedOutboxJob(clientMessageID: clientMessageID)
+            if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
+               outboxItems[idx].isTerminal {
+                streamingPhase = .idle
+                activeStreams.removeAll()
+                return
+            }
+
+            // Check absolute deadline
             let elapsed = Date.now.timeIntervalSince(jobAcceptedAt)
             let deadlineSeconds = Self.absoluteJobDeadline / .seconds(1)
             if elapsed >= deadlineSeconds {
