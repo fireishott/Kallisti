@@ -1827,17 +1827,24 @@ final class ChatStore {
                     }
 
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        // Build N+: always replace with an error message, never
-                        // silently remove.  When acceptedJobID != nil the relay
-                        // accepted the job but the stream failed — the user
-                        // needs to see that their message was received but the
-                        // response failed, not wonder why it vanished.
-                        self.conversation?.messages[idx] = Message(
-                            sender: .system,
-                            content: guidance,
-                            status: .failed,
-                            errorCategory: category
-                        )
+                        // Build N+: "Could not fetch job status" is a transient
+                        // reconnect signal, not a terminal failure.  The relay
+                        // accepted the job (acceptedJobID != nil) and the
+                        // response IS coming — don't replace the placeholder
+                        // with a system error that persists in the chat after
+                        // the response arrives.  Leave the placeholder as-is
+                        // (still streaming) so the .finished handler can
+                        // replace it cleanly when the response lands.
+                        if acceptedJobID != nil && category == nil {
+                            self.appendLog(level: .info, "Transient fetch failure for job \(placeholderID.uuidString.prefix(8)) — waiting for reconnect")
+                        } else {
+                            self.conversation?.messages[idx] = Message(
+                                sender: .system,
+                                content: guidance,
+                                status: .failed,
+                                errorCategory: category
+                            )
+                        }
                     }
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.chatLiveActivity.endActivity()
