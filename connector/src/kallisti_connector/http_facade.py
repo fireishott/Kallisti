@@ -4424,9 +4424,12 @@ async def clear_current_conversation(request: Request) -> JSONResponse:
 async def job_status(request: Request) -> JSONResponse:
     """Poll job status.
 
-    Returns {"data": {...}} — the app declares its own inner `data` key
-    (LiveHeraldClient.swift:827-829) *in addition to* the envelope the middleware
-    adds, so this handler double-wraps on purpose.  Do not flatten it.
+    The envelope_middleware wraps every JSON response in
+    {"data": …, "meta": …}, so this handler must return the payload
+    WITHOUT an outer "data" key — the middleware adds it.  Previously
+    the handler returned {"data": payload} AND the middleware wrapped it,
+    creating a double data wrapper that the iOS decoder couldn't parse
+    (LiveHeraldClient.swift:1287 expects one level of data).
     """
     await require_auth(request)
     ctx = get_context()
@@ -4434,7 +4437,7 @@ async def job_status(request: Request) -> JSONResponse:
 
     job = _http_jobs.get(job_id)
     if job is not None:
-        return JSONResponse({"data": {
+        return JSONResponse({
             "jobId": job_id,
             "status": job["status"],
             "conversationId": job["conversationId"],
@@ -4447,7 +4450,7 @@ async def job_status(request: Request) -> JSONResponse:
             "message": job["message"],
             "attempt": 0,
             "lastSeq": max(len(job["events"]) - 1, 0),
-        }})
+        })
 
     # B33 WS B: the job lifecycle is durable in the delivery store.  When
     # the connector restarted after the ack, _http_jobs is empty but the
@@ -4467,7 +4470,7 @@ async def job_status(request: Request) -> JSONResponse:
             "permanent_failure": "failed",
             "cancelled": "cancelled",
         }.get(request_row["state"], "running")
-        return JSONResponse({"data": {
+        return JSONResponse({
             "jobId": job_id,
             "status": status,
             "conversationId": request_row["conversationId"],
@@ -4485,7 +4488,7 @@ async def job_status(request: Request) -> JSONResponse:
             "message": None,
             "attempt": 0,
             "lastSeq": 0,
-        }})
+        })
 
     # Fallback: jobs created by the legacy relay WS path. Do not remove.
     if ctx.job_status is None:
@@ -4493,7 +4496,7 @@ async def job_status(request: Request) -> JSONResponse:
     result = ctx.job_status(job_id)
     if inspect.isawaitable(result):
         result = await result
-    return JSONResponse({"data": result})
+    return JSONResponse(result)
 
 
 def _format_sse_frame(event: dict, seq: int) -> str:
@@ -5901,7 +5904,11 @@ async def envelope_middleware(scope, receive, send):
                 payload = None
             body = (
                 raw
-                if payload is None or ("error" in payload if isinstance(payload, dict) else False)
+                if payload is None or (
+                    isinstance(payload, dict)
+                    and "error" in payload
+                    and payload["error"] is not None
+                )
                 else json.dumps(envelope(payload)).encode()
             )
             headers = [
