@@ -1141,8 +1141,19 @@ final class ChatStore {
             // was already settled and the FIFO could drain.
             if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
                !outboxItems[idx].isInFlight {
-                streamingPhase = .idle
+                // Build N+: clear per-message isStreaming before dropping
+                // activeStreams.  The .finished consumer event that normally
+                // handles this gets dropped by the activeAttemptID guard when
+                // the stall loop bumps the attempt — leaving the thinking brain
+                // visible after the reply has been settled.
+                if let placeholderID = streamingMessageID,
+                   var conv = conversation,
+                   let msgIdx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                    conv.messages[msgIdx].isStreaming = false
+                    conversation = conv
+                }
                 activeStreams.removeAll()
+                streamingPhase = .idle
                 return
             }
 
