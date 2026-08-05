@@ -1308,6 +1308,12 @@ final class ChatStore {
                 if Task.isCancelled { break }
                 switch update {
                 case .messageSent(let jobID):
+                    // Build N+: guard against stale .messageSent from a
+                    // previous attempt.  cancelStreaming() bumps
+                    // activeAttemptID, so a late arrival from the old stream
+                    // must not overwrite streamingPhase or register in
+                    // activeStreams for the new conversation.
+                    guard self.activeAttemptID == attemptID else { break }
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
@@ -1821,16 +1827,17 @@ final class ChatStore {
                     }
 
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
-                        if acceptedJobID == nil {
-                            self.conversation?.messages[idx] = Message(
-                                sender: .system,
-                                content: guidance,
-                                status: .failed,
-                                errorCategory: category
-                            )
-                        } else {
-                            self.conversation?.messages.remove(at: idx)
-                        }
+                        // Build N+: always replace with an error message, never
+                        // silently remove.  When acceptedJobID != nil the relay
+                        // accepted the job but the stream failed — the user
+                        // needs to see that their message was received but the
+                        // response failed, not wonder why it vanished.
+                        self.conversation?.messages[idx] = Message(
+                            sender: .system,
+                            content: guidance,
+                            status: .failed,
+                            errorCategory: category
+                        )
                     }
                     if let jobID = acceptedJobID { self.activeStreams.removeValue(forKey: jobID) }
                     self.chatLiveActivity.endActivity()
@@ -2272,16 +2279,27 @@ final class ChatStore {
             flushPendingDeltas(placeholderID: sid)
         }
 
-        // Finalize current streaming message with content received so far
-        if let sid = streamingMessageID,
-           var conv = conversation,
-           let idx = conv.messages.firstIndex(where: { $0.id == sid }) {
-            conv.messages[idx].isStreaming = false
-            conv.messages[idx].status = .interrupted  // Build 31: not delivered — interrupted
-            for i in conv.messages[idx].toolActivities.indices {
-                conv.messages[idx].toolActivities[i].isActive = false
+        // Finalize current streaming message with content received so far.
+        // Build N+: also scan for orphaned streaming placeholders that were
+        // created before activeStreams was populated (the placeholder is
+        // appended to the conversation at line ~707, but activeStreams isn't
+        // set until .messageSent fires at line ~1322).  If the user switches
+        // conversations during that window, streamingMessageID returns nil
+        // and the old code skipped cleanup — leaving isStreaming=true on a
+        // stale placeholder that manifests as a random think bubble.
+        if var conv = conversation {
+            var changed = false
+            for i in conv.messages.indices where conv.messages[i].isStreaming {
+                conv.messages[i].isStreaming = false
+                conv.messages[i].status = .interrupted
+                for j in conv.messages[i].toolActivities.indices {
+                    conv.messages[i].toolActivities[j].isActive = false
+                }
+                changed = true
             }
-            conversation = conv
+            if changed {
+                conversation = conv
+            }
         }
         activeStreams.removeAll()
         pendingMessageSentAt = nil
@@ -2857,6 +2875,16 @@ final class ChatStore {
     ) -> Conversation? {
         guard var refreshedConversation else { return localConversation }
         guard let localConversation else { return refreshedConversation }
+
+        // Build N+: refuse to merge across different conversations.  The
+        // polling timer and stall-loop poll both call this with
+        // `self.conversation` as the `from` — if the user switched
+        // conversations during the await, `self.conversation` belongs to a
+        // different session and its local-only messages would contaminate
+        // the refreshed conversation's message list.
+        guard localConversation.id == refreshedConversation.id else {
+            return refreshedConversation
+        }
 
         // Preserve user-set titles — only accept the server's title if the local
         // title is still a default placeholder. This prevents a late server-derived
