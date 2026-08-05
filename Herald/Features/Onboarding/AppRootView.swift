@@ -39,7 +39,7 @@ struct AppRootView: View {
                         .symbolEffect(.pulse, options: .repeating)
 
                     VStack(spacing: Design.Spacing.xs) {
-                        Text("Connecting to Herald…")
+                        Text("Connecting to Kallisti…")
                             .font(Design.Typography.sectionTitle)
                             .foregroundStyle(Design.Colors.foreground)
 
