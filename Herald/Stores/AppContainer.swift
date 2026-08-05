@@ -587,6 +587,22 @@ final class AppContainer {
         // Keep session list in sync when title is derived or renamed
         container.chatStore.onTitleChanged = { [weak container] (conversationID: UUID, newTitle: String) in
             container?.sessionListStore.updateSessionTitle(id: conversationID, newTitle: newTitle)
+            // Persist the title to the server too. updateSessionTitle only
+            // mutates the local cached list, so without this the server
+            // session stayed "New Chat" and the next session-list refresh
+            // (frequent) overwrote the local title back to "New Chat" — the
+            // naming regression (2026-08-04). renameSession PATCHes
+            // /v1/sessions/{id}; best-effort, local title already applied.
+            Task { [weak container] in
+                guard let container else { return }
+                do {
+                    _ = try await container.chatStore.heraldClient.renameSession(
+                        id: conversationID, title: newTitle
+                    )
+                } catch {
+                    Logger.app.warning("renameSession failed for \(conversationID.uuidString.prefix(8)): \(error.localizedDescription)")
+                }
+            }
         }
         container.inboxStore.onOpenConversation = { [weak container] (convId: UUID) in
             guard let container else { return }
