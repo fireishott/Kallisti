@@ -2228,7 +2228,7 @@
 		13EF966D1C6A80AD7DA631A8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2249,7 +2249,7 @@
 		2C56777649F40B07C7ECFC18 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldIntents/HeraldIntents.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2271,7 +2271,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = HeraldControls/HeraldControls.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2306,7 +2306,7 @@
 		5C86F1F90282607C50F1F333 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2327,7 +2327,7 @@
 		714CD9D54151431D1EFD751A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldWatch/HeraldWatch.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2346,7 +2346,7 @@
 		87CAF18551951118C401193B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldIntents/HeraldIntents.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2443,7 +2443,7 @@
 		DB12D97E8C934758B917A812 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldNotificationService/HeraldNotificationService.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2464,7 +2464,7 @@
 		E55EC1A955F7EDB544B9F0F3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldNotificationService/HeraldNotificationService.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2485,7 +2485,7 @@
 		E9FD776754A49C462BF42BD7 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldWidgets/HeraldWidgets.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2507,7 +2507,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = HeraldControls/HeraldControls.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2529,7 +2529,7 @@
 		F07A7CEF0B1E7A5159D37BDB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = HeraldWatch/HeraldWatch.entitlements;
+				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
@@ -2566,7 +2566,7 @@
 		F62F34C1BC122E9F540F1B37 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Herald/Herald.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;

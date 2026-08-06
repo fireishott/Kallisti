@@ -70,6 +70,9 @@ actor JobStreamCoordinator {
         let status: String
         let attempt: Int
         let lastSeq: Int
+        let message: Message?
+        let usage: TokenUsage?
+        let context: ContextInfo?
     }
 
     init(
@@ -204,7 +207,26 @@ actor JobStreamCoordinator {
                     // connector may return any of these depending on which
                     // fallback path answered the poll.
                     case "completed", "delivered", "succeeded", "success", "terminal":
-                        return .completed(nil)
+                        // Build N+: pass the message from the job status
+                        // response through so LiveHeraldClient doesn't have to
+                        // reload the conversation (which may not have the
+                        // message correlated by jobId yet).
+                        let terminalResult = status.message.map { msg in
+                            TerminalResult(
+                                text: msg.content,
+                                reasoning: msg.reasoning,
+                                promptTokens: status.usage?.promptTokens,
+                                completionTokens: status.usage?.completionTokens,
+                                totalTokens: status.usage?.totalTokens,
+                                contextWindow: status.context?.window,
+                                contextUsed: status.context?.used,
+                                error: nil,
+                                errorCategory: nil,
+                                errorAction: nil,
+                                messageJSON: nil
+                            )
+                        }
+                        return .completed(terminalResult)
                     case "failed":
                         return .failed(nil)
                     case "cancelled":
@@ -389,6 +411,45 @@ actor JobStreamCoordinator {
             let fromAttempt = json["from_attempt"] as? Int ?? 0
             let toAttempt = json["to_attempt"] as? Int ?? 0
             payload = .runRequeued(RunRequeuedPayload(fromAttempt: fromAttempt, toAttempt: toAttempt))
+
+        case "run.completed":
+            // v3 terminal event — same payload shape as legacy "done" with status=completed
+            if let msgDict = json["message"] as? [String: Any] {
+                self.pendingTerminalMessageJSON = msgDict
+            }
+            let status = json["status"] as? String ?? "completed"
+            eventType = .runCompleted
+            let text = Self.parseTerminalText(from: json) ?? ""
+            let terminalReasoning = Self.parseTerminalReasoning(from: json)
+            let usageDict = json["usage"] as? [String: Any]
+            let usage = usageDict.map { Usage(
+                promptTokens: $0["prompt_tokens"] as? Int,
+                completionTokens: $0["completion_tokens"] as? Int,
+                totalTokens: $0["total_tokens"] as? Int
+            )}
+            if let contextDict = json["context"] as? [String: Any] {
+                self.pendingContextWindow = contextDict["window"] as? Int
+                self.pendingContextUsed = contextDict["used"] as? Int
+            }
+            if let reasoning = terminalReasoning {
+                self.pendingReasoning = reasoning
+            }
+            payload = .runCompleted(RunCompletedPayload(messageId: "", text: text, usage: usage, diff: nil))
+
+        case "run.failed":
+            eventType = .runFailed
+            let error = json["error"] as? String ?? "Unknown error"
+            let errorCategory = json["errorCategory"] as? String
+            let errorAction = json["errorAction"] as? String
+            payload = .runFailed(RunFailedPayload(
+                error: error, retryable: false,
+                errorCategory: errorCategory, errorAction: errorAction
+            ))
+
+        case "run.cancelled":
+            eventType = .runCancelled
+            let reason = json["error"] as? String ?? "Cancelled"
+            payload = .runCancelled(RunCancelledPayload(reason: reason))
 
         case "reconnecting":
             // D1/D2: Connector signals that the events stream closed without
