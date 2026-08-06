@@ -1166,6 +1166,16 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                 "_publish: builder rejected event %s seq=%s for job %s — dropped",
                 event_type, seq, job_id,
             )
+            # Safety net: never leave the allocated seq as an orphan
+            # placeholder — it would become the job's sole 'terminal' and
+            # poison the SSE replay backlog (the silent 'no reply').
+            try:
+                from .delivery_store import get_delivery_store
+                get_delivery_store().discard_placeholder(job_id, seq)
+            except Exception:
+                logger.exception(
+                    "_publish: placeholder cleanup failed seq=%s job=%s", seq, job_id,
+                )
             return
         # Persist the real event JSON to the durable ledger, replacing
         # the placeholder that allocate_job_seq inserted.  Without this,
@@ -1180,6 +1190,12 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
             )
         except Exception:
             logger.exception("_publish: ledger persist failed for seq=%s job=%s", seq, job_id)
+            # Safety net: the placeholder was not replaced — discard it so
+            # a reconnect/replay never observes it as the terminal.
+            try:
+                get_delivery_store().discard_placeholder(job_id, seq)
+            except Exception:
+                pass
         # Publish the validated v3 envelope.  The legacy {type, data}
         # shape is NEVER constructed downstream — subscribers all see
         # the validated envelope.
