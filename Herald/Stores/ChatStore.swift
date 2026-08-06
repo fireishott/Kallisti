@@ -937,14 +937,14 @@ final class ChatStore {
         }
         switch status.status {
         case "completed", "delivered", "succeeded", "success", "terminal":
-            var updated = item
-            updated.state = .terminal
-            updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
-            updated.lastError = nil
-            updated.nextAttemptAt = nil
-            outboxItems[idx] = updated
-            persistOutbox()
-            outboxStore.removeStagedAttachments(for: updated)
+            // Use terminalizeOutboxItem to set the green dot on the user
+            // message — without this, settleFoundTerminal would mark the
+            // outbox terminal but leave the user message in .sending state.
+            terminalizeOutboxItem(
+                item,
+                canonicalUserMessageID: clientMessageID,
+                terminalMessageID: status.message?.id
+            )
             sendPhase = .completed
         case "failed":
             let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed"
@@ -1293,8 +1293,10 @@ final class ChatStore {
         var acceptedJobID: UUID?
         var needsPollingFallback = false
         var reasoningStartedAt: Date?
+        let sendStartedAt = Date.now
 
         streamingPhase = .sending
+        Self.logger.info("⏱ TIMING: send attempt started at \(sendStartedAt.timeIntervalSince1970)")
 
         var progressContinuation: AsyncStream<Void>.Continuation?
         let progressSignal = AsyncStream<Void> { continuation in
@@ -1314,6 +1316,8 @@ final class ChatStore {
                     // must not overwrite streamingPhase or register in
                     // activeStreams for the new conversation.
                     guard self.activeAttemptID == attemptID else { break }
+                    let elapsed = Date.now.timeIntervalSince(sendStartedAt)
+                    Self.logger.info("⏱ TIMING: .messageSent received after \(String(format: "%.1f", elapsed))s — job \(jobID.uuidString.prefix(8))")
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
@@ -1652,16 +1656,19 @@ final class ChatStore {
                     self.streamingPhase = .idle
                     // Durable outbox: the job reached a server terminal state —
                     // record the canonical identities and release the phase.
+                    // Also mark the user message as .delivered so the green
+                    // checkmark dot appears.  terminalizeOutboxItem is the
+                    // ONLY place that sets .delivered on the user message;
+                    // without this call the green dot never fires on the
+                    // streaming path (the polling fallback path at line 1216
+                    // does call it, but only on stall — not on normal
+                    // completion).
                     if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        var record = self.outboxItems[idx]
-                        record.state = .terminal
-                        record.terminalMessageID = finalMessage.id
-                        record.canonicalUserMessageID = record.canonicalUserMessageID ?? clientMessageID
-                        record.lastError = nil
-                        record.nextAttemptAt = nil
-                        self.outboxItems[idx] = record
-                        self.persistOutbox()
-                        self.outboxStore.removeStagedAttachments(for: record)
+                        self.terminalizeOutboxItem(
+                            self.outboxItems[idx],
+                            canonicalUserMessageID: clientMessageID,
+                            terminalMessageID: finalMessage.id
+                        )
                     }
                     self.sendPhase = .completed
                     self.sendPhaseOwner = nil
@@ -1937,7 +1944,14 @@ final class ChatStore {
         // SSE streams can end prematurely due to proxy timeouts or mobile network
         // transitions, but the relay may still be writing events. A 10-second
         // pause prevents the polling safety net from racing a healthy SSE stream.
-        if needsPollingFallback {
+        //
+        // Skip polling entirely when the outbox item is already terminal —
+        // the .finished handler resolved it via SSE and there's nothing to
+        // poll for.  Without this guard the client polls GET /v1/jobs/{id}
+        // every 10s for 60-80 seconds after the job completes, adding ~2 min
+        // of apparent latency to follow-up messages.
+        let outboxAlreadyTerminal = outboxItems.first(where: { $0.clientMessageID == clientMessageID })?.isTerminal ?? false
+        if needsPollingFallback && !outboxAlreadyTerminal {
             try? await Task.sleep(for: .seconds(10))
             let refreshed = await refreshActiveConversation()
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)

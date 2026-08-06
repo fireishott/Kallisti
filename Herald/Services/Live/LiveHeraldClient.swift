@@ -1329,7 +1329,10 @@ extension LiveHeraldClient {
         return JobStreamCoordinator.JobStatusSnapshot(
             status: status.status,
             attempt: status.attempt ?? 0,
-            lastSeq: status.lastSeq ?? 0
+            lastSeq: status.lastSeq ?? 0,
+            message: status.message,
+            usage: status.usage,
+            context: status.context
         )
     }
 
