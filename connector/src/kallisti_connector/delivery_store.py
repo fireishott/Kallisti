@@ -916,6 +916,27 @@ class DeliveryStore:
             finally:
                 conn.close()
 
+    def discard_placeholder(self, job_id: str, seq: int) -> None:
+        """Delete a seq's row only if it is still an unfilled placeholder.
+
+        Safety net for _publish: if a seq was allocated (which writes a
+        placeholder) but never replaced by a real event, the orphan
+        {"_placeholder":true} must not survive as the job terminal or
+        poison the SSE replay backlog. Idempotent; the LIKE clause matches
+        only placeholders, so a real envelope is never touched.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "DELETE FROM job_events WHERE job_id = ? AND seq = ? "
+                    "AND event_json LIKE '%\"_placeholder\"%'",
+                    (job_id, seq),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def get_job_events(self, job_id: str) -> list[dict]:
         """All events for a job, oldest first: {seq, event, createdAt}.
 
