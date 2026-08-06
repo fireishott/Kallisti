@@ -641,13 +641,14 @@ class TestStreamContractWiring:
         from kallisti_connector import stream_contract
         # Phase 3A v2 correction: bumped to v3.
         assert stream_contract.CONTRACT_VERSION == 3
-        # Twelve event types
+        # Thirteen event types (12 v3 + legacy "done" for backward compat)
         expected = {
             "run.started", "text.delta", "reasoning.delta",
             "tool.started", "tool.progress", "tool.completed",
             "commentary", "approval.required",
             "run.completed", "run.failed", "run.cancelled",
             "run.requeued",
+            "done",  # legacy backward compat — App parseEnvelope expects "done"
         }
         assert set(stream_contract.EVENT_TYPE_TO_MODEL) == expected
 
