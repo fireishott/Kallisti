@@ -137,10 +137,16 @@ class RunRequeuedEvent(_BaseEvent):
     type: Literal["run.requeued"] = "run.requeued"
 
 
+class DoneEvent(_BaseEvent):
+    """Legacy terminal event type that the iOS app's parseEnvelope expects."""
+    type: Literal["done"] = "done"
+
+
 # Discriminated union — used by the validator factory below and by any
 # caller that wants a single type alias for "any relay event".
 RelayEvent = Union[
     RunStartedEvent,
+    DoneEvent,
     TextDeltaEvent,
     ReasoningDeltaEvent,
     ToolStartedEvent,
@@ -168,6 +174,7 @@ EVENT_TYPE_TO_MODEL: dict[str, type[_EnvelopeBase]] = {
     "run.failed": RunFailedEvent,
     "run.cancelled": RunCancelledEvent,
     "run.requeued": RunRequeuedEvent,
+    "done": DoneEvent,  # App parseEnvelope expects "done"
 }
 
 

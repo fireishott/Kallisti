@@ -68,7 +68,7 @@ WIRE_EVENT_TYPES = frozenset({
     "text.delta", "reasoning.delta", "tool.started",
     "tool.progress", "tool.completed", "commentary",
     "approval.required", "run.completed", "run.failed",
-    "run.cancelled", "run.requeued",
+    "run.cancelled", "run.requeued", "done",
 })
 
 # ── Process lifetime ──────────────────────────────────────────────────────
@@ -1055,7 +1055,7 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         # form. TextDeltaEvent is Literal["text.delta"]; a raw "text_delta"
         # from the producer failed validation and every reply token was
         # dropped ("no reply"). Normalize before envelope build + validate.
-        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta"}.get(event_type, event_type)
+        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta", "done": "done"}.get(event_type, event_type)
         # T1.4: filter producer lifecycle events that have no wire
         # equivalent BEFORE allocating a sequence number.
         if event_type not in WIRE_EVENT_TYPES:
@@ -1427,6 +1427,28 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                         continue          # re-emitted with jobId in the finally block
                     _publish({"type": etype, "data": data})
             finally:
+                # B117: ensure profile_name is set on the session.  The API
+                # server creates sessions without profile_name when
+                # create_session_via_api fails (invalid_title), and
+                # session_list filters on profile_name — silently dropping
+                # unprofiled sessions from the sidebar.
+                if hermes_sid:
+                    try:
+                        from .session_store import _connect as _ss_conn, _profile_name
+                        _pn = _profile_name()
+                        if _pn:
+                            _c = _ss_conn()
+                            try:
+                                _c.execute(
+                                    "UPDATE sessions SET profile_name = ? "
+                                    "WHERE id = ? AND (profile_name IS NULL OR profile_name = ''))",
+                                    (_pn, hermes_sid),
+                                )
+                                _c.commit()
+                            finally:
+                                _c.close()
+                    except Exception:
+                        pass
                 if lock:
                     lock.release()
     except TimeoutError:
@@ -4565,14 +4587,22 @@ async def job_events(request: Request) -> StreamingResponse:
                 for event in backlog[start_index:]:
                     yield _format_sse_frame(event, seq)
                     seq += 1
-                if job["status"] != "running" and backlog and (
-                    backlog[-1].get("type") == "run.completed"
-                    or backlog[-1].get("type") == "run.failed"
-                    or backlog[-1].get("type") == "run.cancelled"
-                    or backlog[-1].get("type") == "done"
-                ):
-                    return
+                # Phase 3A v3 correction: never return early based on
+                # job["status"] alone.  The done event sets status to terminal
+                # INSIDE the for loop, but the run.completed / run.failed
+                # terminal event is published AFTER the loop.  A reconnect
+                # replay that sees a terminal status and bails misses the
+                # terminal event published 1s later (race condition:
+                # subscriber disconnects → terminal event has no queue).
+                # Always enter the live-event loop; if a terminal event is
+                # the next item, the loop returns naturally.
                 while True:
+                    # Fast-path: if the last backlog event was already
+                    # terminal, no live events will follow.
+                    if job["status"] != "running" and backlog and (
+                        backlog[-1].get("type") in ("run.completed", "run.failed", "run.cancelled", "done")
+                    ):
+                        return
                     event = await queue.get()
                     if event is None:
                         return
@@ -5234,10 +5264,11 @@ async def create_session(request: Request) -> JSONResponse:
     # B112: Provision the Hermes session immediately so loadConversation
     # returns non-empty.  Without this the iOS New Chat button creates a
     # sidecar-only entry; the user types into a void until the first
+    hermes_sid = None
     # message hits ensureConversation.
     try:
         from .session_store import _create_hermes_session_via_api
-        _create_hermes_session_via_api(session_id, title=title or "New Chat")
+        hermes_sid = _create_hermes_session_via_api(session_id, title=title or f"New Chat {session_id[:8]}")
     except Exception as exc:
         logger.warning(
             "create_session: Hermes provisioning deferred for %s: %s",
@@ -5246,6 +5277,7 @@ async def create_session(request: Request) -> JSONResponse:
 
     # Record device ownership so the session appears in the device-scoped
     # list (allDevices=false).
+    installation_id = ""
     try:
         from .session_store import device_id_for_token, record_session_device
         installation_id = device_id_for_token(token) or ""
@@ -5253,6 +5285,44 @@ async def create_session(request: Request) -> JSONResponse:
             record_session_device(session_id, installation_id)
     except Exception:
         logger.debug("create_session: device record failed (non-fatal)", exc_info=True)
+
+    # B117: Persist the binding so ensure_conversation finds it and
+    # doesn't create a second session (the session fork bug).
+    if hermes_sid:
+        try:
+            from .session_store import _persist_hermes_mapping, _app_uuid
+            from .delivery_store import get_delivery_store
+            canonical_id = _app_uuid(hermes_sid)
+            _persist_hermes_mapping(session_id, hermes_sid)
+            _persist_hermes_mapping(canonical_id, hermes_sid)
+            store = get_delivery_store()
+            store.get_or_create_binding(session_id, hermes_sid, "", installation_id)
+        except Exception as exc:
+            logger.warning(
+                "create_session: binding persist failed for %s: %s",
+                session_id, exc,
+            )
+
+    # B117: set profile_name so session_list finds this session.
+    # API server INSERTs without profile_name, and session_list filters
+    # WHERE profile_name = 'ignyte' — dropping NULLs from the sidebar.
+    if hermes_sid:
+        try:
+            from .session_store import _connect as _ss_conn, _profile_name
+            _pn = _profile_name()
+            if _pn:
+                _c = _ss_conn()
+                try:
+                    _c.execute(
+                        "UPDATE sessions SET profile_name = ? "
+                        "WHERE id = ? AND (profile_name IS NULL OR profile_name = '')",
+                        (_pn, hermes_sid),
+                    )
+                    _c.commit()
+                finally:
+                    _c.close()
+        except Exception:
+            pass
 
     return JSONResponse({"session": {
         "id": session_id,
