@@ -1296,7 +1296,7 @@ final class ChatStore {
         let sendStartedAt = Date.now
 
         streamingPhase = .sending
-        Self.logger.info("⏱ TIMING: send attempt started at \(sendStartedAt.timeIntervalSince1970)")
+        Self.logger.debug("⏱ TIMING: send attempt started at \(sendStartedAt.timeIntervalSince1970)")
 
         var progressContinuation: AsyncStream<Void>.Continuation?
         let progressSignal = AsyncStream<Void> { continuation in
@@ -1317,7 +1317,7 @@ final class ChatStore {
                     // activeStreams for the new conversation.
                     guard self.activeAttemptID == attemptID else { break }
                     let elapsed = Date.now.timeIntervalSince(sendStartedAt)
-                    Self.logger.info("⏱ TIMING: .messageSent received after \(String(format: "%.1f", elapsed))s — job \(jobID.uuidString.prefix(8))")
+                    Self.logger.debug("⏱ TIMING: .messageSent received after \(String(format: "%.1f", elapsed))s — job \(jobID.uuidString.prefix(8))")
                     self.appendLog(level: .info, "Message accepted — job \(jobID.uuidString.prefix(8))")
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
