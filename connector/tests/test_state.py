@@ -1,4 +1,4 @@
-"""Tests for connector/src/herald_connector/state.py."""
+"""Tests for connector/src/kallisti_connector/state.py."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from herald_connector.state import ConnectorStateStore, _default_state_dir
+from kallisti_connector.state import ConnectorStateStore, _default_state_dir
 
 
 class TestDefaultStateDir:
@@ -44,7 +44,7 @@ class TestConnectorStateStoreLoad:
         """load() logs the resolved path at ERROR before raising."""
         import logging
         store = ConnectorStateStore(state_dir=tmp_path)
-        with caplog.at_level(logging.ERROR, logger="herald_connector.state"):
+        with caplog.at_level(logging.ERROR, logger="kallisti_connector.state"):
             with pytest.raises(RuntimeError):
                 store.load()
         assert str(tmp_path / "state.json") in caplog.text

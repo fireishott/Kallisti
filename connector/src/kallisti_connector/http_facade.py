@@ -4587,14 +4587,22 @@ async def job_events(request: Request) -> StreamingResponse:
                 for event in backlog[start_index:]:
                     yield _format_sse_frame(event, seq)
                     seq += 1
-                if job["status"] != "running" and backlog and (
-                    backlog[-1].get("type") == "run.completed"
-                    or backlog[-1].get("type") == "run.failed"
-                    or backlog[-1].get("type") == "run.cancelled"
-                    or backlog[-1].get("type") == "done"
-                ):
-                    return
+                # Phase 3A v3 correction: never return early based on
+                # job["status"] alone.  The done event sets status to terminal
+                # INSIDE the for loop, but the run.completed / run.failed
+                # terminal event is published AFTER the loop.  A reconnect
+                # replay that sees a terminal status and bails misses the
+                # terminal event published 1s later (race condition:
+                # subscriber disconnects → terminal event has no queue).
+                # Always enter the live-event loop; if a terminal event is
+                # the next item, the loop returns naturally.
                 while True:
+                    # Fast-path: if the last backlog event was already
+                    # terminal, no live events will follow.
+                    if job["status"] != "running" and backlog and (
+                        backlog[-1].get("type") in ("run.completed", "run.failed", "run.cancelled", "done")
+                    ):
+                        return
                     event = await queue.get()
                     if event is None:
                         return

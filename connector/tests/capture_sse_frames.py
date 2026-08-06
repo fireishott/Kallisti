@@ -34,13 +34,13 @@ sys.path.insert(0, str(HERE.parent / "src"))
 from starlette.testclient import TestClient  # noqa: E402
 import httpx  # noqa: E402
 
-import herald_connector.http_facade as facade  # noqa: E402
-from herald_connector.delivery_store import (  # noqa: E402
+import kallisti_connector.http_facade as facade  # noqa: E402
+from kallisti_connector.delivery_store import (  # noqa: E402
     CanonicalSnapshotIncomplete,
     DeliveryStore,
     reset_delivery_store,
 )
-from herald_connector.stream_contract import (  # noqa: E402
+from kallisti_connector.stream_contract import (  # noqa: E402
     build_envelope,
 )
 
@@ -113,7 +113,7 @@ def _capture_sse_frames() -> str:
     transport = httpx.ASGITransport(app=facade.app)
     async def _drain() -> str:
         with patch(
-            "herald_connector.http_facade.require_auth",
+            "kallisti_connector.http_facade.require_auth",
             new_callable=AsyncMock,
         ):
             async with httpx.AsyncClient(
@@ -159,9 +159,9 @@ def _capture_snapshot_json() -> dict:
         ctx = facade.FacadeContext()
         ctx.current_conversation = lambda: {"sessionId": CONV_ID}
         ctx.connector_version = "0.7.0"
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             with patch(
-                "herald_connector.http_facade.require_auth",
+                "kallisti_connector.http_facade.require_auth",
                 new_callable=AsyncMock,
             ):
                 with TestClient(facade.app) as c:

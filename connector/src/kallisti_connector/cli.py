@@ -65,7 +65,7 @@ def validate_relay_health(relay_url: str) -> bool:
 
 def _find_relay_source_dir() -> Path | None:
     """Locate the relay/ directory relative to the connector package."""
-    # connector/src/herald_connector/cli.py → repo/relay/
+    # connector/src/kallisti_connector/cli.py → repo/relay/
     candidate = Path(__file__).resolve().parent.parent.parent.parent / "relay"
     if (candidate / "app" / "main.py").exists():
         return candidate

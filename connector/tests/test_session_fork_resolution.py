@@ -22,7 +22,7 @@ import sqlite3
 
 import pytest
 
-from herald_connector import session_store
+from kallisti_connector import session_store
 
 
 USER_TEXT = "Big homie.  Give me some fresh hood comedy to watch tonight."

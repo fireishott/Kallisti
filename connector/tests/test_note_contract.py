@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from herald_connector.note_contract import (
+from kallisti_connector.note_contract import (
     CommandResult,
     Citation,
     EnrichmentRequest,
@@ -137,7 +137,7 @@ def test_v1_command_allowlist():
 
 def test_allowlist_filtering():
     """Only allowlisted commands pass through."""
-    from herald_connector.note_contract import V1_COMMAND_ALLOWLIST
+    from kallisti_connector.note_contract import V1_COMMAND_ALLOWLIST
 
     directives = [
         NoteDirective(id="1", command="research", arguments="topic"),

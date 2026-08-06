@@ -35,17 +35,17 @@ import time
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from herald_connector.client import HermesMobileConnector
-from herald_connector.hermes_api_executor import (
+from kallisti_connector.client import HermesMobileConnector
+from kallisti_connector.hermes_api_executor import (
     StreamEvent,
 )
-from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
-from herald_connector.runtime_adapter import (
+from kallisti_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
+from kallisti_connector.runtime_adapter import (
     HermesAPIRuntimeAdapter,
     RuntimeConversationMessage,
     RuntimeTurnResult,
 )
-from herald_connector.state import (
+from kallisti_connector.state import (
     ConnectorState,
     ConnectorStateStore,
 )
@@ -538,8 +538,8 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
 
 def test_messages_payload_builds_openai_format():
     """The executor should build messages with 'assistant' role for 'hermes' entries."""
-    from herald_connector.hermes_api_executor import HermesAPIExecutor
-    from herald_connector.herald_runner import HeraldConversationMessage
+    from kallisti_connector.hermes_api_executor import HermesAPIExecutor
+    from kallisti_connector.herald_runner import HeraldConversationMessage
 
     executor = HermesAPIExecutor()
     history = [
@@ -562,8 +562,8 @@ def test_messages_payload_builds_openai_format():
 
 def test_messages_payload_skips_empty_history_entries():
     """Empty/whitespace-only history entries should be filtered out."""
-    from herald_connector.hermes_api_executor import HermesAPIExecutor
-    from herald_connector.herald_runner import HeraldConversationMessage
+    from kallisti_connector.hermes_api_executor import HermesAPIExecutor
+    from kallisti_connector.herald_runner import HeraldConversationMessage
 
     executor = HermesAPIExecutor()
     history = [
@@ -678,7 +678,7 @@ def test_handle_job_no_diff_when_no_changes(tmp_path):
 
 
 def test_inline_think_parser_no_think_tags():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     text, reasoning = parser.feed("Hello world")
@@ -687,7 +687,7 @@ def test_inline_think_parser_no_think_tags():
 
 
 def test_inline_think_parser_simple_think_block():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     text, reasoning = parser.feed("Before <think>reasoning here</think> After")
@@ -696,7 +696,7 @@ def test_inline_think_parser_simple_think_block():
 
 
 def test_inline_think_parser_think_at_start():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     text, reasoning = parser.feed("<think>internal thoughts</think>Answer here")
@@ -705,7 +705,7 @@ def test_inline_think_parser_think_at_start():
 
 
 def test_inline_think_parser_split_open_marker():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     t1, r1 = parser.feed("Hello <th")
@@ -724,7 +724,7 @@ def test_inline_think_parser_split_open_marker():
 
 
 def test_inline_think_parser_split_close_marker():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     t0, r0 = parser.feed("<think>deep")
@@ -743,7 +743,7 @@ def test_inline_think_parser_split_close_marker():
 
 
 def test_inline_think_parser_missing_close_marker():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     t1, r1 = parser.feed("Hello <think>unclosed reasoning")
@@ -761,7 +761,7 @@ def test_inline_think_parser_missing_close_marker():
 
 
 def test_inline_think_parser_ordinary_angle_brackets():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     text, reasoning = parser.feed("Use <b>bold</b> and <i>italic</i>")
@@ -770,7 +770,7 @@ def test_inline_think_parser_ordinary_angle_brackets():
 
 
 def test_inline_think_parser_empty_think_block():
-    from herald_connector.herald_api_executor import InlineThinkParser
+    from kallisti_connector.herald_api_executor import InlineThinkParser
 
     parser = InlineThinkParser()
     text, reasoning = parser.feed("Before <think></think>After")
@@ -899,7 +899,7 @@ def test_sse_comments_skipped_without_creating_events():
     """
     from unittest.mock import patch
 
-    from herald_connector.herald_api_executor import HeraldAPIExecutor
+    from kallisti_connector.herald_api_executor import HeraldAPIExecutor
 
     # Runs SSE events with interspersed comments/id lines
     sse_lines = [
@@ -989,7 +989,7 @@ def test_sse_comment_lines_do_not_yield_keepalive():
     """
     from unittest.mock import patch
 
-    from herald_connector.herald_api_executor import HeraldAPIExecutor
+    from kallisti_connector.herald_api_executor import HeraldAPIExecutor
 
     sse_lines = [
         ": keepalive",

@@ -2599,6 +2599,12 @@ class HeraldConnector:
             else:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
+        # No gateway restart here: the executor sends the selected model on
+        # every request (active_model_name), so the running process never
+        # needs a bounce. The restart this used to do took :8642 down for
+        # 60-90s per switch (2026-08-04 15:08 outage) and killed every
+        # in-flight chat. Explicit restarts remain available via the
+        # Settings "Restart Hermes Agent" RPC.
         return {"activeModel": self._read_active_model(hermes_home)}
 
     AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
@@ -4057,6 +4063,14 @@ You MUST return a JSON object with exactly these fields:
                 api_server_url=api_url or "http://localhost:8642",
                 api_server_key=api_key,
             )
+            # Set the active model from config so chat payloads use the
+            # user's chosen model instead of the hardcoded default.
+            try:
+                model_info = self._read_active_model(self._resolve_hermes_home())
+                if model_info and model_info.get("name"):
+                    executor.active_model_name = model_info["name"]
+            except Exception:
+                pass  # Fall back to default if config read fails
             if await executor.health_check():
                 logger.info("Runtime adapter: HeraldAPI (streaming) — api_server=%s", api_url or "http://localhost:8642")
                 adapter = HeraldAPIRuntimeAdapter(executor)

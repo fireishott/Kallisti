@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from herald_connector import session_store
+from kallisti_connector import session_store
 
 
 def _make_test_db(db_path: Path) -> sqlite3.Connection:
@@ -85,7 +85,7 @@ def test_compaction_summaries_excluded(test_db):
     """Compaction summary rows must be absent from session_messages() output."""
     db_path, session_id = test_db
 
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         messages = session_store.session_messages(session_id)
 
     # All normal user/assistant messages should be present
@@ -123,7 +123,7 @@ def test_compaction_summaries_also_excluded_in_mixed_session(test_db):
     """Even when mixed with normal messages, all summary types are excluded."""
     db_path, session_id = test_db
 
-    with patch("herald_connector.session_store._db_path", return_value=db_path):
+    with patch("kallisti_connector.session_store._db_path", return_value=db_path):
         messages = session_store.session_messages(session_id)
 
     # Count: should be 8 messages (4 user + 4 real assistant + 0 compaction)

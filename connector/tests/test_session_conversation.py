@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.testclient import TestClient
 
-from herald_connector.http_facade import app, get_context, FacadeContext
+from kallisti_connector.http_facade import app, get_context, FacadeContext
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def client():
 @pytest.fixture
 def mock_auth():
     """Mock require_auth to always pass."""
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -44,7 +44,7 @@ class TestSessionConversationWrapsFlatPayload:
         session_id = str(uuid.uuid4())
         flat = {"sessionId": session_id, "messages": [], "title": None}
 
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
             resp = client.get(f"/v1/sessions/{session_id}/conversation")
 
         assert resp.status_code == 200
@@ -59,7 +59,7 @@ class TestSessionConversationWrapsFlatPayload:
         flat = {"sessionId": "api-9af38ce", "messages": [], "title": "Test"}
 
         session_id = str(uuid.uuid4())
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
             resp = client.get(f"/v1/sessions/{session_id}/conversation")
 
         assert resp.status_code == 200
@@ -71,7 +71,7 @@ class TestSessionConversationWrapsFlatPayload:
     def test_wraps_empty_provider_result(self, client, mock_auth):
         """Provider returns {} → 200 with decodable conversation."""
         session_id = str(uuid.uuid4())
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: {})):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: {})):
             resp = client.get(f"/v1/sessions/{session_id}/conversation")
 
         assert resp.status_code == 200
@@ -83,7 +83,7 @@ class TestSessionConversationWrapsFlatPayload:
     def test_wraps_none_provider_result(self, client, mock_auth):
         """Provider returns None → 200 with decodable conversation."""
         session_id = str(uuid.uuid4())
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: None)):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: None)):
             resp = client.get(f"/v1/sessions/{session_id}/conversation")
 
         assert resp.status_code == 200
@@ -108,7 +108,7 @@ class TestSessionConversationPassesThroughPrewrapped:
             }
         }
 
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: prewrapped)):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: prewrapped)):
             resp = client.get(f"/v1/sessions/{session_id}/conversation")
 
         assert resp.status_code == 200
@@ -128,7 +128,7 @@ class TestSessionConversationEdgeCases:
         result_id = str(uuid.uuid4())
         flat = {"sessionId": result_id, "messages": [], "title": None}
 
-        with patch("herald_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
+        with patch("kallisti_connector.http_facade.get_context", return_value=_make_ctx(lambda sid: flat)):
             resp = client.get(f"/v1/sessions/{path_id}/conversation")
 
         assert resp.status_code == 200
@@ -141,7 +141,7 @@ class TestSessionConversationEdgeCases:
         ctx = FacadeContext()
         ctx.session_conversation = None
 
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get(f"/v1/sessions/{uuid.uuid4()}/conversation")
 
         assert resp.status_code == 503

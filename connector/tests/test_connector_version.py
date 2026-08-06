@@ -16,7 +16,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-from herald_connector import __version__
+from kallisti_connector import __version__
 
 
 def _pyproject_version() -> str:

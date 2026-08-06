@@ -36,16 +36,16 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.testclient import TestClient
 
-import herald_connector as connector
-import herald_connector.http_facade as facade
-from herald_connector import session_store
-from herald_connector.delivery_store import (
+import kallisti_connector as connector
+import kallisti_connector.http_facade as facade
+from kallisti_connector import session_store
+from kallisti_connector.delivery_store import (
     CanonicalSnapshotIncomplete,
     DeliveryStore,
     get_delivery_store,
     reset_delivery_store,
 )
-from herald_connector.http_facade import FacadeContext, app
+from kallisti_connector.http_facade import FacadeContext, app
 
 
 CONV = "660e8400-e29b-41d4-a716-446655440001"
@@ -84,7 +84,7 @@ def store(env):
 
 @pytest.fixture(autouse=True)
 def auth():
-    with patch("herald_connector.http_facade.require_auth", new_callable=AsyncMock):
+    with patch("kallisti_connector.http_facade.require_auth", new_callable=AsyncMock):
         yield
 
 
@@ -168,7 +168,7 @@ class TestSnapshotASGI:
             "sessionId": conv_id,
             "title": "Snapshot test",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
@@ -197,7 +197,7 @@ class TestSnapshotASGI:
             "sessionId": sid,
             "title": "Session test",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get(f"/v1/sessions/{conv_id}/conversation")
         assert resp.status_code == 200, resp.text
         conv = resp.json()["conversation"]
@@ -218,7 +218,7 @@ class TestSnapshotASGI:
         conv_id = _seed_binding(store)
         # Inject a malformed row directly into the SQLite ledger so
         # the snapshot transaction trips the fail-closed check.
-        from herald_connector.delivery_store import _utcnow_rfc3339
+        from kallisti_connector.delivery_store import _utcnow_rfc3339
         store_path = Path(store.db_path)
         import sqlite3
         with sqlite3.connect(store_path) as raw_conn:
@@ -235,7 +235,7 @@ class TestSnapshotASGI:
             )
             raw_conn.commit()
         ctx.current_conversation = lambda: {"sessionId": conv_id}
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 409, resp.text
         body = resp.json()
@@ -261,9 +261,9 @@ class TestSnapshotASGI:
             "sessionId": conv_id,
             "title": "Repeat test",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.get("/v1/conversations/current").json()
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             second = client.get("/v1/conversations/current").json()
         # The conversation envelope keys and the message row identities
         # (id + sequence + revision + conversationId) are identical.
@@ -283,7 +283,7 @@ class TestSnapshotASGI:
 
 def _seed_terminal_job(store, conv_id, num_events):
     """Build a job dict with a finished backlog + a stream of v3 envelopes."""
-    from herald_connector.stream_contract import build_envelope
+    from kallisti_connector.stream_contract import build_envelope
     job_id = str(uuid.uuid4())
     envelopes = []
     for seq in range(1, num_events):
@@ -371,7 +371,7 @@ class TestSSEASGI:
     ):
         """Every SSE frame decodes into a strict v3 envelope that
         validates through ``stream_contract.parse_event``."""
-        from herald_connector.stream_contract import parse_event
+        from kallisti_connector.stream_contract import parse_event
 
         conv_id = _seed_binding(store)
         job_id, envelopes = _seed_terminal_job(store, conv_id, num_events=4)
@@ -431,7 +431,7 @@ class TestSSEASGI:
         )
         # Build a terminal job whose conversationRevision matches the
         # snapshot revision.
-        from herald_connector.stream_contract import build_envelope
+        from kallisti_connector.stream_contract import build_envelope
         job_id = str(uuid.uuid4())
         snap_rev = store.get_conversation_revision(conv_id)
         terminal = build_envelope(
@@ -497,7 +497,7 @@ class TestSnapshotMutationReload:
             "title": "Mutation test",
         }
         # First snapshot read.
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             first = client.get("/v1/conversations/current").json()
         first_rev = first["conversation"]["revision"]
         first_ids = {m["id"] for m in first["conversation"]["messages"]}
@@ -506,7 +506,7 @@ class TestSnapshotMutationReload:
             conv_id, "assistant", "Reply", "Reply",
         )
         # Second snapshot read.
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             second = client.get("/v1/conversations/current").json()
         second_rev = second["conversation"]["revision"]
         second_ids = {m["id"] for m in second["conversation"]["messages"]}
@@ -542,7 +542,7 @@ class TestSnapshotSystemContextAbsence:
             "sessionId": conv_id,
             "title": "System context test",
         }
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 200
         msgs = resp.json()["conversation"]["messages"]
@@ -594,7 +594,7 @@ class TestSnapshotConcurrentCommits:
         assert not errors, f"Concurrent writes raised: {errors}"
         # The snapshot must be consistent — revision equals
         # MAX(revision_writes) and all rows are present.
-        with patch("herald_connector.http_facade.get_context", return_value=ctx):
+        with patch("kallisti_connector.http_facade.get_context", return_value=ctx):
             resp = client.get("/v1/conversations/current")
         assert resp.status_code == 200
         snap = resp.json()["conversation"]

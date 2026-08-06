@@ -10,8 +10,8 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from herald_connector.client import _extract_media_from_response
-from herald_connector import http_facade
+from kallisti_connector.client import _extract_media_from_response
+from kallisti_connector import http_facade
 
 
 def test_extract_media_reads_png(tmp_path: Path):

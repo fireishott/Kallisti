@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from herald_connector.sensor_store import (
+from kallisti_connector.sensor_store import (
     HealthSample,
     LocationReading,
     SensorStore,

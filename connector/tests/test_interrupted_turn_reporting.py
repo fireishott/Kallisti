@@ -13,8 +13,8 @@ typed fields off the v3 envelope (``payload`` for the producer data,
 """
 import pytest
 
-from herald_connector import http_facade as hf
-from herald_connector.herald_api_executor import (
+from kallisti_connector import http_facade as hf
+from kallisti_connector.herald_api_executor import (
     _is_interrupt_sentinel,
     _split_trailing_sentinel,
 )

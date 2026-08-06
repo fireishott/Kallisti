@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from herald_connector import session_store
+from kallisti_connector import session_store
 
 
 def _make_db(db_path: Path, *, with_reasoning: bool) -> sqlite3.Connection:

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from herald_connector.tui_gateway_executor import TuiGatewayExecutor
+from kallisti_connector.tui_gateway_executor import TuiGatewayExecutor
 
 
 class FakeWS:

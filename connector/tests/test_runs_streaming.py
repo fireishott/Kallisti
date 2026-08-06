@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from herald_connector.herald_api_executor import HeraldAPIExecutor, StreamEvent
+from kallisti_connector.herald_api_executor import HeraldAPIExecutor, StreamEvent
 
 
 class TestRunsReasoningAvailableHandling:

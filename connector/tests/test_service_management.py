@@ -6,16 +6,16 @@ import sys
 
 import pytest
 
-from herald_connector.client import HeraldConnector
-from herald_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
-from herald_connector.service_management import (
+from kallisti_connector.client import HeraldConnector
+from kallisti_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
+from kallisti_connector.service_management import (
     MacOSLaunchAgentManager,
     UnsupportedServiceManager,
     WINDOWS_TASK_NAME,
     WindowsWSLServiceManager,
     build_service_manager,
 )
-from herald_connector.state import ConnectorRuntimeConfig, ConnectorState, ConnectorStateStore
+from kallisti_connector.state import ConnectorRuntimeConfig, ConnectorState, ConnectorStateStore
 
 
 def make_executor(command: str = "env-hermes") -> HeraldCLIExecutor:

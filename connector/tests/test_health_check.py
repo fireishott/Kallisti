@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from herald_connector.herald_api_executor import HeraldAPIExecutor
+from kallisti_connector.herald_api_executor import HeraldAPIExecutor
 
 
 def test_health_check_hits_v1_health(monkeypatch):
@@ -32,7 +32,7 @@ def test_health_check_hits_v1_health(monkeypatch):
 
             return FakeResponse()
 
-    monkeypatch.setattr("herald_connector.herald_api_executor.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("kallisti_connector.herald_api_executor.httpx.AsyncClient", FakeAsyncClient)
 
     executor = HeraldAPIExecutor(api_server_url="http://localhost:8642", api_server_key="test-key")
     result = asyncio.run(executor.health_check())

@@ -21,7 +21,7 @@ import sqlite3
 
 import pytest
 
-from herald_connector import http_facade, session_store
+from kallisti_connector import http_facade, session_store
 
 
 HERMES_SID = "run_f97c917b0219421f8e7f4da5786db3bc"

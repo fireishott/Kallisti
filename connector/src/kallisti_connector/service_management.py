@@ -165,7 +165,7 @@ class BaseServiceManager:
     def render_runner(self, *, runtime_config: ConnectorRuntimeConfig, runner_path: Path) -> str:
         return (
             f"#!{runtime_config.python_executable}\n"
-            "from herald_connector.service_runner import run_from_state_dir\n"
+            "from kallisti_connector.service_runner import run_from_state_dir\n"
             "\n"
             "if __name__ == \"__main__\":\n"
             f"    raise SystemExit(run_from_state_dir({runtime_config.state_dir!r}))\n"
