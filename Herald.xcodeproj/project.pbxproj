@@ -36,7 +36,7 @@
 		17CDAA11A7F4F126CF112EAC /* ChatStoreTestMocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA6F61DFC64DBDFF0C5CB6EC /* ChatStoreTestMocks.swift */; };
 		17D72433834F3A5277290B56 /* MessageSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61996BD68D8533169E0A7F24 /* MessageSender.swift */; };
 		184B11386A1C17BBBC89BAD2 /* JobEventReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA52DDAB41CD6B5BC13E77BD /* JobEventReducer.swift */; };
-		189F3A74AB71235F80FA8322 /* HeraldBrandSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88FE1BAB1356036E22C0DAC8 /* HeraldBrandSurfaces.swift */; };
+		189F3A74AB71235F80FA8322 /* HeraldBrandSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88FE1BAB1356036E22C0DAC8 /* KallistiBrandSurfaces.swift */; };
 		18A1BA4E196146CE7C90363D /* LiveLocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D0A7ADB416C508365F4086 /* LiveLocationService.swift */; };
 		191316D0B5BEB5510A190229 /* NotificationServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C552DADC1F9E5F608AD0A4AD /* NotificationServiceProtocol.swift */; };
 		19679FB26F347A694C4258CC /* MimoFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD9548259B2AEC344F21D0A /* MimoFixtureTests.swift */; };
@@ -64,7 +64,7 @@
 		2C32A767BA7C8407ED6CE9C2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D559C4B594BE6665B0472565 /* Assets.xcassets */; };
 		2F6B40A4074C25EAC312688D /* UserSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7963AB6AB1FAD824DFA63A07 /* UserSettings.swift */; };
 		3172AE06D3D2DB7EDA98CA0A /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */; };
-		31A8494C508AD84D00AB5BC6 /* HeraldAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE77BC683B082007019E5B3 /* HeraldAppState.swift */; };
+		31A8494C508AD84D00AB5BC6 /* HeraldAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE77BC683B082007019E5B3 /* KallistiAppState.swift */; };
 		32147BB06C6DDA44FC2A26D2 /* ModelStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 293E30EB5759A5C4B762C7E8 /* ModelStoreTests.swift */; };
 		325ED42E51534AD466E9C9F0 /* GatewayLogsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */; };
 		329E6F92464922CE3B780F76 /* ConnectionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71EBD1CFF7886DDC671DEFFA /* ConnectionStatus.swift */; };
@@ -177,7 +177,7 @@
 		8A1F99CE6617441D214641B6 /* stream_v3_multi_tools.json in Resources */ = {isa = PBXBuildFile; fileRef = 323C70DD0EE39E7FABCBF72E /* stream_v3_multi_tools.json */; };
 		8B6FA44295C507A5B13A0C67 /* SettingsSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC710002D88B4B50511DE76E /* SettingsSectionView.swift */; };
 		8C447264632BDDEC1DC59D53 /* NoteRecognitionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B4312577C67163337F3571A /* NoteRecognitionCoordinator.swift */; };
-		8D395907255E1C84D6F761B0 /* HeraldActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4635699CD7B8487A10C4D76F /* HeraldActivityAttributes.swift */; };
+		8D395907255E1C84D6F761B0 /* HeraldActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4635699CD7B8487A10C4D76F /* KallistiActivityAttributes.swift */; };
 		8D891E4D54CBBBF2A775ABFB /* AppleTTSServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 429E6F480C8332A308BF46E6 /* AppleTTSServiceTests.swift */; };
 		8D923F7F0B77E249C3F3826E /* ResilientHeraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0CDC440287B35DD2FDCFB2 /* ResilientHeraldClient.swift */; };
 		8D9C75707B5270AEF325F72B /* RestartGatewayControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1B30BA1EBCE116E6F9987E /* RestartGatewayControl.swift */; };
@@ -212,7 +212,7 @@
 		A36D6C05ECE9BA2154590F2A /* LiveMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 860E5A710E08ADEC8B39EFE6 /* LiveMediaService.swift */; };
 		A3D6D65994DA6DCB9337424F /* DeviceCapability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D7991C58D1F60670363B82 /* DeviceCapability.swift */; };
 		A40CFE9CDBA89B16D4663D86 /* ReasoningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */; };
-		A4908655DD7EC703E9263055 /* HeraldAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE77BC683B082007019E5B3 /* HeraldAppState.swift */; };
+		A4908655DD7EC703E9263055 /* HeraldAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE77BC683B082007019E5B3 /* KallistiAppState.swift */; };
 		A6205ED0807251DED1AD3A1E /* SessionSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */; };
 		A9A3BDFEC9C183B41739782C /* InboxItemRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = E852C152AE4E1E57CCC8AB12 /* InboxItemRow.swift */; };
 		AA4DDC9024D815B486B0F7B8 /* GatewayFrameContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DDE4746BA2CE99B1F006D1F /* GatewayFrameContractTests.swift */; };
@@ -235,7 +235,7 @@
 		BCBB8F97C7C2E9C01F6DC13D /* CodeDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321B727C66BCD005C201D787 /* CodeDiff.swift */; };
 		BD3D5376A92FBEC00D20E199 /* TTSServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3F4208475EACBBD283B0BD /* TTSServiceProtocol.swift */; };
 		BDDA10724A58808CE9EC6DBE /* stream_v3_approval.json in Resources */ = {isa = PBXBuildFile; fileRef = 6086DE794C21FDE707FD4674 /* stream_v3_approval.json */; };
-		BDF686278CF2470CEA07184B /* HeraldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2420B2DC64706D89E9FF42 /* HeraldTheme.swift */; };
+		BDF686278CF2470CEA07184B /* HeraldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2420B2DC64706D89E9FF42 /* KallistiTheme.swift */; };
 		BE7CDE011E5D17F30FD94EB1 /* SharedCredentialProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C2BC86BE5521006FF26A42 /* SharedCredentialProvider.swift */; };
 		BF942BCD8A7D4333C646CD72 /* ThinkingBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25B14E4B0A1EC76C42A5BA09 /* ThinkingBlockView.swift */; };
 		C010839183D6313B4BC9737F /* MockLocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E87D525033CA7A83FDF5F82F /* MockLocationService.swift */; };
@@ -247,7 +247,7 @@
 		C2558636F3E74C905E5DEAB2 /* DashboardLogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CEB24E972FC822860E0D282 /* DashboardLogService.swift */; };
 		C25D715B33F62BFCA2EBB5C2 /* GlassCircleButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD34D02337E841475436E38 /* GlassCircleButton.swift */; };
 		C3607E394A8DAC13950309D6 /* stream_v2_commentary.json in Resources */ = {isa = PBXBuildFile; fileRef = 4F84DD87F033A2C69CDB691A /* stream_v2_commentary.json */; };
-		C39A1D0612458F0AA1C658EA /* HeraldActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4635699CD7B8487A10C4D76F /* HeraldActivityAttributes.swift */; };
+		C39A1D0612458F0AA1C658EA /* HeraldActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4635699CD7B8487A10C4D76F /* KallistiActivityAttributes.swift */; };
 		C47A6A21E17C7173CB49C6A9 /* MockNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8C1A87EF775589EC6AB338D /* MockNotificationService.swift */; };
 		C4DE32D07DFB54258F4B7ECA /* PairingServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */; };
 		C5A91A5A80224B0D5CBCD608 /* MockPairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E3E9CD875309C160B15FB7 /* MockPairingService.swift */; };
@@ -268,7 +268,7 @@
 		CD654AC49ABE1BF084A86034 /* RelayAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D8CE1AB325DB26452D90ED1 /* RelayAPIClient.swift */; };
 		CDE957EF790B6A0BC1FBC2F7 /* AppSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B53DEE0C12D517E019B12233 /* AppSessionStore.swift */; };
 		CE090EA2737D1C46EB501B62 /* GatewayControlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D855C288BDE53CCB49D5AA /* GatewayControlClient.swift */; };
-		CEE15A0088C6185690A5FCBC /* MockHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C54928BAB840EF662133F945 /* MockHeraldHostService.swift */; };
+		CEE15A0088C6185690A5FCBC /* MockHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C54928BAB840EF662133F945 /* MockKallistiHostService.swift */; };
 		CF225583958EB358D7EEC02B /* MockNotesRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE230F45FF59C0A1160FD97D /* MockNotesRepository.swift */; };
 		D0D805D3CAD1B0331C5BEAE8 /* MockSessionBootstrapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E310AB9DB310B2F900FF99AF /* MockSessionBootstrapService.swift */; };
 		D0F6390EFAD13AD648C1E3A6 /* FallbackTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC481EA97B23C887B618669 /* FallbackTTSService.swift */; };
@@ -326,7 +326,7 @@
 		F6AE7ED891EE30D507B17D02 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6458A1B911F83B73E45C8025 /* Assets.xcassets */; };
 		F8CB1C39C2CE4858E7D3D381 /* VoiceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE863F3296A2748FD9FAD626 /* VoiceState.swift */; };
 		F95C379DFBAA6D29A678C45A /* AppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9F42A0C678DA92CEEA5D52D /* AppRootView.swift */; };
-		FA1FC0772CCC3B3BDCF46F89 /* LiveHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F9CE2AA79EC021FAB81BC1 /* LiveHeraldHostService.swift */; };
+		FA1FC0772CCC3B3BDCF46F89 /* LiveHeraldHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F9CE2AA79EC021FAB81BC1 /* LiveKallistiHostService.swift */; };
 		FACECDBCA2D8825BB352D82D /* HeraldHostServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771F8F67A5A64290D25F9FD8 /* HeraldHostServiceProtocol.swift */; };
 		FAE4D2158B578396CCAB856C /* InboxServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E138EFAEBD8F22BE0249EC66 /* InboxServiceProtocol.swift */; };
 		FBA83254776BE6645D5B15E1 /* PairedRelayConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF7771986FA2150AEF34153 /* PairedRelayConfiguration.swift */; };
@@ -482,7 +482,7 @@
 		2D3C11B115527992FE8196F4 /* AuthenticatedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedAsyncImage.swift; sourceTree = "<group>"; };
 		2E5B53E8562C62901D062529 /* PendingAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingAttachment.swift; sourceTree = "<group>"; };
 		2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
-		2F2420B2DC64706D89E9FF42 /* HeraldTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldTheme.swift; sourceTree = "<group>"; };
+		2F2420B2DC64706D89E9FF42 /* KallistiTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiTheme.swift; sourceTree = "<group>"; };
 		2FC131E1A52D3BB62EDB05AE /* PencilCanvasRepresentable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PencilCanvasRepresentable.swift; sourceTree = "<group>"; };
 		2FE61813D4321D8A0D8C9E81 /* NotesRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesRepositoryTests.swift; sourceTree = "<group>"; };
 		300CB67C9089E643FB2B1B7D /* LiveHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHeraldClient.swift; sourceTree = "<group>"; };
@@ -513,7 +513,7 @@
 		43D32A538E6F815C92B06203 /* SecureStoreProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStoreProtocol.swift; sourceTree = "<group>"; };
 		4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingServiceProtocol.swift; sourceTree = "<group>"; };
 		457923CB71645597E197DACC /* MimoVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoVoiceCatalogTests.swift; sourceTree = "<group>"; };
-		4635699CD7B8487A10C4D76F /* HeraldActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldActivityAttributes.swift; sourceTree = "<group>"; };
+		4635699CD7B8487A10C4D76F /* KallistiActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiActivityAttributes.swift; sourceTree = "<group>"; };
 		4661E19912A4A828B7518C8A /* GatewayControlService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayControlService.swift; sourceTree = "<group>"; };
 		473F31B4F820435167075CE8 /* HeraldHostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldHostStore.swift; sourceTree = "<group>"; };
 		47B56823EBDD93AC6067B894 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -531,7 +531,7 @@
 		4F84DD87F033A2C69CDB691A /* stream_v2_commentary.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_commentary.json; sourceTree = "<group>"; };
 		4FCBEE8C83861E878B8407B3 /* LiveNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveNotificationService.swift; sourceTree = "<group>"; };
 		4FD34D02337E841475436E38 /* GlassCircleButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassCircleButton.swift; sourceTree = "<group>"; };
-		4FF6D00A4419A7FBE5314C4E /* HeraldWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldWidgets.entitlements; sourceTree = "<group>"; };
+		4FF6D00A4419A7FBE5314C4E /* KallistiWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiWidgets.entitlements; sourceTree = "<group>"; };
 		5077154842FAE4335BC88F08 /* SpeechAuthorizationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechAuthorizationBridge.swift; sourceTree = "<group>"; };
 		50AA91A99B709AF890AF8921 /* VoiceAttachmentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAttachmentSheet.swift; sourceTree = "<group>"; };
 		5149A7CA17C55FAC4C9E3F74 /* PermissionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatus.swift; sourceTree = "<group>"; };
@@ -562,7 +562,7 @@
 		660D3914500E5EAF0A22B8F5 /* DemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoData.swift; sourceTree = "<group>"; };
 		6614D5D1CEDC62A1DA839C6B /* KallistiNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = KallistiNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		674210B133840B32753E5B8F /* LiveMotionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMotionService.swift; sourceTree = "<group>"; };
-		678F979BAE0AD4218EAF367E /* HeraldIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldIntents.entitlements; sourceTree = "<group>"; };
+		678F979BAE0AD4218EAF367E /* KallistiIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiIntents.entitlements; sourceTree = "<group>"; };
 		68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSummary.swift; sourceTree = "<group>"; };
 		69739260DD17C6229D2A945D /* MessageReactionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReactionPicker.swift; sourceTree = "<group>"; };
 		6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLogsScreen.swift; sourceTree = "<group>"; };
@@ -606,7 +606,7 @@
 		863C4536D7558BDC102D6907 /* EnrichedDocumentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrichedDocumentView.swift; sourceTree = "<group>"; };
 		87729377A0556194DF8BFBF7 /* NoteDirective.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteDirective.swift; sourceTree = "<group>"; };
 		88B179CF374730DABD661130 /* SlashCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommand.swift; sourceTree = "<group>"; };
-		88FE1BAB1356036E22C0DAC8 /* HeraldBrandSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldBrandSurfaces.swift; sourceTree = "<group>"; };
+		88FE1BAB1356036E22C0DAC8 /* KallistiBrandSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiBrandSurfaces.swift; sourceTree = "<group>"; };
 		891D5650A6FA0C313E2AF110 /* ModelSwitchControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSwitchControl.swift; sourceTree = "<group>"; };
 		89BE15FD4F6761362E992750 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
 		8DDE4746BA2CE99B1F006D1F /* GatewayFrameContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayFrameContractTests.swift; sourceTree = "<group>"; };
@@ -635,7 +635,7 @@
 		9C64FCA17635A50E9A39AD7E /* HeraldTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldTimelineProvider.swift; sourceTree = "<group>"; };
 		9FD290873560739FC0A0AED0 /* stream_v2_goal_continuation.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_goal_continuation.json; sourceTree = "<group>"; };
 		A03ED706E385625D048AD9F9 /* KallistiTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = KallistiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A04F2628C76B82BF15603E97 /* HeraldWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldWatch.entitlements; sourceTree = "<group>"; };
+		A04F2628C76B82BF15603E97 /* KallistiWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiWatch.entitlements; sourceTree = "<group>"; };
 		A345E28CCF2EEEA52D22C3AD /* RelaySetupCodePayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySetupCodePayload.swift; sourceTree = "<group>"; };
 		A3C9394417BD10811CCD77DA /* StreamingUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingUpdate.swift; sourceTree = "<group>"; };
 		A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionResult.swift; sourceTree = "<group>"; };
@@ -676,7 +676,7 @@
 		C1A530495C77CC7DEAB43D47 /* GatewayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayClient.swift; sourceTree = "<group>"; };
 		C2BD518984239FFDE549937B /* HeraldHealthWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldHealthWidget.swift; sourceTree = "<group>"; };
 		C382C287A04B063179F255B2 /* ChatInputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInputBar.swift; sourceTree = "<group>"; };
-		C54928BAB840EF662133F945 /* MockHeraldHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHeraldHostService.swift; sourceTree = "<group>"; };
+		C54928BAB840EF662133F945 /* MockKallistiHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockKallistiHostService.swift; sourceTree = "<group>"; };
 		C552DADC1F9E5F608AD0A4AD /* NotificationServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationServiceProtocol.swift; sourceTree = "<group>"; };
 		C5E80959DAADB44928CE1A7C /* CreateCronJobSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateCronJobSheet.swift; sourceTree = "<group>"; };
 		C70C34A32AFC2D65D7D6EC1D /* MockHealthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHealthService.swift; sourceTree = "<group>"; };
@@ -690,8 +690,8 @@
 		CBE24DF80549E3B6BD972039 /* B18TerminalStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = B18TerminalStateTests.swift; sourceTree = "<group>"; };
 		CC5E563F9C5DC22502D5B3D6 /* MessageAttachmentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageAttachmentsView.swift; sourceTree = "<group>"; };
 		CC7D1AA4E86817A236D532BF /* iPhoneSessionDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneSessionDrawer.swift; sourceTree = "<group>"; };
-		CCA7E64039E2CA142E9A9AFD /* HeraldControls.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldControls.entitlements; sourceTree = "<group>"; };
-		CDE77BC683B082007019E5B3 /* HeraldAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldAppState.swift; sourceTree = "<group>"; };
+		CCA7E64039E2CA142E9A9AFD /* KallistiControls.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiControls.entitlements; sourceTree = "<group>"; };
+		CDE77BC683B082007019E5B3 /* KallistiAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiAppState.swift; sourceTree = "<group>"; };
 		CE78A4AFFD68002BD6F2EB5D /* AppStoresTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoresTests.swift; sourceTree = "<group>"; };
 		CF288BDAEA5CA4F148345BB0 /* VoiceOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrb.swift; sourceTree = "<group>"; };
 		CF35606C6D86CB57EE6B2A4C /* NotesWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesWorkspaceView.swift; sourceTree = "<group>"; };
@@ -729,7 +729,7 @@
 		E852C152AE4E1E57CCC8AB12 /* InboxItemRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxItemRow.swift; sourceTree = "<group>"; };
 		E87D525033CA7A83FDF5F82F /* MockLocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockLocationService.swift; sourceTree = "<group>"; };
 		E8C1A87EF775589EC6AB338D /* MockNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockNotificationService.swift; sourceTree = "<group>"; };
-		E9F9CE2AA79EC021FAB81BC1 /* LiveHeraldHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHeraldHostService.swift; sourceTree = "<group>"; };
+		E9F9CE2AA79EC021FAB81BC1 /* LiveKallistiHostService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveKallistiHostService.swift; sourceTree = "<group>"; };
 		EBD3AA591BF3A81689A9C404 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionBanner.swift; sourceTree = "<group>"; };
 		EDDB75451F59FAD0A6559929 /* stream_v3_goal_continuation.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_goal_continuation.json; sourceTree = "<group>"; };
@@ -741,11 +741,11 @@
 		F117895BEBAECC0274D7E0C6 /* AuthTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthTokens.swift; sourceTree = "<group>"; };
 		F12EADAC8FD458EC02DC65E5 /* TokenBatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenBatcher.swift; sourceTree = "<group>"; };
 		F278F18617421C07FD526CA9 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		F2DE9E10D6772C6627EC6904 /* Herald.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Herald.entitlements; sourceTree = "<group>"; };
+		F2DE9E10D6772C6627EC6904 /* Kallisti.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Kallisti.entitlements; sourceTree = "<group>"; };
 		F3C879D7DE3CC826078723BE /* LiveLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveLogView.swift; sourceTree = "<group>"; };
 		F55EDFF6549E91516296B24D /* stream_v3_text_only.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_text_only.json; sourceTree = "<group>"; };
 		F6423EAA6221083F645AE41F /* SpeechTextRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTextRenderer.swift; sourceTree = "<group>"; };
-		F8CE57CAE90A3FC6228CC2CD /* HeraldNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeraldNotificationService.entitlements; sourceTree = "<group>"; };
+		F8CE57CAE90A3FC6228CC2CD /* KallistiNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KallistiNotificationService.entitlements; sourceTree = "<group>"; };
 		F94825E2A77A9168D7519B11 /* GatewayDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDTOs.swift; sourceTree = "<group>"; };
 		F9EC61A24B6979033F9896A4 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		FA091035BFB4BAD3EFB013F6 /* JobStreamCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobStreamCoordinator.swift; sourceTree = "<group>"; };
@@ -877,7 +877,7 @@
 				E3B5AFD2826D94698CE40506 /* LiveActivityService.swift */,
 				5E54757D0C6E7FEE9C422F61 /* LiveHealthService.swift */,
 				300CB67C9089E643FB2B1B7D /* LiveHeraldClient.swift */,
-				E9F9CE2AA79EC021FAB81BC1 /* LiveHeraldHostService.swift */,
+				E9F9CE2AA79EC021FAB81BC1 /* LiveKallistiHostService.swift */,
 				DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */,
 				E7D0A7ADB416C508365F4086 /* LiveLocationService.swift */,
 				860E5A710E08ADEC8B39EFE6 /* LiveMediaService.swift */,
@@ -902,13 +902,13 @@
 			path = Live;
 			sourceTree = "<group>";
 		};
-		1F39FEC9F3A829E853663EAF /* HeraldUITests */ = {
+		1F39FEC9F3A829E853663EAF /* KallistiUITests */ = {
 			isa = PBXGroup;
 			children = (
 				7A40EB5BC4942655993A3286 /* AppTemplateUITests.swift */,
 				6351F3BCF7008B9D2E4AF84B /* AppTemplateUITestsLaunchTests.swift */,
 			);
-			path = HeraldUITests;
+			path = KallistiUITests;
 			sourceTree = "<group>";
 		};
 		1FF80C37686A4B35852B7290 /* Onboarding */ = {
@@ -921,18 +921,18 @@
 			path = Onboarding;
 			sourceTree = "<group>";
 		};
-		20A2F53AB999CDD551FA5F09 /* HeraldWatch */ = {
+		20A2F53AB999CDD551FA5F09 /* KallistiWatch */ = {
 			isa = PBXGroup;
 			children = (
 				D559C4B594BE6665B0472565 /* Assets.xcassets */,
-				A04F2628C76B82BF15603E97 /* HeraldWatch.entitlements */,
+				A04F2628C76B82BF15603E97 /* KallistiWatch.entitlements */,
 				E5C86C686F969F84699543CE /* HeraldWatchApp.swift */,
 				5DC7FB6D36152F0FF84AD547 /* Info.plist */,
 				DC31009F39FC0012E1BDDA36 /* WatchConnectivityCoordinator.swift */,
 				4D910098E7F17C6CDA83A769 /* WatchNotificationPayload.swift */,
 				16AA569ADEFB9AB673587989 /* WatchNotificationScene.swift */,
 			);
-			path = HeraldWatch;
+			path = KallistiWatch;
 			sourceTree = "<group>";
 		};
 		2182C3A24530C6AFB4DB35C1 /* Herald */ = {
@@ -947,7 +947,7 @@
 				4E2A875463DCE71B732E91AB /* Stores */,
 				2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */,
 				EBD3AA591BF3A81689A9C404 /* ContentView.swift */,
-				F2DE9E10D6772C6627EC6904 /* Herald.entitlements */,
+				F2DE9E10D6772C6627EC6904 /* Kallisti.entitlements */,
 			);
 			path = Herald;
 			sourceTree = "<group>";
@@ -1017,32 +1017,32 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
-		32B8A6A539448D1C066B338C /* HeraldNotificationService */ = {
+		32B8A6A539448D1C066B338C /* KallistiNotificationService */ = {
 			isa = PBXGroup;
 			children = (
-				F8CE57CAE90A3FC6228CC2CD /* HeraldNotificationService.entitlements */,
+				F8CE57CAE90A3FC6228CC2CD /* KallistiNotificationService.entitlements */,
 				2303C1EF072F4904D7B24FE4 /* Info.plist */,
 				F9EC61A24B6979033F9896A4 /* NotificationService.swift */,
 			);
-			path = HeraldNotificationService;
+			path = KallistiNotificationService;
 			sourceTree = "<group>";
 		};
-		3311B04C42D6498670283869 /* HeraldWidgets */ = {
+		3311B04C42D6498670283869 /* KallistiWidgets */ = {
 			isa = PBXGroup;
 			children = (
 				DDAB618E686C9BF6524EEFB4 /* Models */,
 				8015B126DDEC7F85F68448C4 /* GatewayState.swift */,
-				4635699CD7B8487A10C4D76F /* HeraldActivityAttributes.swift */,
-				CDE77BC683B082007019E5B3 /* HeraldAppState.swift */,
+				4635699CD7B8487A10C4D76F /* KallistiActivityAttributes.swift */,
+				CDE77BC683B082007019E5B3 /* KallistiAppState.swift */,
 				C2BD518984239FFDE549937B /* HeraldHealthWidget.swift */,
 				7EE7EE70650FE88962E2A942 /* HeraldLiveActivity.swift */,
 				A79A8DF82E66C15652CFFB9B /* HeraldStatusWidget.swift */,
 				9C64FCA17635A50E9A39AD7E /* HeraldTimelineProvider.swift */,
 				00418C3064912E9A185FF725 /* HeraldWidgetBundle.swift */,
-				4FF6D00A4419A7FBE5314C4E /* HeraldWidgets.entitlements */,
+				4FF6D00A4419A7FBE5314C4E /* KallistiWidgets.entitlements */,
 				CA8AD87A61B102C8AC59EA3E /* Info.plist */,
 			);
-			path = HeraldWidgets;
+			path = KallistiWidgets;
 			sourceTree = "<group>";
 		};
 		4C98655825F92734D14D2DAB /* Products */ = {
@@ -1210,17 +1210,17 @@
 			path = Components;
 			sourceTree = "<group>";
 		};
-		7A92B771C1C62F68CFE197F8 /* HeraldControls */ = {
+		7A92B771C1C62F68CFE197F8 /* KallistiControls */ = {
 			isa = PBXGroup;
 			children = (
 				EE2D9C6C2FEFF697D1BC4A77 /* GatewayStatusControl.swift */,
-				CCA7E64039E2CA142E9A9AFD /* HeraldControls.entitlements */,
+				CCA7E64039E2CA142E9A9AFD /* KallistiControls.entitlements */,
 				39B60ECC6CC1BFB903A5E5DE /* HeraldControlsBundle.swift */,
 				FF22CD799DEB0DE5718FC9A1 /* Info.plist */,
 				891D5650A6FA0C313E2AF110 /* ModelSwitchControl.swift */,
 				BA1B30BA1EBCE116E6F9987E /* RestartGatewayControl.swift */,
 			);
-			path = HeraldControls;
+			path = KallistiControls;
 			sourceTree = "<group>";
 		};
 		803FDF54355C712D5B0FCDBF /* Support */ = {
@@ -1243,14 +1243,14 @@
 			path = Support;
 			sourceTree = "<group>";
 		};
-		80E59F95F2B0CCFD14490D6D /* HeraldIntents */ = {
+		80E59F95F2B0CCFD14490D6D /* KallistiIntents */ = {
 			isa = PBXGroup;
 			children = (
-				678F979BAE0AD4218EAF367E /* HeraldIntents.entitlements */,
+				678F979BAE0AD4218EAF367E /* KallistiIntents.entitlements */,
 				1A549817DA633882744FA0A2 /* Info.plist */,
 				D789DE34C34A166CCFBBBE75 /* IntentHandler.swift */,
 			);
-			path = HeraldIntents;
+			path = KallistiIntents;
 			sourceTree = "<group>";
 		};
 		84D199467E53FB17F9DE7E04 /* Cron */ = {
@@ -1309,8 +1309,8 @@
 				8FC392ED86295411DCB768B5 /* Design.swift */,
 				163D84922269635F1FE46631 /* DeviceClass.swift */,
 				15B2214FE4DA26E9F49BFBFE /* HapticEngine.swift */,
-				88FE1BAB1356036E22C0DAC8 /* HeraldBrandSurfaces.swift */,
-				2F2420B2DC64706D89E9FF42 /* HeraldTheme.swift */,
+				88FE1BAB1356036E22C0DAC8 /* KallistiBrandSurfaces.swift */,
+				2F2420B2DC64706D89E9FF42 /* KallistiTheme.swift */,
 				540B73A89FCA63E4A659A3D6 /* MarkdownParser.swift */,
 				2A17C229AA3231BD11A662DC /* Router.swift */,
 				F278F18617421C07FD526CA9 /* Theme.swift */,
@@ -1325,7 +1325,7 @@
 			children = (
 				C70C34A32AFC2D65D7D6EC1D /* MockHealthService.swift */,
 				A6608E31D839BA3FB64BD247 /* MockHeraldClient.swift */,
-				C54928BAB840EF662133F945 /* MockHeraldHostService.swift */,
+				C54928BAB840EF662133F945 /* MockKallistiHostService.swift */,
 				CACB5A4B3319724E1D7D4A7F /* MockInboxService.swift */,
 				E87D525033CA7A83FDF5F82F /* MockLocationService.swift */,
 				6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */,
@@ -1378,7 +1378,7 @@
 			path = Protocols;
 			sourceTree = "<group>";
 		};
-		BBD7FBF861C475A8DBD6C2D1 /* HeraldTests */ = {
+		BBD7FBF861C475A8DBD6C2D1 /* KallistiTests */ = {
 			isa = PBXGroup;
 			children = (
 				EFCECDAD6B07CC9F53945F7A /* Fixtures */,
@@ -1415,21 +1415,21 @@
 				B61406B1CDE8FCB38B45B190 /* TerminalMessageMappingTests.swift */,
 				854087D369CE4BDCEDF1408D /* ToolNameSanitizerTests.swift */,
 			);
-			path = HeraldTests;
+			path = KallistiTests;
 			sourceTree = "<group>";
 		};
 		C960DD9679960831752746A9 = {
 			isa = PBXGroup;
 			children = (
 				2182C3A24530C6AFB4DB35C1 /* Herald */,
-				7A92B771C1C62F68CFE197F8 /* HeraldControls */,
-				80E59F95F2B0CCFD14490D6D /* HeraldIntents */,
-				32B8A6A539448D1C066B338C /* HeraldNotificationService */,
-				E2F204687B454E26FBE6456C /* HeraldSupport */,
-				BBD7FBF861C475A8DBD6C2D1 /* HeraldTests */,
-				1F39FEC9F3A829E853663EAF /* HeraldUITests */,
-				20A2F53AB999CDD551FA5F09 /* HeraldWatch */,
-				3311B04C42D6498670283869 /* HeraldWidgets */,
+				7A92B771C1C62F68CFE197F8 /* KallistiControls */,
+				80E59F95F2B0CCFD14490D6D /* KallistiIntents */,
+				32B8A6A539448D1C066B338C /* KallistiNotificationService */,
+				E2F204687B454E26FBE6456C /* KallistiSupport */,
+				BBD7FBF861C475A8DBD6C2D1 /* KallistiTests */,
+				1F39FEC9F3A829E853663EAF /* KallistiUITests */,
+				20A2F53AB999CDD551FA5F09 /* KallistiWatch */,
+				3311B04C42D6498670283869 /* KallistiWidgets */,
 				4C98655825F92734D14D2DAB /* Products */,
 			);
 			sourceTree = "<group>";
@@ -1458,7 +1458,7 @@
 			path = Extensions;
 			sourceTree = "<group>";
 		};
-		E2F204687B454E26FBE6456C /* HeraldSupport */ = {
+		E2F204687B454E26FBE6456C /* KallistiSupport */ = {
 			isa = PBXGroup;
 			children = (
 				65D855C288BDE53CCB49D5AA /* GatewayControlClient.swift */,
@@ -1470,7 +1470,7 @@
 				5168483D5792E8B0BE4D5EB3 /* SharedRelayConfiguration.swift */,
 				04AABAEAF3DBD856C72A666F /* SharedTokenMigrator.swift */,
 			);
-			path = HeraldSupport;
+			path = KallistiSupport;
 			sourceTree = "<group>";
 		};
 		EFCECDAD6B07CC9F53945F7A /* Fixtures */ = {
@@ -2232,7 +2232,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldWidgets/Info.plist;
+				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2253,7 +2253,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldIntents/Info.plist;
+				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2275,7 +2275,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldControls/Info.plist;
+				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
@@ -2318,7 +2318,7 @@
 					"$(inherited)",
 					"-ObjC",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
+				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti;
 				PRODUCT_NAME = Kallisti;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			};
@@ -2331,7 +2331,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldWatch/Info.plist;
+				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
@@ -2350,7 +2350,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldIntents/Info.plist;
+				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2447,7 +2447,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
+				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2468,7 +2468,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldNotificationService/Info.plist;
+				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2489,7 +2489,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldWidgets/Info.plist;
+				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -2511,7 +2511,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldControls/Info.plist;
+				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 2.4.4;
 				OTHER_LDFLAGS = (
@@ -2533,7 +2533,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 126;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
-				INFOPLIST_FILE = HeraldWatch/Info.plist;
+				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 2.4.4;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
@@ -2578,7 +2578,7 @@
 					"$(inherited)",
 					"-ObjC",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.herald;
+				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti;
 				PRODUCT_NAME = Kallisti;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			};
