@@ -55,7 +55,10 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     let clientMessageID: UUID?
     let sender: MessageSender
     var content: String
-    let timestamp: Date
+    /// Mutable so ChatStore.mergeConversationMetadata can re-assert the
+    /// locally-known send time for a user message when a server refresh
+    /// would otherwise overwrite it with `createdAt` (processing time).
+    var timestamp: Date
     /// The relay job ID that produced this message. Mutable so the streaming
     /// placeholder (initialised nil) can acquire its job identity when
     /// `.messageSent` arrives — without this, the conversation refresh merge

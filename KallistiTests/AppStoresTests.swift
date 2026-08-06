@@ -3410,4 +3410,35 @@ struct B40ConversationMergeTests {
 
         #expect(merged?.title == "Cabo trip planning")
     }
+
+    /// Root cause (2026-08-06): the server's `createdAt` is when the
+    /// message was PROCESSED, not when the user SENT it. A refresh landing
+    /// mid-turn must not let that overwrite the locally-known send time —
+    /// otherwise a user bubble's displayed timestamp silently drifts
+    /// forward while its reply is still in flight (observed live: the same
+    /// message read "3:50 PM" and then "3:51 PM" a couple screens later).
+    @Test @MainActor
+    func serverCreatedAtDoesNotOverwriteLocalUserSendTime() {
+        let store = makeStore()
+        let conversationID = UUID()
+        let messageID = UUID()
+        let sentAt = Date()
+        let serverProcessedAt = sentAt.addingTimeInterval(87)
+
+        let localUserMessage = Message(
+            id: messageID, sender: .user, content: "No mgm lines on HOF game?",
+            timestamp: sentAt, status: .sent
+        )
+        let serverUserMessage = Message(
+            id: messageID, sender: .user, content: "No mgm lines on HOF game?",
+            timestamp: serverProcessedAt, status: .delivered
+        )
+
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [localUserMessage])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [serverUserMessage])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.first?.timestamp == sentAt)
+    }
 }

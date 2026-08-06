@@ -3019,6 +3019,18 @@ final class ChatStore {
                local.status == .sending || local.status == .sent {
                 refreshedConversation.messages[index].status = local.status
             }
+
+            // Root cause (2026-08-06): LiveHeraldClient decodes a message's
+            // timestamp from the server's `createdAt`, which is when the
+            // message was PROCESSED, not when the user SENT it. Letting a
+            // background refresh overwrite the local send time here made a
+            // user bubble's displayed timestamp silently drift forward
+            // (observed: "3:50 PM" -> "3:51 PM" on the same message while
+            // its reply was still in flight). The client-known send time
+            // is always correct for a message authored on this device.
+            if local.sender == .user {
+                refreshedConversation.messages[index].timestamp = local.timestamp
+            }
         }
 
         // Turn projection dedup.  Hermes persists one assistant row per tool
