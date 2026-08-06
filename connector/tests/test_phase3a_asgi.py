@@ -391,6 +391,67 @@ class TestSSEASGI:
         assert seqs == [1, 2, 3, 4]
         assert frames[-1]["type"] == "run.completed"
 
+    def test_job_events_heartbeat_prevents_watchdog_starvation(self, monkeypatch):
+        """A running job with no queued events must emit SSE keepalive
+        comments while idle, instead of blocking on the queue forever.
+
+        Regression guard for the 2026-08-06 latency root cause: the iOS
+        watchdog (JobStreamCoordinator, 60s) resets on any SSE byte but
+        tears down and reconnects if none arrive.  A run mid tool-call
+        chain can go well past 60s between real events, so without a
+        heartbeat every such gap read as a dead connection — visible as
+        a "Reconnecting..." banner and ~90-110s of dead time per gap
+        (confirmed against live connector logs, jobs 67e7850b/2fc458a3/
+        8ac31687 on 2026-08-06).
+
+        Drives the StreamingResponse's body_iterator directly rather
+        than through httpx.ASGITransport: that transport buffers the
+        full response and only returns once the app's response cycle
+        completes, so it can't observe a stream that (by design, here)
+        never reaches a terminal state on its own.
+        """
+        monkeypatch.setattr(facade, "_JOB_EVENTS_HEARTBEAT_INTERVAL", 0.05)
+        job_id = str(uuid.uuid4())
+        facade._http_jobs[job_id] = {
+            "status": "running",
+            "events": [],
+            "subscribers": [],
+            "updatedAt": time.time(),
+            "conversationId": str(uuid.uuid4()),
+            "message": None,
+            "error": None,
+            "errorCategory": None,
+            "errorAction": None,
+            "usage": None,
+            "cleanText": None,
+            "clientMessageId": None,
+            "attempt": 1,
+        }
+
+        class _FakeRequest:
+            path_params = {"id": job_id}
+            headers: dict = {}
+
+            async def is_disconnected(self) -> bool:
+                return False
+
+        async def _collect() -> list[str]:
+            resp = await facade.job_events(_FakeRequest())
+            body_iter = resp.body_iterator
+            try:
+                return [
+                    await asyncio.wait_for(body_iter.__anext__(), timeout=1.0)
+                    for _ in range(3)
+                ]
+            finally:
+                await body_iter.aclose()
+
+        chunks = asyncio.new_event_loop().run_until_complete(
+            asyncio.wait_for(_collect(), timeout=5)
+        )
+
+        assert chunks == [": heartbeat\n\n"] * 3
+
     def test_sse_reconnect_cursor_replays_suffix_without_duplicates(
         self, client, ctx, store, no_session_lookups,
     ):
