@@ -4554,6 +4554,12 @@ def _format_sse_frame(event: dict, seq: int) -> str:
     )
 
 
+# How long the live-event loop in job_events waits on an empty queue before
+# emitting a keepalive comment. Module-level so tests can shrink it instead
+# of sleeping through the real interval.
+_JOB_EVENTS_HEARTBEAT_INTERVAL = 15.0
+
+
 async def job_events(request: Request) -> StreamingResponse:
     """SSE stream of job events."""
     await require_auth(request)
@@ -4603,7 +4609,23 @@ async def job_events(request: Request) -> StreamingResponse:
                         backlog[-1].get("type") in ("run.completed", "run.failed", "run.cancelled", "done")
                     ):
                         return
-                    event = await queue.get()
+                    # A run that's mid tool-call chain can go 60-100s+
+                    # between events. The iOS watchdog (JobStreamCoordinator
+                    # .watchdogTimeoutSeconds, 60s) resets on ANY SSE byte,
+                    # including comments — but resets on nothing if none
+                    # arrive, so it tears down and reconnects, which shows up
+                    # as a "Reconnecting..." banner and ~90-110s of dead time
+                    # per gap. Heartbeat well under that window so a long
+                    # silent stretch from the agent never starves the client.
+                    try:
+                        event = await asyncio.wait_for(
+                            queue.get(), timeout=_JOB_EVENTS_HEARTBEAT_INTERVAL
+                        )
+                    except asyncio.TimeoutError:
+                        if await request.is_disconnected():
+                            return
+                        yield ": heartbeat\n\n"
+                        continue
                     if event is None:
                         return
                     if await request.is_disconnected():
