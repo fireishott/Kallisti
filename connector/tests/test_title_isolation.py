@@ -182,6 +182,7 @@ class SlowRecordingHandler:
     async def __call__(
         self, prompt: str, history: list, session_id: str | None,
         attachments: list | None, reasoning_effort: str | None,
+        job_id: str | None = None,
     ):
         t0 = _time.monotonic()
         self.enter_times.append(t0)

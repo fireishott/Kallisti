@@ -875,6 +875,9 @@ class HeraldConnector:
             # P0-4: chat critical-path providers
             facade_ctx.job_status = self._rpc_job_status
             facade_ctx.job_cancel = self._rpc_jobs_cancel
+            facade_ctx.stop_hermes_run = self._rpc_stop_hermes_run
+            facade_ctx.send_completion_push = self._send_push_for_job
+            facade_ctx.end_live_activity = self._send_live_activity_end
             facade_ctx.job_events = self._rpc_job_events_stream
             facade_ctx.session_conversation = self._rpc_session_conversation
             facade_ctx.current_conversation = self._rpc_current_conversation
@@ -1904,11 +1907,17 @@ class HeraldConnector:
         session_id: str | None,
         attachments: list[dict] | None,
         reasoning_effort: str | None,
+        job_id: str | None = None,
     ):
         """Handle a message from the iOS HTTP facade — yields SSE event dicts.
 
         This replaces the FastAPI relay's job creation + SSE streaming path.
         The HTTP facade calls this directly, bypassing the relay entirely.
+
+        job_id, when provided, lets the underlying executor record which
+        Hermes run_id is backing this turn (see herald_api_executor's
+        _hermes_run_ids), so a later POST /v1/jobs/{job_id}/cancel can
+        actually reach Hermes instead of only tearing down local state.
         """
         # Use cached state from startup; fall back to a reload only if the
         # cache is unset (should not happen in normal operation).
@@ -1944,6 +1953,7 @@ class HeraldConnector:
                 session_id=session_id,
                 attachments=attachments,
                 reasoning_effort=reasoning_effort,
+                job_id=job_id,
             ):
                 if event.type == "text_delta":
                     accumulated_text += event.data
@@ -2117,20 +2127,32 @@ class HeraldConnector:
             ]
 
     async def _rpc_push_register(self, params: dict) -> dict:
-        """Persist the mobile APNs token without ever logging its value."""
+        """Persist the mobile APNs token without ever logging its value.
+
+        tokenKind distinguishes the device's regular alert-push token from a
+        Live Activity's own push-to-update token (see ConnectorState.
+        live_activity_push_token) — they are different tokens with different
+        APNs push types and must never share storage.
+        """
         token = str(params.get("token") or "").strip()
         environment = str(params.get("environment") or "production").strip().lower()
+        token_kind = str(params.get("tokenKind") or "device").strip().lower()
         if not token:
             return {"registered": False}
         if environment not in {"production", "development"}:
             return {"registered": False}
 
         state = self.state_store.load()
-        state.device_token = token
-        state.device_token_environment = environment
+        if token_kind == "liveactivity":
+            state.live_activity_push_token = token
+            state.live_activity_push_token_environment = environment
+            logger.info("Live Activity push token registered (environment=%s)", environment)
+        else:
+            state.device_token = token
+            state.device_token_environment = environment
+            logger.info("APNs device token registered (environment=%s)", environment)
         self.state_store.save(state)
         self._state = state
-        logger.info("APNs device token registered (environment=%s)", environment)
         return {"registered": True, "environment": environment}
 
     async def _send_push_for_job(
@@ -2173,7 +2195,7 @@ class HeraldConnector:
             from .apns_client import PushResult
             result = await self._apns_client.send_alert_push(
                 device_token,
-                title="Herald",
+                title="Kallisti",
                 body=body[:100],
                 category=category,
                 environment=environment,
@@ -2187,6 +2209,54 @@ class HeraldConnector:
                 logger.warning("Push send result: %s", result.value)
         except Exception:
             logger.debug("Push send error (non-fatal)", exc_info=True)
+
+    async def _send_live_activity_end(self, status: str = "Done") -> None:
+        """Remote-end the user's Live Activity via its own push-to-update token.
+
+        Client-side, ChatStore.endActivity() only runs from inside the live
+        SSE-consuming Task — which real, minutes-long tool-heavy turns
+        routinely outlive if the app is backgrounded, leaving the lock
+        screen stuck on "Thinking" (see kallisti-b128-four-symptom
+        -investigation memory). This reaches the lock screen directly,
+        independent of whether the app process can run any code at all.
+        Best-effort and silent: no registered token, or no activity
+        currently active, are both routine — not every turn starts one.
+        """
+        state = self.state_store.load()
+        token = state.live_activity_push_token
+        if not token:
+            return
+
+        if not hasattr(self, '_apns_client') or self._apns_client is None:
+            try:
+                from .apns_client import APNsClient
+                self._apns_client = APNsClient()
+            except Exception as e:
+                logger.warning("APNs client init failed: %s", e)
+                self._apns_client = None
+                return
+
+        environment = state.live_activity_push_token_environment or "production"
+        try:
+            from .apns_client import PushResult
+            result = await self._apns_client.send_live_activity_update(
+                token,
+                content_state={
+                    "status": status,
+                    "elapsedSeconds": 0,
+                    "sessionType": "chat",
+                },
+                event="end",
+                environment=environment,
+            )
+            if result == PushResult.SENT:
+                logger.info("Live Activity end-push sent")
+            elif result == PushResult.TOKEN_INVALID:
+                logger.info("Live Activity push token invalid — activity likely already ended")
+            else:
+                logger.warning("Live Activity end-push result: %s", result.value)
+        except Exception:
+            logger.debug("Live Activity end-push error (non-fatal)", exc_info=True)
 
     async def _handle_relay_interrupt(self, session_key: str, reason: str | None) -> None:
         """Handle an interrupt (/stop) from the gateway."""
@@ -3168,6 +3238,33 @@ class HeraldConnector:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
         return {"jobId": job_id, "status": "cancelled"}
+
+    async def _rpc_stop_hermes_run(self, run_id: str) -> bool:
+        """Interrupt a running Hermes turn via POST /v1/runs/{run_id}/stop.
+
+        This is the real, server-reaching half of cancellation for the
+        modern HTTP job path — http_facade.cancel_job's own task.cancel()
+        only tears down the connector's local listener and leaves the
+        agent running orphaned. Best-effort: state.load()/adapter
+        construction failures are logged and treated as "could not stop"
+        rather than raised, matching _send_push_for_job's style — a failed
+        stop must not crash the cancel request the phone is waiting on.
+        """
+        try:
+            state = self._state if getattr(self, '_state', None) is not None else self.state_store.load()
+            runtime = await self.runtime_adapter_for_state_async(state)
+            executor = getattr(runtime, "executor", None)
+            stop = getattr(executor, "stop_run", None)
+            if stop is None:
+                logger.warning(
+                    "stop_hermes_run: active runtime adapter has no stop_run (run=%s)",
+                    run_id,
+                )
+                return False
+            return bool(await stop(run_id))
+        except Exception:
+            logger.exception("stop_hermes_run: failed for run %s", run_id)
+            return False
 
     async def _rpc_job_status(self, job_id: str) -> dict:
         """Return the status of a job by ID (P0-4 polling path)."""

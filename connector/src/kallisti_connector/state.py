@@ -67,6 +67,13 @@ class ConnectorState:
     user_id: str | None = None
     device_token: str | None = None
     device_token_environment: str | None = None
+    # Separate from device_token: ActivityKit's pushToken: .token gives each
+    # Live Activity its own APNs token, requiring the liveactivity push type
+    # and a ContentState-shaped payload — never a plain alert. Registering it
+    # into device_token would silently break regular alert pushes the next
+    # time a Live Activity token rotates (which happens on every chat turn).
+    live_activity_push_token: str | None = None
+    live_activity_push_token_environment: str | None = None
     connector_display_name: str | None = None
     enrolled_at: str | None = None
     last_connected_at: str | None = None

@@ -448,7 +448,7 @@ def test_api_runtime_adapter_streaming_yields_all_events():
     ]
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
             for event in emitted_events:
                 yield event
 
@@ -484,7 +484,7 @@ def test_api_runtime_adapter_streaming_preserves_session_with_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
             captured["session_id"] = session_id
             captured["history"] = history
             yield StreamEvent(type="text_delta", data="ok")
@@ -511,7 +511,7 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
             captured["session_id"] = session_id
             yield StreamEvent(type="text_delta", data="ok")
             yield StreamEvent(type="finish")

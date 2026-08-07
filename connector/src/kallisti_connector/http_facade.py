@@ -153,6 +153,16 @@ MessageHandler = Callable[
 ]
 JobStatusProvider = Callable[[str], Coroutine[Any, Any, dict]]
 JobCancelProvider = Callable[[dict], Coroutine[Any, Any, dict]]
+# Takes a Hermes run_id, returns True if Hermes acknowledged the stop.
+HermesRunStopProvider = Callable[[str], Coroutine[Any, Any, bool]]
+# (job_id, body_text, *, category=None, conversation_id=None) -> None.
+# Sends a real APNs push — independent of whether any client Task is
+# still alive to process the job's terminal SSE event.
+SendCompletionPushProvider = Callable[..., Coroutine[Any, Any, None]]
+# (status: str = "Done") -> None. Remote-ends the user's Live Activity via
+# its own push-to-update token — same "independent of a live client Task"
+# rationale as SendCompletionPushProvider.
+EndLiveActivityProvider = Callable[..., Coroutine[Any, Any, None]]
 JobEventsProvider = Callable[[str], Coroutine[Any, Any, AsyncIterator[dict]]]
 SessionConversationProvider = Callable[[str], Coroutine[Any, Any, dict]]
 CurrentConversationProvider = Callable[[], Coroutine[Any, Any, dict]]
@@ -179,6 +189,9 @@ class FacadeContext:
         # P0-4: chat critical-path providers
         self.job_status: JobStatusProvider | None = None
         self.job_cancel: JobCancelProvider | None = None
+        self.stop_hermes_run: HermesRunStopProvider | None = None
+        self.send_completion_push: SendCompletionPushProvider | None = None
+        self.end_live_activity: EndLiveActivityProvider | None = None
         self.job_events: JobEventsProvider | None = None
         self.auxiliary_list: Callable[[], dict | Coroutine[Any, Any, dict]] | None = None
         self.auxiliary_set: Callable[[dict], dict | Coroutine[Any, Any, dict]] | None = None
@@ -1253,7 +1266,8 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
                     text_with_attachments = f"{text_with_attachments}\n\n{attachment_context}"
                 async for event in handler(
                     text_with_attachments, history, session_id,
-                    staged_meta or attachments, reasoning_effort
+                    staged_meta or attachments, reasoning_effort,
+                    job_id=job_id,
                 ):
                     etype = event.get("type", "progress")
                     data = event.get("data", {}) or {}
@@ -1693,6 +1707,48 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         # ``{type:"done", ...}`` shape is never emitted on the wire
         # downstream — subscribers all observe the v3 envelope.
         _publish(terminal)
+
+        # 2026-08-07: a real APNs push, independent of whether any client
+        # Task survived long enough to process this terminal event itself.
+        # Real tool-heavy turns commonly run minutes; iOS's background
+        # execution grant is shorter than that, so the client-only path
+        # (ChatStore's own local notification + Live Activity end, both
+        # gated on that same live Task) reliably misses long turns finished
+        # while the app was backgrounded — the reported "lock screen stuck
+        # on thinking" bug. Not sent for "cancelled": that status only
+        # follows a user-initiated stop, and the user is presumably still
+        # looking at the app that just sent it.
+        _ctx = get_context()
+        if job["status"] in ("completed", "failed") and _ctx.send_completion_push is not None:
+            push_body = (
+                accumulated.strip() if job["status"] == "completed" and accumulated.strip()
+                else "Kallisti couldn't finish that reply. Open the app to see what happened."
+            )
+            try:
+                await _ctx.send_completion_push(
+                    job_id,
+                    push_body,
+                    category="HERALD_MESSAGE_READY",
+                    conversation_id=job.get("conversationId"),
+                )
+            except Exception:
+                logger.exception("_run_http_job: completion push failed for job %s", job_id)
+
+        # Unlike the alert push above, end the Live Activity for every
+        # terminal status including "cancelled" — a stuck lock-screen
+        # "Thinking" card is exactly as wrong after a cancel the client
+        # itself couldn't process (same backgrounding gap) as after a
+        # normal completion it couldn't process.
+        if _ctx.end_live_activity is not None:
+            try:
+                await _ctx.end_live_activity(
+                    "Done" if job["status"] == "completed" else job["status"].capitalize()
+                )
+            except Exception:
+                logger.exception("_run_http_job: Live Activity end-push failed for job %s", job_id)
+
+        from .herald_api_executor import clear_hermes_run_id
+        clear_hermes_run_id(job_id)
         # Phase 3A v3 correction: the legacy ``{type:"done" ...}``
         # envelope is NEVER appended to ``job["events"]``.  The SSE
         # replay buffer at GET /v1/jobs/{id}/events replays the full
@@ -3843,10 +3899,24 @@ async def push_register(request: Request) -> JSONResponse:
     if environment not in {"production", "development"}:
         raise HTTPException(status_code=400, detail="pushEnvironment must be production or development")
 
+    # 2026-08-07: a Live Activity's ActivityKit pushToken: .token gives it its
+    # OWN APNs token, distinct from the device's regular alert-push token —
+    # it needs the liveactivity push type and a ContentState payload, never a
+    # plain alert. Both used to land in the same body shape at this one
+    # endpoint with no way to tell them apart, so a Live Activity token
+    # rotation (which happens on every chat turn) silently clobbered the
+    # device's real alert token. tokenKind defaults to "device" so already
+    # -shipped clients that never send it keep today's behavior exactly.
+    token_kind = str(body.get("tokenKind") or "device").strip().lower()
+    if token_kind not in {"device", "liveActivity".lower()}:
+        raise HTTPException(status_code=400, detail="tokenKind must be device or liveActivity")
+
     ctx = get_context()
     if ctx.push_register is None:
         raise HTTPException(status_code=503, detail="Push registration is unavailable")
-    result = await ctx.push_register({"token": token, "environment": environment})
+    result = await ctx.push_register({
+        "token": token, "environment": environment, "tokenKind": token_kind,
+    })
     if result.get("registered") is not True:
         raise HTTPException(status_code=503, detail="Push registration was not accepted")
     logger.info("Push registration accepted (environment=%s)", environment)
@@ -4759,6 +4829,27 @@ async def cancel_job(request: Request) -> JSONResponse:
 
     task = _http_job_tasks.get(job_id)
     if task is not None:
+        # Tearing down our own listener (below) does NOT stop Hermes from
+        # continuing to run the turn — it only abandons our interest in it,
+        # leaving the agent orphaned and still burning tool calls/tokens.
+        # Interrupt the actual Hermes run first, best-effort: a failure here
+        # must not block the local cancel the phone is waiting on.
+        from .herald_api_executor import get_hermes_run_id, clear_hermes_run_id
+        hermes_run_id = get_hermes_run_id(job_id)
+        if hermes_run_id and ctx.stop_hermes_run is not None:
+            try:
+                stopped = await ctx.stop_hermes_run(hermes_run_id)
+                logger.info(
+                    "cancel_job: Hermes stop for run %s (job %s) -> %s",
+                    hermes_run_id, job_id, stopped,
+                )
+            except Exception:
+                logger.exception(
+                    "cancel_job: Hermes stop failed for run %s (job %s)",
+                    hermes_run_id, job_id,
+                )
+        clear_hermes_run_id(job_id)
+
         task.cancel()
         job = _http_jobs.get(job_id)
         if job is not None:
