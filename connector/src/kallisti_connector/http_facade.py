@@ -3222,16 +3222,27 @@ async def send_message(request: Request) -> JSONResponse:
     #
     # B40: return the conversation's real title.  The app merges this payload
     # over its open thread on every send (ChatStore.mergeConversationMetadata),
-    # so the hardcoded "Herald" placeholder reset the title of an already-titled
+    # so a hardcoded placeholder here resets the title of an already-titled
     # conversation on each turn — one half of "chat titles not being named".
+    #
+    # 2026-08-06: the placeholder itself must be "Kallisti", not "Herald" —
+    # ChatStore.mergeConversationMetadata's defaultTitles set (the client-side
+    # list of "this is a placeholder, a later real title may replace it") only
+    # recognizes "New Chat"/"Kallisti" post-rebrand. A response titled
+    # "Herald" — the ONLY case that hits this fallback is a conversation's
+    # very first message, before _derived_title has anything to read — reads
+    # to the client as a deliberate user rename, and mergeConversationMetadata
+    # then preserves it forever, permanently shadowing every later real title.
+    # This is the server-side twin of _PLACEHOLDER_TITLES below, which
+    # already treats "Herald" as exactly this kind of placeholder.
     # Computed here (not at the bottom) so the B33 duplicate response below can
     # reuse it.
     from .session_store import session_title as _session_title
     try:
-        conversation_title = _session_title(app_conversation_id) or "Herald"
+        conversation_title = _session_title(app_conversation_id) or "Kallisti"
     except Exception:                             # noqa: BLE001 — never fail a send
         logger.exception("session_title lookup failed for %s", app_conversation_id)
-        conversation_title = "Herald"
+        conversation_title = "Kallisti"
 
     # ── Build 33/108 Workstream B: durable delivery store ─────────────────
     # POST /v1/messages is idempotent on clientMessageId: a transport-level
@@ -4109,7 +4120,7 @@ async def current_conversation(request: Request) -> JSONResponse:
     fallback_title = (
         upstream_conv.get("title")
         or result.get("title")
-        or "Herald"
+        or "Kallisti"
     )
     fallback_updated_at = (
         upstream_conv.get("updatedAt")

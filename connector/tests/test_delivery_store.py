@@ -855,3 +855,34 @@ class TestConversationHistoryReconstruction:
 
         assert "history" in captured, "handler was never invoked"
         assert captured["history"] == []
+
+
+class TestConversationTitleFallback:
+    """2026-08-06: a brand-new conversation's first send has no stored title
+    and nothing yet for _derived_title to read from — so send_message falls
+    back to a hardcoded placeholder. That placeholder must be "Kallisti",
+    not "Herald": ChatStore.mergeConversationMetadata's client-side
+    defaultTitles set only recognizes "New Chat"/"Kallisti" as safe to
+    later overwrite (post-rebrand). A response titled "Herald" reads to the
+    client as a deliberate user rename and mergeConversationMetadata
+    preserves it forever, permanently shadowing every later real title —
+    "new chat names are wrong."
+    """
+
+    def test_first_send_on_new_conversation_falls_back_to_kallisti_not_herald(
+        self, app_env, client, no_session_lookups,
+    ):
+        app_env.message_handler = completed_handler
+        new_conv = str(uuid.uuid4())
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, conversationId=new_conv, text="Yo. Anything good?"),
+        )
+        assert resp.status_code == 200, resp.text
+        title = resp.json()["conversation"]["title"]
+        assert title == "Kallisti", (
+            f"got {title!r} — a title outside ChatStore's defaultTitles set "
+            "{{'New Chat', 'Kallisti'}} is permanently preserved client-side, "
+            "never replaced by a later real title"
+        )
