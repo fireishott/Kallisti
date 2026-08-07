@@ -1111,6 +1111,13 @@ final class AppContainer {
             let apnsToken: String
             let pushEnvironment: String
             let bundleId: String
+            // Distinguishes this from the device's own alert-push token —
+            // ActivityKit gives each Live Activity its own push-to-update
+            // token, which the connector must store and address separately
+            // (see ConnectorState.live_activity_push_token). Without this,
+            // every Live Activity token rotation — i.e. every chat turn —
+            // silently overwrote the device's real alert-push token.
+            let tokenKind: String = "liveActivity"
         }
         struct RegisterResponse: Decodable {
             struct Data: Decodable {
