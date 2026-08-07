@@ -52,6 +52,19 @@ final class ChatStore {
     /// which violated "other conversations may submit independently if
     /// supported" (Build 102 marching orders §5).
     private var activeLeases: [UUID: SubmitLease] = [:]
+    /// 2026-08-06: nothing in this file ever called beginBackgroundTask —
+    /// confirmed by grep across the whole app target, zero hits. If the app
+    /// is backgrounded (switching to another app, screen lock) at any point
+    /// between acquiring a lease and releasing it, iOS can suspend the
+    /// in-flight Task with no warning; it only resumes once the app is
+    /// foregrounded again. From the outside this reads as an unpredictable
+    /// multi-second-to-multi-minute stall with no "thinking" indicator,
+    /// because the client never even reached the point of calling
+    /// POST /v1/conversations/ensure — confirmed via connector access logs
+    /// showing zero request activity for the conversation for 84s while
+    /// unrelated background telemetry (sensor/health, hosts/current) kept
+    /// flowing normally the entire time. Keyed like activeLeases.
+    private var backgroundTaskIDs: [UUID: UIBackgroundTaskIdentifier] = [:]
     /// Monotonic FIFO counter persisted in the manifest.
     private var outboxNextSequence = 0
     /// Defaults to Application Support; tests inject a scratch directory so
@@ -632,10 +645,30 @@ final class ChatStore {
             acquiredAt: .now
         )
         activeLeases[targetID] = lease
+        // Request extra run time so a backgrounding mid-send doesn't
+        // suspend the submission Task outright — see backgroundTaskIDs.
+        let backgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "kallisti.outbox.submit"
+        ) { [weak self] in
+            // Not guaranteed to run on the main actor (UIKit docs) — hop
+            // explicitly before touching MainActor-isolated state.
+            Task { @MainActor [weak self] in
+                Self.logger.warning("background task expired mid-submit conv=\(targetID.uuidString.prefix(8))")
+                if let taskID = self?.backgroundTaskIDs[targetID] {
+                    UIApplication.shared.endBackgroundTask(taskID)
+                    self?.backgroundTaskIDs[targetID] = nil
+                }
+            }
+        }
+        backgroundTaskIDs[targetID] = backgroundTaskID
         defer {
             if activeLeases[targetID] == lease {
                 activeLeases[targetID] = nil
                 Self.logger.info("lease released conv=\(targetID.uuidString.prefix(8)) client=\(item.clientMessageID.uuidString.prefix(8))")
+            }
+            if let taskID = backgroundTaskIDs[targetID] {
+                UIApplication.shared.endBackgroundTask(taskID)
+                backgroundTaskIDs[targetID] = nil
             }
             pruneTerminalOutboxRecords()
         }
