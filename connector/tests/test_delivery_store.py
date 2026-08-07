@@ -780,3 +780,78 @@ class TestSendMessageIdempotency:
         resp = client.get("/v1/jobs/550e8400-e29b-41d4-a716-446655440000")
         # Legacy path without a job service → 503.
         assert resp.status_code == 503
+
+
+class TestConversationHistoryReconstruction:
+    """2026-08-06: _runs_request_payload's own docstring says Hermes does not
+    load conversation_history from its own database — the caller must supply
+    it. The iOS client has never sent a `history` field (MessageCreateBody in
+    LiveHeraldClient.swift carries no such field, confirmed by inspection),
+    so every turn reached the model with zero memory of anything said
+    earlier — the thread only *looked* continuous because the app renders
+    its own local message list. send_message must reconstruct history from
+    the canonical ledger itself rather than trusting the request body."""
+
+    def test_send_message_reconstructs_history_from_canonical_ledger(
+        self, app_env, client, no_session_lookups,
+    ):
+        captured: dict = {}
+
+        async def capturing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+            captured["history"] = history
+            yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
+
+        app_env.message_handler = capturing_handler
+
+        store = get_delivery_store()
+        store.get_or_create_binding(CONV, HERMES_SID, "", DEVICE)
+        store.create_user_message_atomically(
+            CONV, str(uuid.uuid4()),
+            "What's the weather in Vegas?", "What's the weather in Vegas?",
+        )
+        store.create_canonical_message(
+            CONV, "assistant", "It's 105 and sunny.", "It's 105 and sunny.",
+        )
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, conversationId=CONV, text="And tomorrow?"),
+        )
+        assert resp.status_code == 200, resp.text
+
+        deadline = time.monotonic() + 10.0
+        while "history" not in captured and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert "history" in captured, "handler was never invoked"
+        assert [m["role"] for m in captured["history"]] == ["user", "assistant"]
+        assert "vegas" in captured["history"][0]["text"].lower()
+        assert "105" in captured["history"][1]["text"]
+
+    def test_send_message_leaves_new_conversation_history_empty(
+        self, app_env, client, no_session_lookups,
+    ):
+        """A conversation with no prior canonical messages must get an
+        empty history, not an error — this is turn one, not a bug."""
+        captured: dict = {}
+
+        async def capturing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+            captured["history"] = history
+            yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
+
+        app_env.message_handler = capturing_handler
+        store = get_delivery_store()
+        store.get_or_create_binding(CONV, HERMES_SID, "", DEVICE)
+
+        resp = client.post(
+            "/v1/messages",
+            json=post_message(client, conversationId=CONV),
+        )
+        assert resp.status_code == 200, resp.text
+
+        deadline = time.monotonic() + 10.0
+        while "history" not in captured and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert "history" in captured, "handler was never invoked"
+        assert captured["history"] == []

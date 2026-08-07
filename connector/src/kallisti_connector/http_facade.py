@@ -3165,6 +3165,34 @@ async def send_message(request: Request) -> JSONResponse:
     if hermes_session_id is None and app_conversation_id:
         hermes_session_id = _resolve_hermes_id(app_conversation_id) or _app_uuid(app_conversation_id)
 
+    # 2026-08-06: _runs_request_payload's own docstring says it plainly —
+    # "conversation_history ... is the prior conversation context that
+    # Hermes does not load from its own database — the caller must supply
+    # it." The iOS client has never sent one (MessageCreateBody in
+    # LiveHeraldClient.swift carries no history/conversationHistory field),
+    # so every turn reached the model with zero memory of anything said
+    # earlier — the thread looked continuous in the UI purely because the
+    # app renders its own local message list, not because the model
+    # remembered any of it. Reconstruct history server-side from the
+    # canonical ledger instead of trusting the request body: it's
+    # authoritative, and fixes every client/device immediately rather than
+    # only builds that learn to send history themselves.
+    if not history and app_conversation_id:
+        try:
+            from .delivery_store import get_delivery_store
+            canonical_rows = get_delivery_store().get_conversation_messages(app_conversation_id)
+            history = [
+                {"role": row["role"], "text": text}
+                for row in canonical_rows
+                if (text := (row["modelInputContent"] or row["content"] or "").strip())
+            ]
+        except Exception:
+            logger.exception(
+                "Failed to reconstruct conversation_history for %s — "
+                "continuing with empty history rather than failing the send",
+                app_conversation_id,
+            )
+
     job_id = str(uuid.uuid4())
     # Build 30: echo attachment metadata in the user acknowledgement so the
     # server-projected user row preserves attachment identity.  Without this,
