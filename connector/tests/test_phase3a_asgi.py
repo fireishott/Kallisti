@@ -91,7 +91,7 @@ def auth():
 @pytest.fixture
 def ctx(env):
     ctx = FacadeContext()
-    async def _handler(text, history, sid, att, re):  # noqa: ANN001
+    async def _handler(text, history, sid, att, re, job_id=None):  # noqa: ANN001
         yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
     ctx.message_handler = _handler
     ctx.connector_version = "0.4.1"

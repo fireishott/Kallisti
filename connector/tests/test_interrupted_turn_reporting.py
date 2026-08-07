@@ -52,7 +52,7 @@ async def _drain(job_id, handler):
 @pytest.mark.asyncio
 async def test_reconnect_without_done_is_not_success():
     """Transport dropped mid-turn — retryable failure, not a delivered answer."""
-    async def handler(text, history, session_id, attachments, reasoning_effort):
+    async def handler(text, history, session_id, attachments, reasoning_effort, job_id=None):
         yield {"type": "text_delta", "data": {"delta": "Let me pull your play history"}}
         yield {"type": "reconnecting", "data": {"reason": "run_events_closed"}}
 
@@ -67,7 +67,7 @@ async def test_reconnect_without_done_is_not_success():
 @pytest.mark.asyncio
 async def test_silent_generator_is_not_success():
     """Nothing streamed at all must not be reported as a completed turn."""
-    async def handler(text, history, session_id, attachments, reasoning_effort):
+    async def handler(text, history, session_id, attachments, reasoning_effort, job_id=None):
         return
         yield  # pragma: no cover - makes this an async generator
 
@@ -78,7 +78,7 @@ async def test_silent_generator_is_not_success():
 
 @pytest.mark.asyncio
 async def test_partial_text_then_silence_is_not_success():
-    async def handler(text, history, session_id, attachments, reasoning_effort):
+    async def handler(text, history, session_id, attachments, reasoning_effort, job_id=None):
         yield {"type": "text_delta", "data": {"delta": "Working on it"}}
 
     job, data = await _drain("J3", handler)
@@ -89,7 +89,7 @@ async def test_partial_text_then_silence_is_not_success():
 @pytest.mark.asyncio
 async def test_explicit_done_still_wins():
     """The fix must not turn genuine successes into failures."""
-    async def handler(text, history, session_id, attachments, reasoning_effort):
+    async def handler(text, history, session_id, attachments, reasoning_effort, job_id=None):
         yield {"type": "text_delta", "data": {"delta": "All set."}}
         yield {"type": "done", "data": {"status": "completed", "text": "All set."}}
 
@@ -102,7 +102,7 @@ async def test_explicit_done_still_wins():
 @pytest.mark.asyncio
 async def test_reconnect_followed_by_done_is_success():
     """A reconnect that later resolves must not be held against the turn."""
-    async def handler(text, history, session_id, attachments, reasoning_effort):
+    async def handler(text, history, session_id, attachments, reasoning_effort, job_id=None):
         yield {"type": "reconnecting", "data": {"reason": "transport"}}
         yield {"type": "text_delta", "data": {"delta": "Recovered."}}
         yield {"type": "done", "data": {"status": "completed", "text": "Recovered."}}

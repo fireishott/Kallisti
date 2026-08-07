@@ -18,6 +18,21 @@ DEFAULT_API_SERVER_URL = "http://localhost:8642"
 CONNECT_TIMEOUT = 10.0
 READ_TIMEOUT = 300.0  # 5 minutes — long enough for Claude thinking, catches dead connections
 
+# Maps our job_id -> Hermes's own run_id for the /v1/runs turn currently
+# backing it, so a caller holding only job_id (e.g. http_facade.cancel_job)
+# can find the id Hermes's POST /v1/runs/{run_id}/stop actually needs.
+# stream_message_runs populates this as soon as the run starts; http_facade
+# clears it once the job reaches a terminal state.
+_hermes_run_ids: dict[str, str] = {}
+
+
+def get_hermes_run_id(job_id: str) -> str | None:
+    return _hermes_run_ids.get(job_id)
+
+
+def clear_hermes_run_id(job_id: str) -> None:
+    _hermes_run_ids.pop(job_id, None)
+
 # All case-insensitive tag variants recognized for inline reasoning blocks.
 # Must match reasoning_sanitizer.py tag set and iOS LiveHeraldClient.splitThinkingBlocks.
 _REASONING_TAGS = frozenset({
@@ -390,12 +405,17 @@ class HeraldAPIExecutor:
         session_id: str | None = None,
         attachments: list[dict] | None = None,
         reasoning_effort: str | None = None,
+        job_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a chat completion, yielding events as they arrive.
 
         Prefers /v1/runs (reasoning + tool events) when available,
         falls back to /v1/chat/completions. Gate on env var
         HERALD_RUNS_STREAMING_ENABLED (default '0' — opt-in).
+
+        job_id, when provided, is our connector-side job id — passed
+        through so the Hermes run_id backing this turn can be recorded
+        against it (see _hermes_run_ids) for real cancellation support.
         """
         # Build 16: /v1/runs is the canonical production chat path.
         # The chat/completions fallback has been removed — it used a different
@@ -410,6 +430,7 @@ class HeraldAPIExecutor:
                 session_id=session_id,
                 attachments=attachments,
                 reasoning_effort=reasoning_effort,
+                job_id=job_id,
             ):
                 yield event
             return
@@ -851,6 +872,7 @@ class HeraldAPIExecutor:
         session_id: str | None = None,
         attachments: list[dict] | None = None,
         reasoning_effort: str | None = None,
+        job_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream via /v1/runs — exposes reasoning + tool events.
 
@@ -902,6 +924,8 @@ class HeraldAPIExecutor:
 
             if not run_id:
                 raise ValueError("No run_id in /v1/runs response")
+            if job_id:
+                _hermes_run_ids[job_id] = run_id
 
             # Stream events through the canonical SSE parser
             async with client.stream(
@@ -969,3 +993,27 @@ class HeraldAPIExecutor:
 
             # All reconnect attempts exhausted
             yield StreamEvent(type="stream_interrupted")
+
+    async def stop_run(self, run_id: str) -> bool:
+        """POST /v1/runs/{run_id}/stop — hard-interrupt a running turn.
+
+        Best-effort: a 404 means the run already finished or Hermes never
+        registered it (nothing to stop, not an error worth surfacing to the
+        user). Any other failure is logged and swallowed the same way —
+        the caller's own local teardown must not depend on this succeeding.
+        """
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=30.0, write=10.0, pool=10.0),
+            ) as client:
+                resp = await client.post(
+                    f"{self._base_url()}/v1/runs/{run_id}/stop",
+                    headers=self._auth_headers(),
+                )
+                if resp.status_code == 404:
+                    return False
+                resp.raise_for_status()
+                return True
+        except Exception:
+            logger.exception("stop_run: failed to stop Hermes run %s", run_id)
+            return False

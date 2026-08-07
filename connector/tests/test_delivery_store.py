@@ -136,7 +136,7 @@ def post_message(client, **overrides) -> dict:
     return body
 
 
-async def completed_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+async def completed_handler(text, history, session_id, attachments, reasoning_effort, job_id=None):  # noqa: ANN001, ARG001
     yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
     yield {"type": "text_delta", "data": {"delta": "ok"}}
 
@@ -670,7 +670,7 @@ class TestSendMessageIdempotency:
         )
 
     def test_failed_send_marks_request_permanent_failure(self, app_env, client, no_session_lookups):
-        async def failing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+        async def failing_handler(text, history, session_id, attachments, reasoning_effort, job_id=None):  # noqa: ANN001, ARG001
             yield {"type": "done", "data": {
                 "status": "failed", "error": "boom",
                 "errorCategory": "upstream_interrupted", "errorAction": "retry",
@@ -797,7 +797,7 @@ class TestConversationHistoryReconstruction:
     ):
         captured: dict = {}
 
-        async def capturing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+        async def capturing_handler(text, history, session_id, attachments, reasoning_effort, job_id=None):  # noqa: ANN001, ARG001
             captured["history"] = history
             yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
 
@@ -835,7 +835,7 @@ class TestConversationHistoryReconstruction:
         empty history, not an error — this is turn one, not a bug."""
         captured: dict = {}
 
-        async def capturing_handler(text, history, session_id, attachments, reasoning_effort):  # noqa: ANN001, ARG001
+        async def capturing_handler(text, history, session_id, attachments, reasoning_effort, job_id=None):  # noqa: ANN001, ARG001
             captured["history"] = history
             yield {"type": "done", "data": {"status": "completed", "text": "ok"}}
 
