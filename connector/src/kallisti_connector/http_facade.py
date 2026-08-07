@@ -1068,7 +1068,18 @@ async def _run_http_job(job_id: str, handler, text, history, session_id,
         # form. TextDeltaEvent is Literal["text.delta"]; a raw "text_delta"
         # from the producer failed validation and every reply token was
         # dropped ("no reply"). Normalize before envelope build + validate.
-        event_type = {"text_delta": "text.delta", "reasoning_delta": "reasoning.delta", "done": "done"}.get(event_type, event_type)
+        # 2026-08-07: tool_activity was missing from this map, so it always
+        # failed the WIRE_EVENT_TYPES check below and was silently dropped —
+        # the same "no reply" class of bug B116 fixed for text_delta, just
+        # never noticed for tool-progress labels since text/reasoning still
+        # got through this specific gate (they were dropped one step later,
+        # client-side — see kallisti-sse-wire-format-mismatch memory).
+        event_type = {
+            "text_delta": "text.delta",
+            "reasoning_delta": "reasoning.delta",
+            "tool_activity": "tool.progress",
+            "done": "done",
+        }.get(event_type, event_type)
         # T1.4: filter producer lifecycle events that have no wire
         # equivalent BEFORE allocating a sequence number.
         if event_type not in WIRE_EVENT_TYPES:
