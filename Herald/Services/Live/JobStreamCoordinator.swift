@@ -368,66 +368,78 @@ actor JobStreamCoordinator {
             seq = self.lastAppliedSeq + 1
         }
 
+        // 2026-08-07: the connector's v3 envelope (_build_envelope,
+        // connector commit 574c97b, 2026-08-04) nests every event's actual
+        // content one level down under "payload" — {"type":..., "payload":
+        // {"delta": "..."}} — but every case below used to read fields
+        // (delta/label/status/text/message/...) directly off the top-level
+        // envelope dict. That was never updated when the envelope format
+        // changed, so every field read silently returned nil/default. Fall
+        // back to json itself so any caller still sending a flat shape
+        // (there are none today, but this keeps the change purely additive)
+        // doesn't regress.
+        let payloadJSON = (json["payload"] as? [String: Any]) ?? json
+
         let eventType: JobEventType
         let payload: JobEventPayload
 
         switch sseEvent.event {
-        case "text_delta":
+        case "text.delta":
             eventType = .textDelta
-            let delta = json["delta"] as? String ?? ""
+            let delta = payloadJSON["delta"] as? String ?? ""
             payload = .textDelta(TextDeltaPayload(delta: delta, segmentId: ""))
 
-        case "reasoning_delta":
+        case "reasoning.delta":
             eventType = .reasoningDelta
-            let delta = json["delta"] as? String ?? ""
+            let delta = payloadJSON["delta"] as? String ?? ""
             payload = .reasoningDelta(ReasoningDeltaPayload(delta: delta, segmentId: ""))
 
-        case "tool_activity":
+        case "tool.progress":
             eventType = .toolProgress
-            let label = json["label"] as? String ?? "Working..."
+            let label = payloadJSON["label"] as? String ?? "Working..."
             payload = .toolProgress(ToolProgressPayload(toolCallId: "", label: label))
 
         case "tool.started":
             eventType = .toolStarted
-            let toolCallId = json["tool_call_id"] as? String ?? ""
-            let name = json["name"] as? String ?? "tool"
-            let args = json["args"] as? String ?? ""
-            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args, emoji: json["emoji"] as? String))
+            let toolCallId = payloadJSON["tool_call_id"] as? String ?? ""
+            let name = payloadJSON["name"] as? String ?? "tool"
+            let args = payloadJSON["args"] as? String ?? ""
+            payload = .toolStarted(ToolStartedPayload(toolCallId: toolCallId, name: name, args: args, emoji: payloadJSON["emoji"] as? String))
 
         case "tool.completed":
             eventType = .toolCompleted
-            let toolCallId = json["tool_call_id"] as? String ?? ""
-            let output = json["output"] as? String ?? ""
-            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output, isError: json["is_error"] as? Bool ?? false, durationMs: json["duration_ms"] as? Int))
+            let toolCallId = payloadJSON["tool_call_id"] as? String ?? ""
+            let output = payloadJSON["output"] as? String ?? ""
+            payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output, isError: payloadJSON["is_error"] as? Bool ?? false, durationMs: payloadJSON["duration_ms"] as? Int))
 
         case "approval.required":
             eventType = .approvalRequired
-            let toolCallId = json["tool_call_id"] as? String ?? ""
-            let prompt = json["prompt"] as? String ?? "Approval required"
+            let toolCallId = payloadJSON["tool_call_id"] as? String ?? ""
+            let prompt = payloadJSON["prompt"] as? String ?? "Approval required"
             payload = .approvalRequired(ApprovalRequiredPayload(toolCallId: toolCallId, prompt: prompt))
 
         case "run.requeued":
             eventType = .runRequeued
-            let fromAttempt = json["from_attempt"] as? Int ?? 0
-            let toAttempt = json["to_attempt"] as? Int ?? 0
+            let fromAttempt = payloadJSON["from_attempt"] as? Int ?? 0
+            let toAttempt = payloadJSON["to_attempt"] as? Int ?? 0
             payload = .runRequeued(RunRequeuedPayload(fromAttempt: fromAttempt, toAttempt: toAttempt))
 
         case "run.completed":
             // v3 terminal event — same payload shape as legacy "done" with status=completed
-            if let msgDict = json["message"] as? [String: Any] {
+            if let msgDict = payloadJSON["message"] as? [String: Any] {
                 self.pendingTerminalMessageJSON = msgDict
             }
-            let status = json["status"] as? String ?? "completed"
+            let status = payloadJSON["status"] as? String ?? "completed"
             eventType = .runCompleted
-            let text = Self.parseTerminalText(from: json) ?? ""
-            let terminalReasoning = Self.parseTerminalReasoning(from: json)
-            let usageDict = json["usage"] as? [String: Any]
+            let text = Self.parseTerminalText(from: payloadJSON) ?? ""
+            let terminalReasoning = Self.parseTerminalReasoning(from: payloadJSON)
+            let usageDict = payloadJSON["usage"] as? [String: Any]
             let usage = usageDict.map { Usage(
                 promptTokens: $0["prompt_tokens"] as? Int,
                 completionTokens: $0["completion_tokens"] as? Int,
                 totalTokens: $0["total_tokens"] as? Int
             )}
-            if let contextDict = json["context"] as? [String: Any] {
+            if let contextDict = payloadJSON["context"] as? [String: Any] {
                 self.pendingContextWindow = contextDict["window"] as? Int
                 self.pendingContextUsed = contextDict["used"] as? Int
             }
@@ -438,9 +450,9 @@ actor JobStreamCoordinator {
 
         case "run.failed":
             eventType = .runFailed
-            let error = json["error"] as? String ?? "Unknown error"
-            let errorCategory = json["errorCategory"] as? String
-            let errorAction = json["errorAction"] as? String
+            let error = payloadJSON["error"] as? String ?? "Unknown error"
+            let errorCategory = payloadJSON["errorCategory"] as? String
+            let errorAction = payloadJSON["errorAction"] as? String
             payload = .runFailed(RunFailedPayload(
                 error: error, retryable: false,
                 errorCategory: errorCategory, errorAction: errorAction
@@ -448,7 +460,7 @@ actor JobStreamCoordinator {
 
         case "run.cancelled":
             eventType = .runCancelled
-            let reason = json["error"] as? String ?? "Cancelled"
+            let reason = payloadJSON["error"] as? String ?? "Cancelled"
             payload = .runCancelled(RunCancelledPayload(reason: reason))
 
         case "reconnecting":
