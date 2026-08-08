@@ -111,7 +111,13 @@ struct OnboardingFlowView: View {
     private var content: some View {
         switch step {
         case .welcome:
-            WelcomeStepView(onAdvance: { advance(to: .relay) })
+            WelcomeStepView(onAdvance: {
+                // Native gateway talks directly to Hermes and doesn't use
+                // the connector's relay URL or pairing-code handshake at
+                // all -- skip straight to permissions, then Nous login gates
+                // .ready. Legacy mode is unchanged.
+                advance(to: nativeGatewayClient != nil ? .permissions : .relay)
+            })
         case .relay:
             RelayStepView(
                 relayConfiguration: relayConfiguration,
@@ -271,7 +277,14 @@ struct OnboardingFlowView: View {
         guard let currentIndex = OnboardingStep.allCases.firstIndex(of: step),
               currentIndex > 0 else { return }
         localErrorMessage = nil
-        // Skip .welcome (step 0) — go back one step from current position
+        // Skip .welcome (step 0) — go back one step from current position.
+        // Native gateway mode skips .relay/.pairing on the way forward
+        // (see .welcome's onAdvance above); mirror that going back so
+        // .permissions returns to .welcome, not the pairing-code screen.
+        if nativeGatewayClient != nil && step == .permissions {
+            step = .welcome
+            return
+        }
         let previousIndex = currentIndex - 1
         step = OnboardingStep.allCases[previousIndex]
     }

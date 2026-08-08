@@ -219,6 +219,13 @@ final class AppContainer {
     /// the brief window before this flips true the app shows only the deep-ink
     /// background, continuous with the iOS launch image.
     var isLaunchReady: Bool {
+        if let nativeGatewayClient {
+            // Native gateway doesn't use the pairing/session-bootstrap path
+            // at all -- wait for the silent connect() attempt (using any
+            // stored Nous token) to resolve one way or the other before
+            // deciding whether to show onboarding or the main app.
+            return nativeGatewayClient.connectionStatus != .connecting
+        }
         if !pairingStore.isPaired { return true }
         if isInitialized && !sessionStore.isBootstrapping { return true }
         if sessionStore.launchState == .authFailure { return true }

@@ -52,6 +52,7 @@ actor NativeSessionIdMap {
 /// This is the 0.2.0 path. Session IDs are mapped between UUID (app side)
 /// and short-hex (gateway side) via NativeSessionIdMap.
 @MainActor
+@Observable
 final class NativeKallistiClient: HeraldClientProtocol {
     private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeKallistiClient")
 
