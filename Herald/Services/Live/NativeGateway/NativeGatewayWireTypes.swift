@@ -44,6 +44,13 @@ struct NativeGatewayEventParams: Decodable {
         case sessionId = "session_id"
         case payload
     }
+
+    /// Decode the payload as a specific Decodable type.
+    func decodePayload<T: Decodable>(_ type: T.Type) -> T? {
+        guard let payload else { return nil }
+        guard let data = try? JSONEncoder().encode(payload) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
 }
 
 // MARK: - Typed Event Payloads
@@ -111,12 +118,18 @@ struct NativeSessionCreateResult: Decodable {
 struct NativeSessionListItem: Decodable {
     let sessionId: String
     let title: String?
-    let lastActivity: Date?
+    let lastActivity: String?
+    let previewText: String?
+    let isPinned: Bool?
+    let isArchived: Bool?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case title
         case lastActivity = "last_activity"
+        case previewText = "preview_text"
+        case isPinned = "is_pinned"
+        case isArchived = "is_archived"
     }
 }
 
@@ -129,7 +142,7 @@ struct NativeSessionListResult: Decodable {
 struct NativeHistoryMessage: Decodable {
     let role: String
     let content: String
-    let timestamp: Date?
+    let timestamp: String?
 }
 
 struct NativeSessionHistoryResult: Decodable {
@@ -140,7 +153,7 @@ struct NativeSessionHistoryResult: Decodable {
 // MARK: - Untyped JSON Value
 
 /// Minimal untyped JSON value for `NativeGatewayResponse.result` and event payloads.
-enum NativeJSONValue: Decodable {
+enum NativeJSONValue: Codable {
     case object([String: NativeJSONValue])
     case array([NativeJSONValue])
     case string(String)
@@ -156,6 +169,18 @@ enum NativeJSONValue: Decodable {
         if let v = try? container.decode(Double.self) { self = .number(v); return }
         if let v = try? container.decode(Bool.self) { self = .bool(v); return }
         self = .null
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try container.encode(v)
+        case .array(let v): try container.encode(v)
+        case .string(let v): try container.encode(v)
+        case .number(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .null: try container.encodeNil()
+        }
     }
 }
 
