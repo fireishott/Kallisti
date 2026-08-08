@@ -97,6 +97,12 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
         logger.info("Tokens stored in keychain")
     }
 
+    /// The stored gateway access token, for authenticating connector calls
+    /// that native-gateway clients make (they have no paired credential).
+    func currentAccessToken() async -> String? {
+        await secureStore.retrieve(key: "nativeGatewayAccessToken")
+    }
+
     func mintTicket() async throws -> String {
         guard let accessToken = await secureStore.retrieve(key: "nativeGatewayAccessToken") else {
             throw NativeAuthError.notLoggedIn

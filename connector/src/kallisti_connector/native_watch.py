@@ -16,13 +16,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path.home() / ".config" / "kallisti-native-watch.json"
-NATIVE_GATEWAY_HOST = "192.168.10.118"
-NATIVE_GATEWAY_PORT = 9119
+CONFIG_PATH = Path(
+    os.environ.get(
+        "KALLISTI_NATIVE_WATCH_CONFIG",
+        str(Path.home() / ".config" / "kallisti-native-watch.json"),
+    )
+)
+
+# The connector and the native gateway run on the same host, so loopback is
+# both the correct default and the safest -- this traffic should never leave
+# the machine. Overridable for split deployments; not a baked-in LAN IP.
+NATIVE_GATEWAY_HOST = os.environ.get("KALLISTI_NATIVE_GATEWAY_HOST", "127.0.0.1")
+NATIVE_GATEWAY_PORT = int(os.environ.get("KALLISTI_NATIVE_GATEWAY_PORT", "9119"))
 
 
 class NativeWatchRegistry:
@@ -79,6 +89,11 @@ class NativeWatchTokens:
             return
         self._refresh_token = data.get("refresh_token")
 
+    @property
+    def is_configured(self) -> bool:
+        """False until the one-time login has stored a refresh token."""
+        return bool(self._refresh_token)
+
     async def access_token(self) -> str:
         """Return a valid access token, refreshing lazily on first use.
 
@@ -121,21 +136,44 @@ async def run_watcher(
     tokens: NativeWatchTokens,
     send_completion_push,
     end_live_activity,
-    terminal_event_type: str,
+    terminal_event_types: tuple[str, ...] = ("turn.end", "turn.error"),
 ) -> None:
     """Long-running background task -- start once at connector boot.
 
     Holds one persistent WebSocket connection to the native gateway and
     fires pushes when a terminal event matches a watched session.
 
-    ``terminal_event_type`` defaults to ``"turn.complete"`` in the brief
-    but this MUST be confirmed against a live SSE capture -- the actual
-    event type emitted by Hermes for a completed turn may differ.
+    ``terminal_event_types`` is confirmed against ``tui_gateway/server.py``:
+    the gateway's ``_emit`` call sites produce ``turn.end`` on completion
+    and ``turn.error`` on failure. There is no ``turn.complete`` event --
+    an earlier version of this module matched that name and therefore
+    never fired a single push.
+
+    Frame shape, from ``_event_frame`` in the same module::
+
+        {"jsonrpc": "2.0", "method": "event",
+         "params": {"type": ..., "session_id": ..., "payload": {...}}}
     """
     import websockets  # local import to keep module loadable without websockets dep
 
     backoff = 1.0
+    warned_unconfigured = False
     while True:
+        if not tokens.is_configured:
+            # Expected state until the one-time login has been run. Say so
+            # once, then idle quietly -- this used to raise and log a full
+            # traceback every few seconds forever.
+            if not warned_unconfigured:
+                logger.warning(
+                    "Native watch idle: no credential at %s. "
+                    "Push notifications for native-gateway turns are off "
+                    "until the one-time login script is run.",
+                    CONFIG_PATH,
+                )
+                warned_unconfigured = True
+            await asyncio.sleep(60)
+            continue
+        warned_unconfigured = False
         try:
             access_token = await tokens.access_token()
             ticket_url = (
@@ -155,19 +193,30 @@ async def run_watcher(
             async with websockets.connect(uri) as ws:
                 backoff = 1.0
                 async for raw in ws:
-                    frame = json.loads(raw)
-                    params = frame.get("params")
+                    try:
+                        frame = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    params = (
+                        frame.get("params") if isinstance(frame, dict) else None
+                    )
                     if (
                         not isinstance(params, dict)
-                        or params.get("type") != terminal_event_type
+                        or params.get("type") not in terminal_event_types
                     ):
                         continue
                     session_id = params.get("session_id")
                     if not session_id:
                         continue
-                    for device_token, token_kind in registry.watchers_for(
-                        session_id
-                    ):
+                    watchers = registry.watchers_for(session_id)
+                    if watchers:
+                        logger.info(
+                            "Native turn %s for session=%s — notifying %d device(s)",
+                            params.get("type"),
+                            session_id,
+                            len(watchers),
+                        )
+                    for device_token, token_kind in watchers:
                         try:
                             if token_kind == "liveActivity":
                                 await end_live_activity(

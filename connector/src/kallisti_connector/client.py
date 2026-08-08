@@ -905,8 +905,12 @@ class HeraldConnector:
                     run_watcher,
                 )
                 facade_ctx.native_watch_registry = NativeWatchRegistry()
+                # httpx.Timeout requires either a positional default or all
+                # four keywords -- connect/read alone raises ValueError and
+                # killed the watcher at startup. Same trap that broke the
+                # runs probe in 2.4.1; keep the default first arg.
                 _native_watch_session = httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10, read=30)
+                    timeout=httpx.Timeout(30.0, connect=10.0)
                 )
                 watch_tokens = NativeWatchTokens(session=_native_watch_session)
 
@@ -952,7 +956,11 @@ class HeraldConnector:
                         watch_tokens,
                         _adapt_completion_push,
                         _adapt_live_activity_end,
-                        terminal_event_type="turn.complete",  # confirm against live capture
+                        # Confirmed against tui_gateway/server.py's _emit call
+                        # sites: the gateway emits turn.end (and turn.error on
+                        # failure). It never emits "turn.complete", which is
+                        # what this was matching, so no push could ever fire.
+                        terminal_event_types=("turn.end", "turn.error"),
                     ),
                 )
                 logger.info("Native watch watcher started")

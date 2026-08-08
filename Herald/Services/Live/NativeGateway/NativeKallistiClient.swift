@@ -74,9 +74,49 @@ final class NativeKallistiClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
 
-    init(gatewayBaseURL: String, authCoordinator: NativeAuthCoordinator) {
+    private let secureStore: (any SecureStoreProtocol)?
+
+    init(
+        gatewayBaseURL: String,
+        authCoordinator: NativeAuthCoordinator,
+        secureStore: (any SecureStoreProtocol)? = nil
+    ) {
         self.gatewayBaseURL = gatewayBaseURL
         self.authCoordinator = authCoordinator
+        self.secureStore = secureStore
+    }
+
+    /// Registers this session + APNs token with the connector so it can
+    /// deliver a push when the turn finishes with the app backgrounded.
+    /// Authenticates with the gateway bearer token, since native-gateway
+    /// clients never establish the connector's paired credential.
+    private func registerNativeWatch(sessionId: String) async {
+        guard let secureStore else { return }
+        guard let deviceToken = await secureStore.retrieve(key: AppContainer.apnsTokenKeychainKey),
+              !deviceToken.isEmpty,
+              let accessToken = await authCoordinator.currentAccessToken(),
+              let url = URL(string: "\(gatewayBaseURL)/v1/native/watch")
+        else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONEncoder().encode([
+            "session_id": sessionId,
+            "device_token": deviceToken,
+            "token_kind": "alert",
+        ])
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status != 200 {
+                Self.logger.warning("native watch registration returned HTTP \(status)")
+            }
+        } catch {
+            Self.logger.warning("native watch registration failed: \(error.localizedDescription)")
+        }
     }
 
     func connect() async {
@@ -369,6 +409,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
         await client.onEvent { event in
             handler.handle(event)
         }
+
+        // Tell the connector to watch this session so it can fire an APNs
+        // push if the turn finishes while the app is backgrounded or killed
+        // (the app's own WebSocket is suspended then, so nothing else can
+        // notice). Best-effort: a failure here costs a notification, never
+        // the turn itself.
+        await registerNativeWatch(sessionId: sid)
 
         // Submit the prompt
         do {

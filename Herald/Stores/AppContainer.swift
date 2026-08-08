@@ -395,7 +395,8 @@ final class AppContainer {
             )
             let nativeClient = NativeKallistiClient(
                 gatewayBaseURL: gatewayHost.baseURL,
-                authCoordinator: auth
+                authCoordinator: auth,
+                secureStore: secureStore
             )
             Task { @MainActor in
                 await nativeClient.connect()
