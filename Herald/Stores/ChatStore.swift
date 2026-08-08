@@ -3402,6 +3402,55 @@ final class ChatStore {
             }
         }
 
+        // 2026-08-07: final invariant, not another targeted patch. This
+        // function reconciles two independently-computed views of the same
+        // conversation (an SSE-driven local update and a server refresh)
+        // from multiple call sites, several of which run concurrently
+        // against shared @MainActor state (the frequent background poll in
+        // restartPendingPollingIfNeeded races the .finished handler's own
+        // commit). The matching/dedup logic above is already extensive
+        // (id, clientMessageID, jobID+sender, content fingerprint) and is
+        // *supposed* to prevent two representations of the same reply from
+        // both surviving into the result — but this function has been
+        // patched for that exact failure mode roughly a dozen times across
+        // this app's history (B18/B19/B21/B23/B26/B28/B30/B39/B40/B41,
+        // Build 102/107/108/117/118) and duplicate replies resurfaced again
+        // after the 2026-08-07 SSE wire-format fix made the local side of
+        // the merge carry real content for the first time. Rather than add
+        // a 13th targeted patch to logic that has repeatedly proven fragile
+        // even when each individual fix was correct in isolation, enforce
+        // the actual user-visible invariant directly: no two assistant
+        // messages sharing a jobID survive in the returned conversation.
+        // Keeps the richer (non-empty, longer) copy; logs when it fires so
+        // a recurrence is visible instead of silently masked.
+        var bestIndexForJob: [UUID: Int] = [:]
+        var duplicateIndices: [Int] = []
+        for (index, message) in refreshedConversation.messages.enumerated()
+        where message.sender == .herald {
+            guard let jobID = message.jobID else { continue }
+            guard let existingIndex = bestIndexForJob[jobID] else {
+                bestIndexForJob[jobID] = index
+                continue
+            }
+            let existing = refreshedConversation.messages[existingIndex]
+            let existingLen = existing.content.trimmingCharacters(in: .whitespacesAndNewlines).count
+            let candidateLen = message.content.trimmingCharacters(in: .whitespacesAndNewlines).count
+            if candidateLen > existingLen {
+                duplicateIndices.append(existingIndex)
+                bestIndexForJob[jobID] = index
+            } else {
+                duplicateIndices.append(index)
+            }
+        }
+        if !duplicateIndices.isEmpty {
+            Self.logger.error(
+                "mergeConversationMetadata: collapsed \(duplicateIndices.count) duplicate assistant message(s) sharing a jobID — see kallisti-duplicate-reply-merge-race memory"
+            )
+            for index in duplicateIndices.sorted(by: >) {
+                refreshedConversation.messages.remove(at: index)
+            }
+        }
+
         return refreshedConversation
     }
 

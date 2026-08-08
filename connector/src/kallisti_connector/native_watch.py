@@ -41,6 +41,21 @@ class NativeWatchRegistry:
     def watchers_for(self, session_id: str) -> list[tuple[str, str]]:
         return list(self._watchers.get(session_id, []))
 
+    def unwatch(
+        self, *, session_id: str, device_token: str, token_kind: str
+    ) -> None:
+        """Remove a specific watcher entry.  Cleans up the session key if
+        the last watcher for that session is removed."""
+        entries = self._watchers.get(session_id)
+        if entries is None:
+            return
+        try:
+            entries.remove((device_token, token_kind))
+        except ValueError:
+            return
+        if not entries:
+            del self._watchers[session_id]
+
 
 class NativeWatchTokens:
     """Self-rotating access token from refresh_token stored in CONFIG_PATH."""
@@ -52,11 +67,35 @@ class NativeWatchTokens:
         self._load()
 
     def _load(self) -> None:
-        data = json.loads(CONFIG_PATH.read_text())
-        self._refresh_token = data["refresh_token"]
+        try:
+            data = json.loads(CONFIG_PATH.read_text())
+        except FileNotFoundError:
+            logger.warning(
+                "Native watch config not found at %s — "
+                "watcher will start but cannot connect until "
+                "the one-time login script is run.",
+                CONFIG_PATH,
+            )
+            return
+        self._refresh_token = data.get("refresh_token")
 
     async def access_token(self) -> str:
+        """Return a valid access token, refreshing lazily on first use.
+
+        KNOWN LIMITATION (Build 1): tokens are only refreshed when the
+        cached value is None (first call or after an explicit reset).
+        If the token expires between WS reconnects, the reconnect loop
+        will burn 1-30s of backoff before the next attempt refreshes.
+        A future build should track the refresh timestamp and proactively
+        refresh when the token approaches expiry (e.g. at 50 minutes).
+        """
         if self._access_token is None:
+            if self._refresh_token is None:
+                raise RuntimeError(
+                    "Native watch cannot authenticate — "
+                    f"no refresh token loaded from {CONFIG_PATH}. "
+                    "Run the one-time login script first."
+                )
             await self._refresh()
         return self._access_token
 
@@ -93,7 +132,7 @@ async def run_watcher(
     but this MUST be confirmed against a live SSE capture -- the actual
     event type emitted by Hermes for a completed turn may differ.
     """
-    import websockets  # noqa: F811 -- local import to keep module loadable
+    import websockets  # local import to keep module loadable without websockets dep
 
     backoff = 1.0
     while True:
