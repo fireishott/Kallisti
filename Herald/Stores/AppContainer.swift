@@ -355,13 +355,17 @@ final class AppContainer {
             heraldClient = MockHeraldClient()
         } else if UserDefaults.standard.object(forKey: "useNativeGateway") == nil
                    || UserDefaults.standard.bool(forKey: "useNativeGateway") {
+            // Routed through Caddy's TLS termination (hermes-relay.fihonline.net
+            // -> .118:9119 for /auth/* and /api/*, added alongside the existing
+            // connector route) rather than the bare LAN IP -- works off-LAN too,
+            // not just on the same network as the host.
             let auth = NativeAuthCoordinator(
-                host: "192.168.10.118",
-                port: 9119,
+                host: "hermes-relay.fihonline.net",
+                port: 443,
                 secureStore: secureStore
             )
             let nativeClient = NativeKallistiClient(
-                gatewayBaseURL: "http://192.168.10.118:9119",
+                gatewayBaseURL: "https://hermes-relay.fihonline.net",
                 authCoordinator: auth
             )
             Task { @MainActor in

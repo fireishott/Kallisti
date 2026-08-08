@@ -22,6 +22,13 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
         self.secureStore = secureStore
     }
 
+    /// 443 means "reach this through Caddy's TLS termination" -- omit the
+    /// port and use https (Caddy's own listener, not the bare gateway).
+    /// Anything else (9119 today) is a direct, unproxied dev/LAN connection.
+    private var gatewayBaseURL: String {
+        port == 443 ? "https://\(host)" : "http://\(host):\(port)"
+    }
+
     // MARK: - Public
 
     func startLogin(presentingFrom viewController: UIViewController) async throws {
@@ -33,7 +40,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
         activeListener = listener
         try await listener.start()
 
-        var components = URLComponents(string: "http://\(host):\(port)/auth/native/authorize")!
+        var components = URLComponents(string: "\(gatewayBaseURL)/auth/native/authorize")!
         components.queryItems = [
             // Explicit -- the dashboard also has the "basic" password
             // provider registered (dashboard.basic_auth in config.yaml), so
@@ -75,7 +82,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
     }
 
     func exchangeCode(_ code: String, verifier: String) async throws {
-        var request = URLRequest(url: URL(string: "http://\(host):\(port)/auth/native/token")!)
+        var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/native/token")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["code": code, "code_verifier": verifier])
@@ -94,7 +101,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
         guard let accessToken = await secureStore.retrieve(key: "nativeGatewayAccessToken") else {
             throw NativeAuthError.notLoggedIn
         }
-        var request = URLRequest(url: URL(string: "http://\(host):\(port)/api/auth/ws-ticket")!)
+        var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/api/auth/ws-ticket")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 

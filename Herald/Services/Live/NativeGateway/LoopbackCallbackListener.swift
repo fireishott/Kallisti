@@ -18,9 +18,14 @@ final class LoopbackCallbackListener: @unchecked Sendable {
     internal var pendingContinuation: CheckedContinuation<Callback, Error>?
 
     func start() async throws {
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
-        let listener = try NWListener(using: params)
+        // NWParameters.tcp + requiredLocalEndpoint(host: "127.0.0.1", port: .any)
+        // throws NWError 22 (EINVAL) on-device -- that combination isn't a
+        // supported way to request "loopback only, OS-assigned port" for a
+        // listener. The plain port-only initializer is the documented path;
+        // it binds all interfaces, but the redirect_uri we hand the server is
+        // still literally "127.0.0.1", so nothing non-local can ever be
+        // reached this way regardless of what the socket itself accepts.
+        let listener = try NWListener(using: .tcp, on: .any)
         self.listener = listener
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
