@@ -3,7 +3,7 @@ import Foundation
 import CryptoKit
 @testable import Kallisti
 
-@Suite("NativeAuthCoordinator")
+@Suite("NativeAuthCoordinator", .serialized)
 struct NativeAuthCoordinatorTests {
 
     // MARK: - Test 1: PKCE challenge is base64url(SHA256(verifier)) with no padding
@@ -184,6 +184,24 @@ struct NativeAuthCoordinatorTests {
         // Verify pendingContinuation was cleared
         let continuationCleared: Bool = listener.pendingContinuation == nil
         #expect(continuationCleared)
+    }
+
+    @Test("Every case has a human-readable errorDescription, not NSError's generic fallback", arguments: [
+        NativeAuthError.listenerSetupFailed,
+        .invalidBaseURL("http://bad"),
+        .loginCancelled,
+        .callbackParseFailed,
+        .stateMismatch,
+        .tokenExchangeFailed,
+        .notLoggedIn,
+        .ticketMintFailed,
+        .connectFailedAfterLogin,
+    ])
+    func errorDescriptionIsHumanReadable(error: NativeAuthError) {
+        let description = error.errorDescription
+        #expect(description != nil)
+        #expect(description?.isEmpty == false)
+        #expect(description?.contains("couldn't be completed") == false)
     }
 
 }

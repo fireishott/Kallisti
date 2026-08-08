@@ -95,6 +95,20 @@ struct NativeGatewayClientTests {
             try await client.send(method: "slow", params: EmptyParams())
         }
     }
+
+    @Test("Every case has a human-readable errorDescription, not NSError's generic fallback", arguments: [
+        NativeGatewayClientError.notConnected,
+        .requestTimeout,
+        .encodingFailed,
+        .transportClosed,
+        .unexpectedFrame,
+    ])
+    func errorDescriptionIsHumanReadable(error: NativeGatewayClientError) {
+        let description = error.errorDescription
+        #expect(description != nil)
+        #expect(description?.isEmpty == false)
+        #expect(description?.contains("couldn't be completed") == false)
+    }
 }
 
 private struct EmptyParams: Encodable {}

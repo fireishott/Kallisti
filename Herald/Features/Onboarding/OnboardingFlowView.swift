@@ -180,6 +180,9 @@ struct OnboardingFlowView: View {
         do {
             try await nativeGatewayClient.startInteractiveLogin(presentingFrom: root)
             pairingStore.completePermissionsOnboarding()
+        } catch NativeAuthError.connectFailedAfterLogin {
+            // Sign-in itself worked -- don't call this a sign-in failure.
+            nousLoginErrorMessage = NativeAuthError.connectFailedAfterLogin.errorDescription
         } catch {
             nousLoginErrorMessage = "Hermes sign-in failed: \(error.localizedDescription)"
         }
