@@ -1,5 +1,6 @@
 import Foundation
 import os
+import UIKit
 import BackgroundTasks
 import Speech
 import UserNotifications
@@ -337,6 +338,28 @@ final class AppContainer {
         let heraldClient: any HeraldClientProtocol
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
+        } else if UserDefaults.standard.bool(forKey: "useNativeGateway") {
+            let auth = NativeAuthCoordinator(
+                host: "192.168.10.118",
+                port: 9119,
+                secureStore: secureStore
+            )
+            let nativeClient = NativeKallistiClient(
+                gatewayBaseURL: "http://192.168.10.118:9119",
+                authCoordinator: auth
+            )
+            Task { @MainActor in
+                do {
+                    let ticket = try await Self.mintTicketLoggingInIfNeeded(auth: auth)
+                    let wsURL = URL(string: "ws://192.168.10.118:9119/api/ws?ticket=\(ticket)")!
+                    let transport = URLSessionWebSocketTransport()
+                    let gateway = NativeGatewayClient(transport: transport)
+                    try await gateway.connect(url: wsURL)
+                } catch {
+                    Logger.app.error("native gateway connect failed: \(error.localizedDescription)")
+                }
+            }
+            heraldClient = nativeClient
         } else {
             let liveClient = LiveHeraldClient(
                 apiClient: apiClient,
@@ -1410,5 +1433,24 @@ final class AppContainer {
             activeJobs: chatStore.isStreaming ? 1 : 0,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         )
+    }
+}
+
+// MARK: - Native Gateway (developer switch)
+
+extension AppContainer {
+    @MainActor
+    static func mintTicketLoggingInIfNeeded(auth: NativeAuthCoordinator) async throws -> String {
+        do {
+            return try await auth.mintTicket()
+        } catch NativeAuthError.notLoggedIn {
+            guard let root = UIApplication.shared.connectedScenes
+                .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+                .first?.rootViewController else {
+                throw NativeAuthError.notLoggedIn
+            }
+            try await auth.startLogin(presentingFrom: root)
+            return try await auth.mintTicket()
+        }
     }
 }
