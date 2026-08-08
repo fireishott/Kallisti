@@ -33,7 +33,7 @@ from kallisti_connector.client import (
     StructuredJobError,
     _estimate_payload_tokens,
 )
-from kallisti_connector.hermes_api_executor import StreamEvent
+from kallisti_connector.herald_runner import StreamEvent
 from kallisti_connector.runtime_adapter import RuntimeTurnResult
 from kallisti_connector.state import ConnectorState, ConnectorStateStore
 

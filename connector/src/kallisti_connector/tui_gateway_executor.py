@@ -20,7 +20,7 @@ from urllib.parse import quote
 import httpx
 import websockets
 
-from .herald_api_executor import StreamEvent
+from .herald_runner import StreamEvent
 from .herald_runner import HeraldChatResult, HeraldConversationMessage
 
 logger = logging.getLogger(__name__)

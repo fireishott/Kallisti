@@ -57,11 +57,9 @@ def load_fixture(name: str) -> dict:
 def clean_facade_state():
     """Isolate module-level facade state between tests."""
     facade._last_canary_result = None
-    facade._http_jobs.clear()
     facade._restart_tasks.clear()
     yield
     facade._last_canary_result = None
-    facade._http_jobs.clear()
     facade._restart_tasks.clear()
 
 
@@ -327,24 +325,16 @@ class TestPreflight:
         assert data["preflightVersion"]  # non-empty; client must echo it back
 
     def test_preflight_counts_active_work(self, app_env, client):
-        facade._http_jobs.update({
-            "j1": {"status": "running", "events": [{"type": "tool_activity"}]},
-            "j2": {"status": "running", "events": []},
-            "j3": {"status": "queued", "events": []},
-        })
-        try:
-            with patch(
-                "kallisti_connector.http_facade._run_subprocess",
-                side_effect=fake_systemctl(show_props=standard_props()),
-            ):
-                resp = client.get("/v1/gw/restart/preflight?target=hermes")
-        finally:
-            facade._http_jobs.clear()
+        """In push-only mode, active work counts are always zero."""
+        with patch(
+            "kallisti_connector.http_facade._run_subprocess",
+            side_effect=fake_systemctl(show_props=standard_props()),
+        ):
+            resp = client.get("/v1/gw/restart/preflight?target=hermes")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["activeWork"] == {"running": 2, "queued": 1, "voice": 0, "tools": 1}
-        assert data["activeWork"] == load_fixture("preflight_active_work.json")["activeWork"]
+        assert data["activeWork"] == {"running": 0, "queued": 0, "voice": 0, "tools": 0}
 
     def test_preflight_blocked_when_unit_inactive(self, app_env, client):
         props = standard_props()
