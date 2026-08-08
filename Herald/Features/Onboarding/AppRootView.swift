@@ -11,7 +11,16 @@ struct AppRootView: View {
 
             if container.isLaunchReady {
                 Group {
-                    if !container.pairingStore.isPaired {
+                    if let nativeClient = container.nativeGatewayClient {
+                        // Native gateway: pairing is irrelevant (no connector
+                        // relay/pairing-code handshake). Gate on whether the
+                        // silent connect() (stored token) already succeeded.
+                        if nativeClient.connectionStatus == .connected {
+                            AdaptiveRootView()
+                        } else {
+                            OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
+                        }
+                    } else if !container.pairingStore.isPaired {
                         OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
                     } else if container.pairingStore.needsPermissionsOnboarding {
                         OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient)
@@ -68,6 +77,7 @@ struct AppRootView: View {
         }
         .animation(Design.Motion.standard, value: container.pairingStore.isPaired)
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
+        .animation(Design.Motion.standard, value: container.nativeGatewayClient?.connectionStatus)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
         .animation(Design.Motion.standard, value: container.sessionStore.launchState)
         .task {
