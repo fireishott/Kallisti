@@ -94,6 +94,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
     var featureClient: NativeGatewayFeatureClient {
         NativeGatewayFeatureClient { [weak self] in
             self?.client
+        } currentSessionIdProvider: { [weak self] in
+            guard let self else { return nil }
+            guard let conv = self.currentConversation else { return nil }
+            return await self.idMap.nativeId(for: conv.id)
         }
     }
 
@@ -195,6 +199,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
             await client.onDisconnect { [weak self] in
                 Task { @MainActor in await self?.handleUnexpectedDisconnect() }
+            }
+            // Close any previous transport so a reconnect does not leave an
+            // orphaned WS open server-side (each connect() mints a fresh
+            // ticket + socket; replacing self.client without closing the old
+            // transport leaks the old connection and its sessions).
+            if let old = self.transport {
+                await old.close()
             }
             self.transport = transport
             self.client = client
@@ -431,7 +442,26 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func ensureConversation(id: UUID) async -> Bool {
-        if await idMap.nativeId(for: id) != nil { return true }
+        // A persisted mapping can point at a session the gateway no longer
+        // has (reaped after a disconnect / gateway restart). Validate with a
+        // history probe before trusting it, and unregister + recreate when
+        // stale -- otherwise the next prompt.submit dies with 4001
+        // "session not found".
+        if let nativeId = await idMap.nativeId(for: id) {
+            do {
+                guard let client else { throw NativeGatewayClientError.notConnected }
+                let response = try await client.send(
+                    method: "session.history",
+                    params: ["session_id": nativeId]
+                )
+                if response.error == nil {
+                    return true
+                }
+            } catch {
+                // Treat any probe failure as stale; fall through to recreate.
+            }
+            await idMap.remove(uuid: id)
+        }
         do {
             _ = try await createSession(title: "New Chat")
             return true
@@ -525,6 +555,42 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 params: PromptSubmitParams(sessionId: sid, text: message)
             )
             if let error = response.error {
+                // A stale idMap entry (persisted from a previous run, reaped
+                // server-side) surfaces as 4001 "session not found". Unregister
+                // the dead mapping, create a fresh session, register a NEW
+                // handler for it, and retry ONCE so the user's message still
+                // lands instead of failing.
+                if error.message.localizedCaseInsensitiveContains("session not found") {
+                    await idMap.remove(uuid: sessionUUID)
+                    do {
+                        let summary = try await createSession(title: "New Chat")
+                        guard let freshSid = await idMap.nativeId(for: summary.id) else {
+                            continuation.yield(.failed("No session ID"))
+                            continuation.finish()
+                            return
+                        }
+                        let freshHandler = StreamEventHandler(sessionId: freshSid, continuation: continuation)
+                        await client.onEvent { event in
+                            freshHandler.handle(event)
+                        }
+                        let retry = try await client.send(
+                            method: "prompt.submit",
+                            params: PromptSubmitParams(sessionId: freshSid, text: message)
+                        )
+                        if let retryError = retry.error {
+                            continuation.yield(.failed(retryError.message))
+                            continuation.finish()
+                            return
+                        }
+                        // No finish() here - the fresh handler's stream events
+                        // drive the continuation to completion.
+                        return
+                    } catch {
+                        continuation.yield(.failed("Submit failed: \(error)"))
+                        continuation.finish()
+                        return
+                    }
+                }
                 continuation.yield(.failed(error.message))
                 continuation.finish()
                 return

@@ -32,9 +32,14 @@ struct NativeGatewayFeatureClient {
     /// The feature client is stateless: every call fetches the current client
     /// so it stays correct across reconnects.
     private let clientProvider: @MainActor () -> NativeGatewayClient?
+    private let currentSessionIdProvider: @MainActor () async -> String?
 
-    init(clientProvider: @escaping @MainActor () -> NativeGatewayClient?) {
+    init(
+        clientProvider: @escaping @MainActor () -> NativeGatewayClient?,
+        currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil }
+    ) {
         self.clientProvider = clientProvider
+        self.currentSessionIdProvider = currentSessionIdProvider
     }
 
     // MARK: - Gateway Status
@@ -194,9 +199,16 @@ struct NativeGatewayFeatureClient {
             throw NativeGatewayClientError.notConnected
         }
         let target = provider.isEmpty ? name : "\(provider)/\(name)"
+        var params: [String: String] = ["command": "/model \(target)"]
+        // slash.exec requires a session_id (_sess_nowait 4001s without one).
+        // Scope the switch to the active conversation when there is one so the
+        // gateway can resolve the session instead of rejecting the command.
+        if let sessionId = await currentSessionIdProvider() {
+            params["session_id"] = sessionId
+        }
         let response = try await client.send(
             method: "slash.exec",
-            params: ["command": "/model \(target)"]
+            params: params
         )
         if let error = response.error { throw error }
     }
