@@ -131,7 +131,7 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Kallisti uses your location in the background to provide contextual awareness and proactive suggestions."
         NSMotionUsageDescription: "Kallisti uses motion data to understand your current activity for contextual awareness."
         NSSpeechRecognitionUsageDescription: "Kallisti uses speech recognition for voice commands and local transcription."
-        APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
+        APP_HOSTED_RELAY_URL: "https://hermes-relay.fihonline.net/v1"
         APP_HOSTED_RELAY_ENABLED: true
         APP_PRIVACY_URL: "https://kallisti.fihonline.net/privacy.html"
         APP_TERMS_URL: "https://kallisti.app/terms.html"
