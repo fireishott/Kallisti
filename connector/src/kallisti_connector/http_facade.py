@@ -1868,14 +1868,52 @@ async def push_register(request: Request) -> JSONResponse:
     return JSONResponse({"registered": True, "environment": environment})
 
 
+async def _verify_native_gateway_bearer(token: str) -> bool:
+    """True if *token* is a live native-gateway access token.
+
+    Verification is delegated to the gateway rather than reimplemented
+    here: the connector has no business holding Portal's JWKS or
+    duplicating the audience/issuer checks the nous plugin already does.
+    A 200 from an auth-required gateway route means the token is good.
+    """
+    import httpx
+
+    from .native_watch import NATIVE_GATEWAY_HOST, NATIVE_GATEWAY_PORT
+
+    url = (
+        f"http://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}/api/auth/me"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                url, headers={"Authorization": f"Bearer {token}"}
+            )
+        return resp.status_code == 200
+    except Exception:
+        logger.exception("native gateway bearer verification failed")
+        return False
+
+
 async def native_watch_route(request: Request) -> JSONResponse:
     """POST /v1/native/watch -- register a session for push notifications.
 
     The iOS app calls this after submitting a turn directly to Hermes
     (native world) so the connector knows which session_id to watch
     for terminal events and fire APNs / Live Activity pushes.
+
+    Accepts EITHER the connector's own paired credential (legacy clients)
+    or a native-gateway bearer token. Native-gateway clients never pair,
+    so requiring the paired credential here made this endpoint
+    unreachable for exactly the clients it exists to serve.
     """
-    await require_auth(request)
+    auth_header = request.headers.get("authorization", "")
+    bearer = ""
+    if auth_header[:7].lower() == "bearer ":
+        bearer = auth_header[7:].strip()
+    if bearer and await _verify_native_gateway_bearer(bearer):
+        pass  # authenticated as a native-gateway client
+    else:
+        await require_auth(request)
     try:
         body = await request.json()
     except Exception:
