@@ -136,6 +136,8 @@ private struct NativeTokenResponse: Decodable {
 
 enum NativeAuthError: Error {
     case listenerSetupFailed
+    case invalidBaseURL(String)
+    case loginCancelled
     case callbackParseFailed
     case stateMismatch
     case tokenExchangeFailed

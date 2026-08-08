@@ -14,6 +14,8 @@ final class LoopbackCallbackListener: @unchecked Sendable {
 
     private(set) var port: UInt16 = 0
     private var listener: NWListener?
+    /// Internal access for testing the stop-continuation interaction.
+    internal var pendingContinuation: CheckedContinuation<Callback, Error>?
 
     func start() async throws {
         let params = NWParameters.tcp
@@ -40,7 +42,9 @@ final class LoopbackCallbackListener: @unchecked Sendable {
     func waitForCallback() async throws -> Callback {
         guard let listener else { throw NativeAuthError.listenerSetupFailed }
         return try await withCheckedThrowingContinuation { continuation in
+            self.pendingContinuation = continuation
             listener.newConnectionHandler = { connection in
+                self.pendingContinuation = nil
                 Self.handle(connection, listener: listener, continuation: continuation)
             }
         }
@@ -75,6 +79,10 @@ final class LoopbackCallbackListener: @unchecked Sendable {
     }
 
     func stop() {
+        if let continuation = pendingContinuation {
+            pendingContinuation = nil
+            continuation.resume(throwing: NativeAuthError.loginCancelled)
+        }
         listener?.cancel()
     }
 }

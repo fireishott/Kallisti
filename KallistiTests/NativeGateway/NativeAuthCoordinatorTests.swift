@@ -145,6 +145,47 @@ struct NativeAuthCoordinatorTests {
             _ = try await coordinator.mintTicket()
         }
     }
+
+    // MARK: - F2: stop() resumes pending continuation with loginCancelled
+
+    @Test("stop() resumes pending continuation with loginCancelled")
+    func stopResumesPendingContinuation() async throws {
+        let listener = LoopbackCallbackListener()
+        // Simulate a suspended waitForCallback by setting a pending continuation
+        // that will capture whether stop() resumes it.
+        var capturedError: Error?
+
+        let task = Task<LoopbackCallbackListener.Callback, Error> {
+            try await withCheckedThrowingContinuation { continuation in
+                listener.pendingContinuation = continuation
+            }
+        }
+
+        // Give the task time to suspend on the continuation
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        listener.stop()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected loginCancelled error from stop()")
+        } catch {
+            capturedError = error
+        }
+
+        guard let capturedError else {
+            Issue.record("Expected an error but got none")
+            return
+        }
+        guard case NativeAuthError.loginCancelled = capturedError else {
+            Issue.record("Expected NativeAuthError.loginCancelled, got \(capturedError)")
+            return
+        }
+        // Verify pendingContinuation was cleared
+        let continuationCleared: Bool = listener.pendingContinuation == nil
+        #expect(continuationCleared)
+    }
+
 }
 
 // MARK: - Mock URLProtocols
