@@ -166,10 +166,16 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
                 }
             }
 
-            // 2) Present ASWAS (ephemeral = cookie-preserving). Its completion
-            //    handler only fires for errors/cancel — for loopback redirects
-            //    there is no callback URL to deliver, so a "successful" ASWAS
-            //    completion with no URL is treated as a parse failure.
+            // 2) Present ASWAS with the SHARED browser session (ephemeral=false,
+            //    the default). The shared jar is what makes Nous's flaky
+            //    "login failure" page survivable: a retry rides on the cached
+            //    Google/Nous session cookies instead of starting cold.
+            //    Ephemeral=true (build 15/16) isolated the jar and turned every
+            //    retry into a cold start - and still dropped the gateway PKCE
+            //    cookie at least once (18:00:27 missing_pkce_cookie). The
+            //    completion handler only fires for errors/cancel - for loopback
+            //    redirects there is no callback URL to deliver, so a
+            //    "successful" ASWAS completion with no URL is a parse failure.
             let authSession = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: "http",
@@ -190,7 +196,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
                     }
                 }
             )
-            authSession.prefersEphemeralWebBrowserSession = true
+            // Shared session (ephemeral=false): warm cookies across retries.
             authSession.presentationContextProvider = self
             activeAuthSession = authSession
             let started = authSession.start()
