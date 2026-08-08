@@ -1999,13 +1999,6 @@ def _load_canonical_snapshot(conv_id: str) -> dict:
 
 
 
-# How long the live-event loop in job_events waits on an empty queue before
-# emitting a keepalive comment. Module-level so tests can shrink it instead
-# of sleeping through the real interval.
-_JOB_EVENTS_HEARTBEAT_INTERVAL = 15.0
-
-
-
 
 
 
