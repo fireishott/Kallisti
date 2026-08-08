@@ -99,7 +99,27 @@ final class ModelStore {
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 let info = try await featureClient.modelOptions(explicitOnly: false)
-                models = info.providers.flatMap { provider in
+                // The server emits a `custom:<name>` row for every keyed
+                // provider (providers_dict_to_custom_providers). Those rows
+                // carry no API key and resolve to empty ProviderDefs, so
+                // switching to them 401s and the gateway silently falls back
+                // to a different model. Dedupe: a model shown by a keyed
+                // provider wins over its custom:* twin; models only available
+                // via custom:* (e.g. mbp-ollama qwen3:8b) stay.
+                let allRows = info.providers
+                let keyedNames = Set(
+                    allRows
+                        .filter { !$0.slug.hasPrefix("custom:") }
+                        .flatMap { $0.modelNames }
+                        .map { $0.lowercased() }
+                )
+                let dedupedRows = allRows.filter { provider in
+                    if !provider.slug.hasPrefix("custom:") { return true }
+                    return !(provider.modelNames.contains {
+                        keyedNames.contains($0.lowercased())
+                    })
+                }
+                models = dedupedRows.flatMap { provider in
                     provider.modelNames.map { name in
                         HeraldModel(
                             name: name,

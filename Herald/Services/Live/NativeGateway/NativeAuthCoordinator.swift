@@ -239,6 +239,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         let tokens = try JSONDecoder().decode(NativeTokenResponse.self, from: data)
         await secureStore.store(key: "nativeGatewayAccessToken", value: tokens.accessToken)
         await secureStore.store(key: "nativeGatewayRefreshToken", value: tokens.refreshToken)
+        await secureStore.store(key: "nativeGatewayAccessTokenExpiresAt", value: String(tokens.expiresAt))
         logger.info("Tokens stored in keychain")
     }
 
@@ -249,9 +250,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
     }
 
     func mintTicket() async throws -> String {
-        guard let accessToken = await secureStore.retrieve(key: "nativeGatewayAccessToken") else {
-            throw NativeAuthError.notLoggedIn
-        }
+        let accessToken = try await refreshAccessTokenIfNeeded()
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/api/auth/ws-ticket")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
@@ -264,6 +263,50 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         let ticket = try JSONDecoder().decode(TicketResponse.self, from: data).ticket
         logger.info("Minted fresh ws-ticket via Bearer auth")
         return ticket
+    }
+
+    /// Rotate the stored access token when it is missing or about to expire,
+    /// using the stored refresh token against /auth/native/refresh. The
+    /// gateway never refreshes bearer tokens for us -- the desktop (this app)
+    /// owns the refresh token and must rotate before minting tickets, or an
+    /// expired access token makes every reconnect fail with 401 and the app
+    /// goes permanently offline while still appearing logged in.
+    func refreshAccessTokenIfNeeded() async throws -> String {
+        let now = Int(Date().timeIntervalSince1970)
+        if let stored = await secureStore.retrieve(key: "nativeGatewayAccessToken"),
+           let expiresRaw = await secureStore.retrieve(key: "nativeGatewayAccessTokenExpiresAt"),
+           let expires = Int(expiresRaw),
+           expires > now + 60 {
+            // Still valid for at least a minute -- use as-is.
+            return stored
+        }
+        guard let refreshToken = await secureStore.retrieve(key: "nativeGatewayRefreshToken") else {
+            throw NativeAuthError.notLoggedIn
+        }
+        var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/native/refresh")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["refresh_token": refreshToken, "provider": "nous"])
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw NativeAuthError.tokenRefreshFailed
+            }
+            let tokens = try JSONDecoder().decode(NativeTokenResponse.self, from: data)
+            await secureStore.store(key: "nativeGatewayAccessToken", value: tokens.accessToken)
+            await secureStore.store(key: "nativeGatewayRefreshToken", value: tokens.refreshToken)
+            await secureStore.store(key: "nativeGatewayAccessTokenExpiresAt", value: String(tokens.expiresAt))
+            logger.info("Rotated native gateway tokens via /auth/native/refresh")
+            return tokens.accessToken
+        } catch {
+            // A dead/expired refresh token means the session is over. Clear
+            // so the app falls back to onboarding instead of retrying forever.
+            await secureStore.delete(key: "nativeGatewayAccessToken")
+            await secureStore.delete(key: "nativeGatewayRefreshToken")
+            await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
+            throw NativeAuthError.notLoggedIn
+        }
     }
 
     nonisolated static func s256Challenge(for verifier: String) -> String {
@@ -326,6 +369,7 @@ enum NativeAuthError: Error {
     /// (ws-ticket + WebSocket verification) didn't. Distinct from
     /// tokenExchangeFailed, which is the OAuth step itself failing.
     case connectFailedAfterLogin
+    case tokenRefreshFailed
 }
 
 extension NativeAuthError: LocalizedError {
@@ -354,6 +398,8 @@ extension NativeAuthError: LocalizedError {
             return reason
         case .connectFailedAfterLogin:
             return "Signed in, but couldn't reach the gateway. Check that your Hermes host is running and reachable, then retry."
+        case .tokenRefreshFailed:
+            return "Couldn't refresh the gateway session."
         }
     }
 }

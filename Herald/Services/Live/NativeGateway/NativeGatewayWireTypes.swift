@@ -132,6 +132,7 @@ struct NativeSessionListItem: Decodable {
     enum CodingKeys: String, CodingKey {
         case sessionId
         case sessionIdAlias = "session_id"
+        case sessionIdGateway = "id"
         case title
         case lastActivity = "last_activity"
         case lastActivityAlias = "started_at"
@@ -145,7 +146,9 @@ struct NativeSessionListItem: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        if let v = try c.decodeIfPresent(String.self, forKey: .sessionId) {
+        if let v = try c.decodeIfPresent(String.self, forKey: .sessionIdGateway) {
+            sessionId = v
+        } else if let v = try c.decodeIfPresent(String.self, forKey: .sessionId) {
             sessionId = v
         } else if let v = try c.decodeIfPresent(String.self, forKey: .sessionIdAlias) {
             sessionId = v
@@ -157,10 +160,21 @@ struct NativeSessionListItem: Decodable {
             )
         }
         title = try c.decodeIfPresent(String.self, forKey: .title)
+        // The gateway sends `started_at` as a NUMBER (unix seconds), not an
+        // ISO8601 string. decodeIfPresent(String.self) THROWS a typeMismatch
+        // when the key is present but numeric, which surfaced as "The data
+        // couldn't be read because it isn't in the correct format" on every
+        // app open. Normalize: String stays, Number converts to ISO8601.
         if let v = try c.decodeIfPresent(String.self, forKey: .lastActivity) {
             lastActivity = v
-        } else if let v = try c.decodeIfPresent(String.self, forKey: .lastActivityAlias) {
-            lastActivity = v
+        } else if c.contains(.lastActivityAlias) {
+            if let number = try? c.decode(Double.self, forKey: .lastActivityAlias) {
+                lastActivity = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: number))
+            } else if let s = try? c.decode(String.self, forKey: .lastActivityAlias) {
+                lastActivity = s
+            } else {
+                lastActivity = nil
+            }
         } else {
             lastActivity = nil
         }
