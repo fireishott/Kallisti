@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import Kallisti
 
-@Suite("NativeGatewayClient")
+@Suite("NativeGatewayClient", .serialized)
 struct NativeGatewayClientTests {
 
     @Test("Request/response correlation by id")

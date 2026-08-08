@@ -385,16 +385,26 @@ final class AppContainer {
             // build-configured default (APP_HOSTED_RELAY_URL in Info.plist)
             // only when the user hasn't set anything -- never a literal
             // string baked into this branch.
-            let gatewayHost = Self.resolveNativeGatewayHost(
-                from: settingsStore.settings.relayConfiguration.activeBaseURLString
-            )
+            // Resolve the gateway host LIVE from settings on every call, never
+            // once at construction: a fresh install has no relay (localhost
+            // fallback) but the user types their real server during onboarding,
+            // and only lazy resolution honors that updated relay. Baking it at
+            // construction made every login/connect keep hitting the stale
+            // launch-time localhost regardless of the address the user entered.
             let auth = NativeAuthCoordinator(
-                host: gatewayHost.host,
-                port: gatewayHost.port,
+                baseURLProvider: { @MainActor in
+                    Self.resolveNativeGatewayHost(
+                        from: settingsStore.settings.relayConfiguration.activeBaseURLString
+                    ).baseURL
+                },
                 secureStore: secureStore
             )
             let nativeClient = NativeKallistiClient(
-                gatewayBaseURL: gatewayHost.baseURL,
+                gatewayBaseURLProvider: { @MainActor in
+                    Self.resolveNativeGatewayHost(
+                        from: settingsStore.settings.relayConfiguration.activeBaseURLString
+                    ).baseURL
+                },
                 authCoordinator: auth,
                 secureStore: secureStore
             )

@@ -8,28 +8,37 @@ import os
 @MainActor
 final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
     private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeAuth")
-    private let host: String
-    private let port: Int
+    /// Resolves the gateway base URL at call time from the app's current relay
+    /// configuration. The relay is user-entered during onboarding, so the
+    /// coordinator must NOT capture it at construction (a fresh install has no
+    /// relay yet and would bake in the localhost fallback forever). Reading it
+    /// live means whatever address the user typed is what gets hit.
+    private let baseURLProvider: @MainActor () -> String
     private let session: URLSession
     private let secureStore: any SecureStoreProtocol
     private var activeSafari: SFSafariViewController?
     private var activeListener: LoopbackCallbackListener?
 
-    init(host: String, port: Int, session: URLSession = .shared, secureStore: any SecureStoreProtocol) {
-        self.host = host
-        self.port = port
+    /// Convenience for tests: a fixed host/port.
+    convenience init(host: String, port: Int, session: URLSession = .shared, secureStore: any SecureStoreProtocol) {
+        self.init(baseURLProvider: {
+            port == 443 ? "https://\(host)" : "http://\(host):\(port)"
+        }, session: session, secureStore: secureStore)
+    }
+
+    /// Primary init: base URL is resolved lazily via `baseURLProvider` (e.g.
+    /// from the live relay configuration), so a server entered during
+    /// onboarding is honored on the very first login.
+    init(baseURLProvider: @escaping @MainActor () -> String, session: URLSession = .shared, secureStore: any SecureStoreProtocol) {
+        self.baseURLProvider = baseURLProvider
         self.session = session
         self.secureStore = secureStore
     }
 
-    /// 443 means "reach this through Caddy's TLS termination" -- omit the
-    /// port and use https (Caddy's own listener, not the bare gateway).
-    /// Anything else (9119 today) is a direct, unproxied dev/LAN connection.
-    private var gatewayBaseURL: String {
-        port == 443 ? "https://\(host)" : "http://\(host):\(port)"
-    }
-
     // MARK: - Public
+
+    /// Resolve the current gateway base URL (live, not cached).
+    private var gatewayBaseURL: String { baseURLProvider() }
 
     func startLogin(presentingFrom viewController: UIViewController) async throws {
         let verifier = Self.randomPKCEVerifier()

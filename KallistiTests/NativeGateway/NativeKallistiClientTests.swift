@@ -7,7 +7,7 @@ import Foundation
 /// the socket actually opened, and a transient failure afterward reset
 /// `AppRootView` all the way back to onboarding (and a redundant Nous
 /// OAuth login) even though the device was still validly logged in.
-@Suite("NativeKallistiClient connect() status")
+@Suite("NativeKallistiClient connect() status", .serialized)
 struct NativeKallistiClientTests {
 
     /// mintTicket() does a real HTTP POST -- stub it out so tests that have
