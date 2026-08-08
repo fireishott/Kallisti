@@ -44,15 +44,15 @@ actor NativeSessionIdMap {
     }
 }
 
-/// NativeHeraldClient: implements HeraldClientProtocol using the native
+/// NativeKallistiClient: implements HeraldClientProtocol using the native
 /// JSON-RPC/WebSocket gateway (ws://host:9119/api/ws) instead of the
 /// REST+SSE connector facade.
 ///
 /// This is the 0.2.0 path. Session IDs are mapped between UUID (app side)
 /// and short-hex (gateway side) via NativeSessionIdMap.
 @MainActor
-final class NativeHeraldClient: HeraldClientProtocol {
-    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeHeraldClient")
+final class NativeKallistiClient: HeraldClientProtocol {
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeKallistiClient")
 
     // MARK: - Dependencies
 
