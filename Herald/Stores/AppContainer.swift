@@ -233,6 +233,29 @@ final class AppContainer {
         return false
     }
 
+    /// Derives the native gateway's connection details from the relay base
+    /// URL string (e.g. "https://hermes-relay.fihonline.net/v1") -- same
+    /// setting the legacy connector path uses, so there's exactly one
+    /// user-facing "where's my server" field, not a second hidden one.
+    static func resolveNativeGatewayHost(
+        from relayBaseURLString: String?
+    ) -> (host: String, port: Int, baseURL: String) {
+        guard let relayBaseURLString,
+              let url = URL(string: relayBaseURLString),
+              let host = url.host else {
+            // No relay configured at all (fresh install, hostedRelayEnabled
+            // false, user hasn't set one) -- last-resort fallback so native
+            // gateway mode doesn't crash with a force-unwrap; startLogin will
+            // simply fail with a clear network error the user can act on by
+            // configuring a relay URL in Settings.
+            return (host: "localhost", port: 9119, baseURL: "http://localhost:9119")
+        }
+        let isHTTPS = (url.scheme?.lowercased() == "https")
+        let port = url.port ?? (isHTTPS ? 443 : 80)
+        let scheme = isHTTPS ? "https" : "http"
+        return (host: host, port: port, baseURL: "\(scheme)://\(host)")
+    }
+
     static func makeDefault(
         defaults: UserDefaults? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment
@@ -355,17 +378,23 @@ final class AppContainer {
             heraldClient = MockHeraldClient()
         } else if UserDefaults.standard.object(forKey: "useNativeGateway") == nil
                    || UserDefaults.standard.bool(forKey: "useNativeGateway") {
-            // Routed through Caddy's TLS termination (hermes-relay.fihonline.net
-            // -> .118:9119 for /auth/* and /api/*, added alongside the existing
-            // connector route) rather than the bare LAN IP -- works off-LAN too,
-            // not just on the same network as the host.
+            // Not hardcoded: derived from the same relay-URL setting the
+            // legacy connector path already uses (settingsStore.settings
+            // .relayConfiguration -- user-editable in Settings, same field
+            // RelayStepView writes during onboarding), falling back to the
+            // build-configured default (APP_HOSTED_RELAY_URL in Info.plist)
+            // only when the user hasn't set anything -- never a literal
+            // string baked into this branch.
+            let gatewayHost = Self.resolveNativeGatewayHost(
+                from: settingsStore.settings.relayConfiguration.activeBaseURLString
+            )
             let auth = NativeAuthCoordinator(
-                host: "hermes-relay.fihonline.net",
-                port: 443,
+                host: gatewayHost.host,
+                port: gatewayHost.port,
                 secureStore: secureStore
             )
             let nativeClient = NativeKallistiClient(
-                gatewayBaseURL: "https://hermes-relay.fihonline.net",
+                gatewayBaseURL: gatewayHost.baseURL,
                 authCoordinator: auth
             )
             Task { @MainActor in

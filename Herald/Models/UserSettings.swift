@@ -322,7 +322,15 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
     }
 
     var activeBaseURLString: String? {
-        RelayConfiguration.normalizeBaseURL(customRelayBaseURL)
+        // User-entered value always wins. Otherwise fall back to the
+        // build-configured hosted default (APP_HOSTED_RELAY_URL in
+        // Info.plist) -- this field existed but was never actually
+        // consulted here, so hostedRelayEnabled was silently a no-op.
+        if let custom = RelayConfiguration.normalizeBaseURL(customRelayBaseURL) {
+            return custom
+        }
+        guard hostedRelayEnabled else { return nil }
+        return hostedRelayBaseURL
     }
 
     var relayOriginLabel: String {
