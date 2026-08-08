@@ -338,7 +338,8 @@ final class AppContainer {
         let heraldClient: any HeraldClientProtocol
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
-        } else if UserDefaults.standard.bool(forKey: "useNativeGateway") {
+        } else if UserDefaults.standard.object(forKey: "useNativeGateway") == nil
+                   || UserDefaults.standard.bool(forKey: "useNativeGateway") {
             let auth = NativeAuthCoordinator(
                 host: "192.168.10.118",
                 port: 9119,
