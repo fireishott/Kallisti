@@ -70,7 +70,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private var gatewayBaseURL: String { gatewayBaseURLProvider() }
     private let idMap = NativeSessionIdMap()
     private let transportFactory: @Sendable () -> any NativeGatewayTransport
-    private var client: NativeGatewayClient?
+    private(set) var client: NativeGatewayClient?
     private var transport: (any NativeGatewayTransport)?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
@@ -86,6 +86,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
     private(set) var hasStoredLogin = false
+
+    /// Typed feature calls (gateway status, model options, aux models) riding
+    /// the SAME socket as chat. Stateless: each call fetches the current
+    /// client so reconnects are handled transparently. The class is
+    /// @MainActor, so the closure captures self.client directly.
+    var featureClient: NativeGatewayFeatureClient {
+        NativeGatewayFeatureClient { [weak self] in
+            self?.client
+        }
+    }
 
     private let secureStore: (any SecureStoreProtocol)?
 

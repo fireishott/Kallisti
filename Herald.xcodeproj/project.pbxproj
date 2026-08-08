@@ -329,6 +329,7 @@
 		F1517FFDFD7C1F9B984C64F0 /* HermesTalkCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */; };
 		F18BC36F51FFEA6EB5221656 /* QuickNoteActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554C23328FBA8D6CA2E44BDB /* QuickNoteActivity.swift */; };
 		F205A7FEF397AF02BD9B882B /* NativeGatewayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */; };
+		1558FA75A1F4BCEA7A164C69 /* NativeGatewayFeatureClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */; };
 		F395DD90C3B6C14969BD48FD /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */; };
 		F3C5FED2BFA959D2802BA087 /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE6F7624BD43C7E5123259 /* ModelStore.swift */; };
 		F5DD47C150BD0C1A49205E39 /* RelaySetupCodePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = A345E28CCF2EEEA52D22C3AD /* RelaySetupCodePayload.swift */; };
@@ -477,6 +478,7 @@
 		17D020123D7F5CF82E35E7EC /* ConnectHeraldHostScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectHeraldHostScreen.swift; sourceTree = "<group>"; };
 		1818276733B8FCA5971A00A7 /* TranscriptIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdentity.swift; sourceTree = "<group>"; };
 		1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayTransport.swift; sourceTree = "<group>"; };
+		FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayFeatureClient.swift; sourceTree = "<group>"; };
 		1885D85B5424877D7D4832AC /* MimoVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoVoiceCatalogTests.swift; sourceTree = "<group>"; };
 		1AFBD1A002B69B9B6A0274B2 /* KallistiWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = KallistiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsBrowserView.swift; sourceTree = "<group>"; };
@@ -1184,6 +1186,7 @@
 				1C98F8E95254705577781268 /* NativeAuthCoordinator.swift */,
 				AE693FCC35AF80B560A7CCAC /* NativeGatewayClient.swift */,
 				1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */,
+				FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */,
 				BE3B71F147ACE72E07C2C12C /* NativeGatewayWireTypes.swift */,
 				2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */,
 				AA000001B0000001000000AB /* LoopbackCallbackListener.swift */,
@@ -2017,6 +2020,7 @@
 				8417251982713C7AD2DB6605 /* NativeAuthCoordinator.swift in Sources */,
 				D52969A62978FA9B91EC4A9C /* NativeGatewayClient.swift in Sources */,
 				F205A7FEF397AF02BD9B882B /* NativeGatewayTransport.swift in Sources */,
+				1558FA75A1F4BCEA7A164C69 /* NativeGatewayFeatureClient.swift in Sources */,
 				A58A3A7BBF9D632643A86225 /* NativeGatewayWireTypes.swift in Sources */,
 				450323BE1687C596366E6627 /* NativeKallistiClient.swift in Sources */,
 				AA000001B0000001000000AA /* LoopbackCallbackListener.swift in Sources */,

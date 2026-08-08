@@ -1,11 +1,15 @@
 import Foundation
 
-/// Loads the model catalog from the connected Hermes host via the relay.
+/// Loads the model catalog from the connected Hermes host.
 ///
-/// Listing comes from `GET /v1/models` (config.yaml providers on the host).
-/// Switching goes through `POST /v1/model`, which edits the host's
-/// config.yaml directly and returns the resulting active model — that
-/// response is the source of truth for `activeModel`, not an optimistic guess.
+/// NATIVE path (preferred): `model.options` over the gateway WebSocket -
+/// the authoritative server-side catalog. Switching goes through
+/// `slash.exec` `/model <provider>/<name>`.
+///
+/// LEGACY path (fallback): `GET /v1/models` + `POST /v1/model` via the relay
+/// connector. Kept for pre-native compatibility; the connector REST facade
+/// is dead for native clients (native bearer tokens are rejected on
+/// `/v1/*` and `/gw/*`).
 @MainActor
 @Observable
 final class ModelStore {
@@ -48,10 +52,17 @@ final class ModelStore {
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
+    /// Native gateway feature client provider (nil when running legacy mode).
+    private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
 
-    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
+    init(
+        apiClient: RelayAPIClient?,
+        accessTokenProvider: @escaping () async -> String?,
+        nativeFeatureClientProvider: @escaping @MainActor () -> NativeGatewayFeatureClient? = { nil }
+    ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        self.nativeFeatureClientProvider = nativeFeatureClientProvider
     }
 
     /// Models grouped by provider display name, providers sorted alphabetically
@@ -79,14 +90,47 @@ final class ModelStore {
            !models.isEmpty {
             return
         }
-        guard let apiClient, let token = await accessTokenProvider() else {
-            errorMessage = "Not connected to a relay."
-            return
-        }
 
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        // NATIVE path: model.options over the gateway socket.
+        if let featureClient = nativeFeatureClientProvider() {
+            do {
+                let info = try await featureClient.modelOptions(explicitOnly: false)
+                models = info.providers.flatMap { provider in
+                    provider.modelNames.map { name in
+                        HeraldModel(
+                            name: name,
+                            provider: provider.slug,
+                            providerName: provider.displayName,
+                            contextWindow: nil,
+                            isProviderDefault: nil
+                        )
+                    }
+                }
+                if let model = info.model {
+                    activeModel = ActiveModel(
+                        name: model,
+                        provider: info.provider,
+                        contextWindow: nil
+                    )
+                }
+                lastLoadedAt = .now
+                return
+            } catch {
+                // Fall through to legacy path rather than surfacing an error:
+                // the catalog is still reachable via the relay when native
+                // model.options is unavailable.
+                errorMessage = nil
+            }
+        }
+
+        guard let apiClient, let token = await accessTokenProvider() else {
+            errorMessage = "Not connected to a relay."
+            return
+        }
 
         do {
             let response: ModelCatalogResponse = try await apiClient.get(
@@ -115,11 +159,27 @@ final class ModelStore {
         }
     }
 
-    /// Switches the active model via `POST /v1/model`. Falls back to
-    /// `POST /gw/model/switch` if the connector RPC path fails (e.g. connector
-    /// offline). The relay edits the host's config.yaml and returns the
-    /// resulting active model.
+    /// Switches the active model.
+    ///
+    /// NATIVE path: `slash.exec` `/model <provider>/<name>` on the gateway
+    /// socket (uses the gateway's own model-switch machinery - session-scoped
+    /// or persistent per the gateway's default scope).
+    ///
+    /// LEGACY path: `POST /v1/model` via relay, falling back to
+    /// `POST /gw/model/switch`.
     func switchModel(to name: String, provider: String) async throws {
+        if let featureClient = nativeFeatureClientProvider() {
+            do {
+                try await featureClient.switchModel(name, provider: provider)
+                // Optimistic — reload the catalog to confirm the switch.
+                activeModel = ActiveModel(name: name, provider: provider, contextWindow: nil)
+                await loadModels(force: true)
+                return
+            } catch {
+                // Native switch failed; fall through to legacy path.
+            }
+        }
+
         guard let apiClient, let token = await accessTokenProvider() else {
             throw ModelStoreError.notConnected
         }
