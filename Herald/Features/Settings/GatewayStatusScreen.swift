@@ -1,15 +1,19 @@
 import SwiftUI
 
 /// Real-time gateway telemetry dashboard.
-/// Polls the relay's /gw/status endpoint and displays system health.
+/// Polls the NATIVE gateway's JSON-RPC methods (config.get, session.active_list,
+/// system.battery) over the existing WebSocket connection. The old connector
+/// REST facade (/gw/status) is dead for native clients - the native bearer
+/// token is only valid on the gateway, and Caddy routes /gw/* to the connector.
 struct GatewayStatusScreen: View {
+    @Environment(AppContainer.self) private var container
     @Environment(KallistiHostStore.self) private var hostStore
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var telemetry: GatewayTelemetry?
+    @State private var snapshot: NativeGatewayFeatureClient.GatewayStatusSnapshot?
     @State private var errorMessage: String?
     @State private var isLoading = true
     @State private var refreshTask: Task<Void, Never>?
@@ -18,25 +22,17 @@ struct GatewayStatusScreen: View {
         ZStack {
             Design.Colors.background.ignoresSafeArea()
 
-            if isLoading && telemetry == nil {
+            if isLoading && snapshot == nil {
                 ProgressView("Loading gateway status…")
                     .foregroundStyle(Design.Colors.secondaryForeground)
-            } else if let t = telemetry {
+            } else if let s = snapshot {
                 ScrollView {
                     VStack(spacing: Design.Spacing.lg) {
                         // Connection status cards
-                        connectionCards(t)
+                        connectionCards(s)
 
-                        // System stats
-                        systemStatsSection(t)
-
-                        if t.jobs.active > 0 || t.jobs.queued > 0 {
-                            jobsSection(t.jobs)
-                        }
-
-                        if !t.reasons.isEmpty {
-                            reasonsSection(t.reasons)
-                        }
+                        // Gateway stats
+                        systemStatsSection(s)
                     }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.vertical, Design.Spacing.sm)
@@ -53,6 +49,7 @@ struct GatewayStatusScreen: View {
                     Text(error)
                         .font(Design.Typography.callout)
                         .foregroundStyle(Design.Colors.secondaryForeground)
+                        .multilineTextAlignment(.center)
                     Button("Retry") {
                         Task { await fetchTelemetry() }
                     }
@@ -74,23 +71,36 @@ struct GatewayStatusScreen: View {
 
     // MARK: - Connection Cards
 
-    private func connectionCards(_ t: GatewayTelemetry) -> some View {
+    private func connectionCards(_ s: NativeGatewayFeatureClient.GatewayStatusSnapshot) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             statusCard(
-                label: "Relay",
-                isOnline: t.connector.state == "healthy",
-                detail: "v\(t.connector.version) · \(formatUptime(t.connector.uptimeSeconds))"
-            )
-            statusCard(
-                label: "Connector",
-                isOnline: t.connectorConnected && t.connector.singleton && t.connector.portsOwned,
-                detail: t.connector.version
+                label: "Gateway",
+                isOnline: container.nativeGatewayClient?.connectionStatus == .connected,
+                detail: connectionDetail()
             )
             statusCard(
                 label: "Hermes",
-                isOnline: t.hermes.state == "healthy",
-                detail: t.hermes.activeModel ?? t.hermes.installedVersion
+                isOnline: s.model != nil,
+                detail: s.model ?? "No model"
             )
+            statusCard(
+                label: "Provider",
+                isOnline: s.provider != nil,
+                detail: s.provider ?? "Unset"
+            )
+        }
+    }
+
+    private func connectionDetail() -> String {
+        switch container.nativeGatewayClient?.connectionStatus {
+        case .connected: return "Connected"
+        case .connecting: return "Connecting…"
+        case .reconnecting: return "Reconnecting…"
+        case .degraded: return "Degraded"
+        case .error: return "Error"
+        case .restarting: return "Restarting…"
+        case .disconnected: return "Offline"
+        case .none: return "Not configured"
         }
     }
 
@@ -115,26 +125,37 @@ struct GatewayStatusScreen: View {
 
     // MARK: - System Stats
 
-    private func systemStatsSection(_ t: GatewayTelemetry) -> some View {
-        SettingsSectionView(title: "System") {
+    private func systemStatsSection(_ s: NativeGatewayFeatureClient.GatewayStatusSnapshot) -> some View {
+        SettingsSectionView(title: "Gateway") {
             VStack(spacing: 0) {
-                statRow(label: "CPU", value: t.host.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "Sampling…")
+                statRow(label: "Model", value: s.model ?? "Unavailable")
                 sectionDivider
-                statRow(label: "Memory", value: memoryDescription(t.host))
+                statRow(label: "Provider", value: s.provider ?? "Unavailable")
                 sectionDivider
-                statRow(label: "Uptime", value: t.host.uptimeSeconds.map(formatUptime) ?? "Unavailable")
+                statRow(label: "Providers", value: "\(s.availableProviders.count)")
                 sectionDivider
-                statRow(label: "Active Jobs", value: "\(t.jobs.active)")
+                statRow(label: "Active Sessions", value: "\(s.activeSessionCount)")
                 sectionDivider
-                statRow(label: "Connector", value: t.connector.version)
-                sectionDivider
-                statRow(label: "Hermes", value: t.hermes.installedVersion)
-                if let model = t.hermes.activeModel {
+                statRow(label: "Usage", value: s.usageAvailable ? "Available" : "Unavailable")
+                if s.batteryAvailable {
                     sectionDivider
-                    statRow(label: "Model", value: model)
+                    statRow(
+                        label: "Host Battery",
+                        value: batteryDescription(s)
+                    )
+                }
+                if let home = s.hermesHome, !home.isEmpty {
+                    sectionDivider
+                    statRow(label: "HERMES_HOME", value: home)
                 }
             }
         }
+    }
+
+    private func batteryDescription(_ s: NativeGatewayFeatureClient.GatewayStatusSnapshot) -> String {
+        guard let percent = s.batteryPercent else { return "Unavailable" }
+        let plug = s.batteryPlugged ? " · plugged" : ""
+        return "\(percent)%\(plug)"
     }
 
     private func statRow(label: String, value: String) -> some View {
@@ -146,62 +167,23 @@ struct GatewayStatusScreen: View {
             Text(value)
                 .font(Design.Typography.callout)
                 .foregroundStyle(Design.Colors.secondaryForeground)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
         }
         .frame(minHeight: Design.Size.minTapTarget)
     }
 
-    // MARK: - Jobs
-
-    private func jobsSection(_ jobs: GatewayTelemetry.Jobs) -> some View {
-        SettingsSectionView(title: "Jobs") {
-            VStack(spacing: 0) {
-                statRow(label: "Active", value: "\(jobs.active)")
-                sectionDivider
-                statRow(label: "Queued", value: "\(jobs.queued)")
-            }
-        }
-    }
-
-    // MARK: - Alerts
-
-    private func reasonsSection(_ reasons: [String]) -> some View {
-        SettingsSectionView(title: "Host Warnings") {
-            VStack(spacing: 0) {
-                ForEach(reasons.indices, id: \.self) { i in
-                    HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Design.Colors.warning)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(reasons[i])
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.foreground)
-                        }
-                    }
-                    .frame(minHeight: Design.Size.minTapTarget)
-
-                    if i < reasons.count - 1 {
-                        sectionDivider
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
     private var sectionDivider: some View {
         Divider().overlay(Design.Colors.divider)
     }
+
+    // MARK: - Fetch
 
     private func fetchTelemetry() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
-        // Time out after 10 seconds — the relay's gw/status endpoint can hang
-        // when the connector is wedged, and the user needs to know.
         let result = await withTimeout(seconds: 10) {
             await fetchTelemetryInner()
         }
@@ -236,34 +218,28 @@ struct GatewayStatusScreen: View {
     }
 
     private func fetchTelemetryInner() async {
+        guard let nativeClient = container.nativeGatewayClient else {
+            errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
+            return
+        }
         do {
-            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-                ?? pairingStore.pairedRelayConfiguration?.baseURLString
-            guard let relayBase else {
-                errorMessage = "No relay configured. Add your relay URL in Settings."
-                return
-            }
-            let token = await sessionStore.currentAccessToken()
-            let client = RelayAPIClient { relayBase }
-
-            struct Response: Decodable {
-                let data: GatewayTelemetry
-            }
-            let response: Response = try await client.get(path: "gw/status", accessToken: token)
-            telemetry = response.data
+            let featureClient = nativeClient.featureClient
+            snapshot = try await featureClient.gatewayStatus()
 
             // Update shared state for Control Center
-            GatewayState.shared.update(
-                connected: response.data.overall == "healthy",
-                activeJobs: response.data.jobs.active,
-                model: response.data.hermes.activeModel,
-                version: response.data.connector.version,
-                uptimeSeconds: response.data.host.uptimeSeconds,
-                cpuPercent: response.data.host.cpuPercent,
-                memoryUsedGb: response.data.host.memoryUsedBytes.map { Double($0) / 1_073_741_824 },
-                memoryTotalGb: response.data.host.memoryTotalBytes.map { Double($0) / 1_073_741_824 },
-                alertCount: response.data.reasons.count
-            )
+            if let s = snapshot {
+                GatewayState.shared.update(
+                    connected: container.nativeGatewayClient?.connectionStatus == .connected,
+                    activeJobs: s.activeSessionCount,
+                    model: s.model,
+                    version: nil,
+                    uptimeSeconds: nil,
+                    cpuPercent: nil,
+                    memoryUsedGb: nil,
+                    memoryTotalGb: nil,
+                    alertCount: 0
+                )
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -277,56 +253,4 @@ struct GatewayStatusScreen: View {
             }
         }
     }
-
-    private func formatUptime(_ seconds: Int) -> String {
-        let hours = seconds / 3600
-        let minutes = (seconds % 3600) / 60
-        if hours > 24 {
-            return "\(hours / 24)d \(hours % 24)h"
-        }
-        return "\(hours)h \(minutes)m"
-    }
-
-    private func memoryDescription(_ host: GatewayTelemetry.Host) -> String {
-        guard let used = host.memoryUsedBytes, let total = host.memoryTotalBytes else {
-            return "Unavailable"
-        }
-        return String(format: "%.1f / %.1f GB", Double(used) / 1_073_741_824, Double(total) / 1_073_741_824)
-    }
-}
-
-// MARK: - Models
-
-struct GatewayTelemetry: Decodable {
-    struct Connector: Decodable {
-        let state: String
-        let version: String
-        let uptimeSeconds: Int
-        let singleton: Bool
-        let portsOwned: Bool
-    }
-    struct Hermes: Decodable {
-        let state: String
-        let installedVersion: String
-        let activeModel: String?
-    }
-    struct Host: Decodable {
-        let cpuPercent: Double?
-        let cpuSampleReady: Bool
-        let memoryTotalBytes: Int64?
-        let memoryUsedBytes: Int64?
-        let uptimeSeconds: Int?
-    }
-    struct Jobs: Decodable {
-        let active: Int
-        let queued: Int
-    }
-
-    let overall: String
-    let connectorConnected: Bool
-    let connector: Connector
-    let hermes: Hermes
-    let host: Host
-    let jobs: Jobs
-    let reasons: [String]
 }

@@ -19,13 +19,17 @@ final class KallistiHostStore {
 
     private let hostService: any KallistiHostServiceProtocol
     private let accessTokenProvider: @MainActor () async -> String?
+    /// Native gateway feature client provider (nil when running legacy mode).
+    private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
 
     init(
         hostService: any KallistiHostServiceProtocol,
-        accessTokenProvider: @escaping @MainActor () async -> String?
+        accessTokenProvider: @escaping @MainActor () async -> String?,
+        nativeFeatureClientProvider: @escaping @MainActor () -> NativeGatewayFeatureClient? = { nil }
     ) {
         self.hostService = hostService
         self.accessTokenProvider = accessTokenProvider
+        self.nativeFeatureClientProvider = nativeFeatureClientProvider
     }
 
     var isHostOnline: Bool {
@@ -53,6 +57,34 @@ final class KallistiHostStore {
 
         isLoading = true
         defer { isLoading = false }
+
+        // NATIVE path: the connector REST facade (/hosts/current) rejects
+        // native bearer tokens. Build the host row from gateway config.get.
+        if let featureClient = nativeFeatureClientProvider() {
+            do {
+                let info = try await featureClient.hostInfo()
+                let connected = await accessTokenProvider() != nil
+                currentHost = HeraldHostStatus(
+                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+                    displayName: info.model.map { "\(info.provider ?? "hermes")/\($0)" }
+                        ?? (info.provider ?? "Hermes Host"),
+                    hostname: nil,
+                    platform: "native",
+                    connectorVersion: nil,
+                    heraldCommand: nil,
+                    heraldVersion: nil,
+                    heraldModel: info.model,
+                    lastSeenAt: .now,
+                    lastConnectedAt: .now,
+                    isOnline: connected
+                )
+                lastErrorMessage = nil
+                onHostChanged?()
+                return
+            } catch {
+                // Fall through to legacy path.
+            }
+        }
 
         do {
             currentHost = try await hostService.fetchCurrentHost(accessToken: await accessTokenProvider())

@@ -146,7 +146,10 @@ final class AppContainer {
         self.themeManager = loadedThemeManager
         self.modelStore = modelStore ?? ModelStore(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { [nativeGatewayClient] in
+                nativeGatewayClient?.featureClient
+            }
         )
         self.profileStore = profileStore ?? ProfileStore(
             apiClient: apiClient,
@@ -370,7 +373,8 @@ final class AppContainer {
 
         let hostStore = KallistiHostStore(
             hostService: hostService,
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { nativeGatewayClient?.featureClient }
         )
 
         let heraldClient: any HeraldClientProtocol

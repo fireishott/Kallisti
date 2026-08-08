@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(AppContainer.self) private var container
     @Environment(AppSessionStore.self) private var sessionStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(ModelStore.self) private var modelStore
@@ -1672,8 +1673,11 @@ struct SettingsScreen: View {
             // Load AUX model configuration
             if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
                 let client = RelayAPIClient { relayBase }
-                let svc = AuxModelService(apiClient: client) {
-                    await sessionStore.currentAccessToken()
+                let svc = AuxModelService(
+                    apiClient: client,
+                    accessTokenProvider: { await sessionStore.currentAccessToken() }
+                ) {
+                    container.nativeGatewayClient?.featureClient
                 }
                 auxService = svc
                 await svc.load()
