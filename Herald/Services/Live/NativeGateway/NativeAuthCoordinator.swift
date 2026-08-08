@@ -1,12 +1,13 @@
 import Foundation
 import CryptoKit
+import AuthenticationServices
 import SafariServices
 import UIKit
 import Security
 import os
 
 @MainActor
-final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
+final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASWebAuthenticationPresentationContextProviding {
     private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeAuth")
     /// Resolves the gateway base URL at call time from the app's current relay
     /// configuration. The relay is user-entered during onboarding, so the
@@ -18,6 +19,14 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
     private let secureStore: any SecureStoreProtocol
     private var activeSafari: SFSafariViewController?
     private var activeListener: LoopbackCallbackListener?
+    /// Strong reference to the in-flight ASWebAuthenticationSession. The
+    /// session is deallocated by the system if the app drops the last strong
+    /// reference, which cancels the flow — this property keeps it alive until
+    /// the completion handler fires.
+    private var activeAuthSession: ASWebAuthenticationSession?
+    /// Window used as the presentation anchor for ASWebAuthenticationSession
+    /// (required on iPad; harmless on iPhone).
+    private weak var presentationAnchorWindow: UIWindow?
 
     /// Convenience for tests: a fixed host/port.
     convenience init(host: String, port: Int, session: URLSession = .shared, secureStore: any SecureStoreProtocol) {
@@ -65,22 +74,92 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
             URLQueryItem(name: "state", value: state),
         ]
 
-        let safari = SFSafariViewController(url: components.url!)
-        safari.delegate = self
-        activeSafari = safari
-        viewController.present(safari, animated: true)
-        logger.info("Presented OAuth authorize URL in SFSafariViewController")
+        presentationAnchorWindow = viewController.view.window
 
-        let callback = try await listener.waitForCallback()
-        safari.dismiss(animated: true)
-        activeSafari = nil
-        activeListener = nil
+        // Primary path: ASWebAuthenticationSession (RFC 8252 native-app flow).
+        // SFSafariViewController shares Safari's cookie jar, and iOS ITP /
+        // iCloud Private Relay partitioning drops the gateway's PKCE cookie
+        // across the Nous redirect chain — the server then rejects the
+        // callback with "Missing PKCE state cookie". ASWebAuthenticationSession
+        // with an EPHEMERAL session keeps a dedicated cookie jar for the whole
+        // round trip, immune to that partitioning, so the PKCE cookie set by
+        // /auth/native/authorize survives back to /auth/callback.
+        do {
+            let callbackURL = try await presentAuthSession(url: components.url!)
+            guard let callback = Self.parseCallback(from: callbackURL), callback.state == state else {
+                throw NativeAuthError.stateMismatch
+            }
+            activeListener = nil
+            logger.info("Callback received via ASWebAuthenticationSession, state matched, exchanging code")
+            try await exchangeCode(callback.code, verifier: verifier)
+            return
+        } catch NativeAuthError.loginCancelled {
+            // User explicitly cancelled — do NOT fall back; presenting another
+            // browser would be hostile.
+            activeListener?.stop()
+            activeListener = nil
+            throw NativeAuthError.loginCancelled
+        } catch {
+            // The session failed to start or the loopback callback wasn't
+            // captured. Fall back to the proven SFSafariViewController +
+            // loopback-listener path rather than failing the login outright.
+            logger.info("ASWebAuthenticationSession unavailable (\(error.localizedDescription)); falling back to SFSafariViewController")
+            activeAuthSession = nil
+            let safari = SFSafariViewController(url: components.url!)
+            safari.delegate = self
+            activeSafari = safari
+            viewController.present(safari, animated: true)
+            logger.info("Presented OAuth authorize URL in SFSafariViewController")
 
-        guard callback.state == state else {
-            throw NativeAuthError.stateMismatch
+            let callback = try await listener.waitForCallback()
+            safari.dismiss(animated: true)
+            activeSafari = nil
+            activeListener = nil
+
+            guard callback.state == state else {
+                throw NativeAuthError.stateMismatch
+            }
+            logger.info("Callback received (SFSVC fallback), state matched, exchanging code for tokens")
+            try await exchangeCode(callback.code, verifier: verifier)
         }
-        logger.info("Callback received, state matched, exchanging code for tokens")
-        try await exchangeCode(callback.code, verifier: verifier)
+    }
+
+    /// Present the authorize URL in ASWebAuthenticationSession and await the
+    /// loopback callback URL. The session is ephemeral so the gateway's PKCE
+    /// cookie survives the Nous round trip (SFSVC's shared Safari jar drops it
+    /// under ITP/Private Relay — the missing_pkce_cookie failures).
+    private func presentAuthSession(url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let authSession = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "http",
+                completionHandler: { [weak self] callbackURL, error in
+                    Task { @MainActor in
+                        self?.activeAuthSession = nil
+                        if let error {
+                            if let asError = error as? ASWebAuthenticationSessionError,
+                               asError.code == .canceledLogin {
+                                continuation.resume(throwing: NativeAuthError.loginCancelled)
+                            } else {
+                                continuation.resume(throwing: error)
+                            }
+                        } else if let callbackURL {
+                            continuation.resume(returning: callbackURL)
+                        } else {
+                            continuation.resume(throwing: NativeAuthError.callbackParseFailed)
+                        }
+                    }
+                }
+            )
+            authSession.prefersEphemeralWebBrowserSession = true
+            authSession.presentationContextProvider = self
+            activeAuthSession = authSession
+            let started = authSession.start()
+            if !started {
+                activeAuthSession = nil
+                continuation.resume(throwing: NativeAuthError.authSessionFailed("Couldn't start the sign-in session on this device."))
+            }
+        }
     }
 
     nonisolated func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
@@ -89,6 +168,17 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
             activeListener = nil
         }
     }
+
+    // MARK: - ASWebAuthenticationPresentationContextProviding
+
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        // Captured on the main actor at startLogin time; reading a weak ref is
+        // safe from any thread.
+        let anchor = MainActor.assumeIsolated { self.presentationAnchorWindow }
+        return anchor ?? ASPresentationAnchor()
+    }
+
+    // MARK: - Token Exchange
 
     func exchangeCode(_ code: String, verifier: String) async throws {
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/native/token")!)
@@ -137,6 +227,17 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
 
     // MARK: - Private
 
+    /// Extract ``code`` + ``state`` from the loopback callback URL that
+    /// ASWebAuthenticationSession returns (http://127.0.0.1:<port>/callback?code=...&state=...).
+    private static func parseCallback(from url: URL) -> (code: String, state: String)? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let code = components.queryItems?.first(where: { $0.name == "code" })?.value,
+              let state = components.queryItems?.first(where: { $0.name == "state" })?.value else {
+            return nil
+        }
+        return (code, state)
+    }
+
     private static func randomPKCEVerifier() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
@@ -173,6 +274,8 @@ enum NativeAuthError: Error {
     case tokenExchangeFailed
     case notLoggedIn
     case ticketMintFailed
+    /// The ASWebAuthenticationSession could not be started on this device.
+    case authSessionFailed(String)
     /// Nous sign-in itself succeeded, but the follow-up gateway connection
     /// (ws-ticket + WebSocket verification) didn't. Distinct from
     /// tokenExchangeFailed, which is the OAuth step itself failing.
@@ -201,6 +304,8 @@ extension NativeAuthError: LocalizedError {
             return "Not signed in."
         case .ticketMintFailed:
             return "Couldn't establish a session with the gateway."
+        case .authSessionFailed(let reason):
+            return reason
         case .connectFailedAfterLogin:
             return "Signed in, but couldn't reach the gateway. Check that your Hermes host is running and reachable, then retry."
         }
