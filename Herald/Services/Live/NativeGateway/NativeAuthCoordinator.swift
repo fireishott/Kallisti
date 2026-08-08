@@ -164,4 +164,36 @@ enum NativeAuthError: Error {
     case tokenExchangeFailed
     case notLoggedIn
     case ticketMintFailed
+    /// Nous sign-in itself succeeded, but the follow-up gateway connection
+    /// (ws-ticket + WebSocket verification) didn't. Distinct from
+    /// tokenExchangeFailed, which is the OAuth step itself failing.
+    case connectFailedAfterLogin
+}
+
+extension NativeAuthError: LocalizedError {
+    /// Without this, NSError's fallback ("The operation couldn't be
+    /// completed. (Kallisti.NativeAuthError error N.)") is what reaches
+    /// OnboardingFlowView's "Hermes sign-in failed: ..." message.
+    var errorDescription: String? {
+        switch self {
+        case .listenerSetupFailed:
+            return "Couldn't start the sign-in listener on this device."
+        case .invalidBaseURL(let value):
+            return "Invalid gateway address: \(value)"
+        case .loginCancelled:
+            return "Sign-in was cancelled."
+        case .callbackParseFailed:
+            return "Sign-in callback couldn't be read."
+        case .stateMismatch:
+            return "Sign-in response didn't match this request. Please try again."
+        case .tokenExchangeFailed:
+            return "Couldn't complete sign-in with the gateway."
+        case .notLoggedIn:
+            return "Not signed in."
+        case .ticketMintFailed:
+            return "Couldn't establish a session with the gateway."
+        case .connectFailedAfterLogin:
+            return "Signed in, but couldn't reach the gateway. Check that your Hermes host is running and reachable, then retry."
+        }
+    }
 }

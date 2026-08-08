@@ -9,6 +9,26 @@ enum NativeGatewayClientError: Error, Equatable {
     case unexpectedFrame
 }
 
+extension NativeGatewayClientError: LocalizedError {
+    /// Without this, NSError's fallback ("The operation couldn't be
+    /// completed. (Kallisti.NativeGatewayClientError error N.)") is what
+    /// reaches any UI that reads error.localizedDescription.
+    var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            return "Not connected to the gateway."
+        case .requestTimeout:
+            return "The gateway didn't respond in time."
+        case .encodingFailed:
+            return "Couldn't prepare the request."
+        case .transportClosed:
+            return "Connection to the gateway was lost."
+        case .unexpectedFrame:
+            return "Received an unexpected response from the gateway."
+        }
+    }
+}
+
 /// A JSON-RPC 2.0 client over a NativeGatewayTransport.
 ///
 /// Handles request/response correlation by numeric id, dispatches

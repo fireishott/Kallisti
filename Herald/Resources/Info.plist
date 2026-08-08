@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>APP_HOSTED_RELAY_ENABLED</key>
-	<true/>
+	<false/>
 	<key>APP_HOSTED_RELAY_URL</key>
-	<string>https://hermes-relay.fihonline.net/v1</string>
+	<string></string>
 	<key>APP_PRIVACY_URL</key>
 	<string>https://kallisti.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
@@ -59,11 +59,6 @@
 	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>Kallisti uses Siri to send and read messages on CarPlay and with voice commands.</string>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Kallisti uses speech recognition for voice commands and local transcription.</string>
 	<key>NSSupportsLiveActivities</key>

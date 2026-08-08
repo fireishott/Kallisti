@@ -61,8 +61,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private let gatewayBaseURL: String
     private let authCoordinator: NativeAuthCoordinator
     private let idMap = NativeSessionIdMap()
+    private let transportFactory: @Sendable () -> any NativeGatewayTransport
     private var client: NativeGatewayClient?
-    private var transport: URLSessionWebSocketTransport?
+    private var transport: (any NativeGatewayTransport)?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     /// When the current socket was opened, used to tell a working connection
@@ -76,17 +77,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
+    private(set) var hasStoredLogin = false
 
     private let secureStore: (any SecureStoreProtocol)?
 
     init(
         gatewayBaseURL: String,
         authCoordinator: NativeAuthCoordinator,
-        secureStore: (any SecureStoreProtocol)? = nil
+        secureStore: (any SecureStoreProtocol)? = nil,
+        transportFactory: @escaping @Sendable () -> any NativeGatewayTransport = { URLSessionWebSocketTransport() }
     ) {
         self.gatewayBaseURL = gatewayBaseURL
         self.authCoordinator = authCoordinator
         self.secureStore = secureStore
+        self.transportFactory = transportFactory
     }
 
     /// Registers this session + APNs token with the connector so it can
@@ -124,6 +128,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func connect() async {
         connectionStatus = .connecting
+        // Torn down in the catch block if the verification round-trip
+        // below fails, so a socket that "opened" but never proved itself
+        // doesn't linger open in the background on every backoff retry.
+        var provisionalClient: NativeGatewayClient?
         do {
             // Tickets are single-use with a 30s TTL, so every connect --
             // including each reconnect attempt -- mints a fresh one.
@@ -137,26 +145,59 @@ final class NativeKallistiClient: HeraldClientProtocol {
             guard let wsURL = components.url else {
                 throw NativeAuthError.invalidBaseURL(components.description)
             }
-            let transport = URLSessionWebSocketTransport()
+            let transport = transportFactory()
             let client = NativeGatewayClient(transport: transport)
+            provisionalClient = client
 
             try await client.connect(url: wsURL)
+            // task.resume() never throws, so reaching this line does not
+            // prove the socket actually opened -- a rejected ws-ticket or a
+            // routing hiccup looks identical to success until something is
+            // actually sent. Verify with a cheap round-trip before this
+            // client is published and connectionStatus says .connected;
+            // a socket that's really dead fails here and falls through to
+            // the same catch as any other connect failure below instead of
+            // a false "connected" that dies on the very first real request.
+            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0))
+
             await client.onDisconnect { [weak self] in
                 Task { @MainActor in await self?.handleUnexpectedDisconnect() }
             }
             self.transport = transport
             self.client = client
-            // NOT resetting reconnectAttempt here: URLSessionWebSocketTask
-            // .resume() never throws, so reaching this line does not mean the
-            // socket actually opened. Resetting here made a socket that dies
-            // immediately retry at a flat ~1s forever, hammering the gateway
-            // with a fresh ws-ticket mint every attempt. The counter is reset
-            // only once a connection has proven itself (see below).
+            // NOT resetting reconnectAttempt here: a socket can pass the
+            // verification above and still be new/flaky. The counter is
+            // reset only once a connection has proven itself durable (see
+            // handleUnexpectedDisconnect below).
             connectedAt = Date()
+            hasStoredLogin = true
             connectionStatus = .connected
             Self.logger.info("Connected to native gateway")
         } catch {
-            connectionStatus = .disconnected
+            // The client only reaches self.client/self.transport after
+            // verification succeeds (above) -- if we got here with a
+            // provisional client, its socket "opened" but never proved
+            // itself, so close it rather than leaving it dangling.
+            if let provisionalClient {
+                await provisionalClient.close()
+            }
+            // notLoggedIn means there truly is no token -- clear the flag.
+            // Any OTHER failure (network blip, rejected ticket, dead
+            // verification round-trip) must NOT set hasStoredLogin true:
+            // a token existing is not proof this device can actually reach
+            // its gateway (a stale/orphaned token from a previous broken
+            // build mints fine and then fails verification every time,
+            // which used to skip onboarding straight into a permanently
+            // broken main app with no way back). Only a verified successful
+            // connect (above) may set it true. A later failure on an
+            // ALREADY-proven connection correctly leaves it true, which is
+            // what keeps a transient drop from bouncing back to onboarding
+            // and a redundant Nous OAuth login -- that's still intact here,
+            // it just isn't granted on faith from an untested token anymore.
+            if case NativeAuthError.notLoggedIn = error {
+                hasStoredLogin = false
+            }
+            connectionStatus = hasStoredLogin ? .reconnecting : .disconnected
             Self.logger.error("Failed to connect: \(error)")
             scheduleReconnect()
         }
@@ -214,6 +255,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
     func startInteractiveLogin(presentingFrom viewController: UIViewController) async throws {
         try await authCoordinator.startLogin(presentingFrom: viewController)
         await connect()
+        // connect() never throws -- by design, its other callers (the
+        // silent launch-time connect, the background reconnect loop) want
+        // to observe connectionStatus reactively, not catch an exception.
+        // But onboarding's "Open app" button needs to know: without this,
+        // a login that succeeds followed by a connect that silently fails
+        // (unreachable gateway, rejected ticket, etc.) looked identical to
+        // success -- Nous OAuth would fire again with zero error shown,
+        // every single tap, forever. Surface it here instead.
+        guard connectionStatus == .connected else {
+            throw NativeAuthError.connectFailedAfterLogin
+        }
     }
 
     // MARK: - Session Lifecycle

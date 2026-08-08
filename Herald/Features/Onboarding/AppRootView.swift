@@ -13,9 +13,15 @@ struct AppRootView: View {
                 Group {
                     if let nativeClient = container.nativeGatewayClient {
                         // Native gateway: pairing is irrelevant (no connector
-                        // relay/pairing-code handshake). Gate on whether the
-                        // silent connect() (stored token) already succeeded.
-                        if nativeClient.connectionStatus == .connected {
+                        // relay/pairing-code handshake). Gate on hasStoredLogin,
+                        // not raw connectionStatus -- a socket that drops after
+                        // a successful login (idle reap, cell handoff, a flaky
+                        // reconnect) must not bounce the user back through
+                        // onboarding and a redundant Nous OAuth login while
+                        // NativeKallistiClient's own background reconnect is
+                        // already retrying with the stored token. Onboarding
+                        // is for devices that have never logged in at all.
+                        if nativeClient.connectionStatus == .connected || nativeClient.hasStoredLogin {
                             AdaptiveRootView()
                         } else {
                             OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
