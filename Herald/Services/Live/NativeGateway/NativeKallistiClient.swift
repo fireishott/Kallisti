@@ -57,7 +57,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     // MARK: - Dependencies
 
     private let gatewayBaseURL: String
-    private let credentials: NativeAuthCoordinator.Credentials
+    private let authCoordinator: NativeAuthCoordinator
     private let idMap = NativeSessionIdMap()
     private var client: NativeGatewayClient?
     private var transport: URLSessionWebSocketTransport?
@@ -67,18 +67,24 @@ final class NativeKallistiClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
 
-    init(gatewayBaseURL: String, credentials: NativeAuthCoordinator.Credentials) {
+    init(gatewayBaseURL: String, authCoordinator: NativeAuthCoordinator) {
         self.gatewayBaseURL = gatewayBaseURL
-        self.credentials = credentials
+        self.authCoordinator = authCoordinator
     }
 
     func connect() async {
         connectionStatus = .connecting
         do {
-            let wsURL = try await NativeAuthCoordinator.authenticatedWSURL(
-                baseURL: gatewayBaseURL,
-                credentials: credentials
-            )
+            let ticket = try await authCoordinator.mintTicket()
+            guard let base = URL(string: gatewayBaseURL) else {
+                throw NativeAuthError.listenerSetupFailed
+            }
+            var components = URLComponents(url: base.appendingPathComponent("api/ws"), resolvingAgainstBaseURL: false)!
+            components.scheme = base.scheme == "https" ? "wss" : "ws"
+            components.queryItems = [URLQueryItem(name: "ticket", value: ticket)]
+            guard let wsURL = components.url else {
+                throw NativeAuthError.listenerSetupFailed
+            }
             let transport = URLSessionWebSocketTransport()
             let client = NativeGatewayClient(transport: transport)
 

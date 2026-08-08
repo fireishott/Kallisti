@@ -59,6 +59,11 @@
 	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>Kallisti uses Siri to send and read messages on CarPlay and with voice commands.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Kallisti uses speech recognition for voice commands and local transcription.</string>
 	<key>NSSupportsLiveActivities</key>
