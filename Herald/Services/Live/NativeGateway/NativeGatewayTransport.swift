@@ -14,6 +14,13 @@ protocol NativeGatewayTransport: Sendable {
 final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sendable {
     private var task: URLSessionWebSocketTask?
     private let session: URLSession
+    private var keepaliveTask: Task<Void, Never>?
+
+    /// Idle WebSockets get reaped by the reverse proxy and by NAT on
+    /// cellular. Nothing in the JSON-RPC protocol is periodic, so without
+    /// this a quiet connection silently dies and every later request fails
+    /// with transportClosed.
+    private static let keepaliveInterval: Duration = .seconds(20)
 
     init(session: URLSession = .init(configuration: .default)) {
         self.session = session
@@ -23,6 +30,20 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
         let task = session.webSocketTask(with: url)
         task.resume()
         self.task = task
+        startKeepalive()
+    }
+
+    private func startKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.keepaliveInterval)
+                guard !Task.isCancelled, let task = self?.task else { return }
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    task.sendPing { _ in continuation.resume() }
+                }
+            }
+        }
     }
 
     func send(_ data: Data) async throws {
@@ -56,6 +77,8 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
     }
 
     func close() async {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
     }

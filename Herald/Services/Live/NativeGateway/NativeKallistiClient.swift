@@ -63,6 +63,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private let idMap = NativeSessionIdMap()
     private var client: NativeGatewayClient?
     private var transport: URLSessionWebSocketTransport?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempt = 0
+    /// Set by disconnect() so an intentional teardown isn't fought by the
+    /// reconnect loop.
+    private var isDeliberatelyDisconnected = false
 
     // MARK: - HeraldClientProtocol
 
@@ -77,6 +82,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
     func connect() async {
         connectionStatus = .connecting
         do {
+            // Tickets are single-use with a 30s TTL, so every connect --
+            // including each reconnect attempt -- mints a fresh one.
             let ticket = try await authCoordinator.mintTicket()
             guard let base = URL(string: gatewayBaseURL) else {
                 throw NativeAuthError.invalidBaseURL(gatewayBaseURL)
@@ -91,17 +98,53 @@ final class NativeKallistiClient: HeraldClientProtocol {
             let client = NativeGatewayClient(transport: transport)
 
             try await client.connect(url: wsURL)
+            await client.onDisconnect { [weak self] in
+                Task { @MainActor in await self?.handleUnexpectedDisconnect() }
+            }
             self.transport = transport
             self.client = client
+            reconnectAttempt = 0
             connectionStatus = .connected
             Self.logger.info("Connected to native gateway")
         } catch {
             connectionStatus = .disconnected
             Self.logger.error("Failed to connect: \(error)")
+            scheduleReconnect()
+        }
+    }
+
+    /// The socket died on its own (proxy idle reap, network change, cell
+    /// handoff). Without this the app stays up but every request fails with
+    /// transportClosed until it's force-quit.
+    private func handleUnexpectedDisconnect() async {
+        guard !isDeliberatelyDisconnected else { return }
+        Self.logger.warning("Native gateway transport closed unexpectedly — reconnecting")
+        connectionStatus = .reconnecting
+        client = nil
+        transport = nil
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard !isDeliberatelyDisconnected else { return }
+        guard reconnectTask == nil else { return }
+        let attempt = reconnectAttempt
+        reconnectAttempt += 1
+        // 1s, 2s, 4s ... capped at 30s.
+        let delaySeconds = min(pow(2.0, Double(attempt)), 30.0)
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delaySeconds))
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            guard !self.isDeliberatelyDisconnected else { return }
+            await self.connect()
         }
     }
 
     func disconnect() async {
+        isDeliberatelyDisconnected = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
         await client?.close()
         client = nil
         transport = nil
