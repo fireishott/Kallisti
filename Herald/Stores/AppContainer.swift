@@ -51,6 +51,11 @@ final class AppContainer {
     let router = TabRouter()
     let sessionStore: AppSessionStore
     let pairingStore: PairingStore
+    /// Non-nil only when native-gateway mode built a client (see makeDefault).
+    /// Onboarding uses this to trigger the Nous OAuth login it can't reach
+    /// any other way — `NativeKallistiClient.connect()` alone has no UI to
+    /// present a login screen from.
+    let nativeGatewayClient: NativeKallistiClient?
     let hostStore: KallistiHostStore
     let chatStore: ChatStore
     let inboxStore: InboxStore
@@ -98,6 +103,7 @@ final class AppContainer {
     init(
         sessionStore: AppSessionStore,
         pairingStore: PairingStore,
+        nativeGatewayClient: NativeKallistiClient? = nil,
         hostStore: KallistiHostStore,
         chatStore: ChatStore,
         inboxStore: InboxStore,
@@ -123,6 +129,7 @@ final class AppContainer {
     ) {
         self.sessionStore = sessionStore
         self.pairingStore = pairingStore
+        self.nativeGatewayClient = nativeGatewayClient
         self.hostStore = hostStore
         self.chatStore = chatStore
         self.inboxStore = inboxStore
@@ -250,6 +257,7 @@ final class AppContainer {
         let allowMockFallbacks = usesMockPairingService
         let pairingService: any PairingServiceProtocol
         var activePairingStore: PairingStore?
+        var nativeGatewayClient: NativeKallistiClient?
 
         if processEnvironment["UITEST_PAIRING_MODE"] == "mock" {
             pairingService = MockPairingService()
@@ -353,6 +361,7 @@ final class AppContainer {
                 await nativeClient.connect()
             }
             heraldClient = nativeClient
+            nativeGatewayClient = nativeClient
         } else {
             let liveClient = LiveHeraldClient(
                 apiClient: apiClient,
@@ -429,6 +438,7 @@ final class AppContainer {
         let container = AppContainer(
             sessionStore: sessionStore,
             pairingStore: runtimePairingStore,
+            nativeGatewayClient: nativeGatewayClient,
             hostStore: hostStore,
             chatStore: chatStore,
             inboxStore: InboxStore(

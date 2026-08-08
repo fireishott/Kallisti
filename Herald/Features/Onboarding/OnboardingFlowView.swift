@@ -39,16 +39,24 @@ struct OnboardingFlowView: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(PermissionsStore.self) private var permissionsStore
 
+    /// Non-nil only in native-gateway mode. Onboarding's "Open app" step
+    /// uses this to trigger the Nous OAuth login that connect() alone has
+    /// no way to present a screen for.
+    let nativeGatewayClient: NativeKallistiClient?
+
     @State private var step: OnboardingStep
     @State private var setupCode: String = ""
     @State private var isScannerPresented: Bool = false
     @State private var localErrorMessage: String?
     @State private var isRelayValidationInProgress = false
+    @State private var isNousLoginInProgress = false
+    @State private var nousLoginErrorMessage: String?
     @FocusState private var isSetupCodeFocused: Bool
     @FocusState private var isRelayURLFocused: Bool
 
-    init(initialStep: OnboardingStep) {
+    init(initialStep: OnboardingStep, nativeGatewayClient: NativeKallistiClient?) {
         _step = State(initialValue: initialStep)
+        self.nativeGatewayClient = nativeGatewayClient
     }
 
     var body: some View {
@@ -138,8 +146,36 @@ struct OnboardingFlowView: View {
             ReadyStepView(
                 hostDisplayName: pairingStore.pairedRelayConfiguration?.hostDisplayName
                     ?? relayConfiguration.relayOriginLabel,
-                onOpen: { pairingStore.completePermissionsOnboarding() }
+                isSigningIn: isNousLoginInProgress,
+                signInErrorMessage: nousLoginErrorMessage,
+                onOpen: { Task { await completeOnboarding() } }
             )
+        }
+    }
+
+    /// Gates "Open app" on a successful Nous OAuth login when native gateway
+    /// is active. Pairing alone is not enough in that mode — it establishes
+    /// device/push trust with the connector, not chat trust with Hermes.
+    private func completeOnboarding() async {
+        guard let nativeGatewayClient else {
+            pairingStore.completePermissionsOnboarding()
+            return
+        }
+        isNousLoginInProgress = true
+        nousLoginErrorMessage = nil
+        defer { isNousLoginInProgress = false }
+
+        guard let root = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+            .first?.rootViewController else {
+            nousLoginErrorMessage = "Could not present the Hermes sign-in screen."
+            return
+        }
+        do {
+            try await nativeGatewayClient.startInteractiveLogin(presentingFrom: root)
+            pairingStore.completePermissionsOnboarding()
+        } catch {
+            nousLoginErrorMessage = "Hermes sign-in failed: \(error.localizedDescription)"
         }
     }
 
@@ -905,6 +941,8 @@ private struct PermissionsStepView: View {
 
 private struct ReadyStepView: View {
     let hostDisplayName: String
+    let isSigningIn: Bool
+    let signInErrorMessage: String?
     let onOpen: () -> Void
 
     var body: some View {
@@ -942,9 +980,29 @@ private struct ReadyStepView: View {
                 }
                 .padding(.top, Design.Spacing.lg)
 
+                if let signInErrorMessage {
+                    Text(signInErrorMessage)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.danger)
+                        .padding(.top, Design.Spacing.sm)
+                }
+
                 Spacer()
 
-                OnboardingPrimaryCta(title: "Open app") { onOpen() }
+                Group {
+                    if isSigningIn {
+                        HStack {
+                            Spacer()
+                            ProgressView().tint(Design.Colors.foreground)
+                            Spacer()
+                        }
+                        .padding(.vertical, Design.Spacing.sm + 2)
+                    } else {
+                        OnboardingPrimaryCta(
+                            title: signInErrorMessage == nil ? "Open app" : "Retry sign-in"
+                        ) { onOpen() }
+                    }
+                }
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.bottom, Design.Spacing.xl)

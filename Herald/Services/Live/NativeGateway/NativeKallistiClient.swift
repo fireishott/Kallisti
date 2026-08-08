@@ -1,5 +1,6 @@
 import Foundation
 import os
+import UIKit
 
 /// Maps between the app's UUID-based session model and the native gateway's
 /// short-hex session_id model. Stores the mapping in UserDefaults.
@@ -104,6 +105,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
         client = nil
         transport = nil
         connectionStatus = .disconnected
+    }
+
+    /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
+    /// then retries `connect()`. Called from onboarding's "Open app" step —
+    /// `connect()` alone can never trigger this itself, since a failed
+    /// mintTicket() there has nowhere to present a login screen from.
+    func startInteractiveLogin(presentingFrom viewController: UIViewController) async throws {
+        try await authCoordinator.startLogin(presentingFrom: viewController)
+        await connect()
     }
 
     // MARK: - Session Lifecycle

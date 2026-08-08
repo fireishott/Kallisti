@@ -12,9 +12,9 @@ struct AppRootView: View {
             if container.isLaunchReady {
                 Group {
                     if !container.pairingStore.isPaired {
-                        OnboardingFlowView(initialStep: .welcome)
+                        OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
                     } else if container.pairingStore.needsPermissionsOnboarding {
-                        OnboardingFlowView(initialStep: .permissions)
+                        OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient)
                     } else {
                         switch container.sessionStore.launchState {
                         case .authFailure:
