@@ -115,6 +115,10 @@ struct NativeSessionCreateResult: Decodable {
 }
 
 /// Response from `session.list`
+/// The gateway sends `id`/`preview`/`started_at`; older wire revisions sent
+/// `session_id`/`preview_text`/`last_activity`. Decode tolerantly so a single
+/// missing alias cannot throw the whole list (which surfaced as
+/// "The data couldn't be read because it is missing" in the resume picker).
 struct NativeSessionListItem: Decodable {
     let sessionId: String
     let title: String?
@@ -122,14 +126,55 @@ struct NativeSessionListItem: Decodable {
     let previewText: String?
     let isPinned: Bool?
     let isArchived: Bool?
+    let messageCount: Int?
+    let source: String?
 
     enum CodingKeys: String, CodingKey {
-        case sessionId = "session_id"
+        case sessionId
+        case sessionIdAlias = "session_id"
         case title
         case lastActivity = "last_activity"
+        case lastActivityAlias = "started_at"
         case previewText = "preview_text"
+        case previewTextAlias = "preview"
         case isPinned = "is_pinned"
         case isArchived = "is_archived"
+        case messageCount = "message_count"
+        case source
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try c.decodeIfPresent(String.self, forKey: .sessionId) {
+            sessionId = v
+        } else if let v = try c.decodeIfPresent(String.self, forKey: .sessionIdAlias) {
+            sessionId = v
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sessionId,
+                in: c,
+                debugDescription: "session.list item missing id/session_id"
+            )
+        }
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        if let v = try c.decodeIfPresent(String.self, forKey: .lastActivity) {
+            lastActivity = v
+        } else if let v = try c.decodeIfPresent(String.self, forKey: .lastActivityAlias) {
+            lastActivity = v
+        } else {
+            lastActivity = nil
+        }
+        if let v = try c.decodeIfPresent(String.self, forKey: .previewText) {
+            previewText = v
+        } else if let v = try c.decodeIfPresent(String.self, forKey: .previewTextAlias) {
+            previewText = v
+        } else {
+            previewText = nil
+        }
+        isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned)
+        isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived)
+        messageCount = try c.decodeIfPresent(Int.self, forKey: .messageCount)
+        source = try c.decodeIfPresent(String.self, forKey: .source)
     }
 }
 
