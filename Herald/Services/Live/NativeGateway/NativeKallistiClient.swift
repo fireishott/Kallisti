@@ -292,6 +292,31 @@ final class NativeKallistiClient: HeraldClientProtocol {
         connectionStatus = .disconnected
     }
 
+    /// Called on app foreground. iOS suspends URLSessionWebSocketTask sockets
+    /// silently -- receive() never surfaces an error, so handleUnexpectedDisconnect
+    /// may never fire and the app keeps a phantom "connected" socket that fails
+    /// every request. Force a fresh connect whenever we're not verifiably
+    /// connected with a live client.
+    func reconnectIfNeeded() async {
+        guard !isDeliberatelyDisconnected else { return }
+        if let client, connectionStatus == .connected {
+            // Probe cheaply: a dead socket errors on the send, and the
+            // receive loop tears down + reconnects. If the probe succeeds we
+            // are genuinely alive.
+            do {
+                _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0))
+                return
+            } catch {
+                // Fall through to a fresh connect below.
+            }
+        }
+        Self.logger.info("reconnectIfNeeded: forcing fresh connect")
+        connectionStatus = .connecting
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        await connect()
+    }
+
     /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
     /// then retries `connect()`. Called from onboarding's "Open app" step —
     /// `connect()` alone can never trigger this itself, since a failed
@@ -355,14 +380,26 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    /// Protocol-conforming overload (HeraldClientProtocol requires the exact
+    /// single-arg signature; a defaulted parameter does NOT satisfy it).
     func createSession(title: String) async throws -> SessionSummary {
+        try await createSession(title: title, conversationID: nil)
+    }
+
+    func createSession(title: String, conversationID: UUID? = nil) async throws -> SessionSummary {
         guard let client else { throw NativeGatewayClientError.notConnected }
         let response = try await client.send(method: "session.create", params: ["title": title])
         if let error = response.error { throw error }
         guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
         let data = try JSONEncoder().encode(result)
         let decoded = try JSONDecoder().decode(NativeSessionCreateResult.self, from: data)
-        let uuid = UUID()
+        // CRITICAL: register the CALLER's conversation UUID (the one
+        // ChatStore / currentConversation uses), NOT a fresh random UUID.
+        // Registering a random UUID here means idMap.nativeId(for:
+        // conversation.id) returns nil on the next message, so every message
+        // creates a brand-new server session and follow-ups die with 4001
+        // "session not found" (or orphan the previous session).
+        let uuid = conversationID ?? UUID()
         await idMap.register(uuid: uuid, nativeId: decoded.sessionId)
         return SessionSummary(id: uuid, title: title, lastActivity: .now)
     }
@@ -463,7 +500,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             await idMap.remove(uuid: id)
         }
         do {
-            _ = try await createSession(title: "New Chat")
+            _ = try await createSession(title: "New Chat", conversationID: id)
             return true
         } catch {
             return false
@@ -520,7 +557,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         if nativeSessionId == nil {
             do {
-                let summary = try await createSession(title: "New Chat")
+                let summary = try await createSession(title: "New Chat", conversationID: sessionUUID)
                 nativeSessionId = await idMap.nativeId(for: summary.id)
             } catch {
                 continuation.yield(.failed("Failed to create session: \(error)"))
@@ -563,7 +600,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 if error.message.localizedCaseInsensitiveContains("session not found") {
                     await idMap.remove(uuid: sessionUUID)
                     do {
-                        let summary = try await createSession(title: "New Chat")
+                        let summary = try await createSession(title: "New Chat", conversationID: sessionUUID)
                         guard let freshSid = await idMap.nativeId(for: summary.id) else {
                             continuation.yield(.failed("No session ID"))
                             continuation.finish()

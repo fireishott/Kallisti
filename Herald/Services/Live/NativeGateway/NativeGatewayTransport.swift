@@ -22,8 +22,22 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
     /// with transportClosed.
     private static let keepaliveInterval: Duration = .seconds(20)
 
-    init(session: URLSession = .init(configuration: .default)) {
-        self.session = session
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+        } else {
+            // Default URLSessionConfiguration.timeoutIntervalForRequest is 60s.
+            // For WebSocket tasks that acts as an idle deadline: if the server
+            // sends nothing within 60s (normal between requests), the task
+            // fails and the socket dies even though the keepalive pings are
+            // flowing. Disable it -- liveness is handled by the keepalive.
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 0
+            config.timeoutIntervalForResource = 0
+            config.waitsForConnectivity = true
+            config.connectionProxyDictionary = [:]
+            self.session = URLSession(configuration: config)
+        }
     }
 
     func connect(url: URL) async throws {
@@ -39,8 +53,19 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.keepaliveInterval)
                 guard !Task.isCancelled, let task = self?.task else { return }
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    task.sendPing { _ in continuation.resume() }
+                let pingOK = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                    task.sendPing { error in
+                        continuation.resume(returning: error == nil)
+                    }
+                }
+                if !pingOK {
+                    // Socket is gone but receive() may never surface the error
+                    // (iOS suspends WS tasks silently). Tear it down so the
+                    // client's receive loop errors and the reconnect loop
+                    // kicks in instead of leaving a phantom connection.
+                    task.cancel(with: .goingAway, reason: nil)
+                    self?.task = nil
+                    return
                 }
             }
         }

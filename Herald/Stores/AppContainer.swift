@@ -46,6 +46,20 @@ final class AppContainer {
     // key is read once on first launch after upgrade to migrate + delete.
     private static let legacyAPNsTokenDefaultsKey = "kallisti.apns.deviceToken"
     static let apnsTokenKeychainKey = "kallisti.apns.deviceToken"
+
+    /// APNs environment for the CURRENT build. TestFlight / App Store
+    /// builds carry a receipt and use the production APNs environment;
+    /// devicectl/sideloaded builds have no receipt and use development.
+    /// The relay delivers to the environment stored on the registration,
+    /// so registering a devicectl build as production gets APNs
+    /// `BadEnvironmentKeyInToken` (and vice versa).
+    static var apnsEnvironment: String {
+        if let receiptURL = Bundle.main.appStoreReceiptURL,
+           !receiptURL.pathComponents.isEmpty {
+            return "production"
+        }
+        return "development"
+    }
     private static let sharedDefaultContainer = AppContainer.makeDefault()
 
     let router = TabRouter()
@@ -956,6 +970,16 @@ final class AppContainer {
     }
 
     func handleAppDidBecomeActive() async {
+        // Native gateway first: it bypasses pairing entirely (AppRootView
+        // checks nativeGatewayClient before pairingStore), so the pairing
+        // guards below would return early and the socket would never heal.
+        // iOS kills WS sockets on suspension and receive() may never surface
+        // the error - force a healthy socket on foreground instead of letting
+        // a phantom connection fail every request.
+        if let nativeGatewayClient {
+            await nativeGatewayClient.reconnectIfNeeded()
+        }
+
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }
 
@@ -1104,10 +1128,11 @@ final class AppContainer {
             return
         }
 
-        // TestFlight builds use the production APNs environment. The
-        // aps-environment entitlement must be "production" so iOS issues
-        // production tokens that the relay can deliver via APNs production.
-        let pushEnvironment = "production"
+        // APNs environment follows the build: TestFlight/App Store are
+        // production, devicectl/sideloaded builds are development. The
+        // relay sends to the environment stored on the registration, so
+        // this MUST match the token type iOS actually issued.
+        let pushEnvironment = Self.apnsEnvironment
 
         do {
             let didRegister = try await pushRegistrationCoordinator?.registerPushToken(
@@ -1211,7 +1236,7 @@ final class AppContainer {
             deviceId: deviceID.uuidString.lowercased(),
             transport: "direct",
             apnsToken: token,
-            pushEnvironment: "production",
+            pushEnvironment: Self.apnsEnvironment,
             bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti"
         )
         do {
