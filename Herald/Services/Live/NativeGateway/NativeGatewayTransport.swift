@@ -48,7 +48,16 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
 
     func send(_ data: Data) async throws {
         guard let task else { throw NativeGatewayTransportError.notConnected }
-        try await task.send(.data(data))
+        // The gateway's tui_gateway reads inbound frames with receive_text(),
+        // so we must send TEXT frames. Sending binary (URLSessionWebSocketTask
+        // message .data) made the server raise "KeyError: 'text'" and drop the
+        // socket the instant our first request arrived (session.list) -- the
+        // connection opened and authenticated, then died with messages=0 on
+        // the server, which the app surfaced as "couldn't reach the gateway".
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw NativeGatewayTransportError.notTextEncodable
+        }
+        try await task.send(.string(text))
     }
 
     func receive() -> AsyncThrowingStream<Data, Error> {
@@ -86,4 +95,5 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
 
 enum NativeGatewayTransportError: Error {
     case notConnected
+    case notTextEncodable
 }
