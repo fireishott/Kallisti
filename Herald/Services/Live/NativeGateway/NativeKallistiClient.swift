@@ -77,13 +77,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
         do {
             let ticket = try await authCoordinator.mintTicket()
             guard let base = URL(string: gatewayBaseURL) else {
-                throw NativeAuthError.listenerSetupFailed
+                throw NativeAuthError.invalidBaseURL(gatewayBaseURL)
             }
             var components = URLComponents(url: base.appendingPathComponent("api/ws"), resolvingAgainstBaseURL: false)!
             components.scheme = base.scheme == "https" ? "wss" : "ws"
             components.queryItems = [URLQueryItem(name: "ticket", value: ticket)]
             guard let wsURL = components.url else {
-                throw NativeAuthError.listenerSetupFailed
+                throw NativeAuthError.invalidBaseURL(components.description)
             }
             let transport = URLSessionWebSocketTransport()
             let client = NativeGatewayClient(transport: transport)
