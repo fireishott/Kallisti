@@ -9,6 +9,42 @@ from pathlib import Path
 
 from .state import ConnectorRuntimeConfig
 
+# ── Interrupt sentinel detection ───────────────────────────────────────────
+
+_INTERRUPT_SENTINELS = (
+    "Operation interrupted.",
+    "Operation interrupted:",
+    "Operation interrupted during retry",
+)
+
+
+def _is_interrupt_sentinel(text: str) -> bool:
+    """True only when an assistant turn is Hermes' interruption placeholder."""
+    value = (text or "").strip()
+    return bool(value) and value.startswith(_INTERRUPT_SENTINELS)
+
+
+def _split_trailing_sentinel(text: str) -> tuple[str, str | None]:
+    """Split a turn into (answer, trailing interrupt sentinel).
+
+    Hermes appends its interruption marker to whatever the model had already
+    said, so the sentinel is usually preceded by a preamble.  Match on the
+    trailing segment instead and hand back the preamble so it is not discarded.
+    """
+    value = (text or "").strip()
+    if not value:
+        return "", None
+    if _is_interrupt_sentinel(value):
+        return "", value
+    for sentinel in _INTERRUPT_SENTINELS:
+        index = value.rfind(sentinel)
+        if index <= 0:
+            continue
+        preceding = value[index - 1]
+        if preceding.isspace() or preceding in ".!?":
+            return value[:index].rstrip(), value[index:].strip()
+    return value, None
+
 
 @dataclass(frozen=True)
 class HeraldConversationMessage:
@@ -21,6 +57,19 @@ class HeraldChatResult:
     text: str
     session_id: str | None = None
     usage: dict | None = None
+
+
+@dataclass(frozen=True)
+class StreamEvent:
+    """A single event from the streaming chat completions endpoint."""
+
+    type: str  # "text_delta" | "reasoning_delta" | "tool_activity" | "finish" | "error" | "stream_interrupted"
+    data: str = ""
+    label: str = ""
+    session_id: str | None = None
+    usage: dict | None = None
+    error_category: str | None = None
+    output: str | None = None  # canonical terminal text from run.completed (authoritative over deltas)
 
 
 @dataclass(frozen=True)
