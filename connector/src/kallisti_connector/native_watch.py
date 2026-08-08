@@ -94,6 +94,12 @@ class NativeWatchTokens:
         """False until the one-time login has stored a refresh token."""
         return bool(self._refresh_token)
 
+    def invalidate_access_token(self) -> None:
+        """Force the next access_token() call to refresh. Called when the
+        gateway rejects the current token, so a stale one isn't retried
+        for the life of the process."""
+        self._access_token = None
+
     async def access_token(self) -> str:
         """Return a valid access token, refreshing lazily on first use.
 
@@ -119,16 +125,20 @@ class NativeWatchTokens:
             f"http://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}"
             "/auth/native/refresh"
         )
-        async with self._session.post(
+        # httpx: post() is awaited and returns a Response. The aiohttp
+        # `async with session.post(...) as resp` idiom raises TypeError here
+        # ('coroutine' has no __aexit__), and `.status`/`await .json()` are
+        # likewise aiohttp spellings -- httpx uses .status_code / .json().
+        resp = await self._session.post(
             url, json={"refresh_token": self._refresh_token}
-        ) as resp:
-            if resp.status != 200:
-                raise RuntimeError(
-                    f"native watch token refresh failed: {resp.status}"
-                )
-            body = await resp.json()
-            self._access_token = body["access_token"]
-            self._refresh_token = body["refresh_token"]
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"native watch token refresh failed: {resp.status_code}"
+            )
+        body = resp.json()
+        self._access_token = body["access_token"]
+        self._refresh_token = body["refresh_token"]
 
 
 async def run_watcher(
@@ -180,11 +190,19 @@ async def run_watcher(
                 f"http://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}"
                 "/api/auth/ws-ticket"
             )
-            async with tokens._session.post(
+            ticket_resp = await tokens._session.post(
                 ticket_url,
                 headers={"Authorization": f"Bearer {access_token}"},
-            ) as resp:
-                ticket = (await resp.json())["ticket"]
+            )
+            if ticket_resp.status_code != 200:
+                # A 401 here means the access token went stale; drop it so
+                # the next pass refreshes rather than looping on a dead one.
+                if ticket_resp.status_code == 401:
+                    tokens.invalidate_access_token()
+                raise RuntimeError(
+                    f"ws-ticket mint failed: HTTP {ticket_resp.status_code}"
+                )
+            ticket = ticket_resp.json()["ticket"]
 
             uri = (
                 f"ws://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}"
