@@ -35,6 +35,14 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
 
         var components = URLComponents(string: "http://\(host):\(port)/auth/native/authorize")!
         components.queryItems = [
+            // Explicit -- the dashboard also has the "basic" password
+            // provider registered (dashboard.basic_auth in config.yaml), so
+            // the route's auto-select-when-empty logic (routes.py:318-329,
+            // only kicks in with exactly one session provider) can't guess;
+            // omitting this 404s "Unknown provider: ''" even though nous
+            // itself is correctly registered. Confirmed live: provider=nous
+            // -> 302, provider omitted -> 404.
+            URLQueryItem(name: "provider", value: "nous"),
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1:\(listener.port)/callback"),
