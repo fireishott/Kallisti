@@ -58,8 +58,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     // MARK: - Dependencies
 
-    private let gatewayBaseURL: String
+    /// Resolves the gateway base URL at call time from the app's current relay
+    /// configuration (AppContainer passes a closure reading settingsStore). A
+    /// fresh install has no relay -> localhost fallback, but once the user
+    /// enters their server in onboarding, the provider reads the updated relay
+    /// so every connect/login hits the real host, not a launch-time stale value.
+    private let gatewayBaseURLProvider: @MainActor () -> String
     private let authCoordinator: NativeAuthCoordinator
+
+    /// Resolve the current gateway base URL (live, not cached).
+    private var gatewayBaseURL: String { gatewayBaseURLProvider() }
     private let idMap = NativeSessionIdMap()
     private let transportFactory: @Sendable () -> any NativeGatewayTransport
     private var client: NativeGatewayClient?
@@ -82,15 +90,30 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private let secureStore: (any SecureStoreProtocol)?
 
     init(
+        gatewayBaseURLProvider: @escaping @MainActor () -> String,
+        authCoordinator: NativeAuthCoordinator,
+        secureStore: (any SecureStoreProtocol)? = nil,
+        transportFactory: @escaping @Sendable () -> any NativeGatewayTransport = { URLSessionWebSocketTransport() }
+    ) {
+        self.gatewayBaseURLProvider = gatewayBaseURLProvider
+        self.authCoordinator = authCoordinator
+        self.secureStore = secureStore
+        self.transportFactory = transportFactory
+    }
+
+    /// Convenience for callers with a fixed base URL (e.g. tests).
+    convenience init(
         gatewayBaseURL: String,
         authCoordinator: NativeAuthCoordinator,
         secureStore: (any SecureStoreProtocol)? = nil,
         transportFactory: @escaping @Sendable () -> any NativeGatewayTransport = { URLSessionWebSocketTransport() }
     ) {
-        self.gatewayBaseURL = gatewayBaseURL
-        self.authCoordinator = authCoordinator
-        self.secureStore = secureStore
-        self.transportFactory = transportFactory
+        self.init(
+            gatewayBaseURLProvider: { gatewayBaseURL },
+            authCoordinator: authCoordinator,
+            secureStore: secureStore,
+            transportFactory: transportFactory
+        )
     }
 
     /// Registers this session + APNs token with the connector so it can
