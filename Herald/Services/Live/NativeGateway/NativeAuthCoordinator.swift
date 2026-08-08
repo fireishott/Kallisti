@@ -85,8 +85,8 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         // round trip, immune to that partitioning, so the PKCE cookie set by
         // /auth/native/authorize survives back to /auth/callback.
         do {
-            let callbackURL = try await presentAuthSession(url: components.url!)
-            guard let callback = Self.parseCallback(from: callbackURL), callback.state == state else {
+            let callback = try await presentAuthSessionAndCaptureLoopback(url: components.url!, listener: listener)
+            guard callback.state == state else {
                 throw NativeAuthError.stateMismatch
             }
             activeListener = nil
@@ -124,30 +124,69 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         }
     }
 
-    /// Present the authorize URL in ASWebAuthenticationSession and await the
-    /// loopback callback URL. The session is ephemeral so the gateway's PKCE
-    /// cookie survives the Nous round trip (SFSVC's shared Safari jar drops it
-    /// under ITP/Private Relay — the missing_pkce_cookie failures).
-    private func presentAuthSession(url: URL) async throws -> URL {
+    /// Present the authorize URL in ASWebAuthenticationSession and capture the
+    /// loopback callback via the LoopbackCallbackListener.
+    ///
+    /// ASWebAuthenticationSession is used ONLY as the browser surface: an
+    /// ephemeral session keeps the gateway's PKCE cookie alive across the Nous
+    /// redirect chain (SFSVC's shared Safari jar drops it under ITP/Private
+    /// Relay — the missing_pkce_cookie failures). But ASWAS cannot deliver the
+    /// callback itself: its Callback API only supports custom schemes and
+    /// https(host:path:) universal links — there is NO loopback
+    /// http://127.0.0.1:<port> support (ASWebAuthenticationSessionCallback.h).
+    /// So the actual gateway code is captured by the loopback listener, which
+    /// binds 127.0.0.1 and catches the browser's redirect the same way the
+    /// SFSVC path did. Whichever fires first wins: listener success, or
+    /// ASWAS cancel/error.
+    private func presentAuthSessionAndCaptureLoopback(
+        url: URL,
+        listener: LoopbackCallbackListener
+    ) async throws -> LoopbackCallbackListener.Callback {
         try await withCheckedThrowingContinuation { continuation in
+            var didResume = false
+            let resumeOnce: (Result<LoopbackCallbackListener.Callback, Error>) -> Void = { result in
+                guard !didResume else { return }
+                didResume = true
+                continuation.resume(with: result)
+            }
+
+            // 1) Watch the loopback listener FIRST so a fast gateway redirect
+            //    (sub-second after Nous approves) is never missed.
+            let listenerTask = Task {
+                do {
+                    let callback = try await listener.waitForCallback()
+                    // Dismiss the auth sheet once the code is in hand.
+                    Task { @MainActor in
+                        self.activeAuthSession?.cancel()
+                        self.activeAuthSession = nil
+                    }
+                    resumeOnce(.success(callback))
+                } catch {
+                    resumeOnce(.failure(error))
+                }
+            }
+
+            // 2) Present ASWAS (ephemeral = cookie-preserving). Its completion
+            //    handler only fires for errors/cancel — for loopback redirects
+            //    there is no callback URL to deliver, so a "successful" ASWAS
+            //    completion with no URL is treated as a parse failure.
             let authSession = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: "http",
-                completionHandler: { [weak self] callbackURL, error in
-                    Task { @MainActor in
-                        self?.activeAuthSession = nil
-                        if let error {
-                            if let asError = error as? ASWebAuthenticationSessionError,
-                               asError.code == .canceledLogin {
-                                continuation.resume(throwing: NativeAuthError.loginCancelled)
-                            } else {
-                                continuation.resume(throwing: error)
-                            }
-                        } else if let callbackURL {
-                            continuation.resume(returning: callbackURL)
+                completionHandler: { callbackURL, error in
+                    listenerTask.cancel()
+                    if let error {
+                        if let asError = error as? ASWebAuthenticationSessionError,
+                           asError.code == .canceledLogin {
+                            resumeOnce(.failure(NativeAuthError.loginCancelled))
                         } else {
-                            continuation.resume(throwing: NativeAuthError.callbackParseFailed)
+                            resumeOnce(.failure(error))
                         }
+                    } else if let callbackURL,
+                              let parsed = Self.parseCallback(from: callbackURL) {
+                        resumeOnce(.success(.init(code: parsed.code, state: parsed.state)))
+                    } else {
+                        resumeOnce(.failure(NativeAuthError.callbackParseFailed))
                     }
                 }
             )
@@ -157,7 +196,8 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
             let started = authSession.start()
             if !started {
                 activeAuthSession = nil
-                continuation.resume(throwing: NativeAuthError.authSessionFailed("Couldn't start the sign-in session on this device."))
+                listenerTask.cancel()
+                resumeOnce(.failure(NativeAuthError.authSessionFailed("Couldn't start the sign-in session on this device.")))
             }
         }
     }
