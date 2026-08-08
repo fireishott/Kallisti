@@ -65,6 +65,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private var transport: URLSessionWebSocketTransport?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// When the current socket was opened, used to tell a working connection
+    /// that later dropped from one that never came up at all.
+    private var connectedAt: Date?
     /// Set by disconnect() so an intentional teardown isn't fought by the
     /// reconnect loop.
     private var isDeliberatelyDisconnected = false
@@ -143,7 +146,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
             self.transport = transport
             self.client = client
-            reconnectAttempt = 0
+            // NOT resetting reconnectAttempt here: URLSessionWebSocketTask
+            // .resume() never throws, so reaching this line does not mean the
+            // socket actually opened. Resetting here made a socket that dies
+            // immediately retry at a flat ~1s forever, hammering the gateway
+            // with a fresh ws-ticket mint every attempt. The counter is reset
+            // only once a connection has proven itself (see below).
+            connectedAt = Date()
             connectionStatus = .connected
             Self.logger.info("Connected to native gateway")
         } catch {
@@ -158,6 +167,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// transportClosed until it's force-quit.
     private func handleUnexpectedDisconnect() async {
         guard !isDeliberatelyDisconnected else { return }
+        // A socket that survived a while was genuinely working, so start its
+        // backoff fresh. One that died on arrival was never up -- keep
+        // escalating so a persistent failure backs off instead of spinning.
+        if let connectedAt, Date().timeIntervalSince(connectedAt) >= 30 {
+            reconnectAttempt = 0
+        }
+        connectedAt = nil
         Self.logger.warning("Native gateway transport closed unexpectedly — reconnecting")
         connectionStatus = .reconnecting
         client = nil
