@@ -1,138 +1,144 @@
 import Foundation
+import CryptoKit
+import SafariServices
+import UIKit
+import Security
 import os
 
-/// Coordinates authentication for the native gateway WebSocket.
-///
-/// Supports two flows:
-/// - **Password-login**: POST /auth/password-login → cookie → POST /api/auth/ws-ticket → ticket
-/// - **OAuth/PKCE** (future): RFC 8252 broker flow → token → ws-ticket
-///
-/// The ticket is appended as a query parameter to the WS URL.
-enum NativeAuthCoordinator {
-    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeAuth")
+@MainActor
+final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate {
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "NativeAuth")
+    private let host: String
+    private let port: Int
+    private let session: URLSession
+    private let secureStore: any SecureStoreProtocol
+    private var activeSafari: SFSafariViewController?
+    private var activeListener: LoopbackCallbackListener?
 
-    struct Credentials: Sendable {
-        let username: String
-        let password: String
-        let provider: String
+    init(host: String, port: Int, session: URLSession = .shared, secureStore: any SecureStoreProtocol) {
+        self.host = host
+        self.port = port
+        self.session = session
+        self.secureStore = secureStore
     }
 
-    enum AuthError: Error, LocalizedError {
-        case invalidBaseURL
-        case loginFailed(statusCode: Int, body: String)
-        case noCookieFromLogin
-        case ticketFailed(statusCode: Int, body: String)
-        case noTicketInResponse
-        case encodingFailed
+    // MARK: - Public
 
-        var errorDescription: String? {
-            switch self {
-            case .invalidBaseURL: return "Invalid gateway base URL"
-            case .loginFailed(let code, _): return "Password login failed (HTTP \(code))"
-            case .noCookieFromLogin: return "No session cookie returned from login"
-            case .ticketFailed(let code, _): return "Ws-ticket request failed (HTTP \(code))"
-            case .noTicketInResponse: return "No ticket in ws-ticket response"
-            case .encodingFailed: return "Failed to encode request body"
-            }
+    func startLogin(presentingFrom viewController: UIViewController) async throws {
+        let verifier = Self.randomPKCEVerifier()
+        let challenge = Self.s256Challenge(for: verifier)
+        let state = Self.randomState()
+
+        let listener = LoopbackCallbackListener()
+        activeListener = listener
+        try await listener.start()
+
+        var components = URLComponents(string: "http://\(host):\(port)/auth/native/authorize")!
+        components.queryItems = [
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1:\(listener.port)/callback"),
+            URLQueryItem(name: "state", value: state),
+        ]
+
+        let safari = SFSafariViewController(url: components.url!)
+        safari.delegate = self
+        activeSafari = safari
+        viewController.present(safari, animated: true)
+        logger.info("Presented OAuth authorize URL in SFSafariViewController")
+
+        let callback = try await listener.waitForCallback()
+        safari.dismiss(animated: true)
+        activeSafari = nil
+        activeListener = nil
+
+        guard callback.state == state else {
+            throw NativeAuthError.stateMismatch
+        }
+        logger.info("Callback received, state matched, exchanging code for tokens")
+        try await exchangeCode(callback.code, verifier: verifier)
+    }
+
+    nonisolated func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        Task { @MainActor in
+            activeListener?.stop()
+            activeListener = nil
         }
     }
 
-    /// Get a ws-ticket URL for the native gateway using password-login flow.
-    ///
-    /// - Parameters:
-    ///   - baseURL: The gateway's HTTP base URL (e.g., `http://192.168.10.118:9119` or `https://hermes-relay.fihonline.net`)
-    ///   - credentials: Username/password/provider for login
-    ///   - session: URLSession to use (default .shared)
-    /// - Returns: A URL suitable for `URLSessionWebSocketTransport.connect(url:)`
-    static func authenticatedWSURL(
-        baseURL: String,
-        credentials: Credentials,
-        session: URLSession = .shared
-    ) async throws -> URL {
-        guard let base = URL(string: baseURL) else {
-            throw AuthError.invalidBaseURL
+    func exchangeCode(_ code: String, verifier: String) async throws {
+        var request = URLRequest(url: URL(string: "http://\(host):\(port)/auth/native/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["code": code, "code_verifier": verifier])
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NativeAuthError.tokenExchangeFailed
         }
+        let tokens = try JSONDecoder().decode(NativeTokenResponse.self, from: data)
+        await secureStore.store(key: "nativeGatewayAccessToken", value: tokens.accessToken)
+        await secureStore.store(key: "nativeGatewayRefreshToken", value: tokens.refreshToken)
+        logger.info("Tokens stored in keychain")
+    }
 
-        // Step 1: Password login → cookie
-        let cookie = try await passwordLogin(base: base, credentials: credentials, session: session)
-        logger.info("Password login succeeded, got cookie")
-
-        // Step 2: Get ws-ticket
-        let ticket = try await requestTicket(base: base, cookie: cookie, session: session)
-        logger.info("Got ws-ticket")
-
-        // Step 3: Build WS URL with ticket
-        var components = URLComponents(url: base.appendingPathComponent("api/ws"), resolvingAgainstBaseURL: false)!
-        components.scheme = base.scheme == "https" ? "wss" : "ws"
-        components.queryItems = [URLQueryItem(name: "ticket", value: ticket)]
-
-        guard let wsURL = components.url else {
-            throw AuthError.invalidBaseURL
+    func mintTicket() async throws -> String {
+        guard let accessToken = await secureStore.retrieve(key: "nativeGatewayAccessToken") else {
+            throw NativeAuthError.notLoggedIn
         }
-        return wsURL
+        var request = URLRequest(url: URL(string: "http://\(host):\(port)/api/auth/ws-ticket")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NativeAuthError.ticketMintFailed
+        }
+        struct TicketResponse: Decodable { let ticket: String }
+        let ticket = try JSONDecoder().decode(TicketResponse.self, from: data).ticket
+        logger.info("Minted fresh ws-ticket via Bearer auth")
+        return ticket
+    }
+
+    nonisolated static func s256Challenge(for verifier: String) -> String {
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        return Data(digest).base64URLEncodedString()
     }
 
     // MARK: - Private
 
-    private static func passwordLogin(
-        base: URL,
-        credentials: Credentials,
-        session: URLSession
-    ) async throws -> String {
-        let url = base.appendingPathComponent("auth/password-login")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: String] = [
-            "provider": credentials.provider,
-            "username": credentials.username,
-            "password": credentials.password,
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = response as! HTTPURLResponse
-
-        guard httpResponse.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AuthError.loginFailed(statusCode: httpResponse.statusCode, body: body)
-        }
-
-        // Extract cookie from response
-        guard let headerFields = httpResponse.allHeaderFields as? [String: String],
-              let setCookie = headerFields["Set-Cookie"] ?? headerFields["set-cookie"] else {
-            throw AuthError.noCookieFromLogin
-        }
-
-        // Cookie format: "name=value; path=/; ..."
-        let cookie = setCookie.split(separator: ";").first.map(String.init) ?? setCookie
-        return cookie
+    private static func randomPKCEVerifier() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64URLEncodedString()
     }
 
-    private static func requestTicket(
-        base: URL,
-        cookie: String,
-        session: URLSession
-    ) async throws -> String {
-        let url = base.appendingPathComponent("api/auth/ws-ticket")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = response as! HTTPURLResponse
-
-        guard httpResponse.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AuthError.ticketFailed(statusCode: httpResponse.statusCode, body: body)
-        }
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let ticket = json["ticket"] as? String else {
-            throw AuthError.noTicketInResponse
-        }
-
-        return ticket
+    private static func randomState() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64URLEncodedString()
     }
+}
+
+// MARK: - Supporting Types
+
+private struct NativeTokenResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAt: Int
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+    }
+}
+
+enum NativeAuthError: Error {
+    case listenerSetupFailed
+    case callbackParseFailed
+    case stateMismatch
+    case tokenExchangeFailed
+    case notLoggedIn
+    case ticketMintFailed
 }
