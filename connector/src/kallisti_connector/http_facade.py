@@ -185,6 +185,8 @@ class FacadeContext:
         # Wired by the connector: sends a probe turn through the native relay
         # and returns (passed: bool, detail: str). None → canary check skipped.
         self.session_canary: Callable[[], Coroutine[Any, Any, tuple[bool, str]]] | None = None
+        # Native-completion to push bridge (Task 12)
+        self.native_watch_registry: Any = None
 
 
 _context = FacadeContext()
@@ -1866,6 +1868,41 @@ async def push_register(request: Request) -> JSONResponse:
     return JSONResponse({"registered": True, "environment": environment})
 
 
+async def native_watch_route(request: Request) -> JSONResponse:
+    """POST /v1/native/watch -- register a session for push notifications.
+
+    The iOS app calls this after submitting a turn directly to Hermes
+    (native world) so the connector knows which session_id to watch
+    for terminal events and fire APNs / Live Activity pushes.
+    """
+    await require_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    session_id = body.get("session_id")
+    device_token = body.get("device_token")
+    if not session_id or not device_token:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id and device_token are required",
+        )
+    ctx = get_context()
+    if ctx.native_watch_registry is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Native watch is not available",
+        )
+    ctx.native_watch_registry.watch(
+        session_id=session_id,
+        device_token=device_token,
+        token_kind=body.get("token_kind", "alert"),
+    )
+    return JSONResponse({"ok": True})
+
+
 async def host_current(request: Request) -> JSONResponse:
     """Return current host info.
 
@@ -3403,6 +3440,8 @@ routes = [
     Route("/gw/update/check", gateway_update_check, methods=["POST"]),
     Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
+    # Native-completion to push bridge (Task 12)
+    Route("/v1/native/watch", native_watch_route, methods=["POST"]),
 ]
 
 app = Starlette(

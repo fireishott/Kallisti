@@ -896,6 +896,64 @@ class HeraldConnector:
                 "HTTP facade listening on port %d (iOS app path)",
                 http_port,
             )
+
+            # Native-completion to push bridge (Task 12)
+            try:
+                from .native_watch import (
+                    NativeWatchRegistry,
+                    NativeWatchTokens,
+                    run_watcher,
+                )
+                facade_ctx.native_watch_registry = NativeWatchRegistry()
+                _native_watch_session = httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10, read=30)
+                )
+                watch_tokens = NativeWatchTokens(session=_native_watch_session)
+
+                async def _adapt_completion_push(
+                    device_token: str,
+                    *,
+                    session_id: str,
+                ) -> None:
+                    """Bridge native_watch calling convention to _send_push_for_job.
+
+                    NOTE: The actual _send_push_for_job reads device_token from
+                    state, ignoring the token passed here.  For Build 1 this is
+                    acceptable -- single-device deployment.  A future build should
+                    thread the device_token through to APNs directly.
+                    """
+                    await self._send_push_for_job(
+                        job_id=f"native:{session_id}",
+                        body_text="",  # no body_text available from WS event
+                        conversation_id=session_id,
+                    )
+
+                async def _adapt_live_activity_end(
+                    device_token: str,
+                    *,
+                    status: str = "completed",
+                ) -> None:
+                    """Bridge native_watch calling convention to _send_live_activity_end.
+
+                    NOTE: _send_live_activity_end reads its push token from
+                    state, not from the device_token argument.  Same single-
+                    device caveat as _adapt_completion_push above.
+                    """
+                    await self._send_live_activity_end(status=status)
+
+                _watch_task = asyncio.create_task(
+                    run_watcher(
+                        facade_ctx.native_watch_registry,
+                        watch_tokens,
+                        _adapt_completion_push,
+                        _adapt_live_activity_end,
+                        terminal_event_type="turn.complete",  # confirm against live capture
+                    ),
+                )
+                logger.info("Native watch watcher started")
+            except Exception:
+                logger.exception("Failed to start native watch watcher (non-fatal)")
+
         else:
             logger.warning("HERALD_HTTP_FACADE_ENABLED disabled — iOS app path off")
 
