@@ -19,6 +19,9 @@ actor NativeGatewayClient {
     private var pendingRequests: [Int: CheckedContinuation<NativeGatewayResponse, Error>] = [:]
     private var eventHandlers: [@Sendable (NativeGatewayEvent) -> Void] = []
     private var receiveTask: Task<Void, Never>?
+    private var disconnectHandler: (@Sendable () -> Void)?
+    /// Set by close() so a deliberate teardown doesn't trigger a reconnect.
+    private var isClosingDeliberately = false
     private let requestTimeoutNanos: UInt64
 
     init(transport: NativeGatewayTransport, requestTimeout: Duration = .seconds(60)) {
@@ -79,7 +82,16 @@ actor NativeGatewayClient {
         eventHandlers.append(handler)
     }
 
+    /// Fires when the receive loop ends — i.e. the socket died. The owner
+    /// uses this to re-mint a ticket and reconnect; without it a single
+    /// drop leaves every later request failing with transportClosed until
+    /// the app is force-quit.
+    func onDisconnect(_ handler: @escaping @Sendable () -> Void) {
+        disconnectHandler = handler
+    }
+
     func close() async {
+        isClosingDeliberately = true
         receiveTask?.cancel()
         receiveTask = nil
         for (_, cont) in pendingRequests {
@@ -113,10 +125,18 @@ actor NativeGatewayClient {
                     if Task.isCancelled { break }
                     handleFrame(frame)
                 }
+                // Stream ended without throwing — the socket still closed.
+                await self.handleDisconnect()
             } catch {
-                await self.failAllPending(error: NativeGatewayClientError.transportClosed)
+                await self.handleDisconnect()
             }
         }
+    }
+
+    private func handleDisconnect() {
+        failAllPending(error: NativeGatewayClientError.transportClosed)
+        guard !isClosingDeliberately, !Task.isCancelled else { return }
+        disconnectHandler?()
     }
 
     private nonisolated func handleFrame(_ data: Data) {
