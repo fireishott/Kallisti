@@ -103,7 +103,7 @@
 		43DC29D5EF9B7F282E084369 /* KallistiActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB1E3952A4C703165E80A4C /* KallistiActivityAttributes.swift */; };
 		444CF386B72E96CD470EEC7E /* LiveInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */; };
 		44E5211460E9D6829AFE8179 /* KallistiIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75B435EB96C4457174C8AB8 /* KallistiIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		450323BE1687C596366E6627 /* NativeHeraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F12398DF7F84FA90B1E95D6 /* NativeHeraldClient.swift */; };
+		450323BE1687C596366E6627 /* NativeKallistiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */; };
 		45757CDEA0530170E7CBD72A /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C50D91C1CB57831078FF853 /* IntentHandler.swift */; };
 		45FF4288AB4DAA520750BC59 /* TalkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314A5630FAA9C2DB346843A3 /* TalkStore.swift */; };
 		46F010C877203AC24BEED328 /* VoiceOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF288BDAEA5CA4F148345BB0 /* VoiceOrb.swift */; };
@@ -498,7 +498,7 @@
 		2D3C11B115527992FE8196F4 /* AuthenticatedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedAsyncImage.swift; sourceTree = "<group>"; };
 		2E5B53E8562C62901D062529 /* PendingAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingAttachment.swift; sourceTree = "<group>"; };
 		2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
-		2F12398DF7F84FA90B1E95D6 /* NativeHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHeraldClient.swift; sourceTree = "<group>"; };
+		2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKallistiClient.swift; sourceTree = "<group>"; };
 		2F2D09B0484E5E3255AC0165 /* MockHandwritingRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHandwritingRecognizer.swift; sourceTree = "<group>"; };
 		2FC131E1A52D3BB62EDB05AE /* PencilCanvasRepresentable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PencilCanvasRepresentable.swift; sourceTree = "<group>"; };
 		300CB67C9089E643FB2B1B7D /* LiveHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHeraldClient.swift; sourceTree = "<group>"; };
@@ -1181,7 +1181,7 @@
 				AE693FCC35AF80B560A7CCAC /* NativeGatewayClient.swift */,
 				1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */,
 				BE3B71F147ACE72E07C2C12C /* NativeGatewayWireTypes.swift */,
-				2F12398DF7F84FA90B1E95D6 /* NativeHeraldClient.swift */,
+				2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */,
 			);
 			path = NativeGateway;
 			sourceTree = "<group>";
@@ -2012,7 +2012,7 @@
 				D52969A62978FA9B91EC4A9C /* NativeGatewayClient.swift in Sources */,
 				F205A7FEF397AF02BD9B882B /* NativeGatewayTransport.swift in Sources */,
 				A58A3A7BBF9D632643A86225 /* NativeGatewayWireTypes.swift in Sources */,
-				450323BE1687C596366E6627 /* NativeHeraldClient.swift in Sources */,
+				450323BE1687C596366E6627 /* NativeKallistiClient.swift in Sources */,
 				ECC14EA3349A037A34E38AAC /* NoteDirective.swift in Sources */,
 				EB21761C69BE9EAD136142CF /* NoteDirectiveParser.swift in Sources */,
 				A0B9A7D696DF95EFA711B1FF /* NoteEditorView.swift in Sources */,
