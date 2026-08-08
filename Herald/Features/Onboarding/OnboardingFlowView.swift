@@ -116,7 +116,12 @@ struct OnboardingFlowView: View {
                 // the connector's relay URL or pairing-code handshake at
                 // all -- skip straight to permissions, then Nous login gates
                 // .ready. Legacy mode is unchanged.
-                advance(to: nativeGatewayClient != nil ? .permissions : .relay)
+                // Every connection path needs an address: native gateway
+                // uses the same relay URL field as its gateway base URL
+                // (AppContainer.resolveNativeGatewayHost), so always show
+                // .relay. Only .pairing (the connector handshake) is skipped
+                // in native-gateway mode.
+                advance(to: .relay)
             })
         case .relay:
             RelayStepView(
@@ -262,8 +267,10 @@ struct OnboardingFlowView: View {
             if (200...499).contains(statusCode) {
                 let host = url.host ?? baseURL
                 localErrorMessage = nil
-                // Server is reachable — advance to pairing
-                advance(to: .pairing)
+                // Server reachable. Native gateway skips the pairing-code
+                // handshake and goes straight to permissions; legacy mode
+                // proceeds to pairing.
+                advance(to: nativeGatewayClient != nil ? .permissions : .pairing)
             } else {
                 localErrorMessage = "Server returned status \(statusCode). Check your relay URL."
             }
@@ -280,12 +287,11 @@ struct OnboardingFlowView: View {
         guard let currentIndex = OnboardingStep.allCases.firstIndex(of: step),
               currentIndex > 0 else { return }
         localErrorMessage = nil
-        // Skip .welcome (step 0) — go back one step from current position.
-        // Native gateway mode skips .relay/.pairing on the way forward
-        // (see .welcome's onAdvance above); mirror that going back so
-        // .permissions returns to .welcome, not the pairing-code screen.
+        // Go back one step. Native gateway mode skips .pairing on the way
+        // forward (relay -> permissions), so mirror that: .permissions goes
+        // back to .relay (the address screen), not the pairing-code screen.
         if nativeGatewayClient != nil && step == .permissions {
-            step = .welcome
+            step = .relay
             return
         }
         let previousIndex = currentIndex - 1
