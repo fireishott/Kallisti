@@ -921,10 +921,15 @@ class HeraldConnector:
                     state, ignoring the token passed here.  For Build 1 this is
                     acceptable -- single-device deployment.  A future build should
                     thread the device_token through to APNs directly.
+
+                    body_text is fabricated here because the WS terminal event
+                    carries no reply text -- the native world delivers the full
+                    response via a separate channel.  The push just needs to
+                    nudge the user to open the app.
                     """
                     await self._send_push_for_job(
                         job_id=f"native:{session_id}",
-                        body_text="",  # no body_text available from WS event
+                        body_text="Turn complete",
                         conversation_id=session_id,
                     )
 
