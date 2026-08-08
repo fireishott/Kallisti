@@ -179,6 +179,7 @@
 		819760234CAF39810437900B /* SharedGatewayStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255A0F27925F240B22D38E9B /* SharedGatewayStatus.swift */; };
 		831281ACB124481E0B1FC508 /* PendingAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5B53E8562C62901D062529 /* PendingAttachment.swift */; };
 		8410D96E879CA1201C9EBB8C /* InboxItemDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B877ED93E5135C72758F2A /* InboxItemDetailSheet.swift */; };
+		8417251982713C7AD2DB6605 /* NativeAuthCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C98F8E95254705577781268 /* NativeAuthCoordinator.swift */; };
 		844FC541DD973136E1842529 /* HeraldArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDFA3D939B6EB7724ADC925E /* HeraldArtifact.swift */; };
 		84A71704EDD558881457C8CA /* LivePairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3510BF7F4B45473ACAA4AB0D /* LivePairingService.swift */; };
 		862BF45277B693C42CBC198D /* tts_error_response.json in Resources */ = {isa = PBXBuildFile; fileRef = DC86128D433089B205D18BAA /* tts_error_response.json */; };
@@ -336,6 +337,7 @@
 		F7CF8F169557C50C1A66DD54 /* stream_v2_multi_tools.json in Resources */ = {isa = PBXBuildFile; fileRef = 629D45F18DD38DEA0626CC5D /* stream_v2_multi_tools.json */; };
 		F8CB1C39C2CE4858E7D3D381 /* VoiceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE863F3296A2748FD9FAD626 /* VoiceState.swift */; };
 		F95C379DFBAA6D29A678C45A /* AppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9F42A0C678DA92CEEA5D52D /* AppRootView.swift */; };
+		FAAD55CE8F780B92AD6F6A64 /* NativeAuthCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C241EC26EBEDE74BF4AEA9E /* NativeAuthCoordinatorTests.swift */; };
 		FACECDBCA2D8825BB352D82D /* HeraldHostServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771F8F67A5A64290D25F9FD8 /* HeraldHostServiceProtocol.swift */; };
 		FAE4D2158B578396CCAB856C /* InboxServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E138EFAEBD8F22BE0249EC66 /* InboxServiceProtocol.swift */; };
 		FBA83254776BE6645D5B15E1 /* PairedRelayConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF7771986FA2150AEF34153 /* PairedRelayConfiguration.swift */; };
@@ -475,6 +477,7 @@
 		1885D85B5424877D7D4832AC /* MimoVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoVoiceCatalogTests.swift; sourceTree = "<group>"; };
 		1AFBD1A002B69B9B6A0274B2 /* KallistiWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = KallistiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsBrowserView.swift; sourceTree = "<group>"; };
+		1C98F8E95254705577781268 /* NativeAuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAuthCoordinator.swift; sourceTree = "<group>"; };
 		1D930C3B8EDBD223348D3D7E /* NotesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesStore.swift; sourceTree = "<group>"; };
 		1FF7771986FA2150AEF34153 /* PairedRelayConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedRelayConfiguration.swift; sourceTree = "<group>"; };
 		240E891E5866FFBD31C659DA /* TalkAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkAudioCapture.swift; sourceTree = "<group>"; };
@@ -509,6 +512,7 @@
 		364A069BBC3968B80678DED9 /* stream_v3_goal_continuation.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_goal_continuation.json; sourceTree = "<group>"; };
 		369C626933B0631D577E96A5 /* OutboxDurableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxDurableTests.swift; sourceTree = "<group>"; };
 		376F3C46A00109C8437ECCAC /* PCMPlaybackQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCMPlaybackQueue.swift; sourceTree = "<group>"; };
+		3C241EC26EBEDE74BF4AEA9E /* NativeAuthCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAuthCoordinatorTests.swift; sourceTree = "<group>"; };
 		3C4F0C938054F308B4F14959 /* StreamedContentPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamedContentPreservationTests.swift; sourceTree = "<group>"; };
 		3C993396E4C0360AAE5737DB /* TranscriptRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptRow.swift; sourceTree = "<group>"; };
 		3E26B342DD92EA76CCB7EE68 /* stream_v3_error.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_error.json; sourceTree = "<group>"; };
@@ -1171,6 +1175,7 @@
 		59A3237E90167FC022FB1C15 /* NativeGateway */ = {
 			isa = PBXGroup;
 			children = (
+				1C98F8E95254705577781268 /* NativeAuthCoordinator.swift */,
 				AE693FCC35AF80B560A7CCAC /* NativeGatewayClient.swift */,
 				1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */,
 				BE3B71F147ACE72E07C2C12C /* NativeGatewayWireTypes.swift */,
@@ -1342,6 +1347,7 @@
 		98D3F32D3E5255536CC268D1 /* NativeGateway */ = {
 			isa = PBXGroup;
 			children = (
+				3C241EC26EBEDE74BF4AEA9E /* NativeAuthCoordinatorTests.swift */,
 				6B49A4AD692A488C7BA0AEA1 /* NativeGatewayClientTests.swift */,
 				151B1AD6DBBCBD7920C4064B /* NativeGatewayWireTypesTests.swift */,
 			);
@@ -1999,6 +2005,7 @@
 				2418EC9760FFEC65E170A2D7 /* MockSyncCoordinator.swift in Sources */,
 				33F6B3447A9766D4114673BE /* MockVoiceSessionService.swift in Sources */,
 				F3C5FED2BFA959D2802BA087 /* ModelStore.swift in Sources */,
+				8417251982713C7AD2DB6605 /* NativeAuthCoordinator.swift in Sources */,
 				D52969A62978FA9B91EC4A9C /* NativeGatewayClient.swift in Sources */,
 				F205A7FEF397AF02BD9B882B /* NativeGatewayTransport.swift in Sources */,
 				A58A3A7BBF9D632643A86225 /* NativeGatewayWireTypes.swift in Sources */,
@@ -2151,6 +2158,7 @@
 				D7626D502ABA67E81E94A161 /* MockHandwritingRecognizer.swift in Sources */,
 				ADBCD863920691A33653D08C /* MockNotesRepository.swift in Sources */,
 				96CDDF927F3ACD4751B43902 /* ModelStoreTests.swift in Sources */,
+				FAAD55CE8F780B92AD6F6A64 /* NativeAuthCoordinatorTests.swift in Sources */,
 				7A8566F7986037CB40CAF9D0 /* NativeGatewayClientTests.swift in Sources */,
 				999124B54583B1DC53F49CB8 /* NativeGatewayWireTypesTests.swift in Sources */,
 				2FDF6EE4028AB2E3345C0A5E /* NoteDirectiveParserTests.swift in Sources */,
