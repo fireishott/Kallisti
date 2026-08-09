@@ -68,6 +68,22 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     /// Resolve the current gateway base URL (live, not cached).
     private var gatewayBaseURL: String { gatewayBaseURLProvider() }
+
+    /// Connector HTTP facade base URL (same scheme+host, port 8010).
+    /// Used for /gw/logs and /gw/logs/stream - the facade reads journald
+    /// directly (no cli.exec 48K truncation) and answers native-gateway
+    /// bearer tokens (dual-auth, same as /v1/native/watch).
+    func facadeBaseURLString() async -> String? {
+        let base = gatewayBaseURL
+        guard let url = URL(string: base), let host = url.host else { return nil }
+        let scheme = url.scheme == "https" ? "https" : "http"
+        return "\(scheme)://\(host):8010"
+    }
+
+    /// Current native-gateway access token for facade requests.
+    func nativeAccessToken() async -> String? {
+        await authCoordinator.currentAccessToken()
+    }
     private let idMap = NativeSessionIdMap()
     private let transportFactory: @Sendable () -> any NativeGatewayTransport
     private(set) var client: NativeGatewayClient?
@@ -234,7 +250,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // a socket that's really dead fails here and falls through to
             // the same catch as any other connect failure below instead of
             // a false "connected" that dies on the very first real request.
-            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0, allDevices: nil))
+            //
+            // LATENCY (build 34): this verification probe used to inherit
+            // the client's default 60s requestTimeoutNanos. connect() is
+            // ITSELF the fallback path reconnectIfNeeded() takes after its
+            // fast 5s phantom-socket probe fails -- so a routing hiccup here
+            // (e.g. the fresh socket opens but the reverse proxy silently
+            // black-holes it) could hang another full 60s on top of the 8s
+            // ticket-mint timeout, stacking toward the ~85-120s dead window
+            // users saw on follow-up sends after backgrounding. Use the same
+            // short probe timeout as every other liveness check in this file.
+            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0, allDevices: nil), timeoutNanos: Self.probeTimeoutNanos)
 
             await client.onDisconnect { [weak self] in
                 Task { @MainActor in await self?.handleUnexpectedDisconnect() }
@@ -559,12 +585,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// when the mapping points at a reaped session). Returns the mapped
     /// native id, or nil if no session could be established.
     func ensureSessionForSwitch(id: UUID) async -> Bool {
+        // LATENCY (build 33): same phantom-socket guard as ensureConversation.
+        // A stale probe here hung the default 60s before model switch
+        // errored; probe with the short timeout after healing the socket.
+        await reconnectIfNeeded()
         if let nativeId = await idMap.nativeId(for: id) {
             do {
                 guard let client else { throw NativeGatewayClientError.notConnected }
                 let response = try await client.send(
                     method: "session.status",
-                    params: ["session_id": nativeId]
+                    params: ["session_id": nativeId],
+                    timeoutNanos: Self.probeTimeoutNanos
                 )
                 if response.error == nil {
                     return true
@@ -596,12 +627,29 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // window with zero UI feedback. session.status returns small
         // metadata text through the same _sess_nowait 4001 path, so stale
         // detection is identical and the payload is trivial.
+        //
+        // LATENCY (build 33): ensureConversation runs BEFORE the streaming
+        // placeholder is appended, so any hang here is invisible to the
+        // user. The session.status probe used the DEFAULT 60s request
+        // timeout and never checked the socket first. After backgrounding,
+        // iOS silently suspends the WebSocket (receive() never surfaces the
+        // error), connectionStatus stays .connected, and the probe hung the
+        // full 60s on the phantom socket -- then fell through to
+        // createSession, another 60s-class round trip -- before the bubble
+        // ever rendered and before the message hit the gateway (which is
+        // why follow-ups never showed up in hermes logs). Fix: probe the
+        // socket with a 5s timeout FIRST (reconnectIfNeeded), then use the
+        // same short timeout for the session.status probe so a dead socket
+        // heals in ~5s instead of minutes.
+        await reconnectIfNeeded()
+
         if let nativeId = await idMap.nativeId(for: id) {
             do {
                 guard let client else { throw NativeGatewayClientError.notConnected }
                 let response = try await client.send(
                     method: "session.status",
-                    params: ["session_id": nativeId]
+                    params: ["session_id": nativeId],
+                    timeoutNanos: Self.probeTimeoutNanos
                 )
                 if response.error == nil {
                     // Keep the native client's currentConversation pointing at

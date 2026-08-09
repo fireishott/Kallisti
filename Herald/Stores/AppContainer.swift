@@ -479,6 +479,20 @@ final class AppContainer {
                 guard let user = settingsStore.settings.dashboardUsername,
                       let pass = settingsStore.settings.dashboardPassword else { return nil }
                 return (user, pass)
+            },
+            nativeLogStreamProvider: {
+                // Native mode: stream from the connector facade
+                // /gw/logs/stream (port 8010) with the native bearer token.
+                // The gateway :9119 has no /logs/stream route, so the old
+                // dashboard path silently connected to nothing.
+                guard let nativeClient = nativeGatewayClient else { return nil }
+                guard let facadeBase = await nativeClient.facadeBaseURLString(),
+                      let token = await nativeClient.nativeAccessToken(),
+                      let url = URL(string: "\(facadeBase)/gw/logs/stream?level=all&source=hermes-gateway")
+                else { return nil }
+                var request = URLRequest(url: url)
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                return request
             }
         )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)

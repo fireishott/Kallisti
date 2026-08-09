@@ -1,10 +1,12 @@
 import SwiftUI
+import os
 
 /// Gateway log viewer. Fetches recent logs from the relay's /gw/logs endpoint
 /// with optional level filtering and live streaming via SSE. In native
 /// (direct-gateway) mode, logs come from `hermes logs <source> -n 200` via
 /// the gateway's cli.exec (no relay needed).
 struct GatewayLogsScreen: View {
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "GatewayLogsScreen")
     @Environment(AppContainer.self) private var container
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(PairingStore.self) private var pairingStore
@@ -14,7 +16,7 @@ struct GatewayLogsScreen: View {
     @State private var logLines: [LogLine] = []
     @State private var errorMessage: String?
     @State private var isLoading = true
-    @State private var selectedLevel: String = "info"
+    @State private var selectedLevel: String = "all"
     @State private var selectedSource: String = "hermes-gateway"
     @State private var isLiveStreaming = false
     @State private var streamTask: Task<Void, Never>?
@@ -26,7 +28,7 @@ struct GatewayLogsScreen: View {
     @State private var liveIngestedCount = 0
     @State private var streamConnectionError: String?
 
-    private let levels = ["debug", "info", "warning", "error"]
+    private let levels = ["all", "debug", "info", "warning", "error"]
     // Build 107: source picker for selecting which logs to view
     private let sources = [("connector", "Connector"), ("hermes-gateway", "Hermes Gateway"), ("hermes-agent", "Hermes Agent")]
 
@@ -211,9 +213,46 @@ struct GatewayLogsScreen: View {
         errorMessage = nil
         defer { isLoading = false }
 
-        // NATIVE mode: pull logs via the gateway's cli.exec
-        // (`hermes logs <source> -n 200`). The relay REST /gw/logs facade
-        // rejects native bearer tokens, so this is the only working path.
+        // NATIVE mode: prefer the connector HTTP facade (/gw/logs on port
+        // 8010) with the native bearer token. The facade reads journald
+        // directly and returns real timestamps + per-line levels; cli.exec
+        // truncates output at 48K chars (cutting the NEWEST lines) and
+        // stamps every line with the selected level. Fall back to cli.exec
+        // if the facade is unreachable.
+        if container.nativeGatewayClient != nil,
+           let nativeClient = container.nativeGatewayClient {
+            do {
+                guard let facadeBase = await nativeClient.facadeBaseURLString(),
+                      let nativeToken = await nativeClient.nativeAccessToken(),
+                      let url = URL(string: "\(facadeBase)/gw/logs?lines=\(viewAllLines ? 2000 : 200)&level=\(selectedLevel)&source=\(selectedSource)")
+                else {
+                    throw NativeGatewayClientError.notConnected
+                }
+                var request = URLRequest(url: url)
+                request.setValue("Bearer \(nativeToken)", forHTTPHeaderField: "Authorization")
+                request.timeoutInterval = 15
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    throw NativeGatewayClientError.unexpectedFrame
+                }
+                struct FacadeResponse: Decodable {
+                    struct Data: Decodable { let lines: [LogLine] }
+                    let data: Data
+                }
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let decoded = try decoder.decode(FacadeResponse.self, from: data)
+                logLines = decoded.data.lines
+                return
+            } catch {
+                // Facade failed - fall through to cli.exec below.
+                Self.logger.warning("facade log fetch failed: \(error.localizedDescription)")
+            }
+        }
+
+        // Fallback: pull logs via the gateway's cli.exec
+        // (`hermes logs <source> -n 200`). Only used when the facade path
+        // above is unavailable (e.g. no native bearer yet).
         if container.nativeGatewayClient != nil,
            let featureClient = container.nativeGatewayClient?.featureClient {
             do {
@@ -227,8 +266,9 @@ struct GatewayLogsScreen: View {
                 default: logName = "gateway"
                 }
                 let lineCount = viewAllLines ? 2000 : 200
+                let cliLevel = selectedLevel == "all" ? "debug" : selectedLevel
                 let raw = try await featureClient.cliExec(
-                    argv: ["logs", logName, "-n", String(lineCount), "--level", selectedLevel]
+                    argv: ["logs", logName, "-n", String(lineCount), "--level", cliLevel]
                 )
                 let now = Date()
                 logLines = raw.components(separatedBy: .newlines)
@@ -298,60 +338,74 @@ struct GatewayLogsScreen: View {
             isLiveStreaming = true
             liveIngestedCount = 0
             streamConnectionError = nil
-            // NATIVE mode has no relay SSE stream to subscribe to - the relay
-            // endpoints reject native bearer tokens (401). Live mode polls the
-            // gateway's `hermes logs` via cli.exec on a short timer instead.
+            // NATIVE mode: stream from the connector HTTP facade
+            // (/gw/logs/stream on port 8010) with the native bearer token.
+            // The old path polled `hermes logs` via cli.exec every 3s with a
+            // count-based diff that broke once the log exceeded the window
+            // (count stayed 200 forever, so nothing ever appended) - "Live"
+            // looked frozen. The facade's SSE stream is real-time and
+            // returns real per-line levels.
             if container.nativeGatewayClient != nil,
-               let featureClient = container.nativeGatewayClient?.featureClient {
-                startNativeLivePolling(featureClient)
+               let nativeClient = container.nativeGatewayClient {
+                startNativeFacadeStream(nativeClient)
             } else {
                 startLiveStream()
             }
         }
     }
 
-    /// Native live: poll `hermes logs` every 3s and append only NEW lines so
-    /// the tail grows like a real live stream without resetting the list.
-    private func startNativeLivePolling(_ featureClient: NativeGatewayFeatureClient) {
-        nativePollTask = Task {
-            var lastLineCount = 0
-            while !Task.isCancelled {
-                let logName: String
-                switch self.selectedSource {
-                case "connector": logName = "gateway"
-                case "hermes-agent": logName = "agent"
-                default: logName = "gateway"
+    /// Native live: SSE stream from the connector facade /gw/logs/stream
+    /// (port 8010). Authenticates with the native gateway bearer token
+    /// (dual-auth endpoint, same as /v1/native/watch).
+    private func startNativeFacadeStream(_ nativeClient: NativeKallistiClient) {
+        streamTask = Task {
+            guard let facadeBase = await nativeClient.facadeBaseURLString(),
+                  let nativeToken = await nativeClient.nativeAccessToken(),
+                  let url = URL(string: "\(facadeBase)/gw/logs/stream?level=\(selectedLevel)&source=\(selectedSource)")
+            else {
+                await MainActor.run {
+                    streamConnectionError = "Native log stream unavailable (no bearer token)"
+                    isLiveStreaming = false
                 }
-                let lineCount = self.viewAllLines ? 2000 : 200
-                let now = Date()
-                do {
-                    let raw = try await featureClient.cliExec(
-                        argv: ["logs", logName, "-n", String(lineCount), "--level", self.selectedLevel]
-                    )
-                    let freshLines = raw.components(separatedBy: .newlines)
-                        .filter { !$0.isEmpty }
-                        .map { line in
-                            LogLine(timestamp: now, level: self.selectedLevel, message: line, source: self.selectedSource)
-                        }
+                return
+            }
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(nativeToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = TimeInterval(Int.max)
+
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                     await MainActor.run {
-                        if freshLines.count > lastLineCount {
-                            let newOnes = Array(freshLines.suffix(freshLines.count - lastLineCount))
-                            self.logLines.append(contentsOf: newOnes)
-                            self.liveIngestedCount += newOnes.count
-                            if self.logLines.count > 2000 {
-                                self.logLines.removeFirst(self.logLines.count - 2000)
-                            }
-                        }
-                        lastLineCount = freshLines.count
+                        streamConnectionError = "Native log stream returned HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)"
+                        isLiveStreaming = false
                     }
-                } catch {
-                    if !Task.isCancelled {
-                        await MainActor.run {
-                            self.streamConnectionError = error.localizedDescription
+                    return
+                }
+                for try await line in bytes.lines {
+                    guard !Task.isCancelled else { break }
+                    guard line.hasPrefix("data:") else { continue }
+                    let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                    guard !payload.isEmpty,
+                          let data = payload.data(using: .utf8),
+                          let logLine = try? JSONDecoder().decode(LogLine.self, from: data)
+                    else { continue }
+                    await MainActor.run {
+                        logLines.append(logLine)
+                        liveIngestedCount += 1
+                        if logLines.count > 2000 {
+                            logLines.removeFirst(logLines.count - 2000)
                         }
                     }
                 }
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                if !Task.isCancelled {
+                    await MainActor.run {
+                        isLiveStreaming = false
+                        streamConnectionError = error.localizedDescription
+                    }
+                }
             }
         }
     }
