@@ -36,10 +36,19 @@ final class ProfileStore {
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
+    /// Native gateway feature client provider (nil when running legacy mode).
+    /// Profiles have NO relay REST endpoint reachable in native mode, so the
+    /// native path uses the gateway's cli.exec (`hermes profile list/use`).
+    private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
 
-    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
+    init(
+        apiClient: RelayAPIClient?,
+        accessTokenProvider: @escaping () async -> String?,
+        nativeFeatureClientProvider: @escaping @MainActor () -> NativeGatewayFeatureClient? = { nil }
+    ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        self.nativeFeatureClientProvider = nativeFeatureClientProvider
         // Restore cached profile name immediately so ChatInputBar placeholder
         // reads correctly before the first network load completes.
         activeProfileName = UserDefaults.standard.string(forKey: Self.activeProfileKey)
@@ -58,6 +67,52 @@ final class ProfileStore {
            !profiles.isEmpty {
             return
         }
+
+        // NATIVE path: cli.exec `hermes profile list`. The output is a table:
+        //   Profile   Model   Gateway   Alias   Distribution
+        //   default   ...     stopped   -       -
+        //   ◆ignyte    ...     running   -       -
+        // Active profile is prefixed with ◆. Parsing is column-based: take
+        // the first whitespace-delimited field, strip the ◆ marker.
+        if let featureClient = nativeFeatureClientProvider() {
+            isLoading = true
+            errorMessage = nil
+            defer { isLoading = false }
+            do {
+                let output = try await featureClient.cliExec(argv: ["profile", "list"])
+                var parsed: [HeraldProfile] = []
+                var activeName: String?
+                for rawLine in output.components(separatedBy: .newlines) {
+                    let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !line.isEmpty, !line.hasPrefix("Profile"),
+                          !line.hasPrefix("─"), !line.hasPrefix("—"),
+                          !line.hasPrefix("-")
+                    else { continue }
+                    let isActive = line.hasPrefix("◆")
+                    let nameField = line
+                        .replacingOccurrences(of: "◆", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let name = nameField.split(separator: " ", maxSplits: 1).first.map(String.init) ?? nameField
+                    guard !name.isEmpty else { continue }
+                    parsed.append(HeraldProfile(name: name, description: "", skillCount: 0))
+                    if isActive { activeName = name }
+                }
+                if !parsed.isEmpty {
+                    profiles = parsed
+                    if let activeName {
+                        activeProfileName = activeName
+                        UserDefaults.standard.set(activeName, forKey: Self.activeProfileKey)
+                    }
+                    lastLoadedAt = .now
+                    return
+                }
+                // Fall through to legacy path on empty parse.
+            } catch {
+                errorMessage = nil
+                // Fall through to legacy path.
+            }
+        }
+
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return
@@ -100,6 +155,22 @@ final class ProfileStore {
     /// Fallback: ``POST /gw/profile/switch`` — gateway control plane,
     /// used when the connector RPC path is unavailable.
     func switchProfile(to name: String) async throws {
+        // NATIVE path: `hermes profile use <name>` over cli.exec. This is the
+        // same CLI the connector's profile.set RPC wraps; it writes the
+        // sticky default profile so the next gateway start uses it.
+        if let featureClient = nativeFeatureClientProvider() {
+            // Optimistic local update before the network call
+            markActive(name)
+            do {
+                _ = try await featureClient.cliExec(argv: ["profile", "use", name])
+                await loadProfiles(force: true)
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+                throw error
+            }
+        }
+
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return

@@ -75,7 +75,7 @@ struct NativeGatewayFeatureClient {
                let decoded = try? JSONDecoder().decode(ProviderConfigResponse.self, from: data) {
                 snapshot.model = decoded.model
                 snapshot.provider = decoded.provider
-                snapshot.availableProviders = decoded.providers ?? []
+                snapshot.availableProviders = (decoded.providers ?? []).compactMap { $0.id }
             }
         } catch {
             Self.logger.error("gatewayStatus config.get failed: \(error.localizedDescription)")
@@ -215,6 +215,42 @@ struct NativeGatewayFeatureClient {
 
     // MARK: - Settings host row
 
+    /// Run a headless hermes CLI command over the gateway WS (cli.exec).
+    /// Returns stdout+stderr combined. The gateway allows non-interactive
+    /// subcommands (profile list/use, etc.) - blocked commands come back as
+    /// `blocked: true` with a hint.
+    func cliExec(argv: [String], timeout: Int = 60) async throws -> String {
+        guard let client = await clientProvider() else {
+            throw NativeGatewayClientError.notConnected
+        }
+        let response = try await client.send(
+            method: "cli.exec",
+            params: CliExecParams(argv: argv, timeout: timeout)
+        )
+        if let error = response.error { throw error }
+        guard let result = response.result,
+              let data = try? JSONEncoder().encode(result),
+              let decoded = try? JSONDecoder().decode(CliExecResponse.self, from: data)
+        else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        if decoded.blocked == true {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        return decoded.output ?? ""
+    }
+
+    private struct CliExecParams: Encodable {
+        let argv: [String]
+        let timeout: Int
+    }
+
+    private struct CliExecResponse: Decodable {
+        let blocked: Bool?
+        let code: Int?
+        let output: String?
+    }
+
     /// Hermes host identity for the Settings host row.
     struct HostInfo {
         var model: String?
@@ -317,9 +353,18 @@ struct NativeGatewayFeatureClient {
     // MARK: - Response shapes
 
     private struct ProviderConfigResponse: Decodable {
+        struct ProviderInfo: Decodable {
+            let id: String?
+            let label: String?
+            let aliases: [String]?
+        }
         let model: String?
         let provider: String?
-        let providers: [String]?
+        // Server sends list[dict] (id/label/aliases from
+        // list_available_providers). Decoding as [String] throws a silent
+        // typeMismatch, which zeroed providerCount and cascaded into
+        // Settings showing "Model: Unavailable / Providers: 0".
+        let providers: [ProviderInfo]?
     }
 
     private struct ProfileResponse: Decodable {

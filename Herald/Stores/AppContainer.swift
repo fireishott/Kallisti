@@ -167,7 +167,10 @@ final class AppContainer {
         )
         self.profileStore = profileStore ?? ProfileStore(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { [nativeGatewayClient] in
+                nativeGatewayClient?.featureClient
+            }
         )
         self.skillsStore = skillsStore ?? SkillsStore(
             apiClient: apiClient,

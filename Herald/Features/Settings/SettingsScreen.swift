@@ -113,6 +113,14 @@ struct SettingsScreen: View {
     /// state is suppressed so the UI doesn't contradict the gateway dashboard.
     private var effectiveConnectionStatus: ConnectionStatus {
         let relayStatus = chatStore.connectionStatus
+        // The host row is fed by hostInfo() over the live gateway socket.
+        // When that succeeded, the gateway IS reachable - even if the chat
+        // client carries a stale .error from an earlier WS drop. Prefer the
+        // definitive host state so Settings doesn't show "Error/Offline"
+        // while the gateway status page shows Connected.
+        if hostStore.isHostOnline {
+            return .connected
+        }
         if relayStatus == .error {
             return relayStatus
         }
@@ -462,6 +470,18 @@ struct SettingsScreen: View {
     }
 
     private func checkForUpdates() async {
+        // NATIVE mode: update check goes through the relay REST facade
+        // (/gw/update/check), which rejects native bearer tokens. Show an
+        // honest state rather than a confusing auth error.
+        guard container.nativeGatewayClient == nil else {
+            updateCheckResult = "Not available in direct gateway mode"
+            isCheckingForUpdate = true
+            try? await Task.sleep(for: .seconds(2))
+            isCheckingForUpdate = false
+            try? await Task.sleep(for: .seconds(6))
+            updateCheckResult = nil
+            return
+        }
         let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString
         guard let relayBase else { return }
@@ -494,6 +514,17 @@ struct SettingsScreen: View {
     }
 
     private func updateAgent() async {
+        // NATIVE mode: agent update goes through the relay REST facade
+        // (/gw/update), which rejects native bearer tokens.
+        guard container.nativeGatewayClient == nil else {
+            updateAgentResult = "Not available in direct gateway mode"
+            isUpdatingAgent = true
+            try? await Task.sleep(for: .seconds(2))
+            isUpdatingAgent = false
+            try? await Task.sleep(for: .seconds(6))
+            updateAgentResult = nil
+            return
+        }
         let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
             ?? pairingStore.pairedRelayConfiguration?.baseURLString
         guard let relayBase else { return }
@@ -570,6 +601,18 @@ struct SettingsScreen: View {
         isRestartingGW = true
         gwRestartTarget = target
         gwRestartResult = nil
+
+        // NATIVE mode: the gateway WS has no restart RPC, and the relay
+        // REST facade /gw/* rejects native bearer tokens. Surface an honest
+        // state instead of the confusing "Not authenticated - please pair
+        // your device first" from the preflight 401.
+        if container.nativeGatewayClient != nil {
+            gwRestartResult = "Not available in direct gateway mode"
+            isRestartingGW = false
+            try? await Task.sleep(for: .seconds(3))
+            gwRestartResult = nil
+            return
+        }
 
         do {
             try await withTimeout(seconds: 15) {

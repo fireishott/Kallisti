@@ -303,8 +303,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // Probe cheaply: a dead socket errors on the send, and the
             // receive loop tears down + reconnects. If the probe succeeds we
             // are genuinely alive.
+            //
+            // CRITICAL (build 26 latency fix): the probe must use a SHORT
+            // timeout. A phantom socket (iOS suspended the WS in background,
+            // receive() never surfaced the error) would otherwise make this
+            // session.list probe hang the full 60s request timeout before we
+            // fall through to a fresh connect - and the user's next message
+            // sat in the outbox behind that 60s hang (~85s total round trip
+            // for a 4s LLM call).
             do {
-                _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0))
+                _ = try await client.send(
+                    method: "session.list",
+                    params: SessionListParams(limit: 1, offset: 0),
+                    timeoutNanos: Self.probeTimeoutNanos
+                )
                 return
             } catch {
                 // Fall through to a fresh connect below.
@@ -316,6 +328,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
         reconnectTask = nil
         await connect()
     }
+
+    /// Liveness probe timeout: 5 seconds. Short enough that a phantom dead
+    /// socket is detected before the user notices, long enough that a
+    /// genuinely slow gateway doesn't cause spurious reconnects.
+    private static let probeTimeoutNanos: UInt64 = 5_000_000_000
 
     /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
     /// then retries `connect()`. Called from onboarding's "Open app" step —
@@ -352,7 +369,27 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         var sessions: [SessionSummary] = []
         for native in decoded.sessions {
-            let uuid = await idMap.uuid(for: native.sessionId) ?? UUID()
+            // Filter out internal/cron sessions (wedding-board enrichment
+            // agent, etc.) so the history list only shows real chats. The
+            // gateway's session.list RPC returns ALL sources (the deny-list
+            // only filters kanban/tool for the `recent` command).
+            if let source = native.source?.lowercased(), source == "cron" {
+                continue
+            }
+            // CRITICAL: resolve the app-side UUID AND register the reverse
+            // mapping when it's missing. Previously listSessions minted a
+            // fresh UUID() that was NEVER registered in idMap, so any
+            // interaction with a resumed session (delete, rename, follow-up
+            // message, model switch) failed with "session not found" / 4001
+            // or created a brand-new server session (context loss + cold
+            // start latency on every follow-up).
+            let uuid: UUID
+            if let existing = await idMap.uuid(for: native.sessionId) {
+                uuid = existing
+            } else {
+                uuid = UUID()
+                await idMap.register(uuid: uuid, nativeId: native.sessionId)
+            }
             sessions.append(SessionSummary(
                 id: uuid,
                 title: native.title ?? "Untitled",
@@ -545,6 +582,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
+        // Build 26 (latency fix): verify the socket is genuinely alive BEFORE
+        // submitting. A phantom connection (iOS suspended the WS in
+        // background, receive() never surfaced the error) would otherwise let
+        // prompt.submit hang the full 60s request timeout, and the user's
+        // message waits behind that hang (~85s total for a 4s LLM call).
+        // reconnectIfNeeded() probes with a 5s timeout and forces a fresh
+        // connect when the probe fails, so a dead socket heals fast and the
+        // submit lands on a live connection.
+        await reconnectIfNeeded()
+
         guard let client else {
             continuation.yield(.failed("Not connected"))
             continuation.finish()
@@ -673,6 +720,16 @@ private final class StreamEventHandler: @unchecked Sendable {
                 continuation.yield(.textDelta(delta.text))
             }
         case "thinking.delta":
+            // Build 26 (thought-stacking fix): the gateway streams
+            // KawaiiSpinner frames ("(°□°) analyzing...", "(・_・)>musing...")
+            // on this event via thinking_callback - one frame per tool-call
+            // API round. They are transient UI noise, NOT reasoning: feeding
+            // them into .reasoningDelta stacked faces up in the thought card
+            // and pushed out the real chain-of-thought. Real CoT arrives on
+            // "reasoning.delta" (handled below). Drop the spinner frames.
+            break
+        case "reasoning.delta":
+            // Real chain-of-thought from the gateway's reasoning_callback.
             if let delta = event.params.decodePayload(NativeThinkingDeltaPayload.self) {
                 continuation.yield(.reasoningDelta(delta.text))
             }
