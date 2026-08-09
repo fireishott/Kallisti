@@ -43,6 +43,7 @@ struct OnboardingFlowView: View {
     /// uses this to trigger the Nous OAuth login that connect() alone has
     /// no way to present a screen for.
     let nativeGatewayClient: NativeKallistiClient?
+    let installationID: UUID
 
     @State private var step: OnboardingStep
     @State private var setupCode: String = ""
@@ -51,14 +52,13 @@ struct OnboardingFlowView: View {
     @State private var isRelayValidationInProgress = false
     @State private var isNousLoginInProgress = false
     @State private var nousLoginErrorMessage: String?
-    @State private var gatewayUsername = ""
-    @State private var gatewayPassword = ""
     @FocusState private var isSetupCodeFocused: Bool
     @FocusState private var isRelayURLFocused: Bool
 
-    init(initialStep: OnboardingStep, nativeGatewayClient: NativeKallistiClient?) {
+    init(initialStep: OnboardingStep, nativeGatewayClient: NativeKallistiClient?, installationID: UUID) {
         _step = State(initialValue: initialStep)
         self.nativeGatewayClient = nativeGatewayClient
+        self.installationID = installationID
     }
 
     var body: some View {
@@ -161,8 +161,6 @@ struct OnboardingFlowView: View {
                     ?? relayConfiguration.relayOriginLabel,
                 isSigningIn: isNousLoginInProgress,
                 signInErrorMessage: nousLoginErrorMessage,
-                username: $gatewayUsername,
-                password: $gatewayPassword,
                 onOpen: { Task { await completeOnboarding() } }
             )
         }
@@ -172,29 +170,10 @@ struct OnboardingFlowView: View {
     /// is active. Pairing alone is not enough in that mode — it establishes
     /// device/push trust with the connector, not chat trust with Hermes.
     private func completeOnboarding() async {
-        guard let nativeGatewayClient else {
-            pairingStore.completePermissionsOnboarding()
-            return
-        }
-        isNousLoginInProgress = true
-        nousLoginErrorMessage = nil
-        defer { isNousLoginInProgress = false }
-
-        guard let root = UIApplication.shared.connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first?.rootViewController else {
-            nousLoginErrorMessage = "Could not present the Hermes sign-in screen."
-            return
-        }
-        do {
-            try await nativeGatewayClient.startBasicLogin(username: gatewayUsername, password: gatewayPassword)
-            pairingStore.completePermissionsOnboarding()
-        } catch NativeAuthError.connectFailedAfterLogin {
-            // Sign-in itself worked -- don't call this a sign-in failure.
-            nousLoginErrorMessage = NativeAuthError.connectFailedAfterLogin.errorDescription
-        } catch {
-            nousLoginErrorMessage = "Hermes sign-in failed: \(error.localizedDescription)"
-        }
+        // Legacy relay mode completes after permissions. Native mode completed
+        // its cookie-backed gateway authentication during the one-time pairing
+        // handshake before reaching Ready.
+        pairingStore.completePermissionsOnboarding()
     }
 
     // MARK: - Scanner
@@ -274,7 +253,7 @@ struct OnboardingFlowView: View {
                 // Server reachable. Native gateway skips the pairing-code
                 // handshake and goes straight to permissions; legacy mode
                 // proceeds to pairing.
-                advance(to: nativeGatewayClient != nil ? .permissions : .pairing)
+                advance(to: .pairing)
             } else {
                 localErrorMessage = "Server returned status \(statusCode). Check your relay URL."
             }
@@ -348,6 +327,18 @@ struct OnboardingFlowView: View {
     private func completePairing(using rawCode: String) async {
         guard relayConfiguration.validationMessage == nil else {
             localErrorMessage = relayConfiguration.validationMessage
+            return
+        }
+        if let nativeGatewayClient {
+            isNousLoginInProgress = true
+            defer { isNousLoginInProgress = false }
+            do {
+                try await nativeGatewayClient.startPairingLogin(code: rawCode, installationID: installationID)
+                localErrorMessage = nil
+                step = .permissions
+            } catch {
+                localErrorMessage = "Pairing failed: \(error.localizedDescription)"
+            }
             return
         }
         let didPair = await pairingStore.pair(using: rawCode)
@@ -969,8 +960,6 @@ private struct ReadyStepView: View {
     let hostDisplayName: String
     let isSigningIn: Bool
     let signInErrorMessage: String?
-    @Binding var username: String
-    @Binding var password: String
     let onOpen: () -> Void
 
     var body: some View {
@@ -1008,17 +997,6 @@ private struct ReadyStepView: View {
                 }
                 .padding(.top, Design.Spacing.lg)
 
-                VStack(spacing: Design.Spacing.sm) {
-                    TextField("Gateway username", text: $username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textContentType(.username)
-                    SecureField("Gateway password", text: $password)
-                        .textContentType(.password)
-                }
-                .textFieldStyle(.roundedBorder)
-                .padding(.top, Design.Spacing.md)
-
                 if let signInErrorMessage {
                     Text(signInErrorMessage)
                         .font(Design.Typography.caption)
@@ -1038,9 +1016,8 @@ private struct ReadyStepView: View {
                         .padding(.vertical, Design.Spacing.sm + 2)
                     } else {
                         OnboardingPrimaryCta(
-                            title: signInErrorMessage == nil ? "Sign in" : "Retry sign-in"
+                            title: "Open Kallisti"
                         ) { onOpen() }
-                        .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
                     }
                 }
             }

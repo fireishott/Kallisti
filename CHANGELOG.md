@@ -4,6 +4,14 @@ All notable changes to Kallisti will be documented in this file.
 
 ## [0.2.0] - 2026-08-09
 
+### Added
+- One-time Kallisti pairing-code sign-in for native gateway mode, bound to this device installation
+
+### Fixed
+- Pairing now creates the authenticated gateway session before opening Kallisti and uses it to mint WebSocket tickets
+
+## [0.2.0] - 2026-08-09
+
 ### Fixed
 - Model picker now reads the active conversation model state instead of overwriting it with the global default
 
