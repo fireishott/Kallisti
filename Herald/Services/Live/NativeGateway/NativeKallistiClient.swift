@@ -501,7 +501,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func createSession(title: String, conversationID: UUID? = nil) async throws -> SessionSummary {
         guard let client else { throw NativeGatewayClientError.notConnected }
-        let response = try await client.send(method: "session.create", params: ["title": title])
+        // LATENCY (build 36): session.create is part of the reconnect-path
+        // chain (ensureConversation/ensureSessionForSwitch/_sendStreaming all
+        // fall into this when idMap is stale -- e.g. the gateway reaped the
+        // session while backgrounded). It had no explicit timeout, so it
+        // inherited the client's 60s default, stacking on top of every other
+        // bounded probe in this reconnect chain. Unlike the pure liveness
+        // probes (5s), this does real server-side work (creating a session
+        // row) so it gets the same 8s bound as the other real-work calls
+        // (ticket mint, token refresh) rather than the 5s probe timeout.
+        let response = try await client.send(method: "session.create", params: ["title": title], timeoutNanos: 8_000_000_000)
         if let error = response.error { throw error }
         guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
         let data = try JSONEncoder().encode(result)
