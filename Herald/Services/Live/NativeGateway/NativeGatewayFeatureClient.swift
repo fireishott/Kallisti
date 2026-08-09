@@ -33,13 +33,49 @@ struct NativeGatewayFeatureClient {
     /// so it stays correct across reconnects.
     private let clientProvider: @MainActor () -> NativeGatewayClient?
     private let currentSessionIdProvider: @MainActor () async -> String?
+    /// Base URL of the native gateway (http://host:9119). Used to derive the
+    /// connector HTTP facade URL (same host, port 8010) for version rows.
+    private let gatewayBaseURLProvider: @MainActor () -> String
 
     init(
         clientProvider: @escaping @MainActor () -> NativeGatewayClient?,
-        currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil }
+        currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil },
+        gatewayBaseURLProvider: @escaping @MainActor () -> String = { "http://localhost:9119" }
     ) {
         self.clientProvider = clientProvider
         self.currentSessionIdProvider = currentSessionIdProvider
+        self.gatewayBaseURLProvider = gatewayBaseURLProvider
+    }
+
+    // MARK: - Version info (native mode)
+
+    /// Hermes Agent version string from `hermes version` via cli.exec.
+    func agentVersion() async throws -> String {
+        try await cliExec(argv: ["version"], timeout: 30)
+    }
+
+    /// Connector version from the HTTP facade /v1/version on the same host.
+    /// The facade (port 8010) answers unauthenticated for this endpoint.
+    func connectorVersion() async -> String? {
+        let gatewayBase = await gatewayBaseURLProvider()
+        guard let base = URL(string: gatewayBase),
+              let host = base.host else { return nil }
+        let scheme = base.scheme == "https" ? "https" : "http"
+        guard let url = URL(string: "\(scheme)://\(host):8010/v1/version") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            struct VersionEnvelope: Decodable {
+                struct VersionData: Decodable { let version: String? }
+                let data: VersionData?
+            }
+            let decoded = try? JSONDecoder().decode(VersionEnvelope.self, from: data)
+            return decoded?.data?.version
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Gateway Status
@@ -193,12 +229,32 @@ struct NativeGatewayFeatureClient {
     }
 
     /// Switch the active model via the gateway's /model slash machinery.
-    /// `provider/model` format is accepted by parse_model_switch_args.
+    ///
+    /// The target string must match what the gateway's parse_model_switch_args
+    /// accepts, and that depends on the provider type:
+    ///   - openrouter (aggregator): model names are already vendor-qualified
+    ///     ("deepseek/deepseek-v4-flash"). Prefixing the provider slug
+    ///     produces "openrouter/deepseek/deepseek-v4-flash", which the
+    ///     gateway cannot resolve ("Model not found in this provider's
+    ///     listing"). Send the name as-is.
+    ///   - Direct providers (anthropic, xiaomi): bare names. Send
+    ///     "provider/name".
+    ///   - Custom providers (custom:mbp-ollama): need the explicit
+    ///     "--provider <slug>" form; "custom:mbp-ollama/qwen3:8b" and
+    ///     "mbp-ollama/qwen3:8b" both fail resolution.
     func switchModel(_ name: String, provider: String) async throws {
         guard let client = await clientProvider() else {
             throw NativeGatewayClientError.notConnected
         }
-        let target = provider.isEmpty ? name : "\(provider)/\(name)"
+        let target: String
+        if provider.lowercased().hasPrefix("custom:") {
+            target = "\(name) --provider \(provider)"
+        } else if name.contains("/") {
+            // Already vendor-qualified (aggregator form) - do NOT prefix.
+            target = name
+        } else {
+            target = provider.isEmpty ? name : "\(provider)/\(name)"
+        }
         var params: [String: String] = ["command": "/model \(target)"]
         // slash.exec requires a session_id (_sess_nowait 4001s without one).
         // Scope the switch to the active conversation when there is one so the

@@ -96,8 +96,36 @@ final class NativeKallistiClient: HeraldClientProtocol {
             self?.client
         } currentSessionIdProvider: { [weak self] in
             guard let self else { return nil }
-            guard let conv = self.currentConversation else { return nil }
-            return await self.idMap.nativeId(for: conv.id)
+            // A fresh "New Chat" conversation has no gateway session yet.
+            // Without one, slash.exec /model dies with 4001 "session not
+            // found" and the caller falls back to the legacy relay path,
+            // which rejects native bearer tokens.
+            //
+            // Build 31 created a session when the mapping was MISSING, but
+            // never validated STALE mappings: after a gateway restart the
+            // server reaps sessions from its in-memory registry, the
+            // persisted idMap entry points at a dead session, and the switch
+            // still 4001s. Use the same stale-check as the chat path
+            // (ensureSessionForSwitch) so dead mappings are unregistered and
+            // recreated before the switch runs.
+            if let conv = self.currentConversation {
+                if await self.ensureSessionForSwitch(id: conv.id) {
+                    return await self.idMap.nativeId(for: conv.id)
+                }
+                return nil
+            }
+            // Hub opened from a fresh chat where the native client has not
+            // loaded a conversation yet. Fall back to the persisted active
+            // session id (set by ChatStore on send/selection) so the switch
+            // still has a session to scope to.
+            if let persistedID = UserDefaults.standard.string(forKey: "herald.activeSessionId"),
+               let uuid = UUID(uuidString: persistedID),
+               await self.ensureSessionForSwitch(id: uuid) {
+                return await self.idMap.nativeId(for: uuid)
+            }
+            return nil
+        } gatewayBaseURLProvider: { [weak self] in
+            self?.gatewayBaseURL ?? "http://localhost:9119"
         }
     }
 
@@ -138,8 +166,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
         guard let secureStore else { return }
         guard let deviceToken = await secureStore.retrieve(key: AppContainer.apnsTokenKeychainKey),
               !deviceToken.isEmpty,
-              let accessToken = await authCoordinator.currentAccessToken(),
-              let url = URL(string: "\(gatewayBaseURL)/v1/native/watch")
+              let accessToken = await authCoordinator.currentAccessToken()
+        else { return }
+
+        // APNs watch registration lives on the connector's HTTP facade
+        // (port 8010), NOT the gateway (9119). The gateway has no
+        // /v1/native/watch route and its auth gate redirects the POST (302),
+        // so posting to gatewayBaseURL silently failed and the connector
+        // never watched the session -> no backgrounded-turn push. Derive the
+        // facade URL the same way NativeGatewayFeatureClient.connectorVersion
+        // does: same scheme+host, port 8010.
+        guard let base = URL(string: gatewayBaseURL),
+              let host = base.host,
+              let url = URL(string: "\(base.scheme ?? "http")://\(host):8010/v1/native/watch")
         else { return }
 
         var request = URLRequest(url: url)
@@ -195,7 +234,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // a socket that's really dead fails here and falls through to
             // the same catch as any other connect failure below instead of
             // a false "connected" that dies on the very first real request.
-            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0))
+            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0, allDevices: nil))
 
             await client.onDisconnect { [weak self] in
                 Task { @MainActor in await self?.handleUnexpectedDisconnect() }
@@ -314,7 +353,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             do {
                 _ = try await client.send(
                     method: "session.list",
-                    params: SessionListParams(limit: 1, offset: 0),
+                    params: SessionListParams(limit: 1, offset: 0, allDevices: nil),
                     timeoutNanos: Self.probeTimeoutNanos
                 )
                 return
@@ -358,7 +397,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
         guard let client else { throw NativeGatewayClientError.notConnected }
-        let params = SessionListParams(limit: limit, offset: offset)
+        let params = SessionListParams(limit: limit, offset: offset, allDevices: allDevices)
         let response = try await client.send(method: "session.list", params: params)
         if let error = response.error { throw error }
         guard let result = response.result else {
@@ -515,17 +554,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return currentConversation ?? Conversation(title: "New Chat")
     }
 
-    func ensureConversation(id: UUID) async -> Bool {
-        // A persisted mapping can point at a session the gateway no longer
-        // has (reaped after a disconnect / gateway restart). Validate with a
-        // history probe before trusting it, and unregister + recreate when
-        // stale -- otherwise the next prompt.submit dies with 4001
-        // "session not found".
+    /// Resolve a native session id for `id`, validating staleness like
+    /// ensureConversation (cheap session.status probe; unregister + recreate
+    /// when the mapping points at a reaped session). Returns the mapped
+    /// native id, or nil if no session could be established.
+    func ensureSessionForSwitch(id: UUID) async -> Bool {
         if let nativeId = await idMap.nativeId(for: id) {
             do {
                 guard let client else { throw NativeGatewayClientError.notConnected }
                 let response = try await client.send(
-                    method: "session.history",
+                    method: "session.status",
                     params: ["session_id": nativeId]
                 )
                 if response.error == nil {
@@ -538,6 +576,52 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
         do {
             _ = try await createSession(title: "New Chat", conversationID: id)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func ensureConversation(id: UUID) async -> Bool {
+        // A persisted mapping can point at a session the gateway no longer
+        // has (reaped after a disconnect / gateway restart). Validate with a
+        // cheap metadata probe before trusting it, and unregister + recreate
+        // when stale -- otherwise the next prompt.submit dies with 4001
+        // "session not found".
+        //
+        // LATENCY (build 32): the probe used to call session.history, which
+        // returns the ENTIRE transcript (with ancestors). On a long session
+        // that download took 30-60s+ and happened on EVERY follow-up send
+        // before the thinking placeholder rendered -- the 60-120s "dead"
+        // window with zero UI feedback. session.status returns small
+        // metadata text through the same _sess_nowait 4001 path, so stale
+        // detection is identical and the payload is trivial.
+        if let nativeId = await idMap.nativeId(for: id) {
+            do {
+                guard let client else { throw NativeGatewayClientError.notConnected }
+                let response = try await client.send(
+                    method: "session.status",
+                    params: ["session_id": nativeId]
+                )
+                if response.error == nil {
+                    // Keep the native client's currentConversation pointing at
+                    // this conversation so _sendStreaming resolves the right
+                    // session UUID without a redundant transcript download.
+                    if currentConversation?.id != id {
+                        currentConversation = Conversation(id: id, title: currentConversation?.title ?? "New Chat")
+                    }
+                    return true
+                }
+            } catch {
+                // Treat any probe failure as stale; fall through to recreate.
+            }
+            await idMap.remove(uuid: id)
+        }
+        do {
+            _ = try await createSession(title: "New Chat", conversationID: id)
+            if currentConversation?.id != id {
+                currentConversation = Conversation(id: id, title: "New Chat")
+            }
             return true
         } catch {
             return false
@@ -763,6 +847,10 @@ private final class StreamEventHandler: @unchecked Sendable {
 private struct SessionListParams: Encodable {
     let limit: Int
     let offset: Int
+    // The native gateway currently returns all sessions regardless of device
+    // scope; the flag is forwarded so a future server-side filter works and
+    // the toggle at least round-trips instead of being silently dropped.
+    let allDevices: Bool?
 }
 
 private struct PromptSubmitParams: Encodable {

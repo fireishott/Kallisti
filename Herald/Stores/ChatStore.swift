@@ -705,6 +705,16 @@ final class ChatStore {
         // decides when a conversation is bound to a real Hermes session;
         // iOS must always request provisioning and await a typed ready
         // signal before submitting. ensureConversation is fail-closed.
+        // Build 32 (latency): ensureConversation now uses a cheap metadata
+        // probe (session.status) instead of a full session.history download,
+        // and it sets currentConversation on the native client. The old
+        // `loadConversation(id:)` right after this point downloaded the ENTIRE
+        // transcript a SECOND time purely to set currentConversation - on a
+        // long session that was 30-60s+ of dead time with no thinking bubble.
+        // Removed: the conversation is already in memory.
+        //
+        // The streaming placeholder (thinking bubble) is appended BEFORE the
+        // network calls below so the user sees visible state immediately.
         sendPhase = .creatingConversation
         let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
         guard sessionEstablished else {
@@ -724,13 +734,14 @@ final class ChatStore {
             Logger.app.error("submitNextEligible blocked: ensureConversation returned no session")
             return
         }
-        _ = try? await heraldClient.loadConversation(id: targetID)
 
         item.state = .submitting
         updateOutboxItem(item)
 
         if useStreaming {
             // Append a placeholder Herald message for streaming content
+            // BEFORE the submit round-trip so the thinking bubble renders
+            // immediately after the user's own message.
             let placeholderID = UUID()
             let placeholder = Message(
                 id: placeholderID,

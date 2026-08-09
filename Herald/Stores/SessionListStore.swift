@@ -59,13 +59,12 @@ final class SessionListStore {
         set {
             guard newValue != settingsStore.settings.showAllDevices else { return }
             settingsStore.settings.showAllDevices = newValue
-            // Cancel any in-flight load from the previous scope and clear
-            // visible lists so the user never sees stale foreign-device rows.
+            // Cancel any in-flight load from the previous scope but keep
+            // existing sessions visible until the new scope load completes.
+            // This avoids a flash of empty state on toggle.
             loadTask?.cancel()
             loadTask = nil
             loadGeneration &+= 1
-            pinnedSessions = []
-            recentSessions = []
             searchResults = nil
             totalCount = 0
             currentOffset = 0

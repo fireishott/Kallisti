@@ -67,15 +67,20 @@ final class KallistiHostStore {
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 let info = try await featureClient.hostInfo()
+                // NATIVE mode: pull real versions from the gateway + connector
+                // facade instead of leaving the Settings rows at "—".
+                let connectorVersion = await featureClient.connectorVersion()
+                let agentRaw = (try? await featureClient.agentVersion()) ?? ""
+                let agentVersion = Self.extractAgentVersion(agentRaw)
                 currentHost = HeraldHostStatus(
                     id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
                     displayName: info.model.map { "\(info.provider ?? "hermes")/\($0)" }
                         ?? (info.provider ?? "Hermes Host"),
                     hostname: nil,
                     platform: "native",
-                    connectorVersion: nil,
+                    connectorVersion: connectorVersion,
                     heraldCommand: nil,
-                    heraldVersion: nil,
+                    heraldVersion: agentVersion,
                     heraldModel: info.model,
                     lastSeenAt: .now,
                     lastConnectedAt: .now,
@@ -138,5 +143,15 @@ final class KallistiHostStore {
         isWorking = false
         lastErrorMessage = nil
         onHostChanged?()
+    }
+
+    /// Pull the version line out of `hermes version` output.
+    /// Typical output: "Hermes Agent v0.20.0 (2026.8.3) · upstream 3d7dda4c"
+    private static func extractAgentVersion(_ raw: String) -> String? {
+        let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
+        let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.split(separator: "·").map(String.init)
+        return parts.first?.trimmingCharacters(in: .whitespaces)
     }
 }

@@ -5,6 +5,7 @@ import SwiftUI
 struct iPhoneSessionDrawer: View {
     @Environment(SessionListStore.self) private var sessionStore
     @Environment(TabRouter.self) private var router
+    @Environment(AppContainer.self) private var container
     @Binding var isOpen: Bool
     @State private var dragOffset: CGFloat = 0
     @State private var renamingSession: SessionSummary?
@@ -231,11 +232,19 @@ struct iPhoneSessionDrawer: View {
     // MARK: - All Devices Toggle
 
     private var allDevicesToggleRow: some View {
-        Toggle("All Devices", isOn: Bindable(sessionStore).showAllDevices)
-            .font(.caption)
-            .tint(Design.Brand.accent)
-            .padding(.horizontal, Design.Spacing.md)
-            .listRowBackground(Color.clear)
+        // Native mode: the gateway session list already spans the whole host
+        // (one profile = the shared session DB). There is no per-device
+        // filter server-side, so the toggle would be a no-op - hide it.
+        if container.nativeGatewayClient != nil {
+            return AnyView(EmptyView())
+        }
+        return AnyView(
+            Toggle("All Devices", isOn: Bindable(sessionStore).showAllDevices)
+                .font(.caption)
+                .tint(Design.Brand.accent)
+                .padding(.horizontal, Design.Spacing.md)
+                .listRowBackground(Color.clear)
+        )
     }
 
     // MARK: - Search Results

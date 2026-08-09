@@ -19,6 +19,10 @@ struct GatewayLogsScreen: View {
     @State private var isLiveStreaming = false
     @State private var streamTask: Task<Void, Never>?
     @State private var searchText = ""
+    // Build 32: "view all" raises the cli.exec line cap from 200 to 2000 so
+    // the log viewer isn't limited to a tiny tail.
+    @State private var viewAllLines = false
+    @State private var nativePollTask: Task<Void, Never>?
     @State private var liveIngestedCount = 0
     @State private var streamConnectionError: String?
 
@@ -73,6 +77,16 @@ struct GatewayLogsScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Toggle("View All", isOn: $viewAllLines)
+                    .font(.caption)
+                    .tint(Design.Brand.accent)
+                    .labelsHidden()
+                    .onChange(of: viewAllLines) { _, _ in
+                        Task { await fetchLogs() }
+                    }
+                    .accessibilityLabel("View all log lines")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     toggleLiveStream()
                 } label: {
@@ -88,7 +102,10 @@ struct GatewayLogsScreen: View {
             }
         }
         .task { await fetchLogs() }
-        .onDisappear { streamTask?.cancel() }
+        .onDisappear {
+            streamTask?.cancel()
+            nativePollTask?.cancel()
+        }
     }
 
     // MARK: - Level Picker
@@ -209,8 +226,9 @@ struct GatewayLogsScreen: View {
                 case "hermes-agent": logName = "agent"
                 default: logName = "gateway"
                 }
+                let lineCount = viewAllLines ? 2000 : 200
                 let raw = try await featureClient.cliExec(
-                    argv: ["logs", logName, "-n", "200", "--level", selectedLevel]
+                    argv: ["logs", logName, "-n", String(lineCount), "--level", selectedLevel]
                 )
                 let now = Date()
                 logLines = raw.components(separatedBy: .newlines)
@@ -272,13 +290,69 @@ struct GatewayLogsScreen: View {
         if isLiveStreaming {
             streamTask?.cancel()
             streamTask = nil
+            nativePollTask?.cancel()
+            nativePollTask = nil
             isLiveStreaming = false
             streamConnectionError = nil
         } else {
             isLiveStreaming = true
             liveIngestedCount = 0
             streamConnectionError = nil
-            startLiveStream()
+            // NATIVE mode has no relay SSE stream to subscribe to - the relay
+            // endpoints reject native bearer tokens (401). Live mode polls the
+            // gateway's `hermes logs` via cli.exec on a short timer instead.
+            if container.nativeGatewayClient != nil,
+               let featureClient = container.nativeGatewayClient?.featureClient {
+                startNativeLivePolling(featureClient)
+            } else {
+                startLiveStream()
+            }
+        }
+    }
+
+    /// Native live: poll `hermes logs` every 3s and append only NEW lines so
+    /// the tail grows like a real live stream without resetting the list.
+    private func startNativeLivePolling(_ featureClient: NativeGatewayFeatureClient) {
+        nativePollTask = Task {
+            var lastLineCount = 0
+            while !Task.isCancelled {
+                let logName: String
+                switch self.selectedSource {
+                case "connector": logName = "gateway"
+                case "hermes-agent": logName = "agent"
+                default: logName = "gateway"
+                }
+                let lineCount = self.viewAllLines ? 2000 : 200
+                let now = Date()
+                do {
+                    let raw = try await featureClient.cliExec(
+                        argv: ["logs", logName, "-n", String(lineCount), "--level", self.selectedLevel]
+                    )
+                    let freshLines = raw.components(separatedBy: .newlines)
+                        .filter { !$0.isEmpty }
+                        .map { line in
+                            LogLine(timestamp: now, level: self.selectedLevel, message: line, source: self.selectedSource)
+                        }
+                    await MainActor.run {
+                        if freshLines.count > lastLineCount {
+                            let newOnes = Array(freshLines.suffix(freshLines.count - lastLineCount))
+                            self.logLines.append(contentsOf: newOnes)
+                            self.liveIngestedCount += newOnes.count
+                            if self.logLines.count > 2000 {
+                                self.logLines.removeFirst(self.logLines.count - 2000)
+                            }
+                        }
+                        lastLineCount = freshLines.count
+                    }
+                } catch {
+                    if !Task.isCancelled {
+                        await MainActor.run {
+                            self.streamConnectionError = error.localizedDescription
+                        }
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
         }
     }
 

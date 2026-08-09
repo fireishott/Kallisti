@@ -196,7 +196,12 @@ final class ModelStore {
                 await loadModels(force: true)
                 return
             } catch {
-                // Native switch failed; fall through to legacy path.
+                // NATIVE mode: do NOT fall through to the legacy relay path.
+                // The native bearer token is only valid on the gateway
+                // (dashboard port 9119); the relay facade rejects it, so the
+                // legacy POST always surfaces a confusing "relay error" that
+                // hides the real cause. Surface the actual native error.
+                throw error
             }
         }
 

@@ -356,9 +356,17 @@ struct HeraldSelectorSheet: View {
             do {
                 try await modelStore.switchModel(to: model.name, provider: model.provider)
                 isSwitching = false
-                // If --global was toggled on, send /model as a chat message
+                // If --global was toggled on, send /model as a chat message.
+                // Same formatting rules as switchModel: aggregator names are
+                // already vendor-qualified; custom providers need --provider.
                 if setAsGlobalDefault {
-                    await chatStore.sendMessage("/model \(model.name) --global")
+                    let globalTarget: String
+                    if model.provider.lowercased().hasPrefix("custom:") {
+                        globalTarget = "\(model.name) --provider \(model.provider)"
+                    } else {
+                        globalTarget = model.name
+                    }
+                    await chatStore.sendMessage("/model \(globalTarget) --global")
                 }
                 dismiss()
             } catch {
