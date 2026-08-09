@@ -296,6 +296,16 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         }
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/native/refresh")!)
         request.httpMethod = "POST"
+        // LATENCY (build 36): refreshAccessTokenIfNeeded() runs FIRST inside
+        // mintTicket(), before mintTicket's own (build 34) 8s-bounded POST.
+        // This request used URLSession.shared's default 60s timeout with no
+        // override -- on a dead/half-open network path (backgrounded app,
+        // cell handoff) whenever the stored token was within 60s of expiry,
+        // this alone could eat up to 60s BEFORE the already-bounded ticket
+        // mint (8s) and connect-verify (5s) probes ever ran, reintroducing
+        // most of the delay build 34 thought it had eliminated. Same 8s
+        // bound as every other reconnect-path HTTP call in this file.
+        request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["refresh_token": refreshToken, "provider": "nous"])
 
