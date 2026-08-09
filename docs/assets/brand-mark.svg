@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" width="600" height="120">
+  <defs>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#FF6B00"/>
+      <stop offset="100%" stop-color="#FFF5E0"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(20, 10)">
+    <path d="M50 100 C50 100 10 60 25 30 C30 20 40 25 42 35 C44 45 30 50 35 35 C38 25 55 10 60 25 C65 40 45 55 50 65 C55 75 70 60 65 45 C62 35 75 20 80 35 C85 50 50 100 50 100Z" fill="url(#flame)"/>
+  </g>
+  <text x="130" y="82" font-family="'Helvetica Neue', Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="8" fill="#F5F0E8">HERALD</text>
+</svg>

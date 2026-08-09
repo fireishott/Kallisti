@@ -1,5 +1,5 @@
 import XCTest
-@testable import Herald
+@testable import Kallisti
 
 @MainActor
 final class QuickNotesTests: XCTestCase {
@@ -23,7 +23,7 @@ final class QuickNotesTests: XCTestCase {
     func test_quickNoteActivityType_matchesBundlePrefix() {
         XCTAssertEqual(
             QuickNoteConstants.activityType,
-            "net.fihonline.kallisti.viewNote"
+            "net.fihonline.herald.viewNote"
         )
     }
 

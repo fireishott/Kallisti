@@ -11,12 +11,12 @@ final class KallistiAppState: @unchecked Sendable {
     static let shared = KallistiAppState()
 
     private let defaults: UserDefaults = {
-        guard let suite = UserDefaults(suiteName: "group.net.fihonline.kallisti") else {
-            fatalError("App Group 'group.net.fihonline.kallisti' not available — check provisioning profile.")
+        guard let suite = UserDefaults(suiteName: "group.net.fihonline.herald") else {
+            fatalError("App Group 'group.net.fihonline.herald' not available — check provisioning profile.")
         }
         return suite
     }()
-    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "AppState")
+    private let logger = Logger(subsystem: "net.fihonline.herald", category: "AppState")
 
     /// The relay base URL. Set by the main app after pairing.
     /// Widgets read this from shared App Group UserDefaults.

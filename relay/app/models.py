@@ -1,0 +1,481 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .database import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    devices: Mapped[list["Device"]] = relationship(back_populates="user")
+
+
+class Device(Base):
+    __tablename__ = "devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    installation_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    device_name: Mapped[str | None] = mapped_column(Text)
+    device_model: Mapped[str | None] = mapped_column(Text)
+    system_version: Mapped[str | None] = mapped_column(Text)
+    app_version: Mapped[str | None] = mapped_column(Text)
+    build_number: Mapped[str | None] = mapped_column(Text)
+    bundle_id: Mapped[str | None] = mapped_column(Text)
+    environment: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    app_state: Mapped[str | None] = mapped_column(Text)
+    app_state_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="devices")
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(36), ForeignKey("devices.id"), nullable=False)
+    access_token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PairingInvite(Base):
+    __tablename__ = "pairing_invites"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    redeemed_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    redeemed_device_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("devices.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class HeraldHost(Base):
+    __tablename__ = "herald_hosts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True)
+    display_name: Mapped[str | None] = mapped_column(Text)
+    platform: Mapped[str | None] = mapped_column(Text)
+    hostname: Mapped[str | None] = mapped_column(Text)
+    herald_command: Mapped[str | None] = mapped_column(Text)
+    herald_version: Mapped[str | None] = mapped_column(Text)
+    herald_model: Mapped[str | None] = mapped_column(Text)
+    connector_version: Mapped[str | None] = mapped_column(Text)
+    connector_token_hash: Mapped[str | None] = mapped_column(Text)
+    active_connection_nonce: Mapped[str | None] = mapped_column(Text)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class HostEnrollmentInvite(Base):
+    __tablename__ = "host_enrollment_invites"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    redeemed_host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("herald_hosts.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PhonePairingCode(Base):
+    __tablename__ = "phone_pairing_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
+    created_by_host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    redeemed_device_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("devices.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushRegistration(Base):
+    __tablename__ = "push_registrations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    device_id: Mapped[str] = mapped_column(String(36), ForeignKey("devices.id"), nullable=False)
+    transport: Mapped[str] = mapped_column(Text, nullable=False, default="direct")
+    apns_token: Mapped[str | None] = mapped_column(Text)
+    push_environment: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_id: Mapped[str | None] = mapped_column(Text)
+    relay_handle: Mapped[str | None] = mapped_column(Text)
+    send_grant: Mapped[str | None] = mapped_column(Text)
+    relay_id: Mapped[str | None] = mapped_column(Text)
+    relay_public_key: Mapped[str | None] = mapped_column(Text)
+    token_debug_suffix: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class RelayIdentity(Base):
+    __tablename__ = "relay_identity"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    algorithm: Mapped[str] = mapped_column(Text, nullable=False, default="ed25519")
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    private_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerChallenge(Base):
+    __tablename__ = "push_broker_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    challenge: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AppAttestCredential(Base):
+    __tablename__ = "app_attest_credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    installation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, nullable=False)
+    app_version: Mapped[str | None] = mapped_column(Text)
+    environment: Mapped[str] = mapped_column(Text, nullable=False)
+    key_id: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    receipt: Mapped[str | None] = mapped_column(Text)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerRegistration(Base):
+    __tablename__ = "push_broker_registrations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    relay_id: Mapped[str] = mapped_column(Text, nullable=False)
+    relay_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    app_attest_credential_id: Mapped[str] = mapped_column(String(36), ForeignKey("app_attest_credentials.id"), nullable=False)
+    installation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, nullable=False)
+    app_version: Mapped[str | None] = mapped_column(Text)
+    apns_environment: Mapped[str] = mapped_column(Text, nullable=False)
+    apns_token: Mapped[str] = mapped_column(Text, nullable=False)
+    apns_token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    token_debug_suffix: Mapped[str | None] = mapped_column(Text)
+    relay_handle: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    send_grant_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushBrokerSendNonce(Base):
+    """Tracks recently-seen send-request nonces to reject signature replays.
+
+    Rows older than the iat skew window can be pruned after each insert —
+    the server rejects any iat outside that window anyway, so entries are
+    no longer load-bearing once they age out.
+    """
+    __tablename__ = "push_broker_send_nonces"
+    __table_args__ = (
+        UniqueConstraint("relay_handle", "nonce", name="uq_push_broker_send_nonces_handle_nonce"),
+        Index("ix_push_broker_send_nonces_iat", "iat"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    relay_handle: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    iat: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("devices.id"), nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="Herald")
+    herald_session_id: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    client_message_id: Mapped[str | None] = mapped_column(String(36))
+    delivery_status: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(Text)  # None = chat, "voice_transcript"
+    attachments_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # [{type, filename, mimeType, data}]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MessageJob(Base):
+    __tablename__ = "message_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), nullable=False)
+    user_message_id: Mapped[str] = mapped_column(String(36), ForeignKey("messages.id"), nullable=False, unique=True)
+    host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("herald_hosts.id"))
+    claimed_connection_nonce: Mapped[str | None] = mapped_column(Text)
+    session_id_snapshot: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_message_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("messages.id"))
+    result_text: Mapped[str | None] = mapped_column(Text)
+    result_session_id: Mapped[str | None] = mapped_column(Text)
+    error_text: Mapped[str | None] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    usage_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    context_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    diff_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class JobEvent(Base):
+    __tablename__ = "job_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("message_jobs.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class VoiceSession(Base):
+    __tablename__ = "voice_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(String(36), ForeignKey("herald_hosts.id"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    relay_tool_token_hash: Mapped[str | None] = mapped_column(Text)
+    realtime_session_id: Mapped[str | None] = mapped_column(Text)
+    realtime_model: Mapped[str | None] = mapped_column(Text)
+    realtime_voice: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class VoiceTurn(Base):
+    __tablename__ = "voice_turns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    voice_session_id: Mapped[str] = mapped_column(String(36), ForeignKey("voice_sessions.id"), nullable=False)
+    client_turn_id: Mapped[str | None] = mapped_column(String(36))
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="tool")
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class InboxItem(Base):
+    __tablename__ = "inbox_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("devices.id"))
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[str] = mapped_column(Text, default="normal", nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="pending", nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class InboxAction(Base):
+    __tablename__ = "inbox_actions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    inbox_item_id: Mapped[str] = mapped_column(String(36), ForeignKey("inbox_items.id"), nullable=False)
+    action_id: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    actor_type: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_type: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Notes (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class Note(Base):
+    __tablename__ = "notes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    folder_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    current_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_text_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NoteBlob(Base):
+    __tablename__ = "note_blobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hex
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("note_id", "drawing_revision", name="uq_note_blob_revision"),
+    )
+
+
+class NoteRecognition(Base):
+    __tablename__ = "note_recognitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    engine: Mapped[str] = mapped_column(Text, nullable=False)  # "vn_accurate" | "vn_fast"
+    engine_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    languages: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array of ISO codes
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    user_corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class NoteRun(Base):
+    __tablename__ = "note_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    client_run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_directives: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_run_id", name="uq_note_run_client_id"),
+        {"extend_existing": True},
+    )
+
+
+class NoteRunEvent(Base):
+    __tablename__ = "note_run_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("note_runs.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class EnrichedNoteRevision(Base):
+    __tablename__ = "enriched_note_revisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("note_runs.id"), nullable=False)
+    source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_sections: Mapped[dict] = mapped_column(JSON, nullable=False)
+    citations: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    command_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

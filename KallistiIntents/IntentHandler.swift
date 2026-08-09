@@ -1,7 +1,7 @@
 import Intents
 import os
 
-private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "Intents")
+private let logger = Logger(subsystem: "net.fihonline.herald", category: "Intents")
 
 class IntentHandler: INExtension, INSendMessageIntentHandling, INSearchForMessagesIntentHandling, INSetMessageAttributeIntentHandling {
 
@@ -122,8 +122,8 @@ private enum HeraldIntentAPI {
         let dateSent: Date?
     }
 
-    private static let appGroupID = "group.net.fihonline.kallisti"
-    private static let keychainService = "net.fihonline.kallisti.session"
+    private static let appGroupID = "group.net.fihonline.herald"
+    private static let keychainService = "net.fihonline.herald.session"
     private static let accessTokenKey = "session.accessToken"
 
     private static func baseURL() throws -> String {

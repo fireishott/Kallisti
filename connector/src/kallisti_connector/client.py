@@ -233,13 +233,8 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
         pass
     return None
 from .git_diff import capture_diff, capture_snapshot
-from .herald_api_executor import HeraldAPIExecutor
 from .tui_gateway_executor import TuiGatewayExecutor
-
-# Compatibility symbol retained for tests and extensions written before the
-# product rename. Internal code continues to use HeraldAPIExecutor.
-HermesAPIExecutor = HeraldAPIExecutor
-from .herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
+from .herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor, StreamEvent
 from .mcp_registration import (
     inspect_native_mcp_registration,
     native_mcp_readiness_message,
@@ -864,7 +859,6 @@ class HeraldConnector:
             facade_ctx.session_canary = self._run_session_canary
             facade_ctx.connector_version = self._detect_connector_version()
             facade_ctx.agent_version = self._hermes_agent_version
-            facade_ctx.message_handler = self._handle_http_message
             facade_ctx.health_check = self._check_api_health
             # Auth tokens: register the connector credential so the iOS app
             # can authenticate with the same token used for the FastAPI host WS.
@@ -872,13 +866,9 @@ class HeraldConnector:
             facade_ctx.paired_user_id = state.user_id
             facade_ctx.connector_credential = state.connector_credential
             facade_ctx.public_base_url = os.getenv("HERMES_MOBILE_RELAY_URL", "").rstrip("/") or state.relay_url or ""
-            # P0-4: chat critical-path providers
-            facade_ctx.job_status = self._rpc_job_status
-            facade_ctx.job_cancel = self._rpc_jobs_cancel
-            facade_ctx.job_events = self._rpc_job_events_stream
-            facade_ctx.session_conversation = self._rpc_session_conversation
-            facade_ctx.current_conversation = self._rpc_current_conversation
-            facade_ctx.clear_conversation = self._rpc_clear_conversation
+            # Push / Live-Activity providers
+            facade_ctx.send_completion_push = self._send_push_for_job
+            facade_ctx.end_live_activity = self._send_live_activity_end
             facade_ctx.push_register = self._rpc_push_register
             from .http_facade import set_token_validator, AccessTokenValidator
             # B116: the validator is an in-memory set. It used to be seeded with
@@ -906,6 +896,77 @@ class HeraldConnector:
                 "HTTP facade listening on port %d (iOS app path)",
                 http_port,
             )
+
+            # Native-completion to push bridge (Task 12)
+            try:
+                from .native_watch import (
+                    NativeWatchRegistry,
+                    NativeWatchTokens,
+                    run_watcher,
+                )
+                facade_ctx.native_watch_registry = NativeWatchRegistry()
+                # httpx.Timeout requires either a positional default or all
+                # four keywords -- connect/read alone raises ValueError and
+                # killed the watcher at startup. Same trap that broke the
+                # runs probe in 2.4.1; keep the default first arg.
+                _native_watch_session = httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, connect=10.0)
+                )
+                watch_tokens = NativeWatchTokens(session=_native_watch_session)
+
+                async def _adapt_completion_push(
+                    device_token: str,
+                    *,
+                    session_id: str,
+                ) -> None:
+                    """Bridge native_watch calling convention to _send_push_for_job.
+
+                    NOTE: The actual _send_push_for_job reads device_token from
+                    state, ignoring the token passed here.  For Build 1 this is
+                    acceptable -- single-device deployment.  A future build should
+                    thread the device_token through to APNs directly.
+
+                    body_text is fabricated here because the WS terminal event
+                    carries no reply text -- the native world delivers the full
+                    response via a separate channel.  The push just needs to
+                    nudge the user to open the app.
+                    """
+                    await self._send_push_for_job(
+                        job_id=f"native:{session_id}",
+                        body_text="Turn complete",
+                        conversation_id=session_id,
+                    )
+
+                async def _adapt_live_activity_end(
+                    device_token: str,
+                    *,
+                    status: str = "completed",
+                ) -> None:
+                    """Bridge native_watch calling convention to _send_live_activity_end.
+
+                    NOTE: _send_live_activity_end reads its push token from
+                    state, not from the device_token argument.  Same single-
+                    device caveat as _adapt_completion_push above.
+                    """
+                    await self._send_live_activity_end(status=status)
+
+                _watch_task = asyncio.create_task(
+                    run_watcher(
+                        facade_ctx.native_watch_registry,
+                        watch_tokens,
+                        _adapt_completion_push,
+                        _adapt_live_activity_end,
+                        # Confirmed against tui_gateway/server.py's _emit call
+                        # sites: the gateway emits turn.end (and turn.error on
+                        # failure). It never emits "turn.complete", which is
+                        # what this was matching, so no push could ever fire.
+                        terminal_event_types=("turn.end", "turn.error"),
+                    ),
+                )
+                logger.info("Native watch watcher started")
+            except Exception:
+                logger.exception("Failed to start native watch watcher (non-fatal)")
+
         else:
             logger.warning("HERALD_HTTP_FACADE_ENABLED disabled — iOS app path off")
 
@@ -1897,164 +1958,6 @@ class HeraldConnector:
         except Exception:
             return False
 
-    async def _handle_http_message(
-        self,
-        text: str,
-        history: list[dict],
-        session_id: str | None,
-        attachments: list[dict] | None,
-        reasoning_effort: str | None,
-    ):
-        """Handle a message from the iOS HTTP facade — yields SSE event dicts.
-
-        This replaces the FastAPI relay's job creation + SSE streaming path.
-        The HTTP facade calls this directly, bypassing the relay entirely.
-        """
-        # Use cached state from startup; fall back to a reload only if the
-        # cache is unset (should not happen in normal operation).
-        try:
-            state = self._state if getattr(self, '_state', None) is not None else self.state_store.load()
-        except RuntimeError as exc:
-            yield {
-                "type": "done",
-                "data": {
-                    "status": "failed",
-                    "error": "Connector state is missing on the host. Re-pair the device or restore state.json.",
-                    "errorCategory": "connector_unconfigured",
-                    "errorAction": "contact_admin",
-                },
-            }
-            return
-        runtime = await self.runtime_adapter_for_state_async(state)
-
-        accumulated_text = ""
-        accumulated_reasoning = ""
-        source_seq = 0
-
-        # Emit started event
-        yield {"type": "started", "data": {"phase": "starting"}}
-
-        try:
-            async for event in runtime.send_text_message_streaming(
-                latest_user_message=text,
-                history=[
-                    RuntimeConversationMessage(role=item.get("role", "user"), text=item.get("text", ""))
-                    for item in history
-                ],
-                session_id=session_id,
-                attachments=attachments,
-                reasoning_effort=reasoning_effort,
-            ):
-                if event.type == "text_delta":
-                    accumulated_text += event.data
-                    source_seq += 1
-                    yield {
-                        "type": "text_delta",
-                        "data": {"delta": event.data, "seq": source_seq},
-                    }
-                elif event.type == "reasoning_delta":
-                    accumulated_reasoning += event.data
-                    source_seq += 1
-                    yield {
-                        "type": "reasoning_delta",
-                        "data": {"delta": event.data, "seq": source_seq},
-                    }
-                elif event.type == "tool_activity":
-                    source_seq += 1
-                    yield {
-                        "type": "tool_activity",
-                        "data": {"label": event.label, "seq": source_seq},
-                    }
-                elif event.type == "tool_started":
-                    source_seq += 1
-                    details = json.loads(event.data or "{}")
-                    yield {
-                        "type": "tool.started",
-                        "data": {
-                            "tool_call_id": details.get("toolCallId", ""),
-                            "name": event.label or "tool",
-                            "args": details.get("argsPreview", ""),
-                            "emoji": details.get("emoji", ""),
-                            "seq": source_seq,
-                        },
-                    }
-                elif event.type == "tool_completed":
-                    source_seq += 1
-                    details = json.loads(event.data or "{}")
-                    yield {
-                        "type": "tool.completed",
-                        "data": {
-                            "tool_call_id": details.get("toolCallId", ""),
-                            "output": details.get("resultPreview", ""),
-                            "is_error": details.get("isError", False),
-                            "duration_ms": details.get("durationMs"),
-                            "seq": source_seq,
-                        },
-                    }
-                elif event.type == "keepalive":
-                    source_seq += 1
-                    yield {
-                        "type": "heartbeat",
-                        "data": {"seq": source_seq},
-                    }
-                elif event.type == "finish":
-                    # Prefer the canonical output from run.completed over
-                    # locally accumulated deltas, which can be partial
-                    # after an SSE interruption.
-                    terminal_text = (event.output or accumulated_text).strip()
-                    # Build 27: MiMo reasoning.available is suppressed at
-                    # the SSE parser.  Any accumulated_reasoning here came
-                    # from inline <think> tags — genuine embedded reasoning.
-                    from .reasoning_sanitizer import strip_reasoning
-                    clean_reasoning = strip_reasoning(accumulated_reasoning).strip()
-                    yield {
-                        "type": "done",
-                        "data": {
-                            "status": "completed",
-                            "text": terminal_text,
-                            "sessionId": event.session_id or session_id,
-                            "usage": event.usage,
-                            "reasoning": clean_reasoning or None,
-                        },
-                    }
-                    return
-                elif event.type == "error":
-                    # A sentinel-only Hermes reply represents an upstream
-                    # interruption, never a delivered assistant message.
-                    yield {
-                        "type": "done",
-                        "data": {
-                            "status": "failed",
-                            "error": event.data or "The model was interrupted upstream.",
-                            "errorCategory": event.error_category or "upstream_interrupted",
-                            "errorAction": "retry",
-                            "sessionId": event.session_id or session_id,
-                            "usage": event.usage,
-                        },
-                    }
-                    return
-                elif event.type == "stream_interrupted":
-                    # D1/D2: The events stream ended without run.completed —
-                    # the run may still be executing. Signal reconnect
-                    # instead of a false "completed".
-                    yield {
-                        "type": "reconnecting",
-                        "data": {"reason": "run_events_closed"},
-                    }
-                    return
-
-        except Exception as exc:
-            error_category, error_action = self._classify_error(exc)
-            yield {
-                "type": "done",
-                "data": {
-                    "status": "failed",
-                    "error": str(exc),
-                    "errorCategory": error_category,
-                    "errorAction": error_action,
-                },
-            }
-
     async def _handle_relay_outbound(self, request_id: str, action: dict) -> dict:
         """Handle an outbound action from the gateway (agent response → deliver to iOS via APNs)."""
         logger.info("Outbound action received: requestId=%s, type=%s", request_id, action.get("type"))
@@ -2117,20 +2020,32 @@ class HeraldConnector:
             ]
 
     async def _rpc_push_register(self, params: dict) -> dict:
-        """Persist the mobile APNs token without ever logging its value."""
+        """Persist the mobile APNs token without ever logging its value.
+
+        tokenKind distinguishes the device's regular alert-push token from a
+        Live Activity's own push-to-update token (see ConnectorState.
+        live_activity_push_token) — they are different tokens with different
+        APNs push types and must never share storage.
+        """
         token = str(params.get("token") or "").strip()
         environment = str(params.get("environment") or "production").strip().lower()
+        token_kind = str(params.get("tokenKind") or "device").strip().lower()
         if not token:
             return {"registered": False}
         if environment not in {"production", "development"}:
             return {"registered": False}
 
         state = self.state_store.load()
-        state.device_token = token
-        state.device_token_environment = environment
+        if token_kind == "liveactivity":
+            state.live_activity_push_token = token
+            state.live_activity_push_token_environment = environment
+            logger.info("Live Activity push token registered (environment=%s)", environment)
+        else:
+            state.device_token = token
+            state.device_token_environment = environment
+            logger.info("APNs device token registered (environment=%s)", environment)
         self.state_store.save(state)
         self._state = state
-        logger.info("APNs device token registered (environment=%s)", environment)
         return {"registered": True, "environment": environment}
 
     async def _send_push_for_job(
@@ -2173,7 +2088,7 @@ class HeraldConnector:
             from .apns_client import PushResult
             result = await self._apns_client.send_alert_push(
                 device_token,
-                title="Herald",
+                title="Kallisti",
                 body=body[:100],
                 category=category,
                 environment=environment,
@@ -2187,6 +2102,54 @@ class HeraldConnector:
                 logger.warning("Push send result: %s", result.value)
         except Exception:
             logger.debug("Push send error (non-fatal)", exc_info=True)
+
+    async def _send_live_activity_end(self, status: str = "Done") -> None:
+        """Remote-end the user's Live Activity via its own push-to-update token.
+
+        Client-side, ChatStore.endActivity() only runs from inside the live
+        SSE-consuming Task — which real, minutes-long tool-heavy turns
+        routinely outlive if the app is backgrounded, leaving the lock
+        screen stuck on "Thinking" (see kallisti-b128-four-symptom
+        -investigation memory). This reaches the lock screen directly,
+        independent of whether the app process can run any code at all.
+        Best-effort and silent: no registered token, or no activity
+        currently active, are both routine — not every turn starts one.
+        """
+        state = self.state_store.load()
+        token = state.live_activity_push_token
+        if not token:
+            return
+
+        if not hasattr(self, '_apns_client') or self._apns_client is None:
+            try:
+                from .apns_client import APNsClient
+                self._apns_client = APNsClient()
+            except Exception as e:
+                logger.warning("APNs client init failed: %s", e)
+                self._apns_client = None
+                return
+
+        environment = state.live_activity_push_token_environment or "production"
+        try:
+            from .apns_client import PushResult
+            result = await self._apns_client.send_live_activity_update(
+                token,
+                content_state={
+                    "status": status,
+                    "elapsedSeconds": 0,
+                    "sessionType": "chat",
+                },
+                event="end",
+                environment=environment,
+            )
+            if result == PushResult.SENT:
+                logger.info("Live Activity end-push sent")
+            elif result == PushResult.TOKEN_INVALID:
+                logger.info("Live Activity push token invalid — activity likely already ended")
+            else:
+                logger.warning("Live Activity end-push result: %s", result.value)
+        except Exception:
+            logger.debug("Live Activity end-push error (non-fatal)", exc_info=True)
 
     async def _handle_relay_interrupt(self, session_key: str, reason: str | None) -> None:
         """Handle an interrupt (/stop) from the gateway."""
@@ -2293,8 +2256,6 @@ class HeraldConnector:
                 result = await self._rpc_memories_list()
             elif method == "tools.list":
                 result = await self._rpc_tools_list()
-            elif method == "jobs.cancel":
-                result = await self._rpc_jobs_cancel(params)
             elif method == "note.enrich":
                 result = await self._rpc_note_enrich(params)
             elif method == "session.generateTitle":
@@ -2599,6 +2560,12 @@ class HeraldConnector:
             else:
                 yaml_engine.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
+        # No gateway restart here: the executor sends the selected model on
+        # every request (active_model_name), so the running process never
+        # needs a bounce. The restart this used to do took :8642 down for
+        # 60-90s per switch (2026-08-04 15:08 outage) and killed every
+        # in-flight chat. Explicit restarts remain available via the
+        # Settings "Restart Hermes Agent" RPC.
         return {"activeModel": self._read_active_model(hermes_home)}
 
     AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
@@ -3130,123 +3097,6 @@ class HeraldConnector:
             return {"tools": tools}
         except Exception:  # noqa: BLE001
             return {"tools": []}
-
-    async def _rpc_jobs_cancel(self, params: dict) -> dict:
-        """Cancel a running job by ID."""
-        job_id = params.get("jobId")
-        if not job_id:
-            raise RuntimeError("jobId is required")
-
-        task = self._active_jobs.get(job_id)
-        if task is None:
-            # Job not found — may have already completed
-            return {"jobId": job_id, "status": "not_found"}
-
-        if task.done():
-            return {"jobId": job_id, "status": "already_completed"}
-
-        # Cancel the task and wait for it to finish
-        task.cancel()
-        try:
-            await asyncio.wait_for(task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-
-        # Clean up heartbeat
-        self._stop_job_heartbeat(job_id)
-
-        # Clean up staged attachments
-        staging_dir = self.state_store.state_dir / "attachment_staging" / job_id
-        if staging_dir.exists():
-            import shutil
-            shutil.rmtree(staging_dir, ignore_errors=True)
-
-        return {"jobId": job_id, "status": "cancelled"}
-
-    async def _rpc_job_status(self, job_id: str) -> dict:
-        """Return the status of a job by ID (P0-4 polling path)."""
-        task = self._active_jobs.get(job_id)
-        phase = self._job_phases.get(job_id, "unknown")
-        results = self._pending_results.get(job_id, [])
-        if task is None:
-            return {"jobId": job_id, "status": "not_found", "phase": phase}
-        if task.done():
-            try:
-                exc = task.exception()
-            except (asyncio.CancelledError, asyncio.InvalidStateError):
-                exc = None
-            return {
-                "jobId": job_id,
-                "status": "failed" if exc else "completed",
-                "phase": phase,
-                "results": results,
-                "error": str(exc) if exc else None,
-            }
-        return {"jobId": job_id, "status": "running", "phase": phase}
-
-    async def _rpc_job_events_stream(self, job_id: str) -> AsyncIterator[dict]:
-        """SSE stream of job events (P0-4).  Polls _pending_results."""
-        seen = 0
-        while True:
-            results = self._pending_results.get(job_id, [])
-            while seen < len(results):
-                yield results[seen]
-                seen += 1
-            task = self._active_jobs.get(job_id)
-            if task is None:
-                yield {"type": "job.completed", "data": {"jobId": job_id, "status": "not_found"}}
-                return
-            if task.done():
-                try:
-                    exc = task.exception()
-                except (asyncio.CancelledError, asyncio.InvalidStateError):
-                    exc = None
-                yield {
-                    "type": "job.completed",
-                    "data": {"jobId": job_id, "status": "failed" if exc else "completed", "error": str(exc) if exc else None},
-                }
-                return
-            await asyncio.sleep(0.5)
-
-    async def _rpc_session_conversation(self, session_id: str) -> dict:
-        """Return conversation history for a session from state.db (B34 P0-1).
-
-        Reads messages directly from the Hermes state database instead of
-        dispatching a /status LLM turn.  state.db is opened read-only (G1).
-        """
-        from .session_store import session_messages, session_title
-
-        try:
-            messages = await asyncio.to_thread(session_messages, session_id)
-            title = await asyncio.to_thread(session_title, session_id)
-        except Exception:
-            logger.exception("session_store read failed for %s", session_id)
-            return {"sessionId": session_id, "messages": [], "title": None}
-
-        return {
-            "sessionId": session_id,
-            "messages": messages,
-            "title": title,
-        }
-
-    async def _rpc_current_conversation(self) -> dict:
-        """Return the active conversation (P0-4)."""
-        return {"sessionId": None, "messages": [], "title": None}
-
-    async def _rpc_clear_conversation(self) -> dict:
-        """Clear the active conversation — starts a new session (P0-4)."""
-        state = self.state_store.load()
-        runtime = await self.runtime_adapter_for_state_async(state)
-        try:
-            result = await asyncio.to_thread(
-                runtime.send_text_message,
-                latest_user_message="/new",
-                history=[],
-                session_id=None,
-            )
-            return {"cleared": True}
-        except Exception:
-            return {"cleared": True}
 
     async def _rpc_note_enrich(self, params: dict) -> dict:
         """Handle a note enrichment request.
@@ -4026,10 +3876,10 @@ You MUST return a JSON object with exactly these fields:
         return HeraldRuntimeAdapter(self.executor_for_state(state))
 
     async def runtime_adapter_for_state_async(self, state: ConnectorState) -> HostRuntimeAdapter:
-        """Prefer the API server adapter when available, fall back to CLI.
+        """Prefer the TuiGateway adapter when available, fall back to CLI.
 
         Caches the health check result for ``_HEALTH_CACHE_TTL`` seconds to
-        avoid hitting the API server on every single job.
+        avoid hitting the gateway on every single job.
         """
         import time
 
@@ -4037,10 +3887,6 @@ You MUST return a JSON object with exactly these fields:
         cached_at, cached_adapter = self._health_cache
         if cached_adapter is not None and (now - cached_at) < self._HEALTH_CACHE_TTL:
             return cached_adapter
-
-        config = state.runtime_config
-        api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
-        api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
 
         if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
             gateway = TuiGatewayExecutor(gateway_url=os.getenv("HERALD_GW_URL", "http://127.0.0.1:9119"))
@@ -4050,26 +3896,11 @@ You MUST return a JSON object with exactly these fields:
                 self._health_cache = (now, adapter)
                 self._active_adapter_mode = "tui_ws"
                 return adapter
-            logger.error("Runtime adapter: TuiGateway unavailable — falling back to chat_completions")
+            logger.error("Runtime adapter: TuiGateway unavailable — falling back to CLI")
 
-        if api_url or api_key:
-            executor = HeraldAPIExecutor(
-                api_server_url=api_url or "http://localhost:8642",
-                api_server_key=api_key,
-            )
-            if await executor.health_check():
-                logger.info("Runtime adapter: HeraldAPI (streaming) — api_server=%s", api_url or "http://localhost:8642")
-                adapter = HeraldAPIRuntimeAdapter(executor)
-                self._health_cache = (now, adapter)
-                self._active_adapter_mode = "runs_v2"
-                return adapter
-            else:
-                # Do not silently degrade a streamed chat into the tool-less
-                # CLI path during a gateway restart. The API adapter returns a
-                # retryable failure that the app already knows how to render.
-                logger.error("Runtime adapter: API server unavailable — refusing CLI fallback for streamed turn")
-                return HeraldAPIRuntimeAdapter(executor)
-
+        config = state.runtime_config
+        api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
+        api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
         logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._active_adapter_mode = "openai_v1_fallback"
@@ -4078,16 +3909,11 @@ You MUST return a JSON object with exactly these fields:
     def _runtime_supports_streaming(self, state: ConnectorState) -> bool:
         """Return True when the configured runtime can deliver real upstream deltas.
 
-        The TUI gateway and the Hermes API server both support progressive
-        streaming.  The CLI subprocess path does not — it only returns a
-        single complete response after the process exits.
+        The TUI gateway supports progressive streaming.  The CLI subprocess
+        path does not — it only returns a single complete response after
+        the process exits.
         """
         if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
-            return True
-        config = state.runtime_config
-        api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
-        api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
-        if api_url or api_key:
             return True
         return False
 

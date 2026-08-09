@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// Build 33 Workstream B: durable outbox + visible attempt ownership.
 ///
@@ -46,7 +46,7 @@ struct OutboxDurableTests {
 
     @Test("enqueueMessage appends the optimistic row immediately and persists the record")
     func enqueueAppendsOptimisticRowAndPersists() async throws {
-        let client = MockKallistiClient()
+        let client = MockHeraldClient()
         let persistence = makePersistence()
         let scratch = makeScratchDirectory()
         let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: scratch)
@@ -75,7 +75,7 @@ struct OutboxDurableTests {
     @Test("enqueueMessage rejects duplicates while the optimistic row is sending")
     func enqueueRejectsDuplicateWhileSending() {
         let persistence = makePersistence()
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
 
         let first = store.enqueueMessage("Same text")
         #expect(first != nil)
@@ -91,7 +91,7 @@ struct OutboxDurableTests {
     @Test("sendMessage drives the record to terminal with canonical IDs")
     func sendMessageTerminalizesRecord() async throws {
         let persistence = makePersistence()
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
 
         await store.sendMessage("Hello outbox")
 
@@ -110,7 +110,14 @@ struct OutboxDurableTests {
 
     @Test("messages queued while a job streams submit FIFO after it finishes")
     func queuedItemsSubmitAfterActiveJob() async throws {
-        final class SlowStreamClient: KallistiClientProtocol {
+        // Short timeouts so the watchdog/polling overhead doesn't dominate.
+        let origWatchdog = ChatStore.watchdogTimeout
+        let origDeadline = ChatStore.absoluteJobDeadline
+        ChatStore.watchdogTimeout = .milliseconds(500)
+        ChatStore.absoluteJobDeadline = .seconds(2)
+        defer { ChatStore.watchdogTimeout = origWatchdog; ChatStore.absoluteJobDeadline = origDeadline }
+
+        final class SlowStreamClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             let order = OrderBox()
@@ -143,14 +150,14 @@ struct OutboxDurableTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -179,12 +186,136 @@ struct OutboxDurableTests {
         #expect(store.outboxItems.filter { $0.state == .queued }.isEmpty)
     }
 
+    @Test("pre-ack polling keeps exactly one live thinking placeholder")
+    func preAckPollingKeepsSingleLivePlaceholder() async throws {
+        final class DelayedAckClient: HeraldClientProtocol {
+            var connectionStatus: ConnectionStatus = .connected
+            var currentConversation: Conversation?
+
+            func connect() async {}
+            func disconnect() async {}
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+                Message(sender: .herald, content: "unused", status: .delivered)
+            }
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+                AsyncStream { continuation in
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(3))
+                        continuation.yield(.messageSent(jobID: UUID()))
+                        try? await Task.sleep(for: .milliseconds(100))
+                        continuation.yield(.finished(
+                            Message(sender: .herald, content: "reply", status: .delivered),
+                            nil, nil, nil
+                        ))
+                        continuation.finish()
+                    }
+                }
+            }
+            func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func clearConversation() async throws -> Conversation { Conversation(title: "Kallisti") }
+            func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Kallisti") }
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+            func loadConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Kallisti")
+            }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
+        }
+
+        let client = DelayedAckClient()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: makePersistence(),
+            outboxBaseDirectory: makeScratchDirectory()
+        )
+        store.useStreaming = true
+        store.setPollingEnabled(true)
+
+        let send = Task { await store.sendMessage("One turn") }
+        try? await Task.sleep(for: .milliseconds(2_300))
+
+        let liveRows = store.conversation?.messages.filter { $0.sender == .herald && $0.isStreaming } ?? []
+        #expect(liveRows.count == 1, "a pre-ack transcript refresh must not orphan or duplicate the turn placeholder")
+
+        await send.value
+    }
+
+    @Test("follow-up submits immediately after prior stream finishes")
+    func followUpDoesNotWaitForCancelledTaskState() async throws {
+        final class ImmediateStreamClient: HeraldClientProtocol {
+            var connectionStatus: ConnectionStatus = .connected
+            var currentConversation: Conversation?
+            let order = OrderBox()
+
+            func connect() async {}
+            func disconnect() async {}
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+                Message(sender: .herald, content: "unused", status: .delivered)
+            }
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+                order.append(message)
+                return AsyncStream { continuation in
+                    continuation.yield(.finished(
+                        Message(sender: .herald, content: "reply to \(message)", status: .delivered),
+                        nil, nil, nil
+                    ))
+                    continuation.finish()
+                }
+            }
+            func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func clearConversation() async throws -> Conversation { Conversation(title: "Kallisti") }
+            func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Kallisti") }
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
+        }
+
+        let originalTimeout = ChatStore.watchdogTimeout
+        ChatStore.watchdogTimeout = .seconds(90)
+        defer { ChatStore.watchdogTimeout = originalTimeout }
+
+        let client = ImmediateStreamClient()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: makePersistence(),
+            outboxBaseDirectory: makeScratchDirectory()
+        )
+        store.useStreaming = true
+
+        let started = ContinuousClock.now
+        await store.sendMessage("First")
+        await store.sendMessage("Follow-up")
+        let elapsed = started.duration(to: .now)
+
+        #expect(client.order.value == ["First", "Follow-up"])
+        #expect(elapsed < .seconds(2), "follow-up must not wait for the 90-second watchdog")
+    }
+
     // MARK: - Restart suspension
 
     @Test("messages enqueued during a restart stay queued and submit after resume")
     func restartQueuesThenResumes() async throws {
         let persistence = makePersistence()
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
 
         store.beginRestartSuspension()
         #expect(store.restartInProgress)
@@ -304,11 +435,181 @@ struct OutboxDurableTests {
         #expect(unknownRecord.state == .retryableFailure)
         #expect(unknownRecord.nextAttemptAt == nil, "ambiguous jobs must not auto-resubmit")
     }
+
+    // MARK: - Follow-up wedge fix (Build 7)
+
+    /// Helper: a mock client whose `sendStreaming` yields `.messageSent(jobID:)`
+    /// then finishes WITHOUT `.finished` (terminalless), simulating a hung
+    /// stream. `getJobStatus` is configurable per test.
+    @MainActor
+    private final class HungStreamClient: HeraldClientProtocol {
+        var connectionStatus: ConnectionStatus = .connected
+        var currentConversation: Conversation?
+        let order = OrderBox()
+        let jobStatusProvider: (UUID) async -> LiveHeraldClient.JobStatusResponse?
+
+        init(jobStatusProvider: @escaping (UUID) async -> LiveHeraldClient.JobStatusResponse?) {
+            self.jobStatusProvider = jobStatusProvider
+        }
+
+        func connect() async {}
+        func disconnect() async {}
+
+        func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+            Message(sender: .herald, content: "unused", status: .delivered)
+        }
+
+        func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+            order.append(message)
+            return AsyncStream { continuation in
+                Task { @MainActor in
+                    let jobID = UUID()
+                    continuation.yield(.messageSent(jobID: jobID))
+                    // NO .finished — simulates a terminalless stream.
+                    continuation.finish()
+                }
+            }
+        }
+
+        func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+        func clearConversation() async throws -> Conversation { Conversation(title: "Herald") }
+        func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Herald") }
+        func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+        func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+        func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+        func ensureConversation(id: UUID) async -> Bool { true }
+        func deleteSession(id: UUID) async throws {}
+        func archiveSession(id: UUID) async throws {}
+        func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+        func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+        func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+        func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+        func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+            await jobStatusProvider(jobId)
+        }
+        func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+            Message(sender: .herald, content: text, status: .delivered)
+        }
+        func cancelJob(jobID: UUID) async throws {}
+    }
+
+    @Test("hung stream settles from job status, FIFO drains (the follow-up wedge bug)")
+    func hungStreamSettlesFromJobStatusFIFODrains() async throws {
+        // Use short timeouts so the test completes in seconds, not minutes.
+        let origWatchdog = ChatStore.watchdogTimeout
+        let origDeadline = ChatStore.absoluteJobDeadline
+        ChatStore.watchdogTimeout = .milliseconds(500)
+        ChatStore.absoluteJobDeadline = .seconds(2)
+        defer { ChatStore.watchdogTimeout = origWatchdog; ChatStore.absoluteJobDeadline = origDeadline }
+
+        let client = HungStreamClient { _ in
+            LiveHeraldClient.JobStatusResponse(
+                status: "completed",
+                conversationId: nil,
+                message: Message(sender: .herald, content: "reply", status: .delivered),
+                error: nil, usage: nil, context: nil, diff: nil, attempt: nil, lastSeq: nil, errorCategory: nil, errorAction: nil
+            )
+        }
+        let persistence = makePersistence()
+        let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        store.useStreaming = true
+
+        let first = Task { await store.sendMessage("First") }
+        try? await Task.sleep(for: .milliseconds(30))
+
+        // Queue while the first job is in flight (hung stream, no terminal).
+        store.queueNextMessage(text: "Second", attachments: [])
+
+        // Let the first attempt run and settle.
+        await first.value
+        try? await Task.sleep(for: .milliseconds(500))
+
+        #expect(client.order.value == ["First", "Second"], "Second must be submitted after First settles")
+        #expect(store.outboxItems.filter { $0.state == .terminal }.count == 2, "Both items must reach terminal")
+        #expect(store.outboxItems.filter { $0.state == .accepted }.isEmpty, "No item left stuck in accepted")
+    }
+
+    @Test("hung stream, job status unavailable → retryable, FIFO still drains")
+    func hungStreamJobStatusUnavailableFIFODrains() async throws {
+        let origWatchdog = ChatStore.watchdogTimeout
+        let origDeadline = ChatStore.absoluteJobDeadline
+        ChatStore.watchdogTimeout = .milliseconds(500)
+        ChatStore.absoluteJobDeadline = .seconds(2)
+        defer { ChatStore.watchdogTimeout = origWatchdog; ChatStore.absoluteJobDeadline = origDeadline }
+
+        let client = HungStreamClient { _ in nil }  // getJobStatus returns nil
+        let persistence = makePersistence()
+        let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        store.useStreaming = true
+
+        let first = Task { await store.sendMessage("First") }
+        try? await Task.sleep(for: .milliseconds(30))
+
+        store.queueNextMessage(text: "Second", attachments: [])
+
+        await first.value
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // First must NOT be left .accepted — nil means we can't confirm
+        // status, so it must move to retryableFailure to free the FIFO.
+        let firstItem = try #require(store.outboxItems.first(where: { $0.cleanText == "First" }))
+        #expect(firstItem.state != .accepted, "nil getJobStatus must not leave item .accepted")
+
+        // Second must have been submitted (FIFO drained). It may also
+        // have cycled through retryableFailure if getJobStatus stayed nil,
+        // so check that "Second" appeared in the submission order at least once.
+        #expect(client.order.value.contains("Second"), "Second must submit after First is freed")
+    }
+
+    @Test("genuinely running job is not prematurely settled before the deadline")
+    func runningJobKeepsLease() async throws {
+        let origWatchdog = ChatStore.watchdogTimeout
+        let origDeadline = ChatStore.absoluteJobDeadline
+        ChatStore.watchdogTimeout = .milliseconds(500)
+        ChatStore.absoluteJobDeadline = .seconds(2)
+        defer { ChatStore.watchdogTimeout = origWatchdog; ChatStore.absoluteJobDeadline = origDeadline }
+
+        // Track how many times getJobStatus was called so we can verify
+        // the settle function ran (and saw "running") before the deadline.
+        actor CallCounter { var count = 0; func increment() { count += 1 } }
+        let counter = CallCounter()
+
+        let client = HungStreamClient { _ in
+            await counter.increment()
+            return LiveHeraldClient.JobStatusResponse(
+                status: "running",
+                conversationId: nil, message: nil, error: nil, usage: nil, context: nil, diff: nil, attempt: nil, lastSeq: nil, errorCategory: nil, errorAction: nil
+            )
+        }
+        let persistence = makePersistence()
+        let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        store.useStreaming = true
+
+        let first = Task { await store.sendMessage("First") }
+        try? await Task.sleep(for: .milliseconds(30))
+
+        store.queueNextMessage(text: "Second", attachments: [])
+
+        await first.value
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // The settle function ran and saw "running" — getJobStatus was
+        // called at least once from the polling loop.
+        let callCount = await counter.count
+        #expect(callCount >= 1, "settleAcceptedOutboxJob must query getJobStatus in the polling loop")
+
+        // After the absolute deadline, the item is forced to retryable.
+        let firstItem = try #require(store.outboxItems.first(where: { $0.cleanText == "First" }))
+        #expect(firstItem.state == .retryableFailure, "deadline forces running job to retryableFailure")
+
+        // After the deadline settles First, the FIFO drains Second.
+        #expect(client.order.value.contains("Second"), "FIFO must drain Second after deadline settles First")
+    }
 }
 
 /// Minimal client with a scripted job-status response, for recovery tests.
 @MainActor
-private final class JobStatusClient: KallistiClientProtocol {
+private final class JobStatusClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .connected
     var currentConversation: Conversation?
     private let jobID: UUID
@@ -333,16 +634,16 @@ private final class JobStatusClient: KallistiClientProtocol {
     func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
     func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
     func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-    func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+    func ensureConversation(id: UUID) async -> Bool { true }
     func deleteSession(id: UUID) async throws {}
     func archiveSession(id: UUID) async throws {}
     func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
     func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
     func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-    func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? {
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
         guard jobId == jobID else { return nil }
-        return LiveKallistiClient.JobStatusResponse(
+        return LiveHeraldClient.JobStatusResponse(
             status: reportedStatus,
             conversationId: nil,
             message: reportedStatus == "completed"

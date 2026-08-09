@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 // MARK: - Terminal Parsing Tests
 
@@ -492,5 +492,131 @@ struct TerminalDedupeExemptionTests {
         #expect(JobStreamCoordinator.shouldApply(seq: 3, lastAppliedSeq: 8, isTerminal: true))
         #expect(!JobStreamCoordinator.shouldApply(seq: 3, lastAppliedSeq: 8, isTerminal: false))
         #expect(JobStreamCoordinator.shouldApply(seq: 9, lastAppliedSeq: 8, isTerminal: false))
+    }
+}
+
+// MARK: - v3 Terminal Event Types (run.completed / run.failed / run.cancelled)
+
+@Suite("v3 terminal event parsing via literal SSE event names")
+@MainActor
+struct V3TerminalEventParsingTests {
+
+    private func makeCoordinator() -> JobStreamCoordinator {
+        JobStreamCoordinator(
+            jobId: UUID(),
+            conversationId: UUID(),
+            clientMessageId: UUID(),
+            apiClient: RelayAPIClient(baseURLProvider: { "http://localhost" }),
+            accessTokenProvider: { nil },
+            accessTokenRefresher: { nil },
+            jobStatusProvider: { _ in nil }
+        )
+    }
+
+    @Test("run.completed SSE event parses as runCompleted with text and usage")
+    func runCompletedParsesCorrectly() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "run.completed",
+            data: """
+            {"status": "completed", "message": {"content": "The answer is 42", "role": "assistant"}, "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}, "context": {"window": 256000, "used": 12000}}
+            """,
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runCompleted)
+
+        if case .runCompleted(let payload) = envelope?.payload {
+            #expect(payload.text == "The answer is 42")
+            #expect(payload.usage?.promptTokens == 100)
+            #expect(payload.usage?.completionTokens == 50)
+            #expect(payload.usage?.totalTokens == 150)
+        } else {
+            Issue.record("Expected runCompleted payload")
+        }
+    }
+
+    @Test("run.failed SSE event parses as runFailed with error details")
+    func runFailedParsesCorrectly() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "run.failed",
+            data: "{\"error\": \"Context length exceeded\", \"errorCategory\": \"context_exceeded\", \"errorAction\": \"new_session\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runFailed)
+
+        if case .runFailed(let payload) = envelope?.payload {
+            #expect(payload.error == "Context length exceeded")
+            #expect(payload.errorCategory == "context_exceeded")
+            #expect(payload.errorAction == "new_session")
+        } else {
+            Issue.record("Expected runFailed payload")
+        }
+    }
+
+    @Test("run.cancelled SSE event parses as runCancelled")
+    func runCancelledParsesCorrectly() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "run.cancelled",
+            data: "{\"error\": \"User cancelled\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runCancelled)
+
+        if case .runCancelled(let payload) = envelope?.payload {
+            #expect(payload.reason == "User cancelled")
+        } else {
+            Issue.record("Expected runCancelled payload")
+        }
+    }
+
+    @Test("run.completed terminal event applies even at stale seq (dedup exemption)")
+    func runCompletedExemptFromDedup() async {
+        let coordinator = makeCoordinator()
+        // Simulate: process some events, then a reconnect replays the terminal
+        let e1 = SSEEvent(event: "text_delta", data: "{\"delta\": \"Hi\"}", id: "1")
+        _ = await coordinator.parseEnvelope(from: e1)
+        let e2 = SSEEvent(event: "text_delta", data: "{\"delta\": \" there\"}", id: "2")
+        _ = await coordinator.parseEnvelope(from: e2)
+
+        // Terminal arrives at seq=1 (replay) — should still apply
+        let terminal = SSEEvent(
+            event: "run.completed",
+            data: "{\"status\": \"completed\", \"message\": \"Hi there\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: terminal)
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runCompleted)
+    }
+
+    @Test("Legacy done event still works alongside v3 run.completed")
+    func legacyDoneStillWorks() async {
+        let coordinator = makeCoordinator()
+        let event = SSEEvent(
+            event: "done",
+            data: "{\"status\": \"completed\", \"message\": \"Hello\"}",
+            id: "1"
+        )
+        let envelope = await coordinator.parseEnvelope(from: event)
+
+        #expect(envelope != nil)
+        #expect(envelope?.type == .runCompleted)
+
+        if case .runCompleted(let payload) = envelope?.payload {
+            #expect(payload.text == "Hello")
+        } else {
+            Issue.record("Expected runCompleted payload from legacy done")
+        }
     }
 }

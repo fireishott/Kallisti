@@ -1,5 +1,5 @@
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 struct HeraldMobileTests {
 

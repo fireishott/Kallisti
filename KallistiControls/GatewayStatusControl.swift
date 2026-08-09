@@ -12,7 +12,7 @@ struct GatewayStatusControl: ControlWidget {
         ) {
             ControlWidgetButton(action: RefreshGatewayStatusIntent()) {
                 Label {
-                    Text("Herald GW")
+                    Text("Kallisti GW")
                 } icon: {
                     Image(systemName: "network")
                 }
@@ -20,7 +20,7 @@ struct GatewayStatusControl: ControlWidget {
             .tint(.blue)
         }
         .displayName("Gateway Status")
-        .description("Shows Herald gateway connection status. Tap to refresh.")
+        .description("Shows Kallisti gateway connection status. Tap to refresh.")
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 import HealthKit
 import Testing
 import UIKit
-@testable import Herald
+@testable import Kallisti
 
 @Suite(.serialized)
 struct AppStoresTests {
@@ -171,11 +171,11 @@ struct AppStoresTests {
     }
 
     @MainActor
-    private final class RecordingHeraldHostService: KallistiHostServiceProtocol {
-        var currentHost: KallistiHostStatus?
+    private final class RecordingKallistiHostService: KallistiHostServiceProtocol {
+        var currentHost: HeraldHostStatus?
         var fetchError: Error?
 
-        func fetchCurrentHost(accessToken: String?) async throws -> KallistiHostStatus? {
+        func fetchCurrentHost(accessToken: String?) async throws -> HeraldHostStatus? {
             if let fetchError {
                 throw fetchError
             }
@@ -196,7 +196,7 @@ struct AppStoresTests {
     }
 
     @MainActor
-    fileprivate final class RecordingHeraldClient: KallistiClientProtocol {
+    fileprivate final class RecordingHeraldClient: HeraldClientProtocol {
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         var sendCallCount = 0
@@ -251,7 +251,7 @@ struct AppStoresTests {
             SessionSummary(id: UUID(), title: title)
         }
 
-        func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+        func ensureConversation(id: UUID) async -> Bool { true }
 
         func deleteSession(id: UUID) async throws {}
 
@@ -273,7 +273,7 @@ struct AppStoresTests {
             currentConversation ?? Conversation(title: "Herald")
         }
 
-        func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? {
+        func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
             nil
         }
 
@@ -472,7 +472,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesStreamingArtifactsAfterConversationRefresh() async throws {
-        final class StreamingArtifactClient: KallistiClientProtocol {
+        final class StreamingArtifactClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -545,14 +545,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -574,7 +574,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesStreamingPlaceholderDuringConversationRefresh() async throws {
-        final class PlaceholderRefreshClient: KallistiClientProtocol {
+        final class PlaceholderRefreshClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -608,14 +608,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -640,7 +640,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreKeepsAcceptedMessagePendingUntilTerminalResultArrives() async throws {
-        final class PendingUntilFinishedClient: KallistiClientProtocol {
+        final class PendingUntilFinishedClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -677,14 +677,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -707,7 +707,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreRefreshesConversationWhenStreamingFailsAfterJobAccepted() async throws {
-        final class StreamingFailureClient: KallistiClientProtocol {
+        final class StreamingFailureClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var loadConversationCallCount = 0
@@ -763,14 +763,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { await loadConversation() }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -904,7 +904,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let heraldClient = LiveKallistiClient(
+        let heraldClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { "token" },
             allowDemoFallback: false
@@ -961,7 +961,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let heraldClient = LiveKallistiClient(
+        let heraldClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { "token" },
             allowDemoFallback: false
@@ -980,7 +980,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStoreRetriesAttachmentOnlyMessageWithRestoredAttachments() async throws {
-        final class AttachmentRetryClient: KallistiClientProtocol {
+        final class AttachmentRetryClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var lastMessage: String?
@@ -1022,14 +1022,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -1063,7 +1063,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func chatStorePreservesUserAttachmentPreviewMetadataAfterRefresh() async throws {
-        final class AttachmentRoundTripClient: KallistiClientProtocol {
+        final class AttachmentRoundTripClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -1121,14 +1121,14 @@ struct AppStoresTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
             func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
             func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
             func cancelJob(jobID: UUID) async throws {}
         }
@@ -1153,6 +1153,293 @@ struct AppStoresTests {
         #expect(mergedAttachment.thumbnailBase64 != nil)
         #expect(mergedAttachment.localStoragePath != nil)
     }
+
+    #if canImport(WebRTC)
+    @Test @MainActor
+    func liveVoiceSessionServiceRefreshesExpiredAccessTokenDuringReadiness() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+
+        let accessToken = MutableBox("expired-token")
+        let refreshCallCount = MutableBox(0)
+        let requestCount = MutableBox(0)
+
+        StubURLProtocol.requestHandler = { request in
+            requestCount.value += 1
+            let url = try #require(request.url)
+            #expect(url.absoluteString == "https://relay.example.com/v1/talk/readiness")
+
+            let authHeader = request.value(forHTTPHeaderField: "Authorization")
+            if authHeader == "Bearer expired-token" {
+                let response = HTTPURLResponse(url: url, statusCode: 401, httpVersion: nil, headerFields: nil)!
+                let data = #"{"error":{"code":"unauthorized","message":"expired or invalid access token","retryable":false}}"#.data(using: .utf8)!
+                return (response, data)
+            }
+
+            #expect(authHeader == "Bearer refreshed-token")
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let data = #"""
+            {"data":{
+              "ready":true,
+              "hostOnline":true,
+              "configured":true,
+              "blockedReason":null,
+              "preferredModels":["gpt-realtime-1.5"],
+              "selectedModel":"gpt-realtime-1.5",
+              "voice":"verse",
+              "voiceContextUpdatedAt":"2026-04-01T20:40:47.636600Z"
+            }}
+            """#.data(using: .utf8)!
+            return (response, data)
+        }
+
+        defer {
+            StubURLProtocol.requestHandler = nil
+        }
+
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" },
+            session: session
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { accessToken.value },
+            accessTokenRefresher: {
+                refreshCallCount.value += 1
+                accessToken.value = "refreshed-token"
+                return accessToken.value
+            },
+            urlSession: session
+        )
+
+        await voiceService.refreshReadiness()
+
+        #expect(refreshCallCount.value == 1)
+        #expect(requestCount.value == 2)
+        #expect(voiceService.canStartSession)
+        #expect(voiceService.connectionState == .ready)
+        #expect(voiceService.statusMessage == "Herald talk is ready.")
+        #expect(voiceService.blockedReason == nil)
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceInterruptsAssistantPlaybackOnSpeechStart() async throws {
+        let sentEvents = MutableBox([[String: Any]]())
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" },
+            realtimeEventTransportOverride: { data in
+                guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    return false
+                }
+                sentEvents.value.append(payload)
+                return true
+            }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.handleDataChannelEvent(
+            [
+                "type": "response.created",
+                "response": ["id": "resp_123"],
+            ]
+        )
+        voiceService.handleDataChannelEvent(
+            [
+                "type": "conversation.item.created",
+                "item": [
+                    "id": "item_123",
+                    "role": "assistant",
+                    "type": "message",
+                ],
+            ]
+        )
+        voiceService.handleDataChannelEvent(
+            [
+                "type": "response.output_text.delta",
+                "delta": "Testing interruption handling.",
+            ]
+        )
+        voiceService.handleDataChannelEvent(["type": "output_audio_buffer.started"])
+        try? await Task.sleep(for: .milliseconds(25))
+
+        voiceService.handleDataChannelEvent(["type": "input_audio_buffer.speech_started"])
+
+        #expect(sentEvents.value.count == 3)
+        #expect(sentEvents.value[0]["type"] as? String == "response.cancel")
+        #expect(sentEvents.value[0]["response_id"] as? String == "resp_123")
+        #expect(sentEvents.value[1]["type"] as? String == "output_audio_buffer.clear")
+        #expect(sentEvents.value[2]["type"] as? String == "conversation.item.truncate")
+        #expect(sentEvents.value[2]["item_id"] as? String == "item_123")
+        #expect(sentEvents.value[2]["content_index"] as? Int == 0)
+        let audioEndMs = try #require(sentEvents.value[2]["audio_end_ms"] as? Int)
+        #expect(audioEndMs >= 0)
+        #expect(voiceService.voiceState == .listening)
+        #expect(voiceService.statusMessage == "Listening")
+        #expect(voiceService.transcriptItems.last?.isPartial == false)
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceDoesNotInterruptWhenAssistantIsNotSpeaking() async throws {
+        let sentEvents = MutableBox([[String: Any]]())
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" },
+            realtimeEventTransportOverride: { data in
+                guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    return false
+                }
+                sentEvents.value.append(payload)
+                return true
+            }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.handleDataChannelEvent(
+            [
+                "type": "response.created",
+                "response": ["id": "resp_456"],
+            ]
+        )
+        voiceService.handleDataChannelEvent(
+            [
+                "type": "conversation.item.created",
+                "item": [
+                    "id": "item_456",
+                    "role": "assistant",
+                    "type": "message",
+                ],
+            ]
+        )
+
+        voiceService.handleDataChannelEvent(["type": "input_audio_buffer.speech_started"])
+
+        #expect(sentEvents.value.isEmpty)
+        #expect(voiceService.voiceState == .listening)
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceRecoversFromInterruptionsWithoutEndingSession() async throws {
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.voiceState = .speaking
+
+        voiceService.handleAudioInterruptionBegan()
+
+        #expect(voiceService.voiceState == .interrupted)
+        #expect(voiceService.statusMessage == "Audio interrupted.")
+
+        voiceService.handleAudioInterruptionEnded(shouldResume: true)
+
+        #expect(voiceService.connectionState == .connected)
+        #expect(voiceService.voiceState == .listening)
+        #expect(voiceService.statusMessage == "Listening")
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceRecoversFromRouteChangesDuringActiveSession() async throws {
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.voiceState = .interrupted
+
+        voiceService.handleAudioRouteChange(.oldDeviceUnavailable)
+
+        #expect(voiceService.connectionState == .connected)
+        #expect(voiceService.voiceState == .listening)
+        #expect(voiceService.statusMessage == "Audio route changed.")
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceKeepsUserTranscriptOrderedWhenTranscriptionFinishesLate() async throws {
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.handleDataChannelEvent([
+            "type": "input_audio_buffer.committed",
+            "item_id": "user_item_1",
+        ])
+        voiceService.handleDataChannelEvent([
+            "type": "response.created",
+            "response": ["id": "resp_late_user"],
+        ])
+        voiceService.handleDataChannelEvent([
+            "type": "conversation.item.created",
+            "item": [
+                "id": "assistant_item_1",
+                "role": "assistant",
+                "type": "message",
+            ],
+        ])
+        voiceService.handleDataChannelEvent([
+            "type": "response.output_text.delta",
+            "delta": "Let me check that.",
+        ])
+
+        voiceService.handleDataChannelEvent([
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "user_item_1",
+            "transcript": "What should I focus on today?",
+        ])
+
+        #expect(voiceService.transcriptItems.count == 2)
+        #expect(voiceService.transcriptItems[0].speaker == .user)
+        #expect(voiceService.transcriptItems[0].text == "What should I focus on today?")
+        #expect(voiceService.transcriptItems[0].isPartial == false)
+        #expect(voiceService.transcriptItems[1].speaker == .herald)
+        #expect(voiceService.transcriptItems[1].text == "Let me check that.")
+    }
+
+    @Test @MainActor
+    func liveVoiceSessionServiceIgnoresLateRealtimeErrorsAfterIntentionalEnd() async throws {
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" }
+        )
+        let voiceService = LiveVoiceSessionService(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" }
+        )
+
+        voiceService.connectionState = .connected
+        voiceService.voiceState = .speaking
+
+        await voiceService.endSession()
+        voiceService.handleDataChannelEvent([
+            "type": "error",
+            "error": ["message": "Connection lost."],
+        ])
+
+        #expect(voiceService.connectionState == .idle)
+        #expect(voiceService.voiceState == .idle)
+        #expect(voiceService.statusMessage == nil)
+    }
+    #endif
 
     @Test @MainActor
     func liveHeraldClientRefreshesExpiredAccessTokenDuringConversationLoad() async throws {
@@ -1200,7 +1487,7 @@ struct AppStoresTests {
             baseURLProvider: { "https://relay.example.com/v1" },
             session: session
         )
-        let heraldClient = LiveKallistiClient(
+        let heraldClient = LiveHeraldClient(
             apiClient: apiClient,
             accessTokenProvider: { accessToken.value },
             accessTokenRefresher: {
@@ -1487,7 +1774,7 @@ struct AppStoresTests {
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.1.0",
             pushEnvironment: "production"
         )
@@ -1554,7 +1841,7 @@ struct AppStoresTests {
             accessToken: "access-token",
             deviceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
             installationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.1.0",
             pushEnvironment: "production"
         )
@@ -1795,8 +2082,8 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreGeneratesEnrollmentCodeAndClearsOnRevoke() async throws {
-        let service = RecordingHeraldHostService()
-        service.currentHost = KallistiHostStatus(
+        let service = RecordingKallistiHostService()
+        service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
             hostname: "test-host",
@@ -1828,7 +2115,7 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreMarksReachabilityErrorsWithoutPretendingHostIsOffline() async throws {
-        let service = RecordingHeraldHostService()
+        let service = RecordingKallistiHostService()
         service.fetchError = RelayAPIClient.ClientError.requestFailed("Relay unreachable.")
 
         let hostStore = KallistiHostStore(
@@ -1845,8 +2132,8 @@ struct AppStoresTests {
 
     @Test @MainActor
     func hostStoreKeepsKnownOnlineHostDuringRefreshErrors() async throws {
-        let service = RecordingHeraldHostService()
-        service.currentHost = KallistiHostStatus(
+        let service = RecordingKallistiHostService()
+        service.currentHost = HeraldHostStatus(
             id: UUID(),
             displayName: "Home Mac mini",
             hostname: "test-host",
@@ -2441,7 +2728,7 @@ struct NotificationReplyTests {
     @Test("Failure copy uses active profile name")
     @MainActor
     func failureCopyUsesProfileName() {
-        let heraldClient = MockKallistiClient()
+        let heraldClient = MockHeraldClient()
         let suiteName = "failure-copy-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -2464,7 +2751,7 @@ struct NotificationReplyTests {
     @Test("Failure copy falls back to Herald when no profile active")
     @MainActor
     func failureCopyFallsBackToHerald() {
-        let heraldClient = MockKallistiClient()
+        let heraldClient = MockHeraldClient()
         let suiteName = "failure-copy-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -2484,7 +2771,7 @@ struct NotificationReplyTests {
     @Test("User rename prevents auto-title from overwriting")
     @MainActor
     func titleOwnership_UserRenamePreventsAutoTitle() async throws {
-        final class TitleTrackingClient: KallistiClientProtocol {
+        final class TitleTrackingClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleCallCount = 0
@@ -2509,7 +2796,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2519,7 +2806,7 @@ struct NotificationReplyTests {
                 return "Should Not Apply"
             }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
@@ -2557,7 +2844,7 @@ struct NotificationReplyTests {
         // The server now handles title generation (B38 + B39 T2).  The client
         // must never fire its own generateSessionTitle RPC during a normal
         // online turn — that would be the second racing generator.
-        final class NoTitleRPCClient: KallistiClientProtocol {
+        final class NoTitleRPCClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleCallCount = 0
@@ -2582,7 +2869,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2592,7 +2879,7 @@ struct NotificationReplyTests {
                 return "Should Not Apply"
             }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
@@ -2628,7 +2915,7 @@ struct NotificationReplyTests {
     func titleRPCFailure_UsesFallbackAndLogs() async throws {
         // B39 T4: the client no longer calls generateSessionTitle when online.
         // The local truncation fallback only fires when offline (disconnected).
-        final class FailingTitleClient: KallistiClientProtocol {
+        final class FailingTitleClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .disconnected  // B39: offline-only fallback
             var currentConversation: Conversation?
             var renameSessionCallCount = 0
@@ -2654,7 +2941,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2667,7 +2954,7 @@ struct NotificationReplyTests {
                 throw URLError(.timedOut)
             }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
@@ -2703,7 +2990,7 @@ struct NotificationReplyTests {
         // B39 T4: the client must never call generateSessionTitle when online.
         // The server handles title generation (B38 P1-1 + B39 T2).  Even with
         // a default title ("New Chat"), the client stays silent.
-        final class RetryTitleClient: KallistiClientProtocol {
+        final class RetryTitleClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleAttempts = 0
@@ -2728,7 +3015,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2738,7 +3025,7 @@ struct NotificationReplyTests {
                 return "Should Not Be Called"
             }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
@@ -2773,7 +3060,7 @@ struct NotificationReplyTests {
     func autoGeneratedTitlePersistsAcrossRelaunch() async throws {
         // B39 T4: the local truncation fallback only fires when offline.
         // This test verifies that the offline title persists in the cache.
-        final class PersistTitleClient: KallistiClientProtocol {
+        final class PersistTitleClient: HeraldClientProtocol {
             var connectionStatus: ConnectionStatus = .disconnected  // B39: offline-only
             var currentConversation: Conversation?
 
@@ -2797,7 +3084,7 @@ struct NotificationReplyTests {
             func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
             func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
             func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
-            func ensureConversation(id: UUID) async -> EnsureResult { EnsureResult(ok: true, canonicalID: nil, serverMessage: nil) }
+            func ensureConversation(id: UUID) async -> Bool { true }
             func deleteSession(id: UUID) async throws {}
             func archiveSession(id: UUID) async throws {}
             func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
@@ -2806,7 +3093,7 @@ struct NotificationReplyTests {
                 "Persisted Title"
             }
             func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
-            func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
             func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
                 Message(sender: .herald, content: "reply", status: .delivered)
             }
@@ -2844,7 +3131,7 @@ struct NotificationReplyTests {
     @Test("Failure copy falls back to Herald when profileStore is nil")
     @MainActor
     func failureCopyFallsBackWhenNoProfileStore() {
-        let heraldClient = MockKallistiClient()
+        let heraldClient = MockHeraldClient()
         let suiteName = "failure-copy-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -2909,7 +3196,7 @@ struct NotificationReplyTests {
     @Test("ChatStore connectionStatus reflects heraldClient status")
     @MainActor
     func chatStoreConnectionStatusReflectsHeraldClient() {
-        let heraldClient = MockKallistiClient()
+        let heraldClient = MockHeraldClient()
         let suiteName = "connection-status-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -2930,7 +3217,7 @@ struct NotificationReplyTests {
     @Test("ChatStore updateConnectionStatus propagates to heraldClient")
     @MainActor
     func chatStoreUpdateConnectionStatusPropagates() {
-        let heraldClient = MockKallistiClient()
+        let heraldClient = MockHeraldClient()
         let suiteName = "update-status-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -2987,7 +3274,7 @@ struct B40ConversationMergeTests {
         )
         let reply = Message(
             sender: .herald,
-            content: "Yo, Curtis. What's the word?",
+            content: "Hello there. What's the word?",
             timestamp: sentAt.addingTimeInterval(6),
             jobID: jobID,
             status: .delivered
@@ -3008,7 +3295,7 @@ struct B40ConversationMergeTests {
         let merged = store.mergeConversationMetadata(from: local, into: postResponse)
 
         #expect(merged?.messages.count == 2)
-        #expect(merged?.messages.last?.content == "Yo, Curtis. What's the word?")
+        #expect(merged?.messages.last?.content == "Hello there. What's the word?")
         #expect(merged?.messages.last?.sender == .herald)
     }
 
@@ -3064,12 +3351,12 @@ struct B40ConversationMergeTests {
         let jobID = UUID()
         let sentAt = Date()
         let localReply = Message(
-            sender: .herald, content: "Yo, Curtis.",
+            sender: .herald, content: "Hello there.",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
         // Same answer, different id — as returned by a real conversation fetch.
         let serverReply = Message(
-            sender: .herald, content: "Yo, Curtis.",
+            sender: .herald, content: "Hello there.",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
 
@@ -3090,7 +3377,7 @@ struct B40ConversationMergeTests {
         let sentAt = Date()
 
         let localReply = Message(
-            id: UUID(), sender: .herald, content: "Yo, Curtis. What's the word?",
+            id: UUID(), sender: .herald, content: "Hello there. What's the word?",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
         let emptyServerReply = Message(
@@ -3104,7 +3391,7 @@ struct B40ConversationMergeTests {
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
         #expect(merged?.messages.count == 1)
-        #expect(merged?.messages.first?.content == "Yo, Curtis. What's the word?")
+        #expect(merged?.messages.first?.content == "Hello there. What's the word?")
     }
 
     @Test @MainActor
@@ -3122,5 +3409,36 @@ struct B40ConversationMergeTests {
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
         #expect(merged?.title == "Cabo trip planning")
+    }
+
+    /// Root cause (2026-08-06): the server's `createdAt` is when the
+    /// message was PROCESSED, not when the user SENT it. A refresh landing
+    /// mid-turn must not let that overwrite the locally-known send time —
+    /// otherwise a user bubble's displayed timestamp silently drifts
+    /// forward while its reply is still in flight (observed live: the same
+    /// message read "3:50 PM" and then "3:51 PM" a couple screens later).
+    @Test @MainActor
+    func serverCreatedAtDoesNotOverwriteLocalUserSendTime() {
+        let store = makeStore()
+        let conversationID = UUID()
+        let messageID = UUID()
+        let sentAt = Date()
+        let serverProcessedAt = sentAt.addingTimeInterval(87)
+
+        let localUserMessage = Message(
+            id: messageID, sender: .user, content: "No mgm lines on HOF game?",
+            timestamp: sentAt, status: .sent
+        )
+        let serverUserMessage = Message(
+            id: messageID, sender: .user, content: "No mgm lines on HOF game?",
+            timestamp: serverProcessedAt, status: .delivered
+        )
+
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [localUserMessage])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [serverUserMessage])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.first?.timestamp == sentAt)
     }
 }

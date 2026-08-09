@@ -22,7 +22,7 @@ struct RestartGatewayControl: ControlWidget {
             .tint(.orange)
         }
         .displayName("Restart Gateway")
-        .description("Restart the Herald gateway or connector — opens Herald to confirm.")
+        .description("Restart the Kallisti gateway or connector — opens Kallisti to confirm.")
     }
 }
 

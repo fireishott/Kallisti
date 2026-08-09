@@ -1,5 +1,5 @@
 import XCTest
-@testable import Herald
+@testable import Kallisti
 
 /// Tests for the JSON-RPC 2.0 gateway frame contract.
 /// These tests define the wire protocol that the Swift gateway client must implement.

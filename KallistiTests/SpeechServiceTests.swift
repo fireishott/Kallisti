@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Herald
+@testable import Kallisti
 
 @Suite("Speech Authorization Bridge")
 struct SpeechAuthorizationBridgeTests {

@@ -67,8 +67,8 @@ public final class SharedCredentialProvider: @unchecked Sendable {
     public let accessGroup: String?
 
     public init(
-        serviceName: String = HeraldSupportConfiguration.keychainServiceName,
-        accessGroup: String? = HeraldSupportConfiguration.keychainAccessGroup
+        serviceName: String = KallistiSupportConfiguration.keychainServiceName,
+        accessGroup: String? = KallistiSupportConfiguration.keychainAccessGroup
     ) {
         self.serviceName = serviceName
         self.accessGroup = accessGroup
@@ -95,7 +95,7 @@ public final class SharedCredentialProvider: @unchecked Sendable {
     // MARK: - Internal
 
     private func readToken() throws -> String? {
-        var query = baseQuery(for: HeraldSupportConfiguration.keychainAccessTokenAccount)
+        var query = baseQuery(for: KallistiSupportConfiguration.keychainAccessTokenAccount)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -117,7 +117,7 @@ public final class SharedCredentialProvider: @unchecked Sendable {
 
     private func writeToken(_ token: String) throws {
         let data = Data(token.utf8)
-        var query = baseQuery(for: HeraldSupportConfiguration.keychainAccessTokenAccount)
+        var query = baseQuery(for: KallistiSupportConfiguration.keychainAccessTokenAccount)
         let updateAttrs: [String: Any] = [kSecValueData as String: data]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, updateAttrs as CFDictionary)
@@ -142,7 +142,7 @@ public final class SharedCredentialProvider: @unchecked Sendable {
     }
 
     private func deleteToken() throws {
-        let status = SecItemDelete(baseQuery(for: HeraldSupportConfiguration.keychainAccessTokenAccount) as CFDictionary)
+        let status = SecItemDelete(baseQuery(for: KallistiSupportConfiguration.keychainAccessTokenAccount) as CFDictionary)
         // `errSecItemNotFound` is not an error — we wanted it gone anyway.
         if status != errSecSuccess && status != errSecItemNotFound {
             throw SharedCredentialError.keychainFailure(status: status, operation: "delete")

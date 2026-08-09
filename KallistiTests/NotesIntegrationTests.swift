@@ -1,7 +1,7 @@
 import Foundation
 import PencilKit
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @Suite(.serialized)
 @MainActor

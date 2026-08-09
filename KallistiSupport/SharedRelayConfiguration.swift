@@ -25,7 +25,7 @@ public final class SharedRelayConfiguration: @unchecked Sendable {
     private let defaults: UserDefaults?
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "SharedRelayConfiguration")
 
-    public init(suiteName: String = HeraldSupportConfiguration.appGroupIdentifier) {
+    public init(suiteName: String = KallistiSupportConfiguration.appGroupIdentifier) {
         self.defaults = UserDefaults(suiteName: suiteName)
         if defaults == nil {
             logger.error("App Group \(suiteName, privacy: .public) unavailable — control surface will report configuration errors")
@@ -35,7 +35,7 @@ public final class SharedRelayConfiguration: @unchecked Sendable {
     /// The relay base URL persisted by the main app after pairing.  Empty
     /// string when the app has never been paired.
     public func relayBaseURL() -> String {
-        defaults?.string(forKey: HeraldSupportConfiguration.relayBaseURLDefaultsKey) ?? ""
+        defaults?.string(forKey: KallistiSupportConfiguration.relayBaseURLDefaultsKey) ?? ""
     }
 
     /// True when the user has paired the device and the URL is non-empty.
@@ -46,11 +46,11 @@ public final class SharedRelayConfiguration: @unchecked Sendable {
     /// Write the relay base URL.  Called by the main app after pairing;
     /// widget/control binaries only read.
     public func update(relayBaseURL urlString: String) {
-        defaults?.set(urlString, forKey: HeraldSupportConfiguration.relayBaseURLDefaultsKey)
+        defaults?.set(urlString, forKey: KallistiSupportConfiguration.relayBaseURLDefaultsKey)
     }
 
     /// Clear the cached URL.  Called on sign-out / disconnect.
     public func clear() {
-        defaults?.removeObject(forKey: HeraldSupportConfiguration.relayBaseURLDefaultsKey)
+        defaults?.removeObject(forKey: KallistiSupportConfiguration.relayBaseURLDefaultsKey)
     }
 }
