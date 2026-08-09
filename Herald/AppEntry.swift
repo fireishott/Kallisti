@@ -19,11 +19,11 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // If the app was previously killed while a Live Activity was active,
-        // the OS can still show that stale activity. Clear any orphaned Herald
-        // activities immediately on launch; real active sessions will recreate
-        // or adopt an activity once state is restored.
-        LiveActivityService.endAllActivities()
+        // Do not tear down existing Live Activities on launch. ActivityKit owns
+        // their background lifetime, and the active turn needs to remain visible
+        // after the app is minimized or relaunched. LiveActivityService adopts
+        // an existing activity when the chat resumes and ends it on terminal
+        // turn states.
 
         // Register background refresh task
         BGTaskScheduler.shared.register(

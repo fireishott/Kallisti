@@ -3274,7 +3274,7 @@ struct B40ConversationMergeTests {
         )
         let reply = Message(
             sender: .herald,
-            content: "Yo, Curtis. What's the word?",
+            content: "Hello there. What's the word?",
             timestamp: sentAt.addingTimeInterval(6),
             jobID: jobID,
             status: .delivered
@@ -3295,7 +3295,7 @@ struct B40ConversationMergeTests {
         let merged = store.mergeConversationMetadata(from: local, into: postResponse)
 
         #expect(merged?.messages.count == 2)
-        #expect(merged?.messages.last?.content == "Yo, Curtis. What's the word?")
+        #expect(merged?.messages.last?.content == "Hello there. What's the word?")
         #expect(merged?.messages.last?.sender == .herald)
     }
 
@@ -3351,12 +3351,12 @@ struct B40ConversationMergeTests {
         let jobID = UUID()
         let sentAt = Date()
         let localReply = Message(
-            sender: .herald, content: "Yo, Curtis.",
+            sender: .herald, content: "Hello there.",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
         // Same answer, different id — as returned by a real conversation fetch.
         let serverReply = Message(
-            sender: .herald, content: "Yo, Curtis.",
+            sender: .herald, content: "Hello there.",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
 
@@ -3377,7 +3377,7 @@ struct B40ConversationMergeTests {
         let sentAt = Date()
 
         let localReply = Message(
-            id: UUID(), sender: .herald, content: "Yo, Curtis. What's the word?",
+            id: UUID(), sender: .herald, content: "Hello there. What's the word?",
             timestamp: sentAt, jobID: jobID, status: .delivered
         )
         let emptyServerReply = Message(
@@ -3391,7 +3391,7 @@ struct B40ConversationMergeTests {
         let merged = store.mergeConversationMetadata(from: local, into: refreshed)
 
         #expect(merged?.messages.count == 1)
-        #expect(merged?.messages.first?.content == "Yo, Curtis. What's the word?")
+        #expect(merged?.messages.first?.content == "Hello there. What's the word?")
     }
 
     @Test @MainActor

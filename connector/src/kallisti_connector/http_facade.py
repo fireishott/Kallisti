@@ -48,6 +48,7 @@ from .restart_operations import (
     get_restart_store,
 )
 from . import __version__, HERALD_PROTOCOL
+from .pairing_code_store import PairingCodeStore
 
 logger = logging.getLogger("herald.http_facade")
 
@@ -151,6 +152,15 @@ async def require_native_or_paired_auth(request: Request) -> str:
         bearer = auth_header[7:].strip()
     if bearer and await _verify_native_gateway_bearer(bearer):
         return bearer
+
+    # Basic and Kallisti-pairing native logins are gateway cookie sessions.
+    # URLSession carries that cookie to this public media route, but the
+    # connector previously discarded it and required a bearer the app does not
+    # have in cookie-auth mode. Delegate cookie verification to the gateway.
+    cookie = request.headers.get("cookie", "").strip()
+    if cookie and await _verify_native_gateway_cookie(cookie):
+        return "gateway-cookie-session"
+
     return await require_auth(request)
 
 
@@ -1609,9 +1619,15 @@ async def capabilities_endpoint(request: Request) -> JSONResponse:
 
 # ── Pairing / Auth ───────────────────────────────────────────────────────
 
-# Phone pairing codes stored in-memory (no Postgres needed).
-# Maps normalized code → {expires_at, created_at}
-_pending_pairing_codes: dict[str, dict] = {}
+# Pairing codes persist in the connector-local home, never in Hermes state.db.
+# Records contain only SHA-256 code digests, expiry, device binding and the
+# response needed for same-installation replay. Plaintext codes are never saved.
+def _pairing_code_store() -> PairingCodeStore:
+    home = Path(os.getenv("HERMES_MOBILE_CONNECTOR_HOME") or Path.home() / ".hermes-mobile")
+    return PairingCodeStore(home / "pairing_codes.json")
+
+
+_pairing_codes = _pairing_code_store()
 import hashlib, secrets as _secrets
 
 
@@ -1632,11 +1648,7 @@ async def create_phone_pairing_code(request: Request) -> JSONResponse:
     code, display = _generate_pairing_code()
     hashed = _hash_code(code)
     expires = _time.time() + 600  # 10 minute expiry
-    _pending_pairing_codes[hashed] = {"expires_at": expires, "created_at": _time.time()}
-    # Clean expired codes
-    for k in list(_pending_pairing_codes):
-        if _pending_pairing_codes[k]["expires_at"] < _time.time():
-            del _pending_pairing_codes[k]
+    _pairing_codes.create(hashed, expires_at=expires, created_at=_time.time())
     logger.info("Created pairing code: %s", display)
     return JSONResponse({"code": code, "displayCode": display, "expiresAt": expires})
 
@@ -1670,17 +1682,15 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
     logger.info("Redeem normalized code: %s", code)
     hashed = _hash_code(code)
 
-    # Look up WITHOUT popping — idempotent replay needs the stored record.
-    stored = _pending_pairing_codes.get(hashed)
-    if stored is None or stored["expires_at"] < _time.time():
+    # The durable store keeps a code alive across connector restarts and only
+    # permits replay by the installation that first redeemed it.
+    stored = _pairing_codes.get_live(hashed, now=_time.time())
+    if stored is None:
         raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
-
-    # Already redeemed by this installation → replay the saved payload.
     if stored.get("redeemed_at") is not None:
-        if stored.get("installation_id") == installation_id:
-            logger.info("Idempotent replay of pairing code %s for installation %s",
-                        code, installation_id[:12])
-            return JSONResponse(stored["_response_payload"])
+        if stored.get("installation_id") == installation_id and isinstance(stored.get("response_payload"), dict):
+            logger.info("Idempotent replay of pairing code for installation %s", installation_id[:12])
+            return JSONResponse(stored["response_payload"])
         raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
 
     # First redeem — build the response, mark, and persist.
@@ -1710,9 +1720,9 @@ async def redeem_phone_pairing(request: Request) -> JSONResponse:
         "session": {"connectionStatus": "connected", "isMockMode": False, "backendEndpoint": ctx.public_base_url or "", "lastSyncAt": None},
         "auth": {"accessToken": device_token, "refreshToken": device_token, "expiresAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
     }
-    stored["redeemed_at"] = _time.time()
-    stored["installation_id"] = installation_id
-    stored["_response_payload"] = payload
+    if not _pairing_codes.redeem(hashed, installation_id=installation_id, payload=payload, now=_time.time()):
+        # A concurrent redemption won. Never leak its payload to this request.
+        raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
     return JSONResponse(payload)
 
 
@@ -1887,30 +1897,86 @@ async def push_register(request: Request) -> JSONResponse:
     return JSONResponse({"registered": True, "environment": environment})
 
 
-async def _verify_native_gateway_bearer(token: str) -> bool:
-    """True if *token* is a live native-gateway access token.
+_NATIVE_MEDIA_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
-    Verification is delegated to the gateway rather than reimplemented
-    here: the connector has no business holding Portal's JWKS or
-    duplicating the audience/issuer checks the nous plugin already does.
-    A 200 from an auth-required gateway route means the token is good.
+
+async def native_media_route(request: Request) -> Response:
+    """Serve an agent-generated image to an authenticated native client.
+
+    Native gateway ``message.complete`` events preserve ``MEDIA:/host/path``
+    directives as text. The iOS client cannot read that Linux path, so this
+    Herald-owned mobile adapter exposes only image files under the active
+    Hermes profile's generated-image roots. It never serves arbitrary paths.
     """
+    await require_native_or_paired_auth(request)
+    raw = request.query_params.get("path", "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    candidate = Path(raw).expanduser().resolve()
+    hermes_home = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes").resolve()
+    allowed_roots = [
+        (hermes_home / "cache" / "images").resolve(),
+        (hermes_home / "images").resolve(),
+        (hermes_home / "media").resolve(),
+    ]
+    profiles_root = hermes_home / "profiles"
+    if profiles_root.is_dir():
+        for profile_home in profiles_root.iterdir():
+            if profile_home.is_dir():
+                allowed_roots.extend((
+                    (profile_home / "cache" / "images").resolve(),
+                    (profile_home / "images").resolve(),
+                    (profile_home / "media").resolve(),
+                ))
+    if candidate.suffix.lower() not in _NATIVE_MEDIA_MIME:
+        raise HTTPException(status_code=415, detail="unsupported media type")
+    if not any(candidate.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="media path is outside generated-image roots")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="media not found")
+    if candidate.stat().st_size > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="media exceeds 10 MB")
+
+    return Response(
+        candidate.read_bytes(),
+        media_type=_NATIVE_MEDIA_MIME[candidate.suffix.lower()],
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+async def _verify_native_gateway_auth(headers: dict[str, str]) -> bool:
+    """Delegate a bearer or cookie-session check to the native gateway."""
     import httpx
 
     from .native_watch import NATIVE_GATEWAY_HOST, NATIVE_GATEWAY_PORT
 
-    url = (
-        f"http://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}/api/auth/me"
-    )
+    url = f"http://{NATIVE_GATEWAY_HOST}:{NATIVE_GATEWAY_PORT}/api/auth/me"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {token}"}
-            )
+            resp = await client.get(url, headers=headers)
         return resp.status_code == 200
     except Exception:
-        logger.exception("native gateway bearer verification failed")
+        logger.exception("native gateway auth verification failed")
         return False
+
+
+async def _verify_native_gateway_bearer(token: str) -> bool:
+    """True if *token* is a live native-gateway access token."""
+    return await _verify_native_gateway_auth(
+        {"Authorization": f"Bearer {token}"}
+    )
+
+
+async def _verify_native_gateway_cookie(cookie: str) -> bool:
+    """True if *cookie* identifies a live gateway session."""
+    return await _verify_native_gateway_auth({"Cookie": cookie})
 
 
 async def native_watch_route(request: Request) -> JSONResponse:
@@ -3492,6 +3558,7 @@ routes = [
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
     # Native-completion to push bridge (Task 12)
     Route("/v1/native/watch", native_watch_route, methods=["POST"]),
+    Route("/v1/native/media", native_media_route, methods=["GET"]),
 ]
 
 app = Starlette(

@@ -186,6 +186,130 @@ struct OutboxDurableTests {
         #expect(store.outboxItems.filter { $0.state == .queued }.isEmpty)
     }
 
+    @Test("pre-ack polling keeps exactly one live thinking placeholder")
+    func preAckPollingKeepsSingleLivePlaceholder() async throws {
+        final class DelayedAckClient: HeraldClientProtocol {
+            var connectionStatus: ConnectionStatus = .connected
+            var currentConversation: Conversation?
+
+            func connect() async {}
+            func disconnect() async {}
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+                Message(sender: .herald, content: "unused", status: .delivered)
+            }
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+                AsyncStream { continuation in
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(3))
+                        continuation.yield(.messageSent(jobID: UUID()))
+                        try? await Task.sleep(for: .milliseconds(100))
+                        continuation.yield(.finished(
+                            Message(sender: .herald, content: "reply", status: .delivered),
+                            nil, nil, nil
+                        ))
+                        continuation.finish()
+                    }
+                }
+            }
+            func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func clearConversation() async throws -> Conversation { Conversation(title: "Kallisti") }
+            func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Kallisti") }
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+            func loadConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Kallisti")
+            }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
+        }
+
+        let client = DelayedAckClient()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: makePersistence(),
+            outboxBaseDirectory: makeScratchDirectory()
+        )
+        store.useStreaming = true
+        store.setPollingEnabled(true)
+
+        let send = Task { await store.sendMessage("One turn") }
+        try? await Task.sleep(for: .milliseconds(2_300))
+
+        let liveRows = store.conversation?.messages.filter { $0.sender == .herald && $0.isStreaming } ?? []
+        #expect(liveRows.count == 1, "a pre-ack transcript refresh must not orphan or duplicate the turn placeholder")
+
+        await send.value
+    }
+
+    @Test("follow-up submits immediately after prior stream finishes")
+    func followUpDoesNotWaitForCancelledTaskState() async throws {
+        final class ImmediateStreamClient: HeraldClientProtocol {
+            var connectionStatus: ConnectionStatus = .connected
+            var currentConversation: Conversation?
+            let order = OrderBox()
+
+            func connect() async {}
+            func disconnect() async {}
+            func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+                Message(sender: .herald, content: "unused", status: .delivered)
+            }
+            func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+                order.append(message)
+                return AsyncStream { continuation in
+                    continuation.yield(.finished(
+                        Message(sender: .herald, content: "reply to \(message)", status: .delivered),
+                        nil, nil, nil
+                    ))
+                    continuation.finish()
+                }
+            }
+            func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func clearConversation() async throws -> Conversation { Conversation(title: "Kallisti") }
+            func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Kallisti") }
+            func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+            func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+            func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+            func ensureConversation(id: UUID) async -> Bool { true }
+            func deleteSession(id: UUID) async throws {}
+            func archiveSession(id: UUID) async throws {}
+            func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+            func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+            func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+            func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Kallisti") }
+            func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+            func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message { Message(sender: .herald, content: text, status: .delivered) }
+            func cancelJob(jobID: UUID) async throws {}
+        }
+
+        let originalTimeout = ChatStore.watchdogTimeout
+        ChatStore.watchdogTimeout = .seconds(90)
+        defer { ChatStore.watchdogTimeout = originalTimeout }
+
+        let client = ImmediateStreamClient()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: makePersistence(),
+            outboxBaseDirectory: makeScratchDirectory()
+        )
+        store.useStreaming = true
+
+        let started = ContinuousClock.now
+        await store.sendMessage("First")
+        await store.sendMessage("Follow-up")
+        let elapsed = started.duration(to: .now)
+
+        #expect(client.order.value == ["First", "Follow-up"])
+        #expect(elapsed < .seconds(2), "follow-up must not wait for the 90-second watchdog")
+    }
+
     // MARK: - Restart suspension
 
     @Test("messages enqueued during a restart stay queued and submit after resume")

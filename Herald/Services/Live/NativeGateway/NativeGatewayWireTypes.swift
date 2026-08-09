@@ -19,9 +19,13 @@ struct NativeGatewayResponse: Decodable {
     let error: NativeGatewayError?
 }
 
-struct NativeGatewayError: Decodable, Error, Equatable {
+struct NativeGatewayError: Decodable, Error, Equatable, LocalizedError {
     let code: Int
     let message: String
+
+    var errorDescription: String? {
+        message.isEmpty ? "The gateway rejected the request (\(code))." : message
+    }
 }
 
 // MARK: - Server-initiated Events

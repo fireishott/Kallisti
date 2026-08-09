@@ -68,7 +68,8 @@ final class PushRegistrationCoordinator {
                 try await registerWithConnector(
                     token: token,
                     environment: pushEnvironment,
-                    connectorBaseURL: connectorURL
+                    connectorBaseURL: connectorURL,
+                    accessToken: accessToken
                 )
                 Self.logger.info("Push token registered with connector directly")
                 return true
@@ -136,40 +137,34 @@ final class PushRegistrationCoordinator {
     private func registerWithConnector(
         token: String,
         environment: String,
-        connectorBaseURL: String
+        connectorBaseURL: String,
+        accessToken: String
     ) async throws {
-        let url = URL(string: "\(connectorBaseURL)/mcp")!
+        guard let url = URL(string: "\(connectorBaseURL)/v1/push/register") else {
+            throw URLError(.badURL)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-        let body: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": UUID().uuidString,
-            "method": "tools/call",
-            "params": [
-                "name": "register_push_device",
-                "arguments": [
-                    "device_token": token,
-                    "environment": environment,
-                ]
-            ]
+        let body: [String: String] = [
+            "apnsToken": token,
+            "pushEnvironment": environment,
+            "tokenKind": "device"
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw URLError(.badServerResponse)
+              (200..<300).contains(httpResponse.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw URLError(.init(rawValue: status))
         }
-
-        // Parse MCP response
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let result = json["result"] as? [String: Any],
-           let content = result["content"] as? [[String: Any]],
-           let text = content.first?["text"] as? String {
-            Self.logger.info("Connector push registration response: \(text)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["registered"] as? Bool == true else {
+            throw URLError(.cannotParseResponse)
         }
     }
 

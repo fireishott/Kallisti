@@ -66,7 +66,7 @@ def clean_facade_state():
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_MOBILE_CONNECTOR_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", "/home/user/.hermes/profiles/ignyte")
+    monkeypatch.setenv("HERMES_HOME", "/home/operator/.hermes/profiles/default")
     monkeypatch.delenv("HERMES_AGENT_UNIT", raising=False)
     monkeypatch.setenv("HERALD_RESTART_ACTIVE_TIMEOUT", "2")
     monkeypatch.setenv("HERALD_RESTART_POLL_INTERVAL", "0.02")
