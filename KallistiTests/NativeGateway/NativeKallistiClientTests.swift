@@ -242,6 +242,68 @@ struct NativeKallistiClientTests {
         #expect(resolved.hasSuffix("Done."))
     }
 
+    @Test("Build 50 normalizes current and removed-profile MEDIA paths to stable keys")
+    func build50MediaPathNormalization() {
+        #expect(NativeKallistiClient.normalizeMediaPath(
+            "/home/operator/.hermes/images/funny cat.png"
+        ) == "images/funny cat.png")
+        #expect(NativeKallistiClient.normalizeMediaPath(
+            "/home/operator/.hermes/profiles/ignyte/images/funny cat.png"
+        ) == "images/funny cat.png")
+        #expect(NativeKallistiClient.normalizeMediaPath(
+            "/home/operator/.hermes/profiles/default/cache/images/funny cat.png"
+        ) == "cache/images/funny cat.png")
+        #expect(NativeKallistiClient.normalizeMediaPath("images/../secret.png").isEmpty)
+        #expect(NativeKallistiClient.normalizeMediaPath("/tmp/secret.png").isEmpty)
+    }
+
+    @Test("Build 50 historical MEDIA path becomes a stable authenticated URL")
+    func build50HistoricalMediaURL() throws {
+        let legacy = "/home/operator/.hermes/profiles/ignyte/images/old photo.jpg"
+        let resolved = NativeKallistiClient.resolveNativeMedia(in: "MEDIA: \(legacy)") { path in
+            NativeKallistiClient.nativeMediaURL(
+                for: path,
+                gatewayBaseURL: "https://gateway.example"
+            )
+        }
+        let markdownURL = try #require(resolved.firstMatch(of: /\((https:\/\/[^)]+)\)/)?.1)
+        let components = try #require(URLComponents(string: String(markdownURL)))
+        #expect(components.path == "/v1/native/media")
+        #expect(components.queryItems?.first(where: { $0.name == "path" })?.value == "images/old photo.jpg")
+    }
+
+    @Test("Build 50 connection labels are truthful and complete")
+    func build50ConnectionStageLabels() {
+        #expect(ConnectionStage.allCases.map(\.displayLabel) == [
+            "Preparing secure session", "Contacting gateway", "Authenticating",
+            "Opening secure channel", "Verifying session",
+            "Restoring conversations", "Connected",
+        ])
+    }
+
+    @Test("Build 50 reset is idempotent and preserves gateway credentials")
+    @MainActor
+    func build50ResetPreservesCredentials() async throws {
+        let store = MockSecureStore()
+        await store.store(key: "nativeGatewayAccessToken", value: "keep-me")
+        let auth = await stubbedAuthCoordinator(secureStore: store)
+        let transport = MockNativeGatewayTransport()
+        transport.sendError = URLError(.networkConnectionLost)
+        let sut = NativeKallistiClient(
+            gatewayBaseURL: "http://10.0.0.1:9119",
+            authCoordinator: auth,
+            secureStore: store,
+            transportFactory: { transport }
+        )
+
+        async let first: Void = sut.resetConnection()
+        async let second: Void = sut.resetConnection()
+        _ = await (first, second)
+
+        #expect(await store.retrieve(key: "nativeGatewayAccessToken") == "keep-me")
+        await sut.disconnect()
+    }
+
     @Test("connect() with no stored token at all leaves hasStoredLogin false and status .disconnected")
     @MainActor
     func noStoredTokenStaysDisconnected() async throws {

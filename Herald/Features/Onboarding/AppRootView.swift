@@ -4,6 +4,16 @@ struct AppRootView: View {
     @Environment(AppContainer.self) private var container
     @State private var showLongWait = false
 
+    /// Whether the connection overlay should be shown.
+    private var showConnectionOverlay: Bool {
+        guard let nativeClient = container.nativeGatewayClient else { return false }
+        let status = nativeClient.connectionStatus
+        // Show overlay during connecting/reconnecting with stored login,
+        // or during initial connecting before isLaunchReady.
+        return (status == .connecting || status == .reconnecting)
+            && nativeClient.hasStoredLogin
+    }
+
     var body: some View {
         ZStack {
             Design.Colors.background
@@ -42,6 +52,20 @@ struct AppRootView: View {
                     }
                 }
                 .transition(.opacity)
+
+                // Full-screen connection overlay above app content.
+                if showConnectionOverlay, let nativeClient = container.nativeGatewayClient {
+                    ConnectionOverlay(
+                        stage: nativeClient.connectionStage,
+                        reconnectAttempt: nativeClient.currentReconnectAttempt,
+                        isRecoverable: nativeClient.hasStoredLogin,
+                        onResetConnection: nativeClient.hasStoredLogin ? {
+                            Task { await nativeClient.resetConnection() }
+                        } : nil
+                    )
+                    .transition(.opacity)
+                    .zIndex(10)
+                }
             } else {
                 // Connecting screen while app initializes
                 VStack(spacing: Design.Spacing.lg) {
@@ -173,6 +197,96 @@ struct AppRootView: View {
             .padding(.horizontal, Design.Spacing.xl)
 
             Spacer()
+        }
+    }
+}
+
+/// Full-screen opaque overlay shown while the native gateway is
+/// connecting, reconnecting, or relaunching with stored credentials.
+/// Suppresses transient error messages (like "Cannot connect to gateway")
+/// by presenting real-time truthful stages derived from actual connection
+/// work, not fake timers.
+struct ConnectionOverlay: View {
+    let stage: ConnectionStage
+    let reconnectAttempt: Int
+    let isRecoverable: Bool
+    let onResetConnection: (() -> Void)?
+
+    @State private var showResetButton = false
+    @State private var contentOpacity: Double = 0
+
+    var body: some View {
+        ZStack {
+            // Opaque branded background.
+            Design.Colors.background
+                .ignoresSafeArea()
+
+            VStack(spacing: Design.Spacing.lg) {
+                Spacer()
+
+                // Pulsing Kallisti icon.
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(Design.Brand.accent)
+                    .symbolEffect(.pulse, options: .repeating)
+
+                VStack(spacing: Design.Spacing.xs) {
+                    Text("Kallisti")
+                        .font(Design.Typography.sectionTitle)
+                        .foregroundStyle(Design.Colors.foreground)
+
+                    Text(stage.displayLabel)
+                        .font(Design.Typography.body)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .id(stage.displayLabel)
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.3), value: stage.displayLabel)
+                }
+
+                ProgressView()
+                    .tint(Design.Brand.accent)
+                    .padding(.top, Design.Spacing.sm)
+
+                if reconnectAttempt > 1 {
+                    Text("Reconnect attempt \(reconnectAttempt)")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.tertiaryForeground)
+                        .transition(.opacity)
+                }
+
+                Spacer()
+
+                // Reset connection button, shown after a short honest delay.
+                if let onResetConnection, showResetButton {
+                    Button {
+                        onResetConnection()
+                        showResetButton = false
+                    } label: {
+                        Text("Reset Connection")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.bottom, Design.Spacing.xl)
+                    .transition(.opacity)
+                }
+            }
+        }
+        .opacity(contentOpacity)
+        .onAppear {
+            withAnimation(.easeIn(duration: 0.3)) {
+                contentOpacity = 1
+            }
+        }
+        .task(id: stage) {
+            // Show reset button after a short delay in any non-connected,
+            // recoverable state -- including .preparing during repeated
+            // failures where the stage never advances.
+            showResetButton = false
+            guard isRecoverable, stage != .connected else { return }
+            try? await Task.sleep(for: .seconds(5))
+            if isRecoverable && stage != .connected {
+                withAnimation { showResetButton = true }
+            }
         }
     }
 }

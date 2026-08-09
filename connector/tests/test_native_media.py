@@ -30,6 +30,32 @@ def test_native_media_serves_generated_image_and_blocks_arbitrary_file(tmp_path,
             assert denied.status_code == 403
 
 
+def test_native_media_resolves_stable_and_removed_legacy_profile_paths(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    current = hermes_home / "images" / "old-photo.jpg"
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"jpeg-bytes")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    removed_legacy = hermes_home / "profiles" / "ignyte" / "images" / current.name
+
+    with patch(
+        "kallisti_connector.http_facade.require_native_or_paired_auth",
+        new=AsyncMock(return_value="token"),
+    ):
+        with TestClient(app) as client:
+            stable = client.get("/v1/native/media", params={"path": "images/old-photo.jpg"})
+            legacy = client.get("/v1/native/media", params={"path": str(removed_legacy)})
+            traversal = client.get("/v1/native/media", params={"path": "images/../secret.jpg"})
+            untyped = client.get("/v1/native/media", params={"path": "old-photo.jpg"})
+
+    assert stable.status_code == 200
+    assert stable.content == current.read_bytes()
+    assert legacy.status_code == 200
+    assert legacy.content == current.read_bytes()
+    assert traversal.status_code == 403
+    assert untyped.status_code in {403, 415}
+
+
 def test_native_auth_forwards_gateway_session_cookie():
     from kallisti_connector.http_facade import require_native_or_paired_auth
 

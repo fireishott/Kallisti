@@ -13,6 +13,14 @@
 
 Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects directly to a Hermes gateway for chat and uses the optional Kallisti connector for mobile services such as push notifications, sensors, and authenticated media delivery.
 
+## Build 50 highlights
+
+- Full-screen branded connection overlay with real-time truthful stages during reconnect and relaunch
+- Manual Reset Connection action from the overlay and Settings (idempotent, non-destructive)
+- Historical images remain accessible after gateway restart through normalized media path resolution
+- Connector resolves both current default-profile and legacy per-profile media roots
+- Regression coverage for connection stages, overlay visibility, reset idempotency, and media path normalization
+
 ## Build 49 highlights
 
 - Direct native WebSocket chat with durable session and outbox recovery

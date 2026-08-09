@@ -1913,29 +1913,39 @@ async def native_media_route(request: Request) -> Response:
     directives as text. The iOS client cannot read that Linux path, so this
     Herald-owned mobile adapter exposes only image files under the active
     Hermes profile's generated-image roots. It never serves arbitrary paths.
+
+    Backward compatibility: legacy absolute paths (Build 49) are resolved
+    against the same allowed roots. Normalized relative paths (Build 50)
+    are searched across roots so images survive HERMES_HOME moves or profile
+    consolidation.
     """
     await require_native_or_paired_auth(request)
     raw = request.query_params.get("path", "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="path is required")
 
-    candidate = Path(raw).expanduser().resolve()
     hermes_home = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes").resolve()
-    allowed_roots = [
-        (hermes_home / "cache" / "images").resolve(),
-        (hermes_home / "images").resolve(),
-        (hermes_home / "media").resolve(),
-    ]
-    profiles_root = hermes_home / "profiles"
-    if profiles_root.is_dir():
-        for profile_home in profiles_root.iterdir():
-            if profile_home.is_dir():
-                allowed_roots.extend((
-                    (profile_home / "cache" / "images").resolve(),
-                    (profile_home / "images").resolve(),
-                    (profile_home / "media").resolve(),
-                ))
-    if candidate.suffix.lower() not in _NATIVE_MEDIA_MIME:
+    allowed_roots = _build_media_roots(hermes_home)
+
+    # Build 50: resolve the candidate, trying relative-then-absolute.
+    # Relative paths (Build 50 normalized) are resolved against each
+    # allowed root. Absolute paths (Build 49 legacy) are resolved as-is.
+    candidate: Path | None = None
+    path_obj = Path(raw)
+
+    if not path_obj.is_absolute():
+        if ".." in path_obj.parts:
+            raise HTTPException(status_code=403, detail="media path is outside generated-image roots")
+        candidate = _resolve_media_key(path_obj, hermes_home, allowed_roots)
+    else:
+        candidate = path_obj.expanduser().resolve()
+        # A stored Build 49 path can outlive a removed profile. Map only its
+        # approved media suffix to the consolidated or surviving profile roots.
+        if not candidate.is_file():
+            legacy_key = _legacy_media_key(path_obj)
+            candidate = _resolve_media_key(legacy_key, hermes_home, allowed_roots) if legacy_key else None
+
+    if candidate is None or not candidate.suffix.lower() in _NATIVE_MEDIA_MIME:
         raise HTTPException(status_code=415, detail="unsupported media type")
     if not any(candidate.is_relative_to(root) for root in allowed_roots):
         raise HTTPException(status_code=403, detail="media path is outside generated-image roots")
@@ -1949,6 +1959,65 @@ async def native_media_route(request: Request) -> Response:
         media_type=_NATIVE_MEDIA_MIME[candidate.suffix.lower()],
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+def _legacy_media_key(path: Path) -> Path | None:
+    """Extract only an approved media suffix from a stored absolute path."""
+    parts = path.parts
+    for index in range(len(parts)):
+        tail = parts[index:]
+        if len(tail) >= 3 and tail[0] == "cache" and tail[1] == "images":
+            return Path(*tail)
+        if len(tail) >= 2 and tail[0] in {"images", "media"}:
+            return Path(*tail)
+    return None
+
+
+def _resolve_media_key(key: Path, hermes_home: Path, allowed_roots: list[Path]) -> Path | None:
+    """Resolve a typed relative key without ever leaving an approved root."""
+    if ".." in key.parts:
+        return None
+    parts = key.parts
+    if len(parts) >= 3 and parts[0:2] == ("cache", "images"):
+        suffix = Path(*parts[2:])
+        preferred = [hermes_home / "cache" / "images"]
+    elif len(parts) >= 2 and parts[0] in {"images", "media"}:
+        suffix = Path(*parts[1:])
+        preferred = [hermes_home / parts[0]]
+    else:
+        return None
+
+    roots = [root.resolve() for root in preferred]
+    roots.extend(root for root in allowed_roots if root not in roots)
+    for root in roots:
+        candidate = (root / suffix).resolve()
+        if candidate.is_relative_to(root) and candidate.is_file():
+            return candidate
+    return None
+
+
+def _build_media_roots(hermes_home: Path) -> list[Path]:
+    """Build the ordered list of allowed media roots under HERMES_HOME.
+
+    Includes the consolidated roots (Build 50 preferred) and the legacy
+    per-profile roots so existing stored messages resolve after gateway
+    restarts or profile consolidation.
+    """
+    roots = [
+        (hermes_home / "cache" / "images").resolve(),
+        (hermes_home / "images").resolve(),
+        (hermes_home / "media").resolve(),
+    ]
+    profiles_root = hermes_home / "profiles"
+    if profiles_root.is_dir():
+        for profile_home in profiles_root.iterdir():
+            if profile_home.is_dir():
+                roots.extend((
+                    (profile_home / "cache" / "images").resolve(),
+                    (profile_home / "images").resolve(),
+                    (profile_home / "media").resolve(),
+                ))
+    return roots
 
 
 async def _verify_native_gateway_auth(headers: dict[str, str]) -> bool:
