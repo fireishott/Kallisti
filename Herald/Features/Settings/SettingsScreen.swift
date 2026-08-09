@@ -181,6 +181,32 @@ struct SettingsScreen: View {
                     title: "Auto-Connect",
                     isOn: autoConnectBinding
                 )
+
+                // Manual reset connection: tears down stale transport and
+                // starts a fresh authenticated connection. Idempotent.
+                if container.nativeGatewayClient != nil {
+                    sectionDivider
+
+                    Button {
+                        Task { await container.nativeGatewayClient?.resetConnection() }
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "arrow.clockwise.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.orange)
+                                .frame(width: 20, alignment: .center)
+
+                            Text("Reset Connection")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+
+                            Spacer()
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.resetConnection")
+                }
             }
         }
     }

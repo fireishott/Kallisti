@@ -45,6 +45,42 @@ actor NativeSessionIdMap {
     }
 }
 
+/// Observable connection stages shown by the full-screen overlay while the
+/// native gateway is connecting, reconnecting, or recovering.
+enum ConnectionStage: String, CaseIterable, Sendable {
+    case preparing       // minting ticket, setting up transport
+    case contacting      // WebSocket opening
+    case authenticating  // ticket accepted, server verifying identity
+    case openingChannel  // WebSocket connected, running verification round-trip
+    case verifying       // session.list probe in flight
+    case restoring       // loading conversations, refreshing state
+    case connected       // all done, overlay fades out
+
+    var displayLabel: String {
+        switch self {
+        case .preparing:      "Preparing secure session"
+        case .contacting:     "Contacting gateway"
+        case .authenticating: "Authenticating"
+        case .openingChannel: "Opening secure channel"
+        case .verifying:      "Verifying session"
+        case .restoring:      "Restoring conversations"
+        case .connected:      "Connected"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .preparing:      "key.fill"
+        case .contacting:     "arrow.triangle.2.circlepath"
+        case .authenticating: "lock.shield.fill"
+        case .openingChannel: "bolt.fill"
+        case .verifying:      "checkmark.circle.fill"
+        case .restoring:      "arrow.clockwise"
+        case .connected:      "checkmark.circle.fill"
+        }
+    }
+}
+
 /// NativeKallistiClient: implements HeraldClientProtocol using the native
 /// JSON-RPC/WebSocket gateway (ws://host:9119/api/ws) instead of the
 /// REST+SSE connector facade.
@@ -104,6 +140,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Set by disconnect() so an intentional teardown isn't fought by the
     /// reconnect loop.
     private var isDeliberatelyDisconnected = false
+    /// Tracks the granular stage of the connection lifecycle for the overlay.
+    var connectionStage: ConnectionStage = .preparing
+    /// Number of reconnect attempts in the current backoff cycle, exposed
+    /// so the overlay can show "Reconnect attempt 3" when appropriate.
+    var currentReconnectAttempt: Int { reconnectAttempt }
 
     // MARK: - HeraldClientProtocol
 
@@ -239,6 +280,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func connect() async {
         connectionStatus = .connecting
+        connectionStage = .preparing
         // Torn down in the catch block if the verification round-trip
         // below fails, so a socket that "opened" but never proved itself
         // doesn't linger open in the background on every backoff retry.
@@ -246,6 +288,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         do {
             // Tickets are single-use with a 30s TTL, so every connect --
             // including each reconnect attempt -- mints a fresh one.
+            connectionStage = .authenticating
             let ticket = try await authCoordinator.mintTicket()
             guard let base = URL(string: gatewayBaseURL) else {
                 throw NativeAuthError.invalidBaseURL(gatewayBaseURL)
@@ -260,6 +303,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             let client = NativeGatewayClient(transport: transport)
             provisionalClient = client
 
+            connectionStage = .contacting
             try await client.connect(url: wsURL)
             // task.resume() never throws, so reaching this line does not
             // prove the socket actually opened -- a rejected ws-ticket or a
@@ -279,6 +323,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // ticket-mint timeout, stacking toward the ~85-120s dead window
             // users saw on follow-up sends after backgrounding. Use the same
             // short probe timeout as every other liveness check in this file.
+            connectionStage = .openingChannel
+            connectionStage = .verifying
             _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0, allDevices: nil), timeoutNanos: Self.probeTimeoutNanos)
 
             await client.onDisconnect { [weak self] in
@@ -300,6 +346,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             connectedAt = Date()
             hasStoredLogin = true
             connectionStatus = .connected
+            connectionStage = .connected
             Self.logger.info("Connected to native gateway")
         } catch {
             // The client only reaches self.client/self.transport after
@@ -326,6 +373,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 hasStoredLogin = false
             }
             connectionStatus = hasStoredLogin ? .reconnecting : .disconnected
+            connectionStage = .preparing
             Self.logger.error("Failed to connect: \(error)")
             scheduleReconnect()
         }
@@ -343,8 +391,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
             reconnectAttempt = 0
         }
         connectedAt = nil
-        Self.logger.warning("Native gateway transport closed unexpectedly — reconnecting")
+        Self.logger.warning("Native gateway transport closed unexpectedly - reconnecting")
         connectionStatus = .reconnecting
+        connectionStage = .preparing
         client = nil
         transport = nil
         scheduleReconnect()
@@ -375,6 +424,36 @@ final class NativeKallistiClient: HeraldClientProtocol {
         transport = nil
         connectionStatus = .disconnected
     }
+
+    /// Cancel in-flight reconnect work, tear down stale transport/client
+    /// state, and immediately begin a fresh authenticated connection.
+    /// Idempotent: concurrent calls are no-ops. Does not delete stored
+    /// credentials or conversations -- only transient connection state.
+    func resetConnection() async {
+        guard !isResetting else { return }
+        isResetting = true
+        defer { isResetting = false }
+
+        // Cancel any queued reconnect.
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        isDeliberatelyDisconnected = false
+        reconnectAttempt = 0
+
+        // Tear down stale client/transport.
+        await client?.close()
+        client = nil
+        transport = nil
+        connectedAt = nil
+
+        // Start a fresh authenticated connection.
+        connectionStatus = .connecting
+        connectionStage = .preparing
+        await connect()
+    }
+
+    /// Guard against overlapping resetConnection() calls.
+    private var isResetting = false
 
     /// Called on app foreground. iOS suspends URLSessionWebSocketTask sockets
     /// silently -- receive() never surfaces an error, so handleUnexpectedDisconnect
@@ -598,16 +677,38 @@ final class NativeKallistiClient: HeraldClientProtocol {
     func loadConversation(id: UUID) async throws -> Conversation {
         guard let client else { throw NativeGatewayClientError.notConnected }
         guard let nativeId = await idMap.nativeId(for: id) else { throw NativeGatewayClientError.unexpectedFrame }
+        connectionStage = .restoring
+        defer {
+            if connectionStatus == .connected {
+                connectionStage = .connected
+            }
+        }
         let response = try await client.send(method: "session.history", params: ["session_id": nativeId])
         if let error = response.error { throw error }
         guard let result = response.result else { return Conversation(id: id, title: "Untitled") }
         let data = try JSONEncoder().encode(result)
         let decoded = try JSONDecoder().decode(NativeSessionHistoryResult.self, from: data)
+        // Build 50: resolve MEDIA references in historical messages so
+        // images remain accessible after gateway restarts or new sessions.
+        // The raw MEDIA: directives are converted to authenticated inline
+        // image Markdown using the same normalized path logic as streaming.
+        let mediaBaseURL = gatewayBaseURL
         let messages = decoded.messages.map { msg -> Message in
-            Message(
+            let resolvedContent: String
+            if msg.role == "assistant" {
+                resolvedContent = Self.resolveNativeMedia(
+                    in: msg.content,
+                    mediaURLProvider: { path in
+                        Self.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
+                    }
+                )
+            } else {
+                resolvedContent = msg.content
+            }
+            return Message(
                 id: UUID(),
                 sender: msg.role == "assistant" ? .herald : .user,
-                content: msg.content,
+                content: resolvedContent,
                 timestamp: msg.timestamp.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now
             )
         }
@@ -928,7 +1029,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
-    nonisolated private static func nativeMediaURL(for path: String, gatewayBaseURL: String) -> URL? {
+    nonisolated static func nativeMediaURL(for path: String, gatewayBaseURL: String) -> URL? {
         // Media must ride the SAME base URL as the gateway WS connection, not
         // a hardcoded :8010. The connector facade only listens on the LAN
         // (192.168.1.10:8010); the public relay exposes 443 via Caddy, which
@@ -945,8 +1046,68 @@ final class NativeKallistiClient: HeraldClientProtocol {
             components.port = 8010
         }
         components.path = "/v1/native/media"
-        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        // Build 50: normalize the path to a relative form so historical
+        // images survive HERMES_HOME changes or profile consolidation.
+        let normalizedPath = Self.normalizeMediaPath(path)
+        components.queryItems = [URLQueryItem(name: "path", value: normalizedPath)]
         return components.url
+    }
+
+    /// Normalize a raw MEDIA path to a stable relative key the connector
+    /// can resolve across HERMES_HOME changes or profile consolidation.
+    ///
+    /// The contract: the returned string is one of
+    ///   - `<approved-root-segment>/<basename>`   e.g. `images/file.jpg`
+    ///   - `media/<basename>`                      e.g. `media/file`
+    ///   - `cache/images/<basename>`               e.g. `cache/images/file.jpg`
+    ///
+    /// Legacy paths containing `profiles/<profile>/` are collapsed so the
+    /// connector finds them under the consolidated roots.  Traversal
+    /// components (`..`) are rejected.  Already-relative paths in the
+    /// approved form are returned unchanged.
+    nonisolated static func normalizeMediaPath(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+            return ""
+        }
+
+        var relative: String
+        if trimmed.hasPrefix("~/") {
+            let rest = String(trimmed.dropFirst(2))
+            relative = Self._stripHermesPrefix(rest) ?? rest
+        } else if trimmed.hasPrefix("/") {
+            relative = Self._stripHermesPrefix(trimmed) ?? trimmed
+        } else {
+            relative = trimmed
+        }
+        relative = relative.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if relative.hasPrefix("profiles/") {
+            let components = relative.split(separator: "/", omittingEmptySubsequences: true)
+            guard components.count >= 4 else { return "" }
+            relative = components.dropFirst(2).joined(separator: "/")
+        }
+
+        let components = relative.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty else { return "" }
+        if components.count >= 3, components[0] == "cache", components[1] == "images" {
+            return components.joined(separator: "/")
+        }
+        if components.count >= 2, components[0] == "images" || components[0] == "media" {
+            return components.joined(separator: "/")
+        }
+        return ""
+    }
+
+    /// Strip the hermes home directory prefix from an absolute path.
+    private nonisolated static func _stripHermesPrefix(_ path: String) -> String? {
+        let patterns = ["/.hermes/", "/hermes/", "/.hermes-mobile/"]
+        for prefix in patterns {
+            if let range = path.range(of: prefix) {
+                return String(path[range.upperBound...])
+            }
+        }
+        return nil
     }
 
     nonisolated static func resolveNativeMedia(in text: String, mediaURLProvider: (String) -> URL?) -> String {
@@ -960,7 +1121,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 guard range.location != NSNotFound else { return nil }
                 return (text as NSString).substring(with: range)
             }.first
-            guard let path, let url = mediaURLProvider(path) else { continue }
+            // The mediaURLProvider already normalizes the path (via
+            // nativeMediaURL -> normalizeMediaPath), so pass the raw path
+            // directly to avoid double-normalization.
+            guard let rawPath = path else { continue }
+            guard let url = mediaURLProvider(rawPath) else { continue }
             mutable.replaceCharacters(in: match.range, with: "![image](\(url.absoluteString))")
         }
         return mutable as String

@@ -2,6 +2,22 @@
 
 All notable Kallisti changes are documented here.
 
+## [0.2.0-build.50] - 2026-08-09
+
+### Added
+
+- Full-screen branded connection overlay showing real-time connection stages during connect, reconnect, and relaunch with stored login.
+- Manual Reset Connection action from the overlay (after a short delay) and from Settings, for tearing down stale transport and starting a fresh authenticated connection.
+- Historical MEDIA references are resolved after conversation reload so images remain accessible after gateway restarts.
+- Media path normalization: client converts absolute server paths to relative forms; connector resolves both current default-profile and legacy per-profile image roots.
+- Focused regression tests for connection stage transitions, overlay visibility and error suppression, reset idempotency, and media path backward compatibility.
+
+### Fixed
+
+- Reconnect and relaunch states no longer flash the raw "Cannot connect to gateway" error while recovery is in progress.
+- Stale connection state is properly torn down on manual reset without overlapping reconnect loops.
+- Stored credentials and conversations are preserved through manual connection reset.
+
 ## [0.2.0-build.49] - 2026-08-09
 
 ### Added
