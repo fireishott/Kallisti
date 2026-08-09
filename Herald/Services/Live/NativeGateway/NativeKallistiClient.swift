@@ -199,6 +199,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        // LATENCY (build 35): this had no timeout override, so it inherited
+        // URLSession's 60s default. registerNativeWatch was called with
+        // `await` directly in the hot _sendStreaming path BEFORE
+        // prompt.submit — every send blocked on this call finishing. It only
+        // no-ops (instant) when there's no stored APNs token yet, which is
+        // why the FIRST message after a fresh app launch was fast but every
+        // follow-up (token now registered) paid the full round trip, or the
+        // full 60s hang if port 8010 was slow/unreachable — with nothing
+        // showing in gateway logs since prompt.submit was never reached.
+        // An 8s bound is generous for a same-network POST.
+        request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try? JSONEncoder().encode([
@@ -762,7 +773,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // (the app's own WebSocket is suspended then, so nothing else can
         // notice). Best-effort: a failure here costs a notification, never
         // the turn itself.
-        await registerNativeWatch(sessionId: sid)
+        // LATENCY (build 35): fire-and-forget. This was `await`ed directly
+        // in the hot send path — every prompt.submit waited on this HTTP
+        // call finishing first, even though it's a best-effort push
+        // registration whose own doc comment says a failure "costs a
+        // notification, never the turn itself." The code didn't match the
+        // comment. Detached so a slow/unreachable connector facade (port
+        // 8010) can no longer add latency to the actual message send.
+        Task.detached { [weak self] in
+            await self?.registerNativeWatch(sessionId: sid)
+        }
 
         // Submit the prompt
         do {
