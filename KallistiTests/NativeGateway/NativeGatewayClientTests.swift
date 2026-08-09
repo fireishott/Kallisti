@@ -85,6 +85,28 @@ struct NativeGatewayClientTests {
         #expect(events[0].params.sessionId == "abc123")
     }
 
+    @Test("model options is scoped to the active native session")
+    @MainActor
+    func modelOptionsUsesActiveSession() async throws {
+        let transport = MockNativeGatewayTransport()
+        let client = NativeGatewayClient(transport: transport, requestTimeout: .seconds(5))
+        try await client.connect(url: URL(string: "ws://test")!)
+        let featureClient = NativeGatewayFeatureClient(
+            clientProvider: { client },
+            currentSessionIdProvider: { "native-selected-session" }
+        )
+
+        let task = Task { try await featureClient.modelOptions(explicitOnly: false) }
+        try await Task.sleep(for: .milliseconds(50))
+        let request = try JSONSerialization.jsonObject(with: transport.sentFrames[0]) as! [String: Any]
+        let params = request["params"] as? [String: Any]
+        #expect(params?["session_id"] as? String == "native-selected-session")
+
+        let id = request["id"] as! Int
+        transport.queueIncoming(Data(#"{"jsonrpc":"2.0","id":\#(id),"result":{"providers":[]}}"#.utf8))
+        _ = try await task.value
+    }
+
     @Test("Request timeout fires")
     func requestTimeout() async throws {
         let transport = MockNativeGatewayTransport()
