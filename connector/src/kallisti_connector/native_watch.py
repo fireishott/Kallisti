@@ -139,6 +139,25 @@ class NativeWatchTokens:
         body = resp.json()
         self._access_token = body["access_token"]
         self._refresh_token = body["refresh_token"]
+        # PERSIST the rotated refresh token. The gateway rotates refresh
+        # tokens on every refresh and Portal runs reuse-detection, so the old
+        # token is dead after this call. If we only updated memory, the next
+        # connector restart would load the revoked token from CONFIG_PATH and
+        # 401 forever. Write the new one back so restarts stay healthy.
+        try:
+            import json as _json
+            import os
+
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = CONFIG_PATH.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps({"refresh_token": self._refresh_token}))
+            os.replace(tmp, CONFIG_PATH)
+            os.chmod(CONFIG_PATH, 0o600)
+        except Exception:
+            logger.warning(
+                "native watch: rotated refresh token could not be persisted",
+                exc_info=True,
+            )
 
 
 async def run_watcher(

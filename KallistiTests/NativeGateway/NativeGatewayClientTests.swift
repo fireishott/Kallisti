@@ -38,6 +38,22 @@ struct NativeGatewayClientTests {
         #expect(response.error == nil)
     }
 
+    @Test("Response arriving inside send is not dropped")
+    func responseArrivingInsideSendIsNotDropped() async throws {
+        let transport = MockNativeGatewayTransport()
+        let client = NativeGatewayClient(transport: transport, requestTimeout: .seconds(1))
+        try await client.connect(url: URL(string: "ws://test")!)
+        transport.onSend = { data in
+            let request = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let id = request["id"] as! Int
+            transport.queueIncoming(Data(#"{"jsonrpc":"2.0","id":\#(id),"result":{"ok":true}}"#.utf8))
+        }
+
+        let response = try await client.send(method: "prompt.submit", params: EmptyParams())
+        #expect(response.id == 1)
+        #expect(response.error == nil)
+    }
+
     @Test("Multiple requests get distinct ids")
     func multipleRequestsDistinctIds() async throws {
         let transport = MockNativeGatewayTransport()

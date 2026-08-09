@@ -14,10 +14,6 @@ final class LiveNotificationService: NotificationServiceProtocol {
     init() {
         Task {
             await refreshAuthorizationStatus()
-            // Request authorization if not determined
-            if authorizationStatus == .notDetermined {
-                _ = await requestAuthorization()
-            }
         }
     }
 

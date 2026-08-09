@@ -65,8 +65,9 @@ private final class MockTransportState: @unchecked Sendable {
     }
 }
 
-final class MockNativeGatewayTransport: NativeGatewayTransport {
+final class MockNativeGatewayTransport: NativeGatewayTransport, @unchecked Sendable {
     private let state = MockTransportState()
+    var onSend: (@Sendable (Data) -> Void)?
 
     var sentFrames: [Data] { state.getSentFrames() }
 
@@ -84,6 +85,7 @@ final class MockNativeGatewayTransport: NativeGatewayTransport {
             throw sendError
         }
         state.appendSent(data)
+        onSend?(data)
     }
 
     func queueIncoming(_ data: Data) {

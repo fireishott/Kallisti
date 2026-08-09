@@ -98,8 +98,12 @@ final class ChatStore {
     /// of every attempt; nil between attempts.
     private var acceptedJobID: UUID?
     private var activeStreams: [UUID: UUID] = [:]  // jobId → placeholderId
+    /// Placeholders created before the gateway returns a job ID. Transcript
+    /// polling can run during session provisioning, so these need explicit
+    /// ownership before they can move into `activeStreams`.
+    private var pendingStreamPlaceholders: Set<UUID> = []
     var streamingMessageID: UUID? {
-        activeStreams.values.first
+        activeStreams.values.first ?? pendingStreamPlaceholders.first
     }
 
     /// After `messageSent`, if no real progress (text/reasoning delta, tool
@@ -715,9 +719,38 @@ final class ChatStore {
         //
         // The streaming placeholder (thinking bubble) is appended BEFORE the
         // network calls below so the user sees visible state immediately.
+        // Start the Live Activity at submission start, not after the server
+        // acknowledges the job. Session provisioning and socket recovery can
+        // take seconds; waiting for .messageSent made the Lock Screen appear
+        // 60+ seconds late even though the turn was already in flight.
+        chatLiveActivity.startThinking()
+
+        // Render the stream placeholder before session health checks. A
+        // reconnect can legitimately take a few seconds after backgrounding,
+        // but it must never look like the send button ignored the user.
+        let earlyPlaceholderID: UUID? = useStreaming ? UUID() : nil
+        if let earlyPlaceholderID {
+            conversation?.messages.append(Message(
+                id: earlyPlaceholderID,
+                sender: .herald,
+                content: "",
+                status: .sending,
+                isStreaming: true
+            ))
+            pendingStreamPlaceholders.insert(earlyPlaceholderID)
+            restartPendingPollingIfNeeded()
+        }
+
         sendPhase = .creatingConversation
         let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
         guard sessionEstablished else {
+            if let earlyPlaceholderID,
+               let placeholderIndex = conversation?.messages.firstIndex(where: { $0.id == earlyPlaceholderID }) {
+                pendingStreamPlaceholders.remove(earlyPlaceholderID)
+                conversation?.messages[placeholderIndex].isStreaming = false
+                conversation?.messages[placeholderIndex].status = .failed
+                conversation?.messages[placeholderIndex].content = "Could not reach the Kallisti host."
+            }
             // Session could not be established — fail the user-visible
             // message rather than submitting to a non-existent session.
             let error = "Could not reach the Kallisti host to start a conversation. Check your connection and try again."
@@ -738,22 +771,11 @@ final class ChatStore {
         item.state = .submitting
         updateOutboxItem(item)
 
-        if useStreaming {
-            // Append a placeholder Herald message for streaming content
-            // BEFORE the submit round-trip so the thinking bubble renders
-            // immediately after the user's own message.
-            let placeholderID = UUID()
-            let placeholder = Message(
-                id: placeholderID,
-                sender: .herald,
-                content: "",
-                status: .sending,
-                isStreaming: true
-            )
-            conversation?.messages.append(placeholder)
+        if useStreaming, let placeholderID = earlyPlaceholderID {
+            // The placeholder was inserted before ensureConversation so socket
+            // recovery is visible. Reuse that exact row for streamed updates.
             // activeStreams entry is added in the .messageSent handler once jobId is known.
             // streamingMessageID (computed) remains nil until then — that's correct.
-            restartPendingPollingIfNeeded()
 
             await runAttemptLoop(
                 content: item.cleanText,
@@ -1240,7 +1262,17 @@ final class ChatStore {
                 return
             }
 
-            try? await Task.sleep(for: .seconds(10))
+            // Never sleep past the absolute deadline. A fixed 10-second poll
+            // interval made short deadlines overshoot by nearly a full cycle,
+            // and production could likewise remain leased for up to 10 extra
+            // seconds after its configured deadline.
+            let remaining = max(0, deadlineSeconds - Date.now.timeIntervalSince(jobAcceptedAt))
+            try? await Task.sleep(for: .seconds(min(10, remaining)))
+            if Date.now.timeIntervalSince(jobAcceptedAt) >= deadlineSeconds {
+                // Re-enter at the deadline handler instead of starting a
+                // refresh that can add another network timeout first.
+                continue
+            }
             pollCount += 1
 
             let refreshed = await refreshActiveConversation()
@@ -1347,8 +1379,10 @@ final class ChatStore {
             progressContinuation = continuation
         }
 
+        var consumerFinished = false
         let consumerTask = Task { [weak self] in
             guard let self else { return }
+            defer { consumerFinished = true }
             self.appendLog(level: .info, "Streaming started")
             for await update in stream {
                 if Task.isCancelled { break }
@@ -1374,6 +1408,7 @@ final class ChatStore {
                         self.persistOutbox()
                     }
                     self.activeStreams[jobID] = placeholderID
+                    self.pendingStreamPlaceholders.remove(placeholderID)
                     // Correlate the placeholder with its server-assigned job
                     // identity so the conversation refresh merge can match
                     // persisted assistant rows back to this live placeholder
@@ -1534,6 +1569,7 @@ final class ChatStore {
 
                 case .finished(let finalMessage, let usage, let diff, let context):
                     guard self.activeAttemptID == attemptID else { break }
+                    self.pendingStreamPlaceholders.remove(placeholderID)
                     progressContinuation?.yield(())
                     self.heraldClient.connectionStatus = .connected
                     self.activeStreams.removeAll()
@@ -1814,6 +1850,7 @@ final class ChatStore {
 
                 case .cancelled:
                     guard self.activeAttemptID == attemptID else { break }
+                    self.pendingStreamPlaceholders.remove(placeholderID)
                     self.appendLog(level: .info, "Job cancelled")
                     progressContinuation?.yield(())
                     self.flushPendingReasoning(placeholderID: placeholderID)
@@ -1849,6 +1886,7 @@ final class ChatStore {
 
                 case .failed(let errorMessage, let category, let action):
                     guard self.activeAttemptID == attemptID else { break }
+                    self.pendingStreamPlaceholders.remove(placeholderID)
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
                     // out the timeout, and handle it exactly as before.
@@ -1947,11 +1985,9 @@ final class ChatStore {
         self.streamingProgressAt = .now
         let jobAcceptedAt = Date.now
         var stallDetected = false
-        while !consumerTask.isCancelled {
-            // Check if the consumer finished while we were sleeping
-            if streamingTask == nil { break }
-
-            try? await Task.sleep(for: .seconds(5))
+        while !consumerFinished {
+            try? await Task.sleep(for: .milliseconds(100))
+            if consumerFinished || Task.isCancelled { break }
 
             // Absolute deadline check — terminate even if progress events
             // are still arriving, to prevent an infinite "Thinking..." hang
@@ -1983,30 +2019,16 @@ final class ChatStore {
         await consumerTask.value
         streamingTask = nil
 
-        // If streaming failed after the job was accepted, give the relay a grace
-        // period to finish delivering events before falling back to polling.
-        // SSE streams can end prematurely due to proxy timeouts or mobile network
-        // transitions, but the relay may still be writing events. A 10-second
-        // pause prevents the polling safety net from racing a healthy SSE stream.
-        //
-        // Skip polling entirely when the outbox item is already terminal —
-        // the .finished handler resolved it via SSE and there's nothing to
-        // poll for.  Without this guard the client polls GET /v1/jobs/{id}
-        // every 10s for 60-80 seconds after the job completes, adding ~2 min
-        // of apparent latency to follow-up messages.
+        // A stream that ends after `.messageSent` but before `.finished` is not
+        // complete. The server accepted the job, but the transport disappeared
+        // while the outbox still owns an unresolved accepted record. Classify
+        // that exact state as stalled so `runAttemptLoop` performs authoritative
+        // job-status polling and enforces the absolute deadline. Returning false
+        // here previously mislabeled the attempt as completed, released the call
+        // path after one status probe, and left the accepted lease blocking every
+        // follow-up indefinitely.
         let outboxAlreadyTerminal = outboxItems.first(where: { $0.clientMessageID == clientMessageID })?.isTerminal ?? false
-        if needsPollingFallback && !outboxAlreadyTerminal {
-            try? await Task.sleep(for: .seconds(10))
-            let refreshed = await refreshActiveConversation()
-            conversation = mergeConversationMetadata(from: conversation, into: refreshed)
-            if let latestUsage = conversation?.latestUsage {
-                lastTokenUsage = latestUsage
-            }
-            activeStreams.removeAll()
-            restartPendingPollingIfNeeded()
-        }
-
-        return false
+        return needsPollingFallback && !outboxAlreadyTerminal
     }
 
     // MARK: - Structured concurrency race (Build 102 P0-A)
@@ -2128,6 +2150,7 @@ final class ChatStore {
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil
+        pendingStreamPlaceholders.removeAll()
         activeStreams.removeAll()
         chatLiveActivity.endActivity()
         // Durable outbox: in-flight items belong to the conversation being
@@ -2367,6 +2390,7 @@ final class ChatStore {
             }
         }
         activeStreams.removeAll()
+        pendingStreamPlaceholders.removeAll()
         pendingMessageSentAt = nil
 
         if let conversation {
@@ -2656,6 +2680,7 @@ final class ChatStore {
         streamingTask = nil
         activeAttemptID = UUID()  // invalidate all in-flight stream callbacks
         activeStreams.removeAll()
+        pendingStreamPlaceholders.removeAll()
         restartInProgress = false  // Build 33: don't carry suspension across sessions
         // Build 33 WSB: reload the durable outbox from disk — a profile
         // switch must not carry stale in-memory records (or a phantom
@@ -3327,7 +3352,7 @@ final class ChatStore {
         // Build 108 WS-D: Do NOT settle as empty_response if the job is still
         // running. Stream ownership and server state, not empty text, decide
         // whether a response failed.
-        let livePlaceholders = Set(activeStreams.values)
+        let livePlaceholders = Set(activeStreams.values).union(pendingStreamPlaceholders)
         let settledLocalOnly: [Message] = localOnly.map { message in
             guard message.isStreaming else { return message }
             guard !livePlaceholders.contains(message.id) else { return message }

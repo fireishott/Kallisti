@@ -83,26 +83,19 @@ actor NativeGatewayClient {
             throw NativeGatewayClientError.encodingFailed
         }
 
-        // Send the frame AND await the correlated response under ONE timeout
-        // race. Build 41: the send itself must be inside the timeout - a
-        // phantom socket (iOS suspended the WS in background, receive() never
-        // surfaced the error) could make transport.send(data) hang
-        // indefinitely, and because the old code sent the frame BEFORE
-        // entering the task group, neither the 5s probe timeout nor the 60s
-        // request timeout ever fired. The user's message sat in the outbox
-        // for the full 60-120s observed delay. Bounding the send too means a
-        // dead socket surfaces requestTimeout fast and the caller's
-        // reconnectIfNeeded() heals it with a fresh connect.
+        // Register before sending. A fast response can arrive as soon as the
+        // transport accepts the frame; registering afterward drops it and
+        // leaves the caller waiting for the full request timeout.
         return try await withThrowingTaskGroup(of: NativeGatewayResponse.self) { group in
             group.addTask {
-                do {
-                    try await self.transport.send(data)
-                } catch {
-                    throw NativeGatewayClientError.transportClosed
-                }
-                return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NativeGatewayResponse, Error>) in
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NativeGatewayResponse, Error>) in
                     Task {
                         await self.registerPending(id: id, continuation: continuation)
+                        do {
+                            try await self.transport.send(data)
+                        } catch {
+                            await self.failPending(id: id, error: NativeGatewayClientError.transportClosed)
+                        }
                     }
                 }
             }
@@ -155,6 +148,12 @@ actor NativeGatewayClient {
     private func timeoutPending(id: Int) {
         if let cont = pendingRequests.removeValue(forKey: id) {
             cont.resume(throwing: NativeGatewayClientError.requestTimeout)
+        }
+    }
+
+    private func failPending(id: Int, error: Error) {
+        if let cont = pendingRequests.removeValue(forKey: id) {
+            cont.resume(throwing: error)
         }
     }
 

@@ -90,6 +90,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private var transport: (any NativeGatewayTransport)?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// prompt.submit is only an acknowledgement that the gateway accepted the
+    /// turn. Model output arrives via stream events, so bound the ack rather
+    /// than inheriting NativeGatewayClient's 60-second request default.
+    private static let submitAckTimeoutNanos: UInt64 = 8_000_000_000
+    nonisolated(unsafe) private static let nativeMediaPattern = try! NSRegularExpression(
+        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp)))(?=[\s`\"',;:)\]}]|$)"#,
+        options: [.caseInsensitive]
+    )
     /// When the current socket was opened, used to tell a working connection
     /// that later dropped from one that never came up at all.
     private var connectedAt: Date?
@@ -735,11 +743,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) -> AsyncStream<StreamingUpdate> {
-        AsyncStream { continuation in
+        return AsyncStream { continuation in
             Task { [weak self] in
                 guard let self else { continuation.finish(); return }
                 await self._sendStreaming(
                     message: message,
+                    attachments: attachments,
                     clientMessageID: clientMessageID,
                     continuation: continuation
                 )
@@ -749,6 +758,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     private func _sendStreaming(
         message: String,
+        attachments: [PendingAttachment],
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
@@ -790,7 +800,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
 
         // Register a one-shot event handler for this stream
-        let handler = StreamEventHandler(sessionId: sid, continuation: continuation)
+        let mediaBaseURL = gatewayBaseURL
+        let handler = StreamEventHandler(
+            sessionId: sid,
+            continuation: continuation,
+            mediaURLProvider: { path in
+                NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
+            }
+        )
         await client.onEvent { event in
             handler.handle(event)
         }
@@ -811,11 +828,35 @@ final class NativeKallistiClient: HeraldClientProtocol {
             await self?.registerNativeWatch(sessionId: sid)
         }
 
-        // Submit the prompt
+        // Stage images through the native gateway's attachment RPC. The
+        // gateway consumes session-attached image paths on prompt.submit;
+        // sending an unrecognized attachments field drops the image before
+        // vision routing.
         do {
+            for attachment in attachments where attachment.kind == .image {
+                let upload = try await client.send(
+                    method: "image.attach_bytes",
+                    params: NativeImageAttachParams(
+                        sessionId: sid,
+                        contentBase64: attachment.base64Data,
+                        filename: attachment.fileName
+                    ),
+                    timeoutNanos: 10_000_000_000
+                )
+                if let error = upload.error {
+                    throw error
+                }
+            }
+
+            // prompt.submit returns a quick "streaming" acknowledgement;
+            // the actual model turn arrives through gateway events. Never give
+            // this acknowledgement the client's 60-second default timeout,
+            // because a dropped frame otherwise holds the composer even though
+            // no work has reached the host.
             let response = try await client.send(
                 method: "prompt.submit",
-                params: PromptSubmitParams(sessionId: sid, text: message)
+                params: PromptSubmitParams(sessionId: sid, text: message),
+                timeoutNanos: Self.submitAckTimeoutNanos
             )
             if let error = response.error {
                 // A stale idMap entry (persisted from a previous run, reaped
@@ -832,13 +873,35 @@ final class NativeKallistiClient: HeraldClientProtocol {
                             continuation.finish()
                             return
                         }
-                        let freshHandler = StreamEventHandler(sessionId: freshSid, continuation: continuation)
+                        let freshMediaBaseURL = gatewayBaseURL
+                        let freshHandler = StreamEventHandler(
+                            sessionId: freshSid,
+                            continuation: continuation,
+                            mediaURLProvider: { path in
+                                NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: freshMediaBaseURL)
+                            }
+                        )
                         await client.onEvent { event in
                             freshHandler.handle(event)
                         }
+                        for attachment in attachments where attachment.kind == .image {
+                            let upload = try await client.send(
+                                method: "image.attach_bytes",
+                                params: NativeImageAttachParams(
+                                    sessionId: freshSid,
+                                    contentBase64: attachment.base64Data,
+                                    filename: attachment.fileName
+                                ),
+                                timeoutNanos: 10_000_000_000
+                            )
+                            if let uploadError = upload.error {
+                                throw uploadError
+                            }
+                        }
                         let retry = try await client.send(
                             method: "prompt.submit",
-                            params: PromptSubmitParams(sessionId: freshSid, text: message)
+                            params: PromptSubmitParams(sessionId: freshSid, text: message),
+                            timeoutNanos: Self.submitAckTimeoutNanos
                         )
                         if let retryError = retry.error {
                             continuation.yield(.failed(retryError.message))
@@ -865,6 +928,44 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    nonisolated private static func nativeMediaURL(for path: String, gatewayBaseURL: String) -> URL? {
+        // Media must ride the SAME base URL as the gateway WS connection, not
+        // a hardcoded :8010. The connector facade only listens on the LAN
+        // (192.168.1.10:8010); the public relay exposes 443 via Caddy, which
+        // routes /v1/native/media to the connector. Hardcoding :8010 made the
+        // URL unreachable from WAN (connection refused) and the image render
+        // as a failure placeholder. Port 8010 is only correct when the gateway
+        // base itself is a LAN host.
+        guard let base = URL(string: gatewayBaseURL), let host = base.host else { return nil }
+        let isLANHost = host.hasPrefix("192.168.") || host.hasPrefix("10.") || host.hasPrefix("172.16.") || host.hasSuffix(".local")
+        var components = URLComponents()
+        components.scheme = base.scheme == "https" ? "https" : "http"
+        components.host = host
+        if isLANHost {
+            components.port = 8010
+        }
+        components.path = "/v1/native/media"
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return components.url
+    }
+
+    nonisolated static func resolveNativeMedia(in text: String, mediaURLProvider: (String) -> URL?) -> String {
+        let fullRange = NSRange(text.startIndex..., in: text)
+        let matches = nativeMediaPattern.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return text }
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let path = (1...4).compactMap { index -> String? in
+                let range = match.range(at: index)
+                guard range.location != NSNotFound else { return nil }
+                return (text as NSString).substring(with: range)
+            }.first
+            guard let path, let url = mediaURLProvider(path) else { continue }
+            mutable.replaceCharacters(in: match.range, with: "![image](\(url.absoluteString))")
+        }
+        return mutable as String
+    }
+
     func cancelJob(jobID: UUID) async throws {
         guard let client else { throw NativeGatewayClientError.notConnected }
         let response = try await client.send(method: "prompt.cancel", params: ["job_id": jobID.uuidString])
@@ -885,10 +986,16 @@ private final class StreamEventHandler: @unchecked Sendable {
     let sessionId: String
     let continuation: AsyncStream<StreamingUpdate>.Continuation
     private var completed = false
+    private let mediaURLProvider: @Sendable (String) -> URL?
 
-    init(sessionId: String, continuation: AsyncStream<StreamingUpdate>.Continuation) {
+    init(
+        sessionId: String,
+        continuation: AsyncStream<StreamingUpdate>.Continuation,
+        mediaURLProvider: @escaping @Sendable (String) -> URL? = { _ in nil }
+    ) {
         self.sessionId = sessionId
         self.continuation = continuation
+        self.mediaURLProvider = mediaURLProvider
     }
 
     func handle(_ event: NativeGatewayEvent) {
@@ -924,7 +1031,10 @@ private final class StreamEventHandler: @unchecked Sendable {
                 let msg = Message(
                     id: UUID(),
                     sender: .herald,
-                    content: complete.text ?? "",
+                    content: NativeKallistiClient.resolveNativeMedia(
+                        in: complete.text ?? "",
+                        mediaURLProvider: mediaURLProvider
+                    ),
                     timestamp: .now
                 )
                 continuation.yield(.finished(msg, usage, nil, nil))
@@ -948,6 +1058,18 @@ private struct SessionListParams: Encodable {
     let allDevices: Bool?
 }
 
+private struct NativeImageAttachParams: Encodable {
+    let sessionId: String
+    let contentBase64: String
+    let filename: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case contentBase64 = "content_base64"
+        case filename
+    }
+}
+
 private struct PromptSubmitParams: Encodable {
     let sessionId: String
     let text: String
@@ -955,5 +1077,11 @@ private struct PromptSubmitParams: Encodable {
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case text
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(text, forKey: .text)
     }
 }

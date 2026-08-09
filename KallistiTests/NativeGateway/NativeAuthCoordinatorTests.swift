@@ -49,7 +49,7 @@ struct NativeAuthCoordinatorTests {
         )
 
         let coordinator = NativeAuthCoordinator(
-            host: "192.168.10.118",
+            host: "192.168.1.10",
             port: 9119,
             session: session,
             secureStore: store
@@ -161,7 +161,7 @@ struct NativeAuthCoordinatorTests {
         let coordinator = NativeAuthCoordinator(
             host: "gateway.example", port: 443, session: session, secureStore: store
         )
-        try await coordinator.loginWithBasic(username: "fihadmin", password: "correct-password")
+        try await coordinator.loginWithBasic(username: "operator", password: "correct-password")
         _ = try await coordinator.mintTicket()
 
         #expect(store.stored["nativeGatewayAuthMode"] == "basic")

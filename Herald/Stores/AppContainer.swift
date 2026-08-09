@@ -184,7 +184,20 @@ final class AppContainer {
         self.notesStore = notesStore ?? NotesStore()
         self.attachmentService = attachmentService ?? AttachmentService(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            accessTokenProvider: { [nativeGatewayClient] in
+                // Native mode: /v1/native/media wants the NATIVE gateway
+                // bearer (verified against the gateway). BUT basic/pairing
+                // auth DELETES nativeGatewayAccessToken at login, so the
+                // native token is nil in that mode - and the connector also
+                // accepts the relay session token as a paired credential.
+                // Fall back to the relay token when the native token is nil.
+                if let nativeGatewayClient,
+                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+                   !nativeToken.isEmpty {
+                    return nativeToken
+                }
+                return await sessionStore.currentAccessToken()
+            },
             accessTokenRefresher: {
                 await sessionStore.refreshAccessTokenIfNeeded()
                 return await sessionStore.currentAccessToken()
@@ -322,17 +335,22 @@ final class AppContainer {
         }
         let pushBrokerClient = buildConfiguration.pushBrokerBaseURL.map { PushBrokerClient(baseURL: $0) }
 
-        // Derive connector MCP URL from relay URL for direct push registration
+        // Derive the connector HTTP facade URL from the configured host.
+        // Native Kallisti push registration uses the authenticated facade
+        // on port 8010, not the MCP transport on port 8767. The old code
+        // added 2 to whatever public relay port was configured, producing
+        // invalid URLs such as https://relay.example:445 and silently
+        // forcing push registration into the wrong fallback path.
         let connectorMCPURL: String? = {
             let relayBase = activePairingStore?.pairedRelayConfiguration?.baseURLString
                 ?? settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? ""
-            // ws://host:8765 -> http://host:8767 (MCP port = WS port + 2)
-            guard var components = URLComponents(string: relayBase) else { return nil }
-            components.scheme = "http"
-            if let port = components.port {
-                components.port = port + 2  // 8765 -> 8767
-            }
+            guard let source = URLComponents(string: relayBase),
+                  let host = source.host else { return nil }
+            var components = URLComponents()
+            components.scheme = source.scheme?.lowercased() == "https" ? "https" : "http"
+            components.host = host
+            components.port = 8010
             return components.string
         }()
 
