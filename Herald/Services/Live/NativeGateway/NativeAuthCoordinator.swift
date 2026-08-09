@@ -51,6 +51,31 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
 
     /// Signs in using the gateway's local basic provider. The password is sent
     /// only to the HTTPS endpoint and is never persisted on the device.
+    /// Redeems a one-time connector pairing code into a dashboard cookie session.
+    /// The code is never persisted. `installationID` binds redemption to this iOS install.
+    func loginWithPairingCode(_ code: String, installationID: UUID) async throws {
+        let normalized = code.uppercased().replacingOccurrences(of: "-", with: "").replacingOccurrences(of: " ", with: "")
+        guard PhonePairingCode.isComplete(normalized) else { throw NativeAuthError.invalidCredentials }
+        var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/password-login")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode([
+            "provider": "kallisti-pairing",
+            "username": installationID.uuidString.lowercased(),
+            "password": normalized,
+        ])
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NativeAuthError.invalidCredentials
+        }
+        await secureStore.store(key: "nativeGatewayAuthMode", value: "kallisti-pairing")
+        await secureStore.delete(key: "nativeGatewayAccessToken")
+        await secureStore.delete(key: "nativeGatewayRefreshToken")
+        await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
+        logger.info("Signed in with one-time Kallisti pairing code")
+    }
+
     func loginWithBasic(username: String, password: String) async throws {
         guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !password.isEmpty else {
             throw NativeAuthError.invalidCredentials
@@ -272,10 +297,11 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
     }
 
     func mintTicket() async throws -> String {
-        let basicAuth = await secureStore.retrieve(key: "nativeGatewayAuthMode") == "basic"
+        let authMode = await secureStore.retrieve(key: "nativeGatewayAuthMode")
+        let cookieAuth = authMode == "basic" || authMode == "kallisti-pairing"
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/api/auth/ws-ticket")!)
         request.httpMethod = "POST"
-        if !basicAuth {
+        if !cookieAuth {
             let accessToken = try await refreshAccessTokenIfNeeded()
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         }
@@ -297,7 +323,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         }
         struct TicketResponse: Decodable { let ticket: String }
         let ticket = try JSONDecoder().decode(TicketResponse.self, from: data).ticket
-        logger.info("\(basicAuth ? "Minted fresh ws-ticket via basic session cookie" : "Minted fresh ws-ticket via Bearer auth")")
+        logger.info("\(cookieAuth ? "Minted fresh ws-ticket via authenticated session cookie" : "Minted fresh ws-ticket via Bearer auth")")
         return ticket
     }
 

@@ -168,6 +168,25 @@ struct NativeAuthCoordinatorTests {
         #expect(await coordinator.currentAccessToken() == nil)
     }
 
+    @Test("pairing login posts installation identity and code then mints cookie ticket")
+    @MainActor
+    func pairingLoginMintsTicket() async throws {
+        let store = MockSecureStoreForAuth()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockBasicLoginURLProtocol.self]
+        let session = URLSession(configuration: config)
+        MockBasicLoginURLProtocol.reset()
+        let coordinator = NativeAuthCoordinator(host: "gateway.example", port: 443, session: session, secureStore: store)
+
+        try await coordinator.loginWithPairingCode("ABCD-2345", installationID: UUID(uuidString: "B5AD9CBF-0DA2-4C9C-9C2F-568574CC9D46")!)
+        _ = try await coordinator.mintTicket()
+
+        #expect(store.stored["nativeGatewayAuthMode"] == "kallisti-pairing")
+        #expect(MockBasicLoginURLProtocol.loginBody?["provider"] == "kallisti-pairing")
+        #expect(MockBasicLoginURLProtocol.loginBody?["username"] == "b5ad9cbf-0da2-4c9c-9c2f-568574cc9d46")
+        #expect(MockBasicLoginURLProtocol.loginBody?["password"] == "ABCD2345")
+    }
+
     // MARK: - F2: stop() resumes pending continuation with loginCancelled
 
     @Test("stop() resumes pending continuation with loginCancelled")
@@ -326,15 +345,29 @@ private class MockBasicLoginURLProtocol: URLProtocol {
     static func reset() { loginBody = nil; ticketUsedCookie = false }
     override class func canInit(with request: URLRequest) -> Bool {
         let path = request.url?.path ?? ""
-        if path.hasSuffix("/auth/password-login") {
-            Self.loginBody = request.httpBody.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
-        }
         return path.hasSuffix("/auth/password-login") || path.hasSuffix("/api/auth/ws-ticket")
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         if request.url!.path.hasSuffix("/auth/password-login") {
-            Self.loginBody = request.httpBody.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+            let body: Data?
+            if let direct = request.httpBody {
+                body = direct
+            } else if let stream = request.httpBodyStream {
+                stream.open()
+                var data = Data()
+                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
+                defer { buffer.deallocate(); stream.close() }
+                while stream.hasBytesAvailable {
+                    let read = stream.read(buffer, maxLength: 4096)
+                    if read <= 0 { break }
+                    data.append(buffer, count: read)
+                }
+                body = data
+            } else {
+                body = nil
+            }
+            Self.loginBody = body.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Set-Cookie": "hermes_session_at=test-session; Path=/; HttpOnly"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self)

@@ -24,12 +24,12 @@ struct AppRootView: View {
                         if nativeClient.connectionStatus == .connected || nativeClient.hasStoredLogin {
                             AdaptiveRootView()
                         } else {
-                            OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
+                            OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
                         }
                     } else if !container.pairingStore.isPaired {
-                        OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient)
+                        OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
                     } else if container.pairingStore.needsPermissionsOnboarding {
-                        OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient)
+                        OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
                     } else {
                         switch container.sessionStore.launchState {
                         case .authFailure:

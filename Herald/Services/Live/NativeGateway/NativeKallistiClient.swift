@@ -414,6 +414,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// then retries `connect()`. Called from onboarding's "Open app" step —
     /// `connect()` alone can never trigger this itself, since a failed
     /// mintTicket() there has nowhere to present a login screen from.
+    /// Redeems the connector-issued one-time pairing code, then connects through
+    /// the normal cookie-backed WebSocket ticket flow.
+    func startPairingLogin(code: String, installationID: UUID) async throws {
+        try await authCoordinator.loginWithPairingCode(code, installationID: installationID)
+        await connect()
+        guard connectionStatus == .connected else {
+            throw NativeAuthError.connectFailedAfterLogin
+        }
+    }
+
     func startBasicLogin(username: String, password: String) async throws {
         try await authCoordinator.loginWithBasic(username: username, password: password)
         await connect()
