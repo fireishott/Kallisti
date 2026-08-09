@@ -83,17 +83,24 @@ actor NativeGatewayClient {
             throw NativeGatewayClientError.encodingFailed
         }
 
-        // Send the frame first
-        do {
-            try await transport.send(data)
-        } catch {
-            throw NativeGatewayClientError.transportClosed
-        }
-
-        // Await response with timeout
+        // Send the frame AND await the correlated response under ONE timeout
+        // race. Build 41: the send itself must be inside the timeout - a
+        // phantom socket (iOS suspended the WS in background, receive() never
+        // surfaced the error) could make transport.send(data) hang
+        // indefinitely, and because the old code sent the frame BEFORE
+        // entering the task group, neither the 5s probe timeout nor the 60s
+        // request timeout ever fired. The user's message sat in the outbox
+        // for the full 60-120s observed delay. Bounding the send too means a
+        // dead socket surfaces requestTimeout fast and the caller's
+        // reconnectIfNeeded() heals it with a fresh connect.
         return try await withThrowingTaskGroup(of: NativeGatewayResponse.self) { group in
             group.addTask {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NativeGatewayResponse, Error>) in
+                do {
+                    try await self.transport.send(data)
+                } catch {
+                    throw NativeGatewayClientError.transportClosed
+                }
+                return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NativeGatewayResponse, Error>) in
                     Task {
                         await self.registerPending(id: id, continuation: continuation)
                     }
