@@ -193,6 +193,16 @@ struct NativeGatewayFeatureClient {
         }
     }
 
+    private struct ModelOptionsParams: Encodable {
+        let explicitOnly: Bool
+        let sessionId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case explicitOnly = "explicit_only"
+            case sessionId = "session_id"
+        }
+    }
+
     private struct ModelOptionsResponse: Decodable {
         let providers: [ModelProvider]?
         let model: String?
@@ -219,9 +229,17 @@ struct NativeGatewayFeatureClient {
         // model already switched server-side (confirmed in gateway logs).
         // The server builds this payload in <1s on a healthy socket, so a
         // 15s bound is generous while still failing fast on a dead one.
+        // model.options must inspect the same live session that /model updates.
+        // Without this, its response falls back to global config and overwrites
+        // the picker with the default model even though the conversation itself
+        // is correctly pinned to the user's selected model.
+        let params = ModelOptionsParams(
+            explicitOnly: explicitOnly,
+            sessionId: await currentSessionIdProvider()
+        )
         let response = try await client.send(
             method: "model.options",
-            params: ["explicit_only": explicitOnly],
+            params: params,
             timeoutNanos: 15_000_000_000
         )
         if let error = response.error { throw error }
