@@ -470,41 +470,41 @@ struct SettingsScreen: View {
     }
 
     private func checkForUpdates() async {
-        // NATIVE mode: update check goes through the relay REST facade
-        // (/gw/update/check), which rejects native bearer tokens. Show an
-        // honest state rather than a confusing auth error.
-        guard container.nativeGatewayClient == nil else {
-            updateCheckResult = "Not available in direct gateway mode"
-            isCheckingForUpdate = true
-            try? await Task.sleep(for: .seconds(2))
-            isCheckingForUpdate = false
-            try? await Task.sleep(for: .seconds(6))
-            updateCheckResult = nil
-            return
-        }
-        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-            ?? pairingStore.pairedRelayConfiguration?.baseURLString
-        guard let relayBase else { return }
-        let token = await sessionStore.currentAccessToken()
-        let client = RelayAPIClient { relayBase }
-
         isCheckingForUpdate = true
         updateCheckResult = nil
 
-        struct EmptyRequest: Encodable {}
-        struct UpdateStatus: Decodable {
-            let status: String?
-            let message: String?
-        }
-        do {
-            let status: UpdateStatus = try await client.postGateway(
-                path: "gw/update/check",
-                body: EmptyRequest(),
-                accessToken: token ?? ""
-            )
-            updateCheckResult = status.message ?? status.status ?? "Update check complete"
-        } catch {
-            updateCheckResult = "Check failed: \(error.localizedDescription)"
+        // NATIVE mode: the gateway exposes `hermes update --check` through
+        // cli.exec - no relay facade, no bearer token needed.
+        if let featureClient = container.nativeGatewayClient?.featureClient {
+            do {
+                let output = try await featureClient.cliExec(argv: ["update", "--check"], timeout: 120)
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                updateCheckResult = trimmed.isEmpty ? "Update check complete" : trimmed
+            } catch {
+                updateCheckResult = "Check failed: \(error.localizedDescription)"
+            }
+        } else {
+            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            guard let relayBase else { return }
+            let token = await sessionStore.currentAccessToken()
+            let client = RelayAPIClient { relayBase }
+
+            struct EmptyRequest: Encodable {}
+            struct UpdateStatus: Decodable {
+                let status: String?
+                let message: String?
+            }
+            do {
+                let status: UpdateStatus = try await client.postGateway(
+                    path: "gw/update/check",
+                    body: EmptyRequest(),
+                    accessToken: token ?? ""
+                )
+                updateCheckResult = status.message ?? status.status ?? "Update check complete"
+            } catch {
+                updateCheckResult = "Check failed: \(error.localizedDescription)"
+            }
         }
 
         isCheckingForUpdate = false
@@ -514,30 +514,30 @@ struct SettingsScreen: View {
     }
 
     private func updateAgent() async {
-        // NATIVE mode: agent update goes through the relay REST facade
-        // (/gw/update), which rejects native bearer tokens.
-        guard container.nativeGatewayClient == nil else {
-            updateAgentResult = "Not available in direct gateway mode"
-            isUpdatingAgent = true
-            try? await Task.sleep(for: .seconds(2))
-            isUpdatingAgent = false
-            try? await Task.sleep(for: .seconds(6))
-            updateAgentResult = nil
-            return
-        }
-        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
-            ?? pairingStore.pairedRelayConfiguration?.baseURLString
-        guard let relayBase else { return }
-        let token = await sessionStore.currentAccessToken()
-        let client = RelayAPIClient { relayBase }
-
         isUpdatingAgent = true
         updateAgentResult = nil
 
-        struct EmptyRequest: Encodable {}
-        struct UpdateStatus: Decodable {
-            let status: String?
-            let message: String?
+        // NATIVE mode: `hermes update --yes` through cli.exec. No relay
+        // facade, no bearer token - the gateway runs it locally.
+        if let featureClient = container.nativeGatewayClient?.featureClient {
+            do {
+                let output = try await featureClient.cliExec(argv: ["update", "--yes"], timeout: 300)
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                updateAgentResult = trimmed.isEmpty ? "Update complete" : trimmed
+            } catch {
+                updateAgentResult = "Update failed: \(error.localizedDescription)"
+            }
+        } else {
+            let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+                ?? pairingStore.pairedRelayConfiguration?.baseURLString
+            guard let relayBase else { return }
+            let token = await sessionStore.currentAccessToken()
+            let client = RelayAPIClient { relayBase }
+
+            struct EmptyRequest: Encodable {}
+            struct UpdateStatus: Decodable {
+                let status: String?
+                let message: String?
         }
         do {
             let status: UpdateStatus = try await client.postGateway(
@@ -548,6 +548,7 @@ struct SettingsScreen: View {
             updateAgentResult = status.message ?? status.status ?? "Update initiated"
         } catch {
             updateAgentResult = "Update failed: \(error.localizedDescription)"
+        }
         }
 
         isUpdatingAgent = false
@@ -602,12 +603,16 @@ struct SettingsScreen: View {
         gwRestartTarget = target
         gwRestartResult = nil
 
-        // NATIVE mode: the gateway WS has no restart RPC, and the relay
-        // REST facade /gw/* rejects native bearer tokens. Surface an honest
-        // state instead of the confusing "Not authenticated - please pair
-        // your device first" from the preflight 401.
-        if container.nativeGatewayClient != nil {
-            gwRestartResult = "Not available in direct gateway mode"
+        // NATIVE mode: restart the gateway via `hermes gateway restart`
+        // through cli.exec. The gateway runs it locally - no relay token.
+        if let featureClient = container.nativeGatewayClient?.featureClient {
+            do {
+                let output = try await featureClient.cliExec(argv: ["gateway", "restart"], timeout: 60)
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                gwRestartResult = trimmed.isEmpty ? "\(target) restarting…" : trimmed
+            } catch {
+                gwRestartResult = "Error: \(error.localizedDescription)"
+            }
             isRestartingGW = false
             try? await Task.sleep(for: .seconds(3))
             gwRestartResult = nil
