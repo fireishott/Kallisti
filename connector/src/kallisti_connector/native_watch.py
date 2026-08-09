@@ -252,6 +252,25 @@ async def run_watcher(
                                 session_id,
                                 device_token[:8],
                             )
+                    # Build 34 (fix): remote-end the Live Activity / Dynamic
+                    # Island on every terminal event, even when the app only
+                    # registered an "alert" watch (which is all it does
+                    # today).  The end_live_activity adapter resolves the
+                    # ActivityKit push token from connector state, so this is
+                    # safe to call unconditionally: no token, no activity, or
+                    # an already-ended activity are all silent no-ops.  Before
+                    # this, a backgrounded or killed app left the lock screen
+                    # stuck on "Thinking..." forever because the only watcher
+                    # kind the app registers never triggered the end-push.
+                    try:
+                        await end_live_activity(
+                            "state-resolved-token", status="completed"
+                        )
+                    except Exception:
+                        logger.debug(
+                            "live activity end-push error (non-fatal)",
+                            exc_info=True,
+                        )
         except Exception:
             logger.exception(
                 "native watch connection dropped, reconnecting in %.1fs",

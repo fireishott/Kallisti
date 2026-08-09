@@ -197,6 +197,27 @@ struct HeraldApp: App {
     @UIApplicationDelegateAdaptor(HeraldAppDelegate.self) private var appDelegate
     @State private var container = AppContainer.sharedDefault()
 
+    /// Build 26 (keep-awake): identifier of the background task that keeps
+    /// the app process running while backgrounded so the gateway WebSocket
+    /// survives short background periods. Invalid means no task is active.
+    @State private var gatewayKeepAwakeTaskID: UIBackgroundTaskIdentifier = .invalid
+
+    private func beginGatewayKeepAwake() {
+        guard gatewayKeepAwakeTaskID == .invalid else { return }
+        gatewayKeepAwakeTaskID = UIApplication.shared.beginBackgroundTask(withName: "kallisti.gateway.keepalive") {
+            // Expired - iOS will suspend us. Nothing to clean up beyond
+            // marking the task done; the socket heals via reconnectIfNeeded()
+            // on the next foreground.
+            endGatewayKeepAwake()
+        }
+    }
+
+    private func endGatewayKeepAwake() {
+        guard gatewayKeepAwakeTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(gatewayKeepAwakeTaskID)
+        gatewayKeepAwakeTaskID = .invalid
+    }
+
     var body: some Scene {
         WindowGroup {
             ThemeAwareRootView(container: container)
@@ -227,12 +248,25 @@ struct HeraldApp: App {
                         Task { await container.handleAppDidBecomeActive() }
                         // Reset badge count when the user returns to the app
                         UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+                        // End the keep-awake window started when we backgrounded
+                        endGatewayKeepAwake()
                     } else if newPhase == .background {
                         Task {
                             await container.reportAppStateIfNeeded("background")
                             // Stop real-time host status stream when backgrounded
                             await container.hostStatusStream.stop()
                         }
+                        // Build 26 (keep-awake fix): iOS suspends the app
+                        // within seconds of backgrounding, which silently
+                        // kills the gateway WebSocket (receive() never
+                        // surfaces the error). Holding a background task
+                        // keeps the process running long enough for the
+                        // transport's keepalive pings to keep the socket
+                        // alive through short background periods, so the
+                        // next message doesn't wait behind a phantom-socket
+                        // reconnect. The task ends on foreground or when iOS
+                        // expires it (~30s), whichever comes first.
+                        beginGatewayKeepAwake()
                     }
                     // Note: voice sessions are NOT ended on background.
                     // The "audio" background mode keeps the voice session alive

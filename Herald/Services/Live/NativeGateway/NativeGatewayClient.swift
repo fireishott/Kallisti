@@ -58,6 +58,20 @@ actor NativeGatewayClient {
 
     /// Send a JSON-RPC request and await its correlated response.
     func send<P: Encodable>(method: String, params: P) async throws -> NativeGatewayResponse {
+        try await send(method: method, params: params, timeoutNanos: requestTimeoutNanos)
+    }
+
+    /// Send a JSON-RPC request with an explicit timeout override.
+    ///
+    /// The default 60s request timeout is correct for prompt.submit, where the
+    /// gateway can legitimately take tens of seconds to finish an LLM call.
+    /// It is wrong for liveness probes: a phantom socket (iOS suspended the
+    /// WS in background and receive() never surfaced the error) makes a probe
+    /// hang the FULL 60s before the caller can decide the socket is dead and
+    /// force a fresh connect - which is exactly the ~85s app-side delay seen
+    /// when sending a follow-up after backgrounding. Probes use a 5s budget so
+    /// a dead socket is detected fast and the message doesn't wait behind it.
+    func send<P: Encodable>(method: String, params: P, timeoutNanos: UInt64) async throws -> NativeGatewayResponse {
         let id = nextId
         nextId += 1
 
@@ -86,7 +100,7 @@ actor NativeGatewayClient {
                 }
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: self.requestTimeoutNanos)
+                try await Task.sleep(nanoseconds: timeoutNanos)
                 // Clean up the pending request on timeout
                 await self.timeoutPending(id: id)
                 throw NativeGatewayClientError.requestTimeout

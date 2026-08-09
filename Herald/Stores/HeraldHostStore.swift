@@ -60,10 +60,13 @@ final class KallistiHostStore {
 
         // NATIVE path: the connector REST facade (/hosts/current) rejects
         // native bearer tokens. Build the host row from gateway config.get.
+        // hostInfo() succeeding IS proof of connectivity - the call only
+        // succeeds when the WS is live. Never gate isOnline on a relay token
+        // here: native mode has no relay pairing, so the row would always
+        // show offline even with a healthy socket.
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 let info = try await featureClient.hostInfo()
-                let connected = await accessTokenProvider() != nil
                 currentHost = HeraldHostStatus(
                     id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
                     displayName: info.model.map { "\(info.provider ?? "hermes")/\($0)" }
@@ -76,7 +79,7 @@ final class KallistiHostStore {
                     heraldModel: info.model,
                     lastSeenAt: .now,
                     lastConnectedAt: .now,
-                    isOnline: connected
+                    isOnline: true
                 )
                 lastErrorMessage = nil
                 onHostChanged?()

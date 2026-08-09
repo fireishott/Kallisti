@@ -1,8 +1,11 @@
 import SwiftUI
 
 /// Gateway log viewer. Fetches recent logs from the relay's /gw/logs endpoint
-/// with optional level filtering and live streaming via SSE.
+/// with optional level filtering and live streaming via SSE. In native
+/// (direct-gateway) mode, logs come from `hermes logs <source> -n 200` via
+/// the gateway's cli.exec (no relay needed).
 struct GatewayLogsScreen: View {
+    @Environment(AppContainer.self) private var container
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(PairingStore.self) private var pairingStore
     @Environment(AppSessionStore.self) private var sessionStore
@@ -190,6 +193,42 @@ struct GatewayLogsScreen: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        // NATIVE mode: pull logs via the gateway's cli.exec
+        // (`hermes logs <source> -n 200`). The relay REST /gw/logs facade
+        // rejects native bearer tokens, so this is the only working path.
+        if container.nativeGatewayClient != nil,
+           let featureClient = container.nativeGatewayClient?.featureClient {
+            do {
+                // Map the source picker to the CLI log name: connector ->
+                // gateway (connector logs land in the gateway log on the
+                // host), hermes-gateway -> gateway, hermes-agent -> agent.
+                let logName: String
+                switch selectedSource {
+                case "connector": logName = "gateway"
+                case "hermes-agent": logName = "agent"
+                default: logName = "gateway"
+                }
+                let raw = try await featureClient.cliExec(
+                    argv: ["logs", logName, "-n", "200", "--level", selectedLevel]
+                )
+                let now = Date()
+                logLines = raw.components(separatedBy: .newlines)
+                    .filter { !$0.isEmpty }
+                    .map { line in
+                        LogLine(
+                            timestamp: now,
+                            level: selectedLevel,
+                            message: line,
+                            source: selectedSource
+                        )
+                    }
+                return
+            } catch {
+                errorMessage = "Native log fetch failed: \(error.localizedDescription)"
+                return
+            }
+        }
 
         do {
             let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
