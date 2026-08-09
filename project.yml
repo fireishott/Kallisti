@@ -67,7 +67,7 @@ targets:
     type: application
     platform: iOS
     entitlements:
-      path: Herald/Kallisti.entitlements
+      path: Kallisti/Kallisti.entitlements
       properties:
         com.apple.developer.siri: true
         com.apple.developer.healthkit: true
@@ -79,7 +79,7 @@ targets:
         keychain-access-groups:
           - $(AppIdentifierPrefix)group.net.fihonline.kallisti.shared
     sources:
-      - path: Herald
+      - path: Kallisti
         excludes:
           - "**/.DS_Store"
           # Build 108: exclude Watch WIP files until Task 10 finishes them.
@@ -90,9 +90,9 @@ targets:
       - path: KallistiWidgets/KallistiAppState.swift
       - path: KallistiWidgets/GatewayState.swift
       - path: KallistiWidgets/KallistiActivityAttributes.swift
-      - path: Herald/Services/Protocols/NotificationCategories.swift
+      - path: Kallisti/Services/Protocols/NotificationCategories.swift
     resources:
-      - path: Herald/Resources
+      - path: Kallisti/Resources
         optional: true
     dependencies:
       - target: KallistiSupport
@@ -104,14 +104,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Kallisti
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     info:
-      path: Herald/Resources/Info.plist
+      path: Kallisti/Resources/Info.plist
       properties:
         CFBundleDisplayName: Kallisti
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -131,10 +131,10 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Kallisti uses your location in the background to provide contextual awareness and proactive suggestions."
         NSMotionUsageDescription: "Kallisti uses motion data to understand your current activity for contextual awareness."
         NSSpeechRecognitionUsageDescription: "Kallisti uses speech recognition for voice commands and local transcription."
-        APP_HOSTED_RELAY_URL: ""
-        APP_HOSTED_RELAY_ENABLED: false
+        APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
+        APP_HOSTED_RELAY_ENABLED: true
         APP_PRIVACY_URL: "https://kallisti.fihonline.net/privacy.html"
-        APP_TERMS_URL: "https://kallisti.app/terms.html"
+        APP_TERMS_URL: "https://herald.fihonline.net/terms.html"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false
@@ -145,7 +145,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         BGTaskSchedulerPermittedIdentifiers:
           - net.fihonline.kallisti.refresh
-          - net.fihonline.KallistiBGProcessing
+          - net.fihnews.HeraldBGProcessing
         UIBackgroundModes:
           - processing
           - location
@@ -188,7 +188,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -202,7 +202,7 @@ targets:
     platform: iOS
     sources:
       - path: KallistiNotificationService
-      - path: Herald/Services/Protocols/NotificationCategories.swift
+      - path: Kallisti/Services/Protocols/NotificationCategories.swift
     entitlements:
       path: KallistiNotificationService/KallistiNotificationService.entitlements
       properties:
@@ -225,7 +225,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -266,7 +266,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -294,7 +294,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -330,7 +330,7 @@ targets:
     deploymentTarget: "11.0"
     sources:
       - path: KallistiWatch
-      - path: Herald/Services/Protocols/NotificationCategories.swift
+      - path: Kallisti/Services/Protocols/NotificationCategories.swift
     entitlements:
       path: KallistiWatch/KallistiWatch.entitlements
       properties:
@@ -350,7 +350,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "11"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -358,6 +358,27 @@ targets:
         SUPPORTED_PLATFORMS: "watchsimulator watchos"
         SDKROOT: watchos
         WATCHOS_DEPLOYMENT_TARGET: "11.0"
+
+  KallistiWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - path: KallistiWatchTests
+      - path: KallistiWatch/WatchNotificationPayload.swift
+      - path: KallistiWatch/WatchConnectivityCoordinator.swift
+      - path: Kallisti/Services/Protocols/NotificationCategories.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp.tests
+        PRODUCT_NAME: KallistiWatchTests
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "4"
+        SDKROOT: watchos
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/KallistiWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HeraldWatch"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 
   KallistiTests:
     type: bundle.unit-test
@@ -370,7 +391,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.tests
         PRODUCT_NAME: KallistiTests
-        TEST_TARGET_NAME: Kallisti
+        TEST_TARGET_NAME: Herald
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -386,7 +407,23 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.uitests
         PRODUCT_NAME: KallistiUITests
-        TEST_TARGET_NAME: Kallisti
+        TEST_TARGET_NAME: Herald
         GENERATE_INFOPLIST_FILE: true
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
+  KallistiControlsTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: KallistiControlsTests
+    dependencies:
+      - target: KallistiSupport
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlstests
+        PRODUCT_NAME: KallistiControlsTests
+        SWIFT_VERSION: "6.2"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: true
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
