@@ -140,13 +140,35 @@ final class ModelStore {
                 lastLoadedAt = .now
                 return
             } catch {
-                // Fall through to legacy path rather than surfacing an error:
-                // the catalog is still reachable via the relay when native
-                // model.options is unavailable.
-                errorMessage = nil
+                // Build 41: DO NOT fall through to the legacy relay path.
+                // GET /v1/models over the relay is dead for native clients
+                // (native bearer tokens are rejected on /v1/*) and returns
+                // only the API-server's two placeholder rows (Ignyte,
+                // hermes-agent) - no real catalog, and definitely no 9router.
+                // Falling back made retry hit the same dead path forever and
+                // hid the actual native error. Surface the real error so the
+                // picker's retry button re-runs loadModels(force: true) and
+                // retries the NATIVE path (which heals via reconnect).
+                // Match on the error's localized description so this file
+                // doesn't need to reference the transport error enum directly.
+                let desc = (error as NSError).localizedDescription.lowercased()
+                let message: String
+                if desc.contains("timed out") || desc.contains("timeout") {
+                    message = "Gateway timed out. Check the connection and retry."
+                } else if desc.contains("transport") || desc.contains("connection dropped") || desc.contains("closed") {
+                    message = "Gateway connection dropped. Retrying reconnects."
+                } else if desc.contains("not connected") {
+                    message = "Not connected to the gateway."
+                } else {
+                    message = error.localizedDescription
+                }
+                errorMessage = message
+                return
             }
         }
 
+        // Legacy relay path - only used when no native feature client exists
+        // (e.g. pre-auth onboarding). NOT a fallback for native failures.
         guard let apiClient, let token = await accessTokenProvider() else {
             errorMessage = "Not connected to a relay."
             return
