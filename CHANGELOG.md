@@ -1,56 +1,58 @@
 # Changelog
 
-All notable changes to Kallisti will be documented in this file.
+All notable Kallisti changes are documented here.
 
-## [0.2.0] - 2026-08-08
+## [0.2.0-build.49] - 2026-08-09
 
 ### Added
-- Native gateway mode: direct WebSocket JSON-RPC to your Hermes gateway, no relay/connector pairing required
-- Model picker with live catalog from the gateway (`model.options`), dedupe for keyed providers
-- Profile selector over the gateway (native mode) and relay (legacy mode)
-- Auxiliary model overrides (vision, web extract, compression) surfaced from gateway config
-- Push notifications with dynamic APNs environment detection (development vs production)
-- Live Activities / Dynamic Island support with corrected APNs bundle
-- Session resume: stable session identity across reconnects (idMap registration)
+
+- Native `MEDIA:` path conversion to authenticated inline-image Markdown.
+- Restricted `/v1/native/media` connector endpoint for agent-generated images.
+- Native image upload staging through `image.attach_bytes` before prompt submission.
+- Regression coverage for inline media, image staging, fast acknowledgments, stalled streams, and pre-ack placeholder ownership.
 
 ### Fixed
-- Session list: cron/internal sessions no longer pollute history (source filter)
-- Delete/rename/follow-up on resumed sessions no longer fail with "session not found" - session UUIDs are registered on load
-- Follow-up latency: resumed sessions keep their server session instead of cold-starting a new one
-- Model switch now scopes to the active session (session_id passed to slash.exec)
-- Settings status: host row reflects live gateway connectivity, not relay token presence
-- Restart/logs/update controls show an honest "not available in direct gateway mode" state instead of a confusing pairing error
-- Gateway logs work in native mode via `hermes logs` over the gateway socket
-- Settings infrastructure: provider count and model decode from gateway config (list[dict] not list[string])
-- WebSocket transport sends TEXT frames (binary frames were dropped by the gateway)
-- OAuth via ASWebAuthenticationSession (RFC 8252) - no cookie drops on the Nous redirect chain
-- Session list decode: `started_at` number vs string, `id` key alias tolerance
 
-### Changed
-- Complete rebrand: Herald → Kallisti
-- New icon: woodcut relief print seal mark
-- New theme: obsidian/platinum/pewter/steel, Playfair Display headlines
-- Bundle ID: net.fihonline.kallisti
-- Version scheme: 0.x.x (matching MARKETING_VERSION)
+- Follow-up messages no longer wait behind a stream that ended after acknowledgment without a terminal event.
+- Pre-ack transcript polling no longer removes or duplicates the active thinking placeholder.
+- Accepted outbox jobs settle through deadline-aware recovery and release the per-conversation FIFO lease.
+- Native gateway responses arriving during WebSocket send registration are no longer dropped.
+- Public media URLs use the configured HTTPS gateway host instead of an unreachable private connector port.
+- Authenticated image requests attach credentials for `/v1/native/` routes without leaking them to arbitrary image hosts.
+- Connector media downloads accept validated gateway cookie sessions, native bearer tokens, and persisted paired-device tokens.
+- Connector restarts rehydrate paired-device tokens and preserve native-watch refresh credentials.
+- Push registration and Live Activity cleanup no longer block chat startup or leave stale activity state.
+
+### Security
+
+- Media serving is limited to configured Hermes image/media roots.
+- Unsupported file types, traversal attempts, missing files, and files larger than 10 MB are rejected.
+- Gateway cookie and bearer validation is delegated to the gateway's authenticated identity endpoint.
+- Public source and documentation were scrubbed of personal names, user-specific paths, private host addresses, device identifiers, captured production logs, and signing credentials.
+
+## [0.2.0-build.41] - 2026-08-09
+
+### Added
+
+- One-time Kallisti pairing-code sign-in for native gateway mode.
+- Direct native WebSocket transport for chat, session history, model selection, and profile selection.
+- Gateway status, logs, restart operations, push notifications, and Live Activities.
+
+### Fixed
+
+- WebSocket send timeouts and response-registration races.
+- Session identity and reconnect handling.
+- Model and profile selection against the active session.
+- Native basic-auth and pairing-cookie login flows.
+- Gateway ticket refresh and session creation timeouts.
 
 ## [0.1.0] - 2026-08-03
 
 ### Added
-- Brand asset package (icons, marks, splash, OG image)
-- Landing page with full brand identity
-- Rebrand instructions for Claude Code execution
 
-### Changed
-- Complete rebrand: Herald → Kallisti
-- New color palette: obsidian/platinum/pewter/steel
-- Tagline: "To the Most Beautiful."
-- Website: kallisti.app / kallisti.fihonline.net
+- Initial Kallisti branding and iOS application structure.
+- Connector, relay, widget, watch, intents, and notification-extension targets.
 
 ### Attribution
-- Built on the foundation of [Herald](https://github.com/fireishott/Herald)
-- Original work licensed under MIT
 
-## Herald (pre-rebrand)
-
-- Herald gateway and iOS companion app
-- Original identity and branding
+- Built from the earlier Herald mobile client foundation under the repository's MIT license history.

@@ -788,6 +788,25 @@ class DeliveryStore:
             where="state = 'running'",
         )
 
+    def mark_user_message_terminal(self, client_message_id: str) -> None:
+        """Transition the user row in conversation_messages from 'accepted'
+        to 'terminal' so iOS sees a delivered green dot that persists across
+        refreshes.  Idempotent — no-op if already terminal or missing."""
+        now = _utcnow_rfc3339()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE conversation_messages "
+                    "SET state = 'terminal', updated_at = ? "
+                    "WHERE client_message_id = ? AND state = 'accepted'",
+                    (now, client_message_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def fail_message_request(self, client_message_id: str, error_category: str | None = None) -> dict:
         """Transition running → permanent_failure with the error category."""
         return self._transition(
@@ -892,6 +911,27 @@ class DeliveryStore:
                     "INSERT OR REPLACE INTO job_events "
                     "(job_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
                     (job_id, seq, event_json, _utcnow_rfc3339()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def discard_placeholder(self, job_id: str, seq: int) -> None:
+        """Delete a seq's row only if it is still an unfilled placeholder.
+
+        Safety net for _publish: if a seq was allocated (which writes a
+        placeholder) but never replaced by a real event, the orphan
+        {"_placeholder":true} must not survive as the job terminal or
+        poison the SSE replay backlog. Idempotent; the LIKE clause matches
+        only placeholders, so a real envelope is never touched.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "DELETE FROM job_events WHERE job_id = ? AND seq = ? "
+                    "AND event_json LIKE '%\"_placeholder\"%'",
+                    (job_id, seq),
                 )
                 conn.commit()
             finally:

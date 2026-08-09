@@ -1,5 +1,5 @@
 import Foundation
-@testable import Herald
+@testable import Kallisti
 
 /// Mock notes repository for testing.
 actor MockNotesRepository: NotesRepositoryProtocol {

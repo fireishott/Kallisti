@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @Suite("ModelStore state management")
 struct ModelStoreTests {

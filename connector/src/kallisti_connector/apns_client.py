@@ -106,6 +106,48 @@ class APNsClient:
 
         return await self._send(url, headers, payload, device_token)
 
+    async def send_live_activity_update(
+        self,
+        activity_push_token: str,
+        *,
+        content_state: dict,
+        event: str = "update",
+        bundle_id: str | None = None,
+        environment: str | None = None,
+        dismissal_seconds_from_now: float | None = None,
+    ) -> PushResult:
+        """Remote-update or end a Live Activity — the ActivityKit push type.
+
+        content_state must match KallistiActivityAttributes.ContentState's
+        Codable shape (KallistiWidgets/KallistiActivityAttributes.swift):
+        status/elapsedSeconds/sessionType are required, everything else is
+        decodeIfPresent and safe to omit. event is "update" while a turn is
+        still running, or "end" on terminal state — mirrors what
+        LiveActivityService.endActivity() does locally, except this reaches
+        the lock screen even when the app process cannot run any code at
+        all, which endActivity() can never do.
+        """
+        topic = f"{bundle_id or self.default_bundle_id}.push-type.liveactivity"
+        base_url = self._base_url_for(environment)
+        url = f"{base_url}/3/device/{activity_push_token}"
+
+        headers = {
+            "authorization": f"bearer {self._get_token()}",
+            "apns-topic": topic,
+            "apns-push-type": "liveactivity",
+            "apns-priority": "10",
+        }
+        aps: dict = {
+            "timestamp": int(time.time()),
+            "event": event,
+            "content-state": content_state,
+        }
+        if event == "end":
+            aps["dismissal-date"] = int(time.time() + (dismissal_seconds_from_now or 0))
+        payload = {"aps": aps}
+
+        return await self._send(url, headers, payload, activity_push_token)
+
     async def _send(self, url: str, headers: dict, payload: dict, device_token: str) -> PushResult:
         try:
             client = await self._get_client()

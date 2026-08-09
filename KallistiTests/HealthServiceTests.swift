@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import HealthKit
-@testable import Herald
+@testable import Kallisti
 
 @Suite("HealthService Tests")
 struct HealthServiceTests {

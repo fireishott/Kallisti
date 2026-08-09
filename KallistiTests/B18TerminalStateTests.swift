@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @MainActor
 @Suite("B18 terminal state — credible completion and placeholder settlement")
@@ -18,7 +18,7 @@ struct B18TerminalStateTests {
     private func merge(local: [Message], refreshed: [Message]) -> [Message] {
         let localConv = Conversation(id: UUID(), title: "Test", messages: local)
         let refreshedConv = Conversation(id: localConv.id, title: "Test", messages: refreshed)
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: MockPersistence())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
         let merged = store.mergeConversationMetadata(from: localConv, into: refreshedConv)
         return merged?.messages ?? []
     }

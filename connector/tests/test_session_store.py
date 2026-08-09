@@ -142,3 +142,32 @@ def test_compaction_summaries_also_excluded_in_mixed_session(test_db):
         assert "compacted history" not in m["text"], f"Leaked compaction: {m['text'][:60]}"
         assert "[CONTEXT COMPACTION" not in m["text"], f"Leaked compaction: {m['text'][:60]}"
         assert "[CONTEXT SUMMARY]" not in m["text"], f"Leaked compaction: {m['text'][:60]}"
+
+
+# ── Device filter ──────────────────────────────────────────────────────────
+
+
+class TestSessionBelongsToDevice:
+    """_session_belongs_to_device must match its docstring: sessions with
+    no recorded device are visible to every device."""
+
+    def test_unrecorded_session_visible_to_any_device(self, tmp_path):
+        """A session with no entry in device_registry.json is visible."""
+        registry_path = tmp_path / "device_registry.json"
+        registry_path.write_text('{"sessions": {}}')
+        with patch("kallisti_connector.session_store._device_registry_path", return_value=registry_path):
+            assert session_store._session_belongs_to_device("some-session", "device-X") is True
+
+    def test_recorded_session_visible_to_owning_device(self, tmp_path):
+        """A session recorded to device-X is visible to device-X."""
+        registry_path = tmp_path / "device_registry.json"
+        registry_path.write_text('{"sessions": {"s1": {"deviceId": "device-X"}}}')
+        with patch("kallisti_connector.session_store._device_registry_path", return_value=registry_path):
+            assert session_store._session_belongs_to_device("s1", "device-X") is True
+
+    def test_recorded_session_hidden_from_other_device(self, tmp_path):
+        """A session recorded to device-X is NOT visible to device-Y."""
+        registry_path = tmp_path / "device_registry.json"
+        registry_path.write_text('{"sessions": {"s1": {"deviceId": "device-X"}}}')
+        with patch("kallisti_connector.session_store._device_registry_path", return_value=registry_path):
+            assert session_store._session_belongs_to_device("s1", "device-Y") is False

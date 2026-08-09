@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 @Suite(.serialized)
 struct PushRegistrationTests {
@@ -124,7 +124,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -141,7 +141,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -177,7 +177,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -214,7 +214,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "1.0.0",
             pushEnvironment: "production"
         )
@@ -252,14 +252,14 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: deviceID,
             installationID: UUID(),
-            bundleID: "net.fihonline.kallisti",
+            bundleID: "net.fihonline.herald",
             appVersion: "2.0.0",
             pushEnvironment: "development"
         )
 
         let body = try #require(capture.capturedBody)
         #expect(body.contains("11111111-1111-1111-1111-111111111111"))
-        #expect(body.contains("net.fihonline.kallisti"))
+        #expect(body.contains("net.fihonline.herald"))
         #expect(body.contains("deadbeef"))
     }
 
@@ -293,7 +293,7 @@ struct PushRegistrationTests {
                 accessToken: "test-token",
                 deviceID: UUID(),
                 installationID: UUID(),
-                bundleID: "net.fihonline.kallisti",
+                bundleID: "net.fihonline.herald",
                 appVersion: "1.0.0",
                 pushEnvironment: "development"
             )

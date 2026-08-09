@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260">
+  <rect width="1200" height="260" fill="none"/>
+  <text x="600" y="145" text-anchor="middle"
+        fill="#F1F5F3" font-family="EB Garamond, Georgia, serif"
+        font-size="150" font-weight="700" letter-spacing="18">HERALD</text>
+  <line x1="260" y1="188" x2="940" y2="188" stroke="#BCCDDA" stroke-opacity=".65"/>
+  <text x="600" y="225" text-anchor="middle"
+        fill="#BCCDDA" font-family="SFMono-Regular, Menlo, monospace"
+        font-size="18" letter-spacing="5">YOUR AI · YOUR SERVER · YOUR SIGNAL</text>
+</svg>

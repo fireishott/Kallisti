@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// B21 — the follow-up prompt renders *below* the reply it produced.
 ///
@@ -50,7 +50,7 @@ struct B21FollowUpOrderTests {
     private func merge(local: [Message], refreshed: [Message]) -> [Message] {
         let localConv = Conversation(id: UUID(), title: "Test", messages: local)
         let refreshedConv = Conversation(id: localConv.id, title: "Test", messages: refreshed)
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: MockPersistence())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
         return store.mergeConversationMetadata(from: localConv, into: refreshedConv)?.messages ?? []
     }
 

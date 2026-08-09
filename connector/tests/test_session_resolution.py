@@ -27,7 +27,7 @@ from unittest.mock import patch
 import pytest
 
 from kallisti_connector import session_store
-from kallisti_connector.herald_api_executor import _is_interrupt_sentinel
+from kallisti_connector.herald_runner import _is_interrupt_sentinel
 
 
 def _make_db(db_path: Path) -> sqlite3.Connection:

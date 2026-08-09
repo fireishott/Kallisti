@@ -1,0 +1,26 @@
+{
+  "name": "Herald Temple Blue",
+  "source": "HeraldAppIcon.png",
+  "colors": {
+    "deepInk": "#020813",
+    "background": "#030C1C",
+    "templeBlue": "#071C3D",
+    "surface": "#0C3569",
+    "surfaceRaised": "#123F78",
+    "royalBlue": "#1A4F97",
+    "signalBlue": "#306FD6",
+    "signalBlueHot": "#5797F1",
+    "foreground": "#F1F5F3",
+    "secondaryForeground": "#BCCDDA",
+    "muted": "#789AB8",
+    "divider": "#466C96",
+    "success": "#41C98E",
+    "warning": "#D9AF53",
+    "danger": "#CF4D57"
+  },
+  "typography": {
+    "display": "New York / EB Garamond / Georgia",
+    "ui": "SF Pro / Inter",
+    "statusAndCode": "SF Mono / Menlo / DejaVu Sans Mono"
+  }
+}

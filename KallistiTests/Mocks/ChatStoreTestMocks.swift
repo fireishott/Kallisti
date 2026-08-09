@@ -1,10 +1,10 @@
 import Foundation
-@testable import Herald
+@testable import Kallisti
 
 // MARK: - Minimal mocks for ChatStore testing
 
 @MainActor
-final class MockKallistiClient: KallistiClientProtocol {
+final class MockHeraldClient: HeraldClientProtocol {
     var connectionStatus: ConnectionStatus = .disconnected
     var currentConversation: Conversation?
 
@@ -16,8 +16,8 @@ final class MockKallistiClient: KallistiClientProtocol {
     func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
         AsyncStream { $0.finish() }
     }
-    func ensureConversation(id: UUID) async -> EnsureResult {
-        EnsureResult(ok: true, canonicalID: nil, serverMessage: nil)
+    func ensureConversation(id: UUID) async -> Bool {
+        true
     }
     func loadConversation() async -> Conversation { Conversation(id: UUID(), title: "") }
     func clearConversation() async throws -> Conversation { Conversation(id: UUID(), title: "") }
@@ -39,7 +39,7 @@ final class MockKallistiClient: KallistiClientProtocol {
     }
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
     func loadConversation(id: UUID) async throws -> Conversation { Conversation(id: UUID(), title: "") }
-    func getJobStatus(_ jobId: UUID) async -> LiveKallistiClient.JobStatusResponse? { nil }
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         Message(sender: .user, content: text)
     }

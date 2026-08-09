@@ -1,47 +1,64 @@
 # Security Policy
 
-## Reporting Vulnerabilities
+## Supported versions
 
-If you discover a security vulnerability in Kallisti, please report it responsibly:
+Security fixes are applied to the latest published Kallisti release. Older builds may not receive backports.
 
-1. **Do not** open a public GitHub issue for security vulnerabilities
-2. Email security concerns to the maintainers directly
-3. Include a description of the vulnerability, steps to reproduce, and potential impact
+## Reporting a vulnerability
 
-We will acknowledge receipt within 48 hours and work with you on a fix.
+Do not open a public issue containing exploit details, credentials, private URLs, device identifiers, personal data, or production logs.
 
-## Security Architecture
+Use GitHub's private vulnerability reporting feature for this repository. Include:
 
-### Relay
+- affected version and component;
+- impact and attack prerequisites;
+- minimal reproduction steps using sanitized data;
+- suggested mitigation, if known.
 
-The relay is the only internet-facing component. It handles:
+## Security model
 
-- **Authentication:** Bearer token auth for iOS clients, connector credential for WebSocket
-- **CONNECTOR_SETUP_SECRET:** Optional shared secret that gates new connector registration. When set as an env var on the relay, the connector must provide the same value during `kallisti-connector setup`. Strongly recommended for production deployments.
-- **INTERNAL_API_KEY:** Gates internal admin endpoints. Must be changed from the default `"replace-me"` in production — the relay logs a security warning if the default is used outside development.
-- **Token lifecycle:** Access tokens (1h default), refresh tokens (30d default), phone pairing codes (10min default) are all configurable via env vars.
+### iOS app
+
+- Credentials are stored in the iOS Keychain.
+- Gateway passwords are used only for authentication and are not embedded in source or release artifacts.
+- Native gateway sessions use authenticated WebSocket tickets or validated cookie sessions.
+- Camera, microphone, location, motion, health, and notification permissions are requested only for features that need them.
 
 ### Connector
 
-The connector runs on the same machine as the Hermes Agent:
+- The connector runs beside the operator's Hermes Agent installation.
+- Mobile HTTP endpoints require a validated gateway session, native bearer, or paired-device credential as appropriate.
+- Paired-device credentials survive connector restarts through the local protected registry.
+- Pairing codes are time-limited and persisted only as digests with installation binding.
+- Sensor and delivery state remain on operator-controlled infrastructure.
 
-- **WebSocket auth:** Authenticates to the relay using a credential obtained during setup
-- **Sensor data:** Stored locally in SQLite at `/.kallisti/state/sensors.db`
-- **MCP tools:** The `query_sensor_data` tool opens a read-only SQLite connection, preventing write-based SQL injection even if the LLM crafts a malicious query
-- **OpenAI API key:** Stored in `/.kallisti/secrets.json` (not in state.json), used only for Realtime voice sessions
+### Native media
 
-### iOS App
+The `/v1/native/media` endpoint:
 
-- **Relay URL:** Configured during onboarding, persisted locally. Not hardcoded.
-- **Credentials:** Stored in the iOS Keychain (service name: `net.fihonline.kallisti.session`)
-- **Health data:** Read-only HealthKit access, uploaded to the relay only when the connector is connected and acknowledges receipt
-- **Camera/mic:** Requested just-in-time, not at launch. Camera frames for voice mode are sent directly to OpenAI via WebRTC, not through the relay.
+- requires authentication;
+- serves only supported image files under configured Hermes image/media roots;
+- rejects arbitrary paths, traversal, unsupported types, missing files, and files over 10 MB;
+- delegates gateway cookie and bearer validation to the gateway identity endpoint;
+- uses private cache headers.
 
-### Known Limitations
+### Deployment
 
-- **MCP tool token in URL:** The voice mode MCP tool token is passed as a query parameter (`?token=...`). This is a constraint of the MCP Streamable HTTP protocol. The token is short-lived (valid only during the active voice session), server-to-server (OpenAI → relay, never in a browser), and invalidated when the session ends.
-- **Sensor data retention:** Health and location data is retained for 90 days locally on the connector host. Users should be aware of this when granting access to the machine.
+Operators are responsible for:
 
-## Supported Versions
+- TLS termination and reverse-proxy access controls;
+- strong gateway and connector credentials;
+- Apple signing keys, provisioning profiles, and APNs credentials;
+- filesystem permissions on connector state and Hermes media directories;
+- log retention and removal of personal or secret data before sharing diagnostics.
 
-Security updates are applied to the latest version on the `master` branch. There are no backported security patches for older commits.
+## Public repository hygiene
+
+Never commit:
+
+- `.env` files, API keys, passwords, refresh tokens, signing keys, or provisioning profiles;
+- private IP addresses, internal hostnames, user-specific absolute paths, device IDs, or personal email addresses;
+- production database files, connector state, pairing registries, screenshots, or raw protocol captures;
+- signed IPAs or archives containing private entitlements or profiles.
+
+Use placeholders and documentation examples instead.

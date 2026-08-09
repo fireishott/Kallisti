@@ -1,0 +1,51 @@
+<svg viewBox="0 0 390 844" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141618"/>
+      <stop offset="100%" stop-color="#1A1D23"/>
+    </linearGradient>
+    <linearGradient id="btnGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF3D00"/>
+      <stop offset="100%" stop-color="#FF6B00"/>
+    </linearGradient>
+    <clipPath id="phoneClip">
+      <rect x="0" y="0" width="390" height="844" rx="44"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#phoneClip)">
+    <rect width="390" height="844" fill="url(#bg)"/>
+
+    <!-- Status bar -->
+    <text x="32" y="52" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="16" font-weight="600" fill="#FFFFFF" letter-spacing="0.5">8:30</text>
+
+    <!-- Nav bar -->
+    <text x="32" y="108" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="500" fill="#999999" letter-spacing="2">HERMES · iOS</text>
+    <text x="358" y="108" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="500" fill="#999999" letter-spacing="1" text-anchor="end">V2.0.0</text>
+
+    <!-- Hero text -->
+    <text x="32" y="310" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="82" font-weight="800" fill="#FFFFFF" letter-spacing="-1">HERMES</text>
+    <text x="32" y="420" font-family="SF Pro Display, -apple-system, system-ui, sans-serif" font-size="82" font-weight="800" fill="#555555" letter-spacing="-1">ON</text>
+    <text x="32" y="540" font-family="Georgia, 'Times New Roman', serif" font-size="86" font-weight="400" fill="#FFFFFF" letter-spacing="-1">iOS.</text>
+
+    <!-- Subtitle -->
+    <text x="32" y="620" font-family="Georgia, 'Times New Roman', serif" font-size="26" font-style="italic" fill="#AAAAAA">An iOS client for the</text>
+    <text x="32" y="655" font-family="Georgia, 'Times New Roman', serif" font-size="26" font-style="italic" fill="#AAAAAA">Hermes Agent framework.</text>
+
+    <!-- Divider -->
+    <line x1="32" y1="730" x2="358" y2="730" stroke="#333333" stroke-width="1"/>
+
+    <!-- Tab labels -->
+    <text x="55" y="764" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1.5" text-anchor="middle">CHAT</text>
+    <text x="155" y="764" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1.5" text-anchor="middle">VOICE</text>
+    <text x="255" y="764" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1.5" text-anchor="middle">VISION</text>
+    <text x="345" y="764" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="500" fill="#999999" letter-spacing="1.5" text-anchor="middle">SENSORS</text>
+
+    <!-- BEGIN button -->
+    <rect x="24" y="786" width="342" height="52" rx="26" fill="url(#btnGrad)"/>
+    <text x="185" y="818" font-family="SF Mono, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700" fill="#FFFFFF" letter-spacing="2" text-anchor="middle">BEGIN →</text>
+  </g>
+
+  <!-- Phone bezel outline -->
+  <rect x="0" y="0" width="390" height="844" rx="44" fill="none" stroke="#333333" stroke-width="2"/>
+</svg>

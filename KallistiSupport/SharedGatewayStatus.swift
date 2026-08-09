@@ -25,7 +25,7 @@ public final class SharedGatewayStatus: @unchecked Sendable {
     private let defaults: UserDefaults?
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "SharedGatewayStatus")
 
-    public init(suiteName: String = HeraldSupportConfiguration.appGroupIdentifier) {
+    public init(suiteName: String = KallistiSupportConfiguration.appGroupIdentifier) {
         self.defaults = UserDefaults(suiteName: suiteName)
     }
 
@@ -103,6 +103,6 @@ public final class SharedGatewayStatus: @unchecked Sendable {
     }
 
     private func prefix(_ name: String) -> String {
-        HeraldSupportConfiguration.gatewayStatusDefaultsPrefix + name
+        KallistiSupportConfiguration.gatewayStatusDefaultsPrefix + name
     }
 }

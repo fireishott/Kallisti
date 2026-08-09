@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Herald
+@testable import Kallisti
 
 /// Build 23: delivery-state semantics and terminal message projection.
 ///
@@ -30,7 +30,7 @@ struct B23DeliveryStateTests {
     private func merge(local: [Message], refreshed: [Message]) -> [Message] {
         let localConv = Conversation(id: UUID(), title: "Test", messages: local)
         let refreshedConv = Conversation(id: localConv.id, title: "Test", messages: refreshed)
-        let store = ChatStore(heraldClient: MockKallistiClient(), persistence: MockPersistence())
+        let store = ChatStore(heraldClient: MockHeraldClient(), persistence: MockPersistence())
         let merged = store.mergeConversationMetadata(from: localConv, into: refreshedConv)
         return merged?.messages ?? []
     }
@@ -82,7 +82,7 @@ struct B23DeliveryStateTests {
             ],
         ]
 
-        let message = LiveKallistiClient.finalMessage(
+        let message = LiveHeraldClient.finalMessage(
             fromTerminalText: "Here is an image",
             jobId: jobId,
             messageJSON: json
@@ -253,7 +253,7 @@ struct B23DeliveryStateTests {
             "text": "Response text",
         ]
 
-        let message = LiveKallistiClient.finalMessage(
+        let message = LiveHeraldClient.finalMessage(
             fromTerminalText: "Response text",
             jobId: jobId,
             messageJSON: json
@@ -268,7 +268,7 @@ struct B23DeliveryStateTests {
     @Test("Terminal message without messageJSON falls back to text-only")
     func terminalMessageWithoutJSONFallsBack() {
         let jobId = UUID()
-        let message = LiveKallistiClient.finalMessage(
+        let message = LiveHeraldClient.finalMessage(
             fromTerminalText: "Plain text response",
             jobId: jobId,
             messageJSON: nil
