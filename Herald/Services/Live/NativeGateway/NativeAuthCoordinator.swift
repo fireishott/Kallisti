@@ -254,6 +254,17 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/api/auth/ws-ticket")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        // LATENCY (build 34): this HTTP POST used the shared session's
+        // default 60s request timeout. On the reconnect path -- triggered by
+        // reconnectIfNeeded()'s 5s phantom-socket probe -- a dead/half-open
+        // network path (backgrounded app, cell handoff, VPN flap) let this
+        // call hang up to 60s BEFORE the WS connect + verify round-trip even
+        // started, stacking on top of the (also unbounded) verify below for
+        // a combined ~120s dead window with zero UI feedback. Bound it to
+        // 8s: generous for a same-network HTTP POST, short enough that a
+        // dead path fails fast and scheduleReconnect()'s backoff takes over
+        // instead of the user watching a frozen thinking bubble.
+        request.timeoutInterval = 8
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

@@ -36,6 +36,11 @@ final class DashboardLogService {
 
     private let baseURLProvider: @MainActor () -> String
     private let credentialsProvider: @MainActor () -> (username: String, password: String)?
+    /// Native-mode log stream request (connector facade /gw/logs/stream with
+    /// the native bearer token). When provided, it REPLACES the dashboard
+    /// (:9119/logs/stream) path - the gateway has no such route, so the old
+    /// path silently connected to nothing in native mode.
+    private let nativeLogStreamProvider: @MainActor () async -> URLRequest?
     private var streamTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private static let maxReconnectAttempts = 10
@@ -43,10 +48,12 @@ final class DashboardLogService {
 
     init(
         baseURLProvider: @escaping @MainActor () -> String,
-        credentialsProvider: @escaping @MainActor () -> (username: String, password: String)?
+        credentialsProvider: @escaping @MainActor () -> (username: String, password: String)?,
+        nativeLogStreamProvider: @escaping @MainActor () async -> URLRequest? = { nil }
     ) {
         self.baseURLProvider = baseURLProvider
         self.credentialsProvider = credentialsProvider
+        self.nativeLogStreamProvider = nativeLogStreamProvider
     }
 
     func connect() {
@@ -96,6 +103,17 @@ final class DashboardLogService {
     }
 
     private func connectAndStream() async throws {
+        // Native mode: the connector facade /gw/logs/stream replaces the
+        // dashboard path entirely (the gateway :9119 has no /logs/stream
+        // route). Falls back to the legacy dashboard URL otherwise.
+        if let nativeRequest = await nativeLogStreamProvider() {
+            var request = nativeRequest
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = TimeInterval(Int.max)
+            try await stream(request: request)
+            return
+        }
+
         let baseURL = baseURLProvider()
         guard let url = URL(string: "\(baseURL)/logs/stream") else {
             throw URLError(.badURL)
@@ -113,6 +131,10 @@ final class DashboardLogService {
             }
         }
 
+        try await stream(request: request)
+    }
+
+    private func stream(request: URLRequest) async throws {
         connectionState = .connected
         reconnectAttempt = 0
 
@@ -176,13 +198,21 @@ final class DashboardLogService {
         guard let jsonData = data.data(using: .utf8) else { return }
 
         struct DashboardLogEntry: Decodable {
-            let timestamp: String?
+            let timestamp: Date?
             let level: String?
             let message: String?
             let source: String?
         }
 
-        if let entry = try? JSONDecoder().decode(DashboardLogEntry.self, from: jsonData) {
+        // The connector facade /gw/logs/stream emits timestamps as
+        // Apple-reference seconds (a number); the legacy dashboard emits
+        // ISO-8601 strings. Try both decoders.
+        let appleRefDecoder = JSONDecoder() // .deferredToDate -> Apple-reference seconds
+        let isoDecoder = JSONDecoder()
+        isoDecoder.dateDecodingStrategy = .iso8601
+
+        if let entry = (try? appleRefDecoder.decode(DashboardLogEntry.self, from: jsonData))
+            ?? (try? isoDecoder.decode(DashboardLogEntry.self, from: jsonData)) {
             let logLevel: LogLevel
             switch entry.level?.lowercased() {
             case "error", "err": logLevel = .error
@@ -192,15 +222,8 @@ final class DashboardLogService {
             default: logLevel = .info
             }
 
-            let timestamp: Date
-            if let ts = entry.timestamp {
-                timestamp = ISO8601DateFormatter().date(from: ts) ?? .now
-            } else {
-                timestamp = .now
-            }
-
             let logLine = LogLine(
-                timestamp: timestamp,
+                timestamp: entry.timestamp ?? .now,
                 level: logLevel,
                 message: entry.message ?? data,
                 source: entry.source

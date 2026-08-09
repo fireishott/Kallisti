@@ -77,7 +77,7 @@ _PROCESS_STARTED_AT = time.monotonic()
 
 # ── Journal constants (F-3: Gateway Logs) ─────────────────────────────────
 
-_JOURNAL_PRIORITY = {"error": "3", "warning": "4", "info": "6", "debug": "7"}
+_JOURNAL_PRIORITY = {"error": "3", "warning": "4", "info": "6", "debug": "7", "all": "7"}
 _JOURNAL_LEVEL_NAME = {0: "error", 1: "error", 2: "error", 3: "error",
                        4: "warning", 5: "info", 6: "info", 7: "debug"}
 _APPLE_EPOCH_OFFSET = 978_307_200.0
@@ -133,6 +133,25 @@ async def require_auth(request: Request) -> str:
         except Exception:
             pass
     raise HTTPException(status_code=401, detail="Invalid or missing access token")
+
+
+async def require_native_or_paired_auth(request: Request) -> str:
+    """Accept EITHER the connector's paired credential OR a native-gateway
+    bearer token.
+
+    Native-gateway clients (direct mode, WS :9119) never pair with the
+    connector, so requiring the paired credential made /gw/logs and
+    /gw/logs/stream unreachable for exactly the clients that need them
+    (same rationale as native_watch_route). The native bearer is verified
+    against the gateway itself.
+    """
+    auth_header = request.headers.get("authorization", "")
+    bearer = ""
+    if auth_header[:7].lower() == "bearer ":
+        bearer = auth_header[7:].strip()
+    if bearer and await _verify_native_gateway_bearer(bearer):
+        return bearer
+    return await require_auth(request)
 
 
 # ── Model / Profile providers ─────────────────────────────────────────
@@ -2358,8 +2377,8 @@ async def gateway_logs(request: Request) -> JSONResponse:
 
     Source validation prevents path traversal and only allows known units.
     """
-    await require_auth(request)
-    lines = min(int(request.query_params.get("lines", "200") or 200), 1000)
+    await require_native_or_paired_auth(request)
+    lines = min(int(request.query_params.get("lines", "200") or 200), 2000)
     level = (request.query_params.get("level") or "info").lower()
     priority = _JOURNAL_PRIORITY.get(level, "6")
     source = (request.query_params.get("source") or "connector").lower()
@@ -2403,7 +2422,7 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
 
     Build 107: added `source` parameter to select which logs to stream.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     level = (request.query_params.get("level") or "info").lower()
     priority = _JOURNAL_PRIORITY.get(level, "6")
     source = (request.query_params.get("source") or "connector").lower()
