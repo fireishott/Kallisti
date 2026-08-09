@@ -210,9 +210,19 @@ struct NativeGatewayFeatureClient {
         guard let client = await clientProvider() else {
             throw NativeGatewayClientError.notConnected
         }
+        // LATENCY (build 37): this RPC had no timeout override, inheriting
+        // the client's 60s default. ModelStore.switchModel calls
+        // modelOptions(force: true) immediately AFTER a successful
+        // slash.exec switch to confirm the new active model — if the socket
+        // is a phantom (backgrounded app, dead but not-yet-detected), this
+        // hangs 60s+ and the picker spinner never clears even though the
+        // model already switched server-side (confirmed in gateway logs).
+        // The server builds this payload in <1s on a healthy socket, so a
+        // 15s bound is generous while still failing fast on a dead one.
         let response = try await client.send(
             method: "model.options",
-            params: ["explicit_only": explicitOnly]
+            params: ["explicit_only": explicitOnly],
+            timeoutNanos: 15_000_000_000
         )
         if let error = response.error { throw error }
         guard let result = response.result,
@@ -262,9 +272,19 @@ struct NativeGatewayFeatureClient {
         if let sessionId = await currentSessionIdProvider() {
             params["session_id"] = sessionId
         }
+        // LATENCY (build 37): slash.exec had no timeout override either,
+        // inheriting the client's 60s default. The model picker's switch
+        // path (selectModel -> ModelStore.switchModel -> slash.exec) would
+        // spin its row spinner for the full 60s on a phantom socket before
+        // surfacing an error — and since the gateway applies the switch
+        // quickly on a healthy socket, the right bound is short enough to
+        // fail fast but long enough for the slash worker to spawn on first
+        // use (cold worker spawn + /model resolution can take a few
+        // seconds). 30s bound.
         let response = try await client.send(
             method: "slash.exec",
-            params: params
+            params: params,
+            timeoutNanos: 30_000_000_000
         )
         if let error = response.error { throw error }
     }
@@ -279,9 +299,14 @@ struct NativeGatewayFeatureClient {
         guard let client = await clientProvider() else {
             throw NativeGatewayClientError.notConnected
         }
+        // LATENCY (build 37): cli.exec had no timeout override on the WS
+        // send either (the `timeout` param only bounds the server-side
+        // command execution). Same phantom-socket hang class as
+        // model.options/slash.exec — bound it explicitly.
         let response = try await client.send(
             method: "cli.exec",
-            params: CliExecParams(argv: argv, timeout: timeout)
+            params: CliExecParams(argv: argv, timeout: timeout),
+            timeoutNanos: 60_000_000_000
         )
         if let error = response.error { throw error }
         guard let result = response.result,

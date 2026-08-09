@@ -414,6 +414,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// then retries `connect()`. Called from onboarding's "Open app" step —
     /// `connect()` alone can never trigger this itself, since a failed
     /// mintTicket() there has nowhere to present a login screen from.
+    func startBasicLogin(username: String, password: String) async throws {
+        try await authCoordinator.loginWithBasic(username: username, password: password)
+        await connect()
+        guard connectionStatus == .connected else {
+            throw NativeAuthError.connectFailedAfterLogin
+        }
+    }
+
     func startInteractiveLogin(presentingFrom viewController: UIViewController) async throws {
         try await authCoordinator.startLogin(presentingFrom: viewController)
         await connect()

@@ -49,6 +49,28 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
     /// Resolve the current gateway base URL (live, not cached).
     private var gatewayBaseURL: String { baseURLProvider() }
 
+    /// Signs in using the gateway's local basic provider. The password is sent
+    /// only to the HTTPS endpoint and is never persisted on the device.
+    func loginWithBasic(username: String, password: String) async throws {
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !password.isEmpty else {
+            throw NativeAuthError.invalidCredentials
+        }
+        var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/auth/password-login")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["provider": "basic", "username": username, "password": password])
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NativeAuthError.invalidCredentials
+        }
+        await secureStore.store(key: "nativeGatewayAuthMode", value: "basic")
+        await secureStore.delete(key: "nativeGatewayAccessToken")
+        await secureStore.delete(key: "nativeGatewayRefreshToken")
+        await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
+        logger.info("Signed in with local basic auth; password was not persisted")
+    }
+
     func startLogin(presentingFrom viewController: UIViewController) async throws {
         let verifier = Self.randomPKCEVerifier()
         let challenge = Self.s256Challenge(for: verifier)
@@ -250,10 +272,13 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
     }
 
     func mintTicket() async throws -> String {
-        let accessToken = try await refreshAccessTokenIfNeeded()
+        let basicAuth = await secureStore.retrieve(key: "nativeGatewayAuthMode") == "basic"
         var request = URLRequest(url: URL(string: "\(gatewayBaseURL)/api/auth/ws-ticket")!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        if !basicAuth {
+            let accessToken = try await refreshAccessTokenIfNeeded()
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
         // LATENCY (build 34): this HTTP POST used the shared session's
         // default 60s request timeout. On the reconnect path -- triggered by
         // reconnectIfNeeded()'s 5s phantom-socket probe -- a dead/half-open
@@ -272,7 +297,7 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         }
         struct TicketResponse: Decodable { let ticket: String }
         let ticket = try JSONDecoder().decode(TicketResponse.self, from: data).ticket
-        logger.info("Minted fresh ws-ticket via Bearer auth")
+        logger.info("\(basicAuth ? "Minted fresh ws-ticket via basic session cookie" : "Minted fresh ws-ticket via Bearer auth")")
         return ticket
     }
 
@@ -391,6 +416,7 @@ enum NativeAuthError: Error {
     /// tokenExchangeFailed, which is the OAuth step itself failing.
     case connectFailedAfterLogin
     case tokenRefreshFailed
+    case invalidCredentials
 }
 
 extension NativeAuthError: LocalizedError {
@@ -421,6 +447,8 @@ extension NativeAuthError: LocalizedError {
             return "Signed in, but couldn't reach the gateway. Check that your Hermes host is running and reachable, then retry."
         case .tokenRefreshFailed:
             return "Couldn't refresh the gateway session."
+        case .invalidCredentials:
+            return "The gateway username or password was not accepted."
         }
     }
 }

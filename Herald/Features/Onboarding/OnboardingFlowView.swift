@@ -51,6 +51,8 @@ struct OnboardingFlowView: View {
     @State private var isRelayValidationInProgress = false
     @State private var isNousLoginInProgress = false
     @State private var nousLoginErrorMessage: String?
+    @State private var gatewayUsername = ""
+    @State private var gatewayPassword = ""
     @FocusState private var isSetupCodeFocused: Bool
     @FocusState private var isRelayURLFocused: Bool
 
@@ -159,6 +161,8 @@ struct OnboardingFlowView: View {
                     ?? relayConfiguration.relayOriginLabel,
                 isSigningIn: isNousLoginInProgress,
                 signInErrorMessage: nousLoginErrorMessage,
+                username: $gatewayUsername,
+                password: $gatewayPassword,
                 onOpen: { Task { await completeOnboarding() } }
             )
         }
@@ -183,7 +187,7 @@ struct OnboardingFlowView: View {
             return
         }
         do {
-            try await nativeGatewayClient.startInteractiveLogin(presentingFrom: root)
+            try await nativeGatewayClient.startBasicLogin(username: gatewayUsername, password: gatewayPassword)
             pairingStore.completePermissionsOnboarding()
         } catch NativeAuthError.connectFailedAfterLogin {
             // Sign-in itself worked -- don't call this a sign-in failure.
@@ -965,6 +969,8 @@ private struct ReadyStepView: View {
     let hostDisplayName: String
     let isSigningIn: Bool
     let signInErrorMessage: String?
+    @Binding var username: String
+    @Binding var password: String
     let onOpen: () -> Void
 
     var body: some View {
@@ -1002,6 +1008,17 @@ private struct ReadyStepView: View {
                 }
                 .padding(.top, Design.Spacing.lg)
 
+                VStack(spacing: Design.Spacing.sm) {
+                    TextField("Gateway username", text: $username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.username)
+                    SecureField("Gateway password", text: $password)
+                        .textContentType(.password)
+                }
+                .textFieldStyle(.roundedBorder)
+                .padding(.top, Design.Spacing.md)
+
                 if let signInErrorMessage {
                     Text(signInErrorMessage)
                         .font(Design.Typography.caption)
@@ -1021,8 +1038,9 @@ private struct ReadyStepView: View {
                         .padding(.vertical, Design.Spacing.sm + 2)
                     } else {
                         OnboardingPrimaryCta(
-                            title: signInErrorMessage == nil ? "Open app" : "Retry sign-in"
+                            title: signInErrorMessage == nil ? "Sign in" : "Retry sign-in"
                         ) { onOpen() }
+                        .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
                     }
                 }
             }

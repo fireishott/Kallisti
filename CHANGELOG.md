@@ -2,6 +2,12 @@
 
 All notable changes to Kallisti will be documented in this file.
 
+## [0.2.0] - 2026-08-09
+
+### Fixed
+- Native gateway sign-in now uses the self-hosted basic-auth session instead of the retired Nous OAuth provider
+- Kallisti obtains fresh WebSocket tickets from the authenticated HttpOnly session without storing the gateway password
+
 ## [0.2.0] - 2026-08-08
 
 ### Added

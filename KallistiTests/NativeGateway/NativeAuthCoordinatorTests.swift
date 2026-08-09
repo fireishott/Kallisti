@@ -97,6 +97,7 @@ struct NativeAuthCoordinatorTests {
     func mintTicketUsesBearerAuth() async throws {
         let store = MockSecureStoreForAuth()
         store.stored["nativeGatewayAccessToken"] = "my_access_token"
+        store.stored["nativeGatewayAccessTokenExpiresAt"] = "9999999999"
 
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockTicketURLProtocol.self]
@@ -144,6 +145,27 @@ struct NativeAuthCoordinatorTests {
         await #expect(throws: NativeAuthError.self) {
             _ = try await coordinator.mintTicket()
         }
+    }
+
+    // MARK: - Basic password login
+
+    @Test("basic login posts credentials then mints a cookie-authenticated ticket")
+    @MainActor
+    func basicLoginMintsTicket() async throws {
+        let store = MockSecureStoreForAuth()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockBasicLoginURLProtocol.self]
+        let session = URLSession(configuration: config)
+        MockBasicLoginURLProtocol.reset()
+
+        let coordinator = NativeAuthCoordinator(
+            host: "gateway.example", port: 443, session: session, secureStore: store
+        )
+        try await coordinator.loginWithBasic(username: "fihadmin", password: "correct-password")
+        _ = try await coordinator.mintTicket()
+
+        #expect(store.stored["nativeGatewayAuthMode"] == "basic")
+        #expect(await coordinator.currentAccessToken() == nil)
     }
 
     // MARK: - F2: stop() resumes pending continuation with loginCancelled
@@ -295,4 +317,34 @@ private final class MockSecureStoreForAuth: SecureStoreProtocol {
     func delete(key: String) async {
         stored.removeValue(forKey: key)
     }
+}
+
+
+private class MockBasicLoginURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var loginBody: [String: String]?
+    nonisolated(unsafe) static var ticketUsedCookie = false
+    static func reset() { loginBody = nil; ticketUsedCookie = false }
+    override class func canInit(with request: URLRequest) -> Bool {
+        let path = request.url?.path ?? ""
+        if path.hasSuffix("/auth/password-login") {
+            Self.loginBody = request.httpBody.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+        }
+        return path.hasSuffix("/auth/password-login") || path.hasSuffix("/api/auth/ws-ticket")
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        if request.url!.path.hasSuffix("/auth/password-login") {
+            Self.loginBody = request.httpBody.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Set-Cookie": "hermes_session_at=test-session; Path=/; HttpOnly"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        } else {
+            Self.ticketUsedCookie = request.value(forHTTPHeaderField: "Cookie")?.contains("hermes_session_at=test-session") == true
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{\"ticket\":\"basic-ticket\"}".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
 }
