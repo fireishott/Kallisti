@@ -223,7 +223,10 @@ struct GatewayLogsScreen: View {
            let nativeClient = container.nativeGatewayClient {
             do {
                 guard let facadeBase = await nativeClient.facadeBaseURLString(),
-                      let nativeToken = await nativeClient.nativeAccessToken(),
+                      // Build 55: refresh the bearer first — the facade
+                      // verifies against the gateway, and an expired token
+                      // 401s every log fetch even when the socket is healthy.
+                      let nativeToken = await nativeClient.refreshAccessToken(),
                       let url = URL(string: "\(facadeBase)/gw/logs?lines=\(viewAllLines ? 2000 : 200)&level=\(selectedLevel)&source=\(selectedSource)")
                 else {
                     throw NativeGatewayClientError.notConnected

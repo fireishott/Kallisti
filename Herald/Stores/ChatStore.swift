@@ -111,20 +111,28 @@ final class ChatStore {
     /// silently stalled/dropped — see `runStreamingAttemptLegacy`.
     /// Mutable so tests can set it to milliseconds.
     ///
-    /// Set to 60s — large models can take 30-45s to load/prefill before the
-    /// first token, and the connector has its own 120s watchdog. 30s was too
-    /// tight for real-world usage with local models on constrained hardware.
-    /// If no text/reasoning/tool/finished event arrives within this window,
-    /// the job is treated as stalled and parallel polling begins.
-    static var watchdogTimeout: Duration = .seconds(90)
+    /// Set to 300s — large models can take 30-45s to load/prefill before the
+    /// first token, and tool calls like image generation run 2-4 minutes with
+    /// NO streaming events (toolStarted fires once, then silence until
+    /// toolCompleted). 90s was too tight: it killed live image-gen turns
+    /// mid-tool, marked them stalled, and the retry loop resubmitted the SAME
+    /// job — double-billing every slow image request. The gateway allows
+    /// 1800s per turn and the connector 420s per job, so a 300s no-progress
+    /// window still catches real dead streams while letting long tool calls
+    /// finish.
+    static var watchdogTimeout: Duration = .seconds(300)
 
     /// Absolute deadline for a single streaming job from message acceptance to
     /// terminal resolution. After this duration, the polling loop forcibly
     /// resolves the placeholder to a timeout failure, even if heartbeats are
     /// still arriving. This prevents the "infinite thinking" bug where a hung
     /// upstream model keeps the job alive via heartbeats forever.
-    /// Mirrors the relay's max_job_duration_seconds.
-    static var absoluteJobDeadline: Duration = .seconds(180)
+    /// Mirrors the relay's max_job_duration_seconds. Set to 600s (10 min):
+    /// image-generation lanes (Nano Banana, gpt-5.4-image-2) routinely take
+    /// 3-5 minutes end to end; the old 180s absolute deadline fired BEFORE the
+    /// image even rendered, the client declared timeout, and the auto-retry
+    /// resubmitted the generation — wasting real money per loop.
+    static var absoluteJobDeadline: Duration = .seconds(600)
 
     /// Timestamp of the last streaming progress signal. Updated on every
     /// textDelta, reasoningDelta, toolActivity, keepalive, and messageSent.

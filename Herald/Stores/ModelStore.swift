@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Loads the model catalog from the connected Hermes host.
 ///
@@ -49,6 +50,16 @@ final class ModelStore {
     private var lastLoadedAt: Date?
 
     private static let refreshInterval: TimeInterval = 60
+
+    /// Build 55: number of self-healing retries after a native catalog load
+    /// fails while we hold no cached catalog (e.g. first load racing the
+    /// gateway socket during reconnect churn). Capped so a dead gateway
+    /// doesn't spin forever; the retry button and the .connected reload
+    /// handler remain the durable recovery paths.
+    private static let maxNativeRetries = 5
+    private var nativeRetryCount = 0
+
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "ModelStore")
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
@@ -138,6 +149,7 @@ final class ModelStore {
                     )
                 }
                 lastLoadedAt = .now
+                nativeRetryCount = 0
                 return
             } catch {
                 // Build 41: DO NOT fall through to the legacy relay path.
@@ -163,6 +175,24 @@ final class ModelStore {
                     message = error.localizedDescription
                 }
                 errorMessage = message
+                // Build 55: self-healing retry. On the iPad the first
+                // loadModels often runs while the gateway socket is still
+                // coming up (reconnect churn), errors silently, and the pill
+                // stays a bare dot until the user opens the picker. When the
+                // native load fails and we have no cached catalog, schedule a
+                // few short-delay retries instead of waiting for a manual
+                // action. Each attempt re-enters the NATIVE path, which heals
+                // once the socket is actually live.
+                if models.isEmpty, nativeRetryCount < Self.maxNativeRetries {
+                    nativeRetryCount += 1
+                    let attempt = nativeRetryCount
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(3))
+                        guard !Task.isCancelled, self.models.isEmpty else { return }
+                        Self.logger.info("ModelStore retry \\(attempt)/\\(Self.maxNativeRetries) after native load failure")
+                        await self.loadModels(force: true)
+                    }
+                }
                 return
             }
         }
