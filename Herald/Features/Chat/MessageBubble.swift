@@ -367,7 +367,17 @@ struct MessageBubble: View, Equatable {
             TypingDotsView()
             TimelineView(.periodic(from: message.timestamp, by: 1)) { context in
                 let elapsed = context.date.timeIntervalSince(message.timestamp)
-                Text("Thinking… \(formatElapsed(elapsed))")
+                let text: String
+                if elapsed < 5 {
+                    text = "Connecting to Hermes..."
+                } else if elapsed < 30 {
+                    text = "Thinking... \(formatElapsed(elapsed))"
+                } else if elapsed < 60 {
+                    text = "Model is working on your request..."
+                } else {
+                    text = "This is taking longer than usual..."
+                }
+                return Text(text)
                     .brandEyebrow(Design.Colors.tertiaryForeground)
             }
         }

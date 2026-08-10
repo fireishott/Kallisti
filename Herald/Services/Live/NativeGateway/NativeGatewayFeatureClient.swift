@@ -51,31 +51,27 @@ struct NativeGatewayFeatureClient {
 
     /// Hermes Agent version string from `hermes version` via cli.exec.
     func agentVersion() async throws -> String {
-        try await cliExec(argv: ["version"], timeout: 30)
+        let raw = try await cliExec(argv: ["version"], timeout: 30)
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Self.logger.warning("agentVersion: empty response from cli.exec")
+            return ""
+        }
+        return raw
     }
 
     /// Connector version from the HTTP facade /v1/version on the same host.
     /// The facade (port 8010) answers unauthenticated for this endpoint.
     func connectorVersion() async -> String? {
         let gatewayBase = await gatewayBaseURLProvider()
-        guard let base = URL(string: gatewayBase),
-              let host = base.host else { return nil }
-        let scheme = base.scheme == "https" ? "https" : "http"
-        guard let url = URL(string: "\(scheme)://\(host):8010/v1/version") else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 8
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-            struct VersionEnvelope: Decodable {
-                struct VersionData: Decodable { let version: String? }
-                let data: VersionData?
-            }
-            let decoded = try? JSONDecoder().decode(VersionEnvelope.self, from: data)
-            return decoded?.data?.version
-        } catch {
-            return nil
+        guard let base = URL(string: gatewayBase), let host = base.host else { return nil }
+        struct VersionEnvelope: Decodable { struct VersionData: Decodable { let version: String? }; let data: VersionData? }
+        if NativeKallistiClient.isLANHost(host) {
+            let scheme = base.scheme == "https" ? "https" : "http"
+            guard let url = URL(string: "\(scheme)://\(host):8010/v1/version") else { return nil }
+            var request = URLRequest(url: url); request.timeoutInterval = 8
+            do { let (data, response) = try await URLSession.shared.data(for: request); guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }; return try? JSONDecoder().decode(VersionEnvelope.self, from: data).data?.version } catch { return nil }
         }
+        do { let output = try await cliExec(argv: ["shell", "--", "curl", "-s", "http://127.0.0.1:8010/v1/version"], timeout: 10); return try? JSONDecoder().decode(VersionEnvelope.self, from: Data(output.utf8)).data?.version } catch { return nil }
     }
 
     // MARK: - Gateway Status

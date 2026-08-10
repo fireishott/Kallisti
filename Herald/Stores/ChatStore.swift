@@ -122,6 +122,10 @@ final class ChatStore {
     /// finish.
     static var watchdogTimeout: Duration = .seconds(300)
 
+    /// Timeout for turns that have not started streaming any content yet.
+    /// Catches model errors, stream drops, and provider timeouts before any tokens arrive.
+    static var thinkingOnlyTimeout: Duration = .seconds(60)
+
     /// Absolute deadline for a single streaming job from message acceptance to
     /// terminal resolution. After this duration, the polling loop forcibly
     /// resolves the placeholder to a timeout failure, even if heartbeats are
@@ -162,6 +166,8 @@ final class ChatStore {
     private var foregroundElapsedSinceLastProgress: TimeInterval {
         let wall = Date.now.timeIntervalSince(streamingProgressAt)
         guard let bg = streamBackgroundedAt else { return wall }
+        // Don't pause watchdog when no tokens received yet (waitingForHermes).
+        if sendPhase == .waitingForHermes { return wall }
         let suspended = Date.now.timeIntervalSince(bg)
         return max(0, wall - suspended)
     }
@@ -2059,7 +2065,8 @@ final class ChatStore {
                 break
             }
 
-            let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
+            let elapsed = Duration.seconds(self.foregroundElapsedSinceLastProgress)
+            let stallTimeout = self.sendPhase == .waitingForHermes ? Self.thinkingOnlyTimeout : Self.watchdogTimeout
 
             // Build 55: while a tool is in flight, the no-progress stall
             // watchdog is DISABLED. Long tool calls (image gen via Nano
@@ -2069,7 +2076,7 @@ final class ChatStore {
             // it stalled, the outbox auto-retried, and the SAME image gen ran
             // again: double billing and the "took too long" restart loop.
             // Only the absolute deadline above still applies as the hard cap.
-            if elapsed > Self.watchdogTimeout && self.activeToolCount == 0 {
+            if elapsed > stallTimeout && self.activeToolCount == 0 {
                 self.streamingPhase = .stalled
                 stallDetected = true
                 break
