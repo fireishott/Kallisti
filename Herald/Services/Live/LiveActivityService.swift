@@ -33,6 +33,14 @@ final class LiveActivityService {
     private var startedAt: Date?
     /// Current lock-screen phase — only these values enter ActivityKit state.
     private var lockScreenPhase: LiveActivityPhase = .thinking
+    /// Build 55: periodic elapsed-time heartbeat. Tool calls like image
+    /// generation can run 2-4 minutes with zero stream events, and the
+    /// lockscreen used to sit frozen on the phase set at tool start. This
+    /// ticker refreshes the elapsed timer every 10s while an activity is
+    /// live so the lockscreen visibly progresses through long turns. The
+    /// widget also renders Text(timerInterval:) which ticks natively, so the
+    /// heartbeat mainly re-asserts phase/status for the push-capable state.
+    private var heartbeatTask: Task<Void, Never>?
 
     var isAvailable: Bool {
         ActivityAuthorizationInfo().areActivitiesEnabled
@@ -113,6 +121,7 @@ final class LiveActivityService {
             phase: lockScreenPhase, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "chat"
         )
         updateActivity(with: state)
+        startHeartbeatIfNeeded()
     }
 
     // MARK: - Chat / Tool Calls
@@ -155,6 +164,7 @@ final class LiveActivityService {
             phase: .usingTools, elapsedSeconds: elapsed, startDate: startedAt, sessionType: "tool"
         )
         updateActivity(with: state)
+        startHeartbeatIfNeeded()
     }
 
     // MARK: - End
@@ -162,6 +172,7 @@ final class LiveActivityService {
     func endActivity() {
         startedAt = nil
         lockScreenPhase = .done
+        stopHeartbeat()
         guard currentActivity != nil else { return }
         currentActivity = nil
 
@@ -228,6 +239,35 @@ final class LiveActivityService {
                 await activity.update(content)
             }
         }
+    }
+
+    // MARK: - Elapsed-Time Heartbeat
+
+    /// Starts (or keeps) the 10s heartbeat that refreshes the lockscreen
+    /// elapsed timer while an activity is live. Safe to call on every event;
+    /// no-ops when the task already exists.
+    private func startHeartbeatIfNeeded() {
+        guard currentActivity != nil, heartbeatTask == nil else { return }
+        heartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard let self, !Task.isCancelled, self.currentActivity != nil else { break }
+                let elapsed = Int(Date().timeIntervalSince(self.startedAt ?? .now))
+                let state = self.makeContentState(
+                    phase: self.lockScreenPhase,
+                    elapsedSeconds: elapsed,
+                    startDate: self.startedAt,
+                    sessionType: "tool"
+                )
+                self.updateActivity(with: state)
+            }
+            self?.heartbeatTask = nil
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
     }
 
     // MARK: - App Lifecycle
