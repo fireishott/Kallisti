@@ -2520,6 +2520,23 @@ final class ChatStore {
         InFlightCheckpointStore.clear()
     }
 
+    // MARK: - Draft Persistence
+
+    /// Draft text per conversation, survives view recreation during reconnects.
+    var drafts: [UUID: String] = [:]
+
+    func saveDraft(_ text: String, for conversationID: UUID) {
+        drafts[conversationID] = text
+    }
+
+    func loadDraft(for conversationID: UUID) -> String {
+        drafts[conversationID, default: ""]
+    }
+
+    func clearDraft(for conversationID: UUID) {
+        drafts.removeValue(forKey: conversationID)
+    }
+
     // MARK: - Outbox Queue (Build 31 → Build 33 WSB durable)
 
     /// Enqueue a message to be sent after the active turn finishes.

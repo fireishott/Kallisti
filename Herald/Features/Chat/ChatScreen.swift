@@ -15,8 +15,15 @@ struct ChatScreen: View {
     @Environment(SessionListStore.self) private var sessionListStore
     @Binding var isSessionDrawerOpen: Bool
 
-    @State private var messageText = ""
     @State private var pendingAttachments: [PendingAttachment] = []
+
+    /// Backed by ChatStore so the draft survives view recreation during reconnects.
+    private var messageTextBinding: Binding<String> {
+        Binding(
+            get: { chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID()) },
+            set: { chatStore.saveDraft($0, for: chatStore.conversation?.id ?? UUID()) }
+        )
+    }
     @State private var showClearConfirmation = false
     @State private var showStatusCard = false
     @State private var scrollProxy: ScrollViewProxy?
@@ -86,7 +93,7 @@ struct ChatScreen: View {
                 }
                 messageList
                 ChatInputBar(
-                    text: $messageText,
+                    text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
                     isStreaming: chatStore.isStreaming,
                     isFocused: $isComposerFocused,
@@ -100,12 +107,12 @@ struct ChatScreen: View {
                         // the text before the composer is cleared, and the
                         // submit phase runs immediately (it no-ops while a job
                         // is active and the FIFO chain picks the item up after).
-                        let frozenText = messageText
+                        let frozenText = chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID())
                         let frozenAttachments = pendingAttachments
                         let conversationID = chatStore.conversation?.id
                         Task {
                             guard chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments) != nil else { return }
-                            messageText = ""
+                            if let cid = conversationID { chatStore.clearDraft(for: cid) }
                             pendingAttachments = []
                             await chatStore.submitNextEligible(for: conversationID)
                         }
@@ -1039,7 +1046,7 @@ struct ChatScreen: View {
     // MARK: - Actions
 
     private func sendMessage() {
-        let content = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID()).trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard !content.isEmpty || !attachments.isEmpty else { return }
 
@@ -1085,7 +1092,7 @@ struct ChatScreen: View {
             }
 
             // Now safe to clear — the outbox has it.
-            messageText = ""
+            if let cid = conversationID { chatStore.clearDraft(for: cid) }
             pendingAttachments = []
 
             // Phase 2: submit (async; may queue behind an active job and
@@ -1132,7 +1139,7 @@ struct ChatScreen: View {
 
         // Local commands dispatch synchronously in-app, so the composer is
         // consumed on tap.
-        messageText = ""
+        if let cid = chatStore.conversation?.id { chatStore.clearDraft(for: cid) }
 
         switch command.name {
         case "new", "reset":
@@ -1173,7 +1180,7 @@ struct ChatScreen: View {
     /// for unreachability stays editable for retry.
     private func sendSlashAsMessage(_ text: String) async {
         if refuseSendIfUnreachable() { return }
-        messageText = ""
+        if let cid = chatStore.conversation?.id { chatStore.clearDraft(for: cid) }
         await chatStore.sendMessage(text, attachments: [])
         scrollToBottom()
     }
