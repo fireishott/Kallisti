@@ -354,7 +354,20 @@ struct HeraldSelectorSheet: View {
         switchingModelID = model.id
         Task {
             do {
-                try await modelStore.switchModel(to: model.name, provider: model.provider)
+                // Build 60: race the switch against a 35s timeout so the
+                // spinner never hangs forever on a phantom socket.
+                try await withThrowingTaskGroup(of: String.self) { group in
+                    group.addTask {
+                        try await modelStore.switchModel(to: model.name, provider: model.provider)
+                        return "done"
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(35))
+                        throw CancellationError()
+                    }
+                    let _ = try await group.next()!
+                    group.cancelAll()
+                }
                 isSwitching = false
                 // If --global was toggled on, send /model as a chat message.
                 // Same formatting rules as switchModel: aggregator names are

@@ -282,19 +282,17 @@ final class AppContainer {
             // stored Nous token) to resolve one way or the other before
             // deciding whether to show onboarding or the main app.
             //
-            // Build 55: use hasConnectedOnce, NOT `connectionStatus !=
-            // .connecting`. connectionStatus flips to .connecting on EVERY
-            // reconnect, so the old check made AppRootView re-show the full
-            // opaque loading surface mid-session whenever the socket dropped
-            // (which the 8s ping timeout triggered during long tool calls).
-            // The surface swap tore AdaptiveRootView down and rebuilt it,
-            // wiping the composer draft (@State messageText) and re-syncing
-            // the stale router.selectedTab — the "random refreshing that
-            // drops you in Settings and eats your typed text" bug. Once the
-            // app has connected at least once, reconnects stay in the chat
-            // UI; the surface only appears on genuine cold launch.
+            // Build 60: the old OR (hasConnectedOnce || connectionStatus != .connecting)
+            // caused a flicker storm on cold launch. On app start, connectionStatus is
+            // .disconnected (default), so .disconnected != .connecting = true, which
+            // made isLaunchReady true BEFORE any connect attempt. Then connect() sets
+            // .connecting (isLaunchReady=false, loading surface shows), which fails and
+            // sets .reconnecting (isLaunchReady=true, loading surface hides), then the
+            // next attempt sets .connecting again -- the surface flickers on every
+            // reconnect cycle. Fix: single condition. Before first connect = always
+            // show surface. After first connect = never show surface (connection
+            // banner handles mid-session reconnect communication).
             return nativeGatewayClient.hasConnectedOnce
-                || nativeGatewayClient.connectionStatus != .connecting
         }
         if !pairingStore.isPaired { return true }
         if isInitialized && !sessionStore.isBootstrapping { return true }
