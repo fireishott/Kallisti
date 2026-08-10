@@ -96,11 +96,24 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
 
     /// Bridges sendPing's callback while guaranteeing one continuation resume
     /// even if URLSession invokes the callback more than once.
+    ///
+    /// Build 53: the callback is not guaranteed to fire for a half-dead
+    /// socket (TCP alive, no response). Without a timeout the keepalive
+    /// Task hangs forever on this continuation, the phantom socket is never
+    /// torn down, and the app sits "connected" while every request fails
+    /// with transportClosed - the constant-disconnect experience. The gate
+    /// makes a late callback a no-op, so racing the timeout is safe.
+    private static let pingTimeout: Duration = .seconds(8)
+
     private static func oneShotSendPing(_ task: URLSessionWebSocketTask) async -> Bool {
         await withCheckedContinuation { continuation in
             let gate = PingContinuationGate(continuation)
             task.sendPing { error in
                 gate.resume(error == nil)
+            }
+            Task {
+                try? await Task.sleep(for: Self.pingTimeout)
+                gate.resume(false)
             }
         }
     }

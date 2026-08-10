@@ -561,7 +561,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         themePreset: ThemePreset = .kallisti,
         colorSchemePreference: ColorSchemePreference = .system,
         chatWallpaper: ChatWallpaper = .default,
-        showAllDevices: Bool = false,
+        showAllDevices: Bool = true,
         ttsEnabled: Bool = false,
         ttsVoice: String = "Mia",
         ttsAutoSpeak: Bool = false,
@@ -658,7 +658,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         }
         colorSchemePreference = try container.decodeIfPresent(ColorSchemePreference.self, forKey: .colorSchemePreference) ?? .system
         chatWallpaper = try container.decodeIfPresent(ChatWallpaper.self, forKey: .chatWallpaper) ?? .default
-        showAllDevices = try container.decodeIfPresent(Bool.self, forKey: .showAllDevices) ?? false
+        showAllDevices = try container.decodeIfPresent(Bool.self, forKey: .showAllDevices) ?? true
         ttsEnabled = try container.decodeIfPresent(Bool.self, forKey: .ttsEnabled) ?? false
         ttsVoice = try container.decodeIfPresent(String.self, forKey: .ttsVoice) ?? "Mia"
         ttsAutoSpeak = try container.decodeIfPresent(Bool.self, forKey: .ttsAutoSpeak) ?? false

@@ -770,6 +770,16 @@ final class AppContainer {
             Task { @MainActor [weak container] in
                 guard let container else { return }
                 container.chatStore.updateConnectionStatus(status)
+                // Build 53: re-register push the moment the native gateway
+                // comes back online. The connector's stored device token can
+                // go stale (test runs, connector restarts, token rotation) and
+                // the app previously only re-registered at launch or on APNs
+                // permission grant - so Settings could sit at "Not Registered"
+                // indefinitely even though the host is healthy. Registration
+                // is idempotent and cheap (single POST, no-op on empty token).
+                if status == .connected {
+                    await container.registerStoredPushTokenIfNeeded()
+                }
             }
         }
 

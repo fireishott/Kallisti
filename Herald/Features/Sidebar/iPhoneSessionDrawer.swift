@@ -232,12 +232,11 @@ struct iPhoneSessionDrawer: View {
     // MARK: - All Devices Toggle
 
     private var allDevicesToggleRow: some View {
-        // Native mode: the gateway session list already spans the whole host
-        // (one profile = the shared session DB). There is no per-device
-        // filter server-side, so the toggle would be a no-op - hide it.
-        if container.nativeGatewayClient != nil {
-            return AnyView(EmptyView())
-        }
+        // Build 53: the toggle now works in native mode too. The gateway has
+        // no server-side per-device filter, so the app filters client-side:
+        // OFF shows only sessions this device created (source ios/tui), ON
+        // shows every session on the shared host. Same semantic as the old
+        // relay toggle, just enforced locally.
         return AnyView(
             Toggle("All Devices", isOn: Bindable(sessionStore).showAllDevices)
                 .font(.caption)
