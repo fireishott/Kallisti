@@ -2,16 +2,61 @@ import SwiftUI
 
 struct AppRootView: View {
     @Environment(AppContainer.self) private var container
-    @State private var showLongWait = false
 
-    /// Whether the connection overlay should be shown.
-    private var showConnectionOverlay: Bool {
+    /// Whether the single opaque loading surface should be shown.
+    /// Covers: initial launch, reconnect, auth, verification, restoration,
+    /// and any transient error states (suppresses "Cannot connect" and
+    /// "Model unavailable" during recovery).
+    ///
+    /// The loading surface is NOT shown for terminal unrecoverable errors
+    /// (authFailure, networkFailure) - those need visible error UI with
+    /// recovery actions, not an opaque spinner.
+    private var showLoadingSurface: Bool {
+        let terminalLegacyFailure: Bool
+        switch container.sessionStore.launchState {
+        case .authFailure, .networkFailure:
+            terminalLegacyFailure = true
+        default:
+            terminalLegacyFailure = false
+        }
+        let nativeClient = container.nativeGatewayClient
+        let status = nativeClient?.connectionStatus
+        return Self.shouldShowLoadingSurface(
+            isNative: nativeClient != nil,
+            isLaunchReady: container.isLaunchReady,
+            isRecovering: status == .connecting || status == .reconnecting,
+            hasStoredLogin: nativeClient?.hasStoredLogin ?? false,
+            isBootstrapping: container.sessionStore.isBootstrapping,
+            hasTerminalLegacyFailure: terminalLegacyFailure
+        )
+    }
+
+    nonisolated static func shouldShowLoadingSurface(
+        isNative: Bool,
+        isLaunchReady: Bool,
+        isRecovering: Bool,
+        hasStoredLogin: Bool,
+        isBootstrapping: Bool,
+        hasTerminalLegacyFailure: Bool
+    ) -> Bool {
+        if isNative {
+            return !isLaunchReady || (isRecovering && hasStoredLogin)
+        }
+        return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
+    }
+
+    /// The stage label for the loading surface.
+    private var loadingStage: ConnectionStage {
+        guard let nativeClient = container.nativeGatewayClient else {
+            return .preparing
+        }
+        return nativeClient.connectionStage
+    }
+
+    private var showResetButton: Bool {
         guard let nativeClient = container.nativeGatewayClient else { return false }
-        let status = nativeClient.connectionStatus
-        // Show overlay during connecting/reconnecting with stored login,
-        // or during initial connecting before isLaunchReady.
-        return (status == .connecting || status == .reconnecting)
-            && nativeClient.hasStoredLogin
+        return nativeClient.hasStoredLogin
+            && nativeClient.connectionStatus != .connected
     }
 
     var body: some View {
@@ -19,18 +64,22 @@ struct AppRootView: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            if container.isLaunchReady {
+            if showLoadingSurface {
+                // Single opaque loading surface: covers launch, reconnect,
+                // auth, verification, restoration, and initial model/profile
+                // readiness. Truthful stages from actual work -- no fake timers.
+                LoadingSurface(
+                    stage: loadingStage,
+                    reconnectAttempt: container.nativeGatewayClient?.currentReconnectAttempt ?? 0,
+                    onResetConnection: showResetButton ? {
+                        Task { await container.nativeGatewayClient?.resetConnection() }
+                    } : nil
+                )
+                .transition(.opacity)
+                .zIndex(10)
+            } else {
                 Group {
                     if let nativeClient = container.nativeGatewayClient {
-                        // Native gateway: pairing is irrelevant (no connector
-                        // relay/pairing-code handshake). Gate on hasStoredLogin,
-                        // not raw connectionStatus -- a socket that drops after
-                        // a successful login (idle reap, cell handoff, a flaky
-                        // reconnect) must not bounce the user back through
-                        // onboarding and a redundant Nous OAuth login while
-                        // NativeKallistiClient's own background reconnect is
-                        // already retrying with the stored token. Onboarding
-                        // is for devices that have never logged in at all.
                         if nativeClient.connectionStatus == .connected || nativeClient.hasStoredLogin {
                             AdaptiveRootView()
                         } else {
@@ -52,164 +101,72 @@ struct AppRootView: View {
                     }
                 }
                 .transition(.opacity)
-
-                // Full-screen connection overlay above app content.
-                if showConnectionOverlay, let nativeClient = container.nativeGatewayClient {
-                    ConnectionOverlay(
-                        stage: nativeClient.connectionStage,
-                        reconnectAttempt: nativeClient.currentReconnectAttempt,
-                        isRecoverable: nativeClient.hasStoredLogin,
-                        onResetConnection: nativeClient.hasStoredLogin ? {
-                            Task { await nativeClient.resetConnection() }
-                        } : nil
-                    )
-                    .transition(.opacity)
-                    .zIndex(10)
-                }
-            } else {
-                // Connecting screen while app initializes
-                VStack(spacing: Design.Spacing.lg) {
-                    Spacer()
-
-                    // Pulsing Herald icon
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 48))
-                        .foregroundStyle(Design.Brand.accent)
-                        .symbolEffect(.pulse, options: .repeating)
-
-                    VStack(spacing: Design.Spacing.xs) {
-                        Text("Connecting to Kallisti…")
-                            .font(Design.Typography.sectionTitle)
-                            .foregroundStyle(Design.Colors.foreground)
-
-                        Text("Establishing secure connection")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                    }
-
-                    ProgressView()
-                        .tint(Design.Brand.accent)
-                        .padding(.top, Design.Spacing.sm)
-
-                    if showLongWait {
-                        Text("This is taking longer than usual.\nCheck that your Kallisti host is online.")
-                            .font(Design.Typography.caption)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                            .multilineTextAlignment(.center)
-                            .padding(.top, Design.Spacing.md)
-                            .transition(.opacity)
-                    }
-
-                    Spacer()
-                }
-                .transition(.opacity)
             }
         }
         .animation(Design.Motion.standard, value: container.pairingStore.isPaired)
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
         .animation(Design.Motion.standard, value: container.nativeGatewayClient?.connectionStatus)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
-        .animation(Design.Motion.standard, value: container.sessionStore.launchState)
-        .task {
-            try? await Task.sleep(for: .seconds(5))
-            if !container.isLaunchReady {
-                withAnimation { showLongWait = true }
-            }
-        }
     }
 
     private var authFailureView: some View {
         VStack(spacing: Design.Spacing.lg) {
             Spacer()
-
             Image(systemName: "exclamationmark.lock.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(Design.Colors.danger)
-
-            VStack(spacing: Design.Spacing.xs) {
-                Text("Authentication Failed")
-                    .font(Design.Typography.sectionTitle)
-                    .foregroundStyle(Design.Colors.foreground)
-
-                Text("Your session has expired and could not be renewed.")
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-                    .multilineTextAlignment(.center)
+            Text("Authentication Failed")
+                .font(Design.Typography.sectionTitle)
+                .foregroundStyle(Design.Colors.foreground)
+            Text("Your session has expired and could not be renewed.")
+                .font(Design.Typography.callout)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .multilineTextAlignment(.center)
+            Button("Re-pair Device") {
+                Task { await container.repairFromAuthFailure() }
             }
-
-            VStack(spacing: Design.Spacing.md) {
-                Button {
-                    Task { await container.repairFromAuthFailure() }
-                } label: {
-                    Text("Re-pair Device")
-                        .font(Design.Typography.body)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Design.Brand.accent)
-            }
-            .padding(.horizontal, Design.Spacing.xl)
-
+            .buttonStyle(.borderedProminent)
+            .tint(Design.Brand.accent)
             Spacer()
         }
+        .padding(.horizontal, Design.Spacing.xl)
     }
 
     private func networkFailureView(message: String) -> some View {
         VStack(spacing: Design.Spacing.lg) {
             Spacer()
-
             Image(systemName: "wifi.exclamationmark")
                 .font(.system(size: 48))
                 .foregroundStyle(Design.Colors.warning)
-
-            VStack(spacing: Design.Spacing.xs) {
-                Text("Connection Failed")
-                    .font(Design.Typography.sectionTitle)
-                    .foregroundStyle(Design.Colors.foreground)
-
-                Text(message)
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, Design.Spacing.xl)
+            Text("Connection Failed")
+                .font(Design.Typography.sectionTitle)
+                .foregroundStyle(Design.Colors.foreground)
+            Text(message)
+                .font(Design.Typography.callout)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .multilineTextAlignment(.center)
+            Button("Retry") {
+                Task { await container.retryInitialization() }
             }
-
-            VStack(spacing: Design.Spacing.md) {
-                Button {
-                    Task { await container.retryInitialization() }
-                } label: {
-                    Text("Retry")
-                        .font(Design.Typography.body)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Design.Brand.accent)
-
-                Button {
-                    Task { await container.repairFromAuthFailure() }
-                } label: {
-                    Text("Re-pair Device")
-                        .font(Design.Typography.body)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(Design.Brand.accent)
+            Button("Re-pair Device") {
+                Task { await container.repairFromAuthFailure() }
             }
-            .padding(.horizontal, Design.Spacing.xl)
-
+            .buttonStyle(.bordered)
             Spacer()
         }
+        .padding(.horizontal, Design.Spacing.xl)
     }
 }
 
-/// Full-screen opaque overlay shown while the native gateway is
-/// connecting, reconnecting, or relaunching with stored credentials.
-/// Suppresses transient error messages (like "Cannot connect to gateway")
-/// by presenting real-time truthful stages derived from actual connection
-/// work, not fake timers.
-struct ConnectionOverlay: View {
+/// Single opaque loading surface covering launch, reconnect, auth,
+/// verification, restoration, and initial model/profile readiness.
+/// Truthful stages from actual work -- no fake timers. Suppresses
+/// transient "Cannot connect" and "Model unavailable" states.
+struct LoadingSurface: View {
     let stage: ConnectionStage
     let reconnectAttempt: Int
-    let isRecoverable: Bool
     let onResetConnection: (() -> Void)?
 
     @State private var showResetButton = false
@@ -282,9 +239,9 @@ struct ConnectionOverlay: View {
             // recoverable state -- including .preparing during repeated
             // failures where the stage never advances.
             showResetButton = false
-            guard isRecoverable, stage != .connected else { return }
-            try? await Task.sleep(for: .seconds(5))
-            if isRecoverable && stage != .connected {
+            guard stage != .connected else { return }
+            try? await Task.sleep(for: .seconds(8))
+            if stage != .connected {
                 withAnimation { showResetButton = true }
             }
         }

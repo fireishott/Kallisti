@@ -60,6 +60,26 @@ final class ProfileStore {
         return profiles.first { $0.name == name }
     }
 
+    /// The user-facing display name for the active profile.
+    ///
+    /// Sole "default" profile → "Ignyte" (known persona name for this
+    /// consolidated single-profile deployment). Multiple profiles or
+    /// non-default profiles retain their own name. The internal
+    /// `activeProfileName` stays "default" for routing - only the display
+    /// surface uses this.
+    ///
+    /// Before catalog load: `profiles` is empty, `activeProfileName` may
+    /// be "default" from UserDefaults cache. This still resolves to "Ignyte"
+    /// so the chat input bar and profile chip never flash "default".
+    var displayProfileName: String {
+        Self.resolveDisplayName(activeProfileName: activeProfileName, profileCount: profiles.count)
+    }
+
+    nonisolated static func resolveDisplayName(activeProfileName: String?, profileCount: Int) -> String {
+        let name = activeProfileName ?? "default"
+        return name == "default" && profileCount <= 1 ? "Ignyte" : name
+    }
+
     func loadProfiles(force: Bool = false) async {
         if !force,
            let lastLoadedAt,
@@ -85,7 +105,7 @@ final class ProfileStore {
                 for rawLine in output.components(separatedBy: .newlines) {
                     let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !line.isEmpty, !line.hasPrefix("Profile"),
-                          !line.hasPrefix("─"), !line.hasPrefix("—"),
+                          !line.hasPrefix("─"), !line.hasPrefix("-"),
                           !line.hasPrefix("-")
                     else { continue }
                     let isActive = line.hasPrefix("◆")
@@ -127,12 +147,12 @@ final class ProfileStore {
                 path: "profiles",
                 accessToken: token
             )
-            // Only replace profiles after new data arrives — never set
+            // Only replace profiles after new data arrives - never set
             // profiles = [] as an intermediate step, which would cause the
             // profile/model chips to vanish mid-session.
             profiles = response.profiles
             // Only update activeProfileName if the server actually returns one.
-            // A nil response means the connector doesn't track active profiles —
+            // A nil response means the connector doesn't track active profiles -
             // preserve our local state so the chip doesn't vanish.
             if let name = response.activeProfile?.name {
                 activeProfileName = name
@@ -148,11 +168,11 @@ final class ProfileStore {
     /// Optimistically marks a profile active and calls the relay endpoint
     /// to persist the selection on the host.
     ///
-    /// Primary path: ``POST /v1/profile`` — the relay forwards to the
+    /// Primary path: ``POST /v1/profile`` - the relay forwards to the
     /// connector's ``profile.set`` RPC, which writes config.yaml and
     /// restarts the Hermes gateway so the new profile takes effect.
     ///
-    /// Fallback: ``POST /gw/profile/switch`` — gateway control plane,
+    /// Fallback: ``POST /gw/profile/switch`` - gateway control plane,
     /// used when the connector RPC path is unavailable.
     func switchProfile(to name: String) async throws {
         // NATIVE path: `hermes profile use <name>` over cli.exec. This is the
@@ -204,7 +224,7 @@ final class ProfileStore {
         let profile: String?
     }
 
-    /// Optimistically marks a profile active — used when the chat path
+    /// Optimistically marks a profile active - used when the chat path
     /// detects a profile switch in the agent's response text.
     func markActive(_ name: String) {
         activeProfileName = name

@@ -56,6 +56,30 @@ def test_native_media_resolves_stable_and_removed_legacy_profile_paths(tmp_path,
     assert untyped.status_code in {403, 415}
 
 
+def test_native_media_profile_overlay_falls_back_to_consolidated_images(tmp_path, monkeypatch):
+    base_home = tmp_path / ".hermes"
+    profile_home = base_home / "profiles" / "ignyte"
+    profile_home.mkdir(parents=True)
+    image = base_home / "images" / "mark_stoned_cartoon.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    with patch(
+        "kallisti_connector.http_facade.require_native_or_paired_auth",
+        new=AsyncMock(return_value="token"),
+    ):
+        with TestClient(app) as client:
+            response = client.get(
+                "/v1/native/media",
+                params={"path": "images/mark_stoned_cartoon.png"},
+            )
+
+    assert response.status_code == 200
+    assert response.content == image.read_bytes()
+    assert response.headers["content-type"] == "image/png"
+
+
 def test_native_auth_forwards_gateway_session_cookie():
     from kallisti_connector.http_facade import require_native_or_paired_auth
 

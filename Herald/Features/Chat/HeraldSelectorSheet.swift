@@ -106,7 +106,7 @@ struct HeraldSelectorSheet: View {
                     Circle()
                         .fill(hostStore.isHostOnline ? Design.Colors.success : Design.Colors.warning)
                         .frame(width: 6, height: 6)
-                    Text(profileStore.activeProfileName ?? "default")
+                    Text(profileStore.displayProfileName)
                         .font(Design.Typography.headline)
                         .foregroundStyle(Design.Colors.foreground)
                 }

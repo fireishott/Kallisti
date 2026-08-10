@@ -131,6 +131,38 @@ final class ChatStore {
     /// The continuous watchdog checks this to detect mid-stream stalls.
     private var streamingProgressAt: Date = .now
 
+    /// When the app was backgrounded while a stream was in flight (if any).
+    /// The watchdog pauses while the app is suspended - iOS freezes the task,
+    /// no events can arrive, and counting that wall time would make every
+    /// screen-lock look like a stall. On foreground we resume the session
+    /// (desktop parity) and keep waiting instead of declaring "took too long".
+    private var streamBackgroundedAt: Date?
+
+    /// Foreground-only elapsed time since the last progress signal. If the
+    /// app was backgrounded mid-stream, suspended wall time is excluded so
+    /// the watchdog only fires after real, user-visible silence.
+    private var foregroundElapsedSinceLastProgress: TimeInterval {
+        let wall = Date.now.timeIntervalSince(streamingProgressAt)
+        guard let bg = streamBackgroundedAt else { return wall }
+        let suspended = Date.now.timeIntervalSince(bg)
+        return max(0, wall - suspended)
+    }
+
+    /// Called when the app enters background while a stream may be in flight.
+    /// Records the suspension start so the watchdog excludes frozen wall time
+    /// and recoverStalledStream knows a resume may be needed.
+    func markStreamBackgrounded() {
+        guard streamBackgroundedAt == nil else { return }
+        streamBackgroundedAt = .now
+    }
+
+    /// Called when the app returns to foreground. Clears the suspension mark;
+    /// recoverStalledStream (invoked right after) decides whether to resume
+    /// the parked session or let the watchdog fire.
+    func markStreamForegrounded() {
+        streamBackgroundedAt = nil
+    }
+
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
     // Buffer deltas per-placeholder in an Array<String> (avoids O(n²) inline
     // concat) and flush onto the placeholder at ~30fps so every append triggers
@@ -2060,7 +2092,7 @@ final class ChatStore {
                 return .stalled(jobID: jobID)
             }
 
-            let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
+            let elapsed = Duration.seconds(self.foregroundElapsedSinceLastProgress)
             if elapsed > Self.watchdogTimeout {
                 let jobID = self.acceptedJobID ?? UUID()
                 Self.logger.warning(
@@ -2120,7 +2152,7 @@ final class ChatStore {
     /// The user-facing failure copy, using the active profile name when
     /// available and falling back to "Kallisti".
     func failureMessage(for category: String? = nil) -> String {
-        let name = profileStore?.activeProfile?.name ?? "Kallisti"
+        let name = profileStore?.displayProfileName ?? "Ignyte"
         switch category {
         case "context_exceeded":
             return "Session too long. Start a new chat."
@@ -2238,7 +2270,29 @@ final class ChatStore {
                 persistence.saveConversationCache(conversation)
                 onConversationChanged?()
             }
+            return
         }
+
+        // Build 52 (sleep recovery): the server does NOT have a completed
+        // response yet. Two possibilities: (a) the job is still running
+        // server-side - the gateway parked the live session when our WS died
+        // and the job kept billing; (b) the job died with the transport. Ask
+        // the gateway to resume the parked session (desktop parity). If it is
+        // still running, reset the watchdog clock and keep the stream alive -
+        // terminal events flow again on the reattached transport and the
+        // consumer finishes normally. Only fall through to a stall when the
+        // session is genuinely gone.
+        let resumedRunning = await heraldClient.resumeActiveSessionIfNeeded()
+        if resumedRunning {
+            appendLog(level: .info, "Session still running server-side after suspension - resumed, keeping stream alive")
+            streamingProgressAt = .now
+            streamBackgroundedAt = nil
+            // Keep streamingPhase as-is (streaming) so the UI keeps the
+            // thinking indicator; the watchdog gets a fresh window.
+            return
+        }
+        // Genuinely stalled: leave the stall detection to the watchdog /
+        // absolute deadline path. Nothing else to merge.
     }
 
     // MARK: - Gateway restart suspension (Build 33)

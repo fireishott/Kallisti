@@ -58,10 +58,7 @@ struct ChatInputBar: View {
     }
 
     private var placeholderText: String {
-        if let profile = profileStore.activeProfileName {
-            return "Reply to \(profile)"
-        }
-        return "Reply to Herald"
+        return "Reply to \(profileStore.displayProfileName)"
     }
 
     /// Parses the command and any trailing argument from the text field.

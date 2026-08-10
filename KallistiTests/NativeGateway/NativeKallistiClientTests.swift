@@ -326,6 +326,57 @@ struct NativeKallistiClientTests {
 
         await sut.disconnect()
     }
+
+    // MARK: - facadeBaseURL: LAN vs public HTTPS
+
+    @Test("facadeBaseURL for LAN host adds :8010")
+    func facadeBaseURLForLAN() {
+        let result = NativeKallistiClient.facadeBaseURL(for: "http://192.168.1.10:9119")
+        #expect(result == "http://192.168.1.10:8010")
+    }
+
+    @Test("facadeBaseURL for 10.x.x.x LAN host adds :8010")
+    func facadeBaseURLForRFC1910() {
+        let result = NativeKallistiClient.facadeBaseURL(for: "http://10.0.0.5:9119")
+        #expect(result == "http://10.0.0.5:8010")
+    }
+
+    @Test("facadeBaseURL for .local host adds :8010")
+    func facadeBaseURLForMDNS() {
+        let result = NativeKallistiClient.facadeBaseURL(for: "http://fihadmin.local:9119")
+        #expect(result == "http://fihadmin.local:8010")
+    }
+
+    @Test("facadeBaseURL for public HTTPS omits port")
+    func facadeBaseURLForPublicHTTPS() {
+        let result = NativeKallistiClient.facadeBaseURL(for: "https://hermes-relay.fihonline.net")
+        #expect(result == "https://hermes-relay.fihonline.net")
+    }
+
+    @Test("facadeBaseURL for public HTTP omits port")
+    func facadeBaseURLForPublicHTTP() {
+        let result = NativeKallistiClient.facadeBaseURL(for: "http://relay.example.com")
+        #expect(result == "http://relay.example.com")
+    }
+
+    @Test("facadeBaseURL returns nil for invalid URL")
+    func facadeBaseURLInvalid() {
+        #expect(NativeKallistiClient.facadeBaseURL(for: "not-a-url") == nil)
+    }
+
+    // MARK: - isLANHost
+
+    @Test("isLANHost detects RFC1918 and mDNS")
+    func isLANHostDetection() {
+        #expect(NativeKallistiClient.isLANHost("192.168.1.1"))
+        #expect(NativeKallistiClient.isLANHost("10.0.0.1"))
+        #expect(NativeKallistiClient.isLANHost("172.16.0.1"))
+        #expect(NativeKallistiClient.isLANHost("fihadmin.local"))
+        #expect(!NativeKallistiClient.isLANHost("hermes-relay.fihonline.net"))
+        #expect(!NativeKallistiClient.isLANHost("relay.example.com"))
+    }
+
+
 }
 
 /// Answers every `/api/auth/ws-ticket` POST with a fixed ticket so

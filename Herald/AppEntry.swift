@@ -245,12 +245,22 @@ struct HeraldApp: App {
                 .task { await container.initialize() }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
+                        // Build 52 (sleep recovery): tell ChatStore the app is
+                        // foregrounded again so the streaming watchdog stops
+                        // excluding suspended wall time and the resume path
+                        // (session.resume) can reattach a parked session.
+                        container.chatStore.markStreamForegrounded()
                         Task { await container.handleAppDidBecomeActive() }
                         // Reset badge count when the user returns to the app
                         UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
                         // End the keep-awake window started when we backgrounded
                         endGatewayKeepAwake()
                     } else if newPhase == .background {
+                        // Build 52 (sleep recovery): a stream in flight when we
+                        // background is frozen by iOS. Exclude this wall time
+                        // from the watchdog and remember that a resume may be
+                        // needed on foreground.
+                        container.chatStore.markStreamBackgrounded()
                         Task {
                             await container.reportAppStateIfNeeded("background")
                             // Stop real-time host status stream when backgrounded

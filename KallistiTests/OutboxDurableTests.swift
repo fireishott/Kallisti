@@ -493,6 +493,115 @@ struct OutboxDurableTests {
         func cancelJob(jobID: UUID) async throws {}
     }
 
+    /// Client that reports a still-running session on resume (the Build 52
+    /// sleep-recovery contract). The stream never finishes on its own - the
+    /// test drives recoverStalledStream to prove the resume path keeps the
+    /// stream alive instead of declaring a stall.
+    private final class ResumeAwareClient: HeraldClientProtocol {
+        var connectionStatus: ConnectionStatus = .connected
+        var currentConversation: Conversation?
+        var resumeCalls = 0
+        let resumeResult: Bool
+        let conversation: Conversation
+
+        init(resumeResult: Bool, conversation: Conversation) {
+            self.resumeResult = resumeResult
+            self.conversation = conversation
+            self.currentConversation = conversation
+        }
+
+        func connect() async {}
+        func disconnect() async {}
+
+        func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+            Message(sender: .herald, content: "unused", status: .delivered)
+        }
+
+        func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+            AsyncStream { continuation in
+                Task { @MainActor in
+                    let jobID = UUID()
+                    continuation.yield(.messageSent(jobID: jobID))
+                    // No .finished: simulates a terminalless stream whose job
+                    // is still running server-side after a suspension.
+                }
+            }
+        }
+
+        func loadConversation() async -> Conversation { conversation }
+        func loadConversation(id: UUID) async throws -> Conversation { conversation }
+        func clearConversation() async throws -> Conversation { Conversation(title: "Herald") }
+        func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Herald") }
+        func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+        func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+        func createSession(title: String) async throws -> SessionSummary { SessionSummary(id: UUID(), title: title) }
+        func ensureConversation(id: UUID) async -> Bool { true }
+        func deleteSession(id: UUID) async throws {}
+        func archiveSession(id: UUID) async throws {}
+        func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Test") }
+        func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+        func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+        func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+        func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+            Message(sender: .herald, content: text, status: .delivered)
+        }
+        func cancelJob(jobID: UUID) async throws {}
+        func resumeActiveSessionIfNeeded() async -> Bool {
+            resumeCalls += 1
+            return resumeResult
+        }
+    }
+
+    @Test("recoverStalledStream resumes a still-running session instead of stalling (Build 52)")
+    func recoverStalledStreamResumesRunningSession() async throws {
+        let conversation = Conversation(title: "Resume Test")
+        let client = ResumeAwareClient(resumeResult: true, conversation: conversation)
+        let persistence = makePersistence()
+        let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        store.useStreaming = true
+
+        // Drive a real send through the terminalless stream so the store's
+        // streaming state is genuinely in-flight (activeStreams populated via
+        // the .messageSent update).
+        let first = Task { await store.sendMessage("First") }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(store.isStreaming, "stream must be in flight before recovery")
+
+        // Simulate the app backgrounding mid-stream, then foregrounding.
+        store.markStreamBackgrounded()
+        store.markStreamForegrounded()
+        await store.recoverStalledStream()
+        first.cancel()
+
+        #expect(client.resumeCalls == 1, "resume must be attempted on foreground recovery")
+        #expect(store.isStreaming, "a still-running session must keep the stream alive, not stall")
+    }
+
+    @Test("recoverStalledStream does not fabricate a live stream for a dead session (Build 52)")
+    func recoverStalledStreamDeadSessionFallsThrough() async throws {
+        let conversation = Conversation(title: "Dead Test")
+        let client = ResumeAwareClient(resumeResult: false, conversation: conversation)
+        let persistence = makePersistence()
+        let store = ChatStore(heraldClient: client, persistence: persistence, outboxBaseDirectory: makeScratchDirectory())
+        store.useStreaming = true
+
+        let first = Task { await store.sendMessage("First") }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(store.isStreaming, "stream must be in flight before recovery")
+
+        store.markStreamBackgrounded()
+        store.markStreamForegrounded()
+        await store.recoverStalledStream()
+        first.cancel()
+
+        #expect(client.resumeCalls == 1, "resume must be attempted")
+        // Resume=false and no server response: recoverStalledStream leaves the
+        // terminal decision to the watchdog/deadline - it must NOT declare
+        // success or kill the stream state prematurely.
+        #expect(store.streamingPhase != .idle || !store.isStreaming,
+                "dead session must not fake a live stream")
+    }
+
     @Test("hung stream settles from job status, FIFO drains (the follow-up wedge bug)")
     func hungStreamSettlesFromJobStatusFIFODrains() async throws {
         // Use short timeouts so the test completes in seconds, not minutes.

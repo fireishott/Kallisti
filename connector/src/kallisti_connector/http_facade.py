@@ -1946,6 +1946,13 @@ async def native_media_route(request: Request) -> Response:
             candidate = _resolve_media_key(legacy_key, hermes_home, allowed_roots) if legacy_key else None
 
     if candidate is None or not candidate.suffix.lower() in _NATIVE_MEDIA_MIME:
+        logger.warning(
+            "native media resolution failed raw=%r home=%s candidate=%s roots=%s",
+            raw,
+            hermes_home,
+            candidate,
+            [str(root) for root in allowed_roots],
+        )
         raise HTTPException(status_code=415, detail="unsupported media type")
     if not any(candidate.is_relative_to(root) for root in allowed_roots):
         raise HTTPException(status_code=403, detail="media path is outside generated-image roots")
@@ -2008,6 +2015,17 @@ def _build_media_roots(hermes_home: Path) -> list[Path]:
         (hermes_home / "images").resolve(),
         (hermes_home / "media").resolve(),
     ]
+    # A selected profile rewrites HERMES_HOME to
+    # <base>/.hermes/profiles/<profile>. Generated media can still live in the
+    # consolidated base home, so include those roots without permitting any
+    # path outside the known media directories.
+    if hermes_home.parent.name == "profiles":
+        base_home = hermes_home.parent.parent
+        roots.extend((
+            (base_home / "cache" / "images").resolve(),
+            (base_home / "images").resolve(),
+            (base_home / "media").resolve(),
+        ))
     profiles_root = hermes_home / "profiles"
     if profiles_root.is_dir():
         for profile_home in profiles_root.iterdir():

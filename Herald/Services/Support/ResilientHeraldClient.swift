@@ -123,6 +123,10 @@ extension ResilientHeraldClient {
         await primary.getJobStatus(jobId)
     }
 
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        await primary.resumeActiveSessionIfNeeded()
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         try await primary.sendMessage(text, conversationID: conversationID, clientMessageID: clientMessageID)
     }
