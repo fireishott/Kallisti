@@ -42,6 +42,19 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
 
     func connect(url: URL) async throws {
         let task = session.webSocketTask(with: url)
+        // Build 57 (root cause): URLSessionWebSocketTask.maximumMessageSize
+        // defaults to 1MB. The gateway's tool.complete frame carries the
+        // FULL tool result, and image generation returns 2.5-4MB base64
+        // payloads (agent saw LEN 4030283 / LEN 2665324). A frame over the
+        // 1MB cap makes receive() throw -> socket dies mid-turn -> the
+        // terminal message.complete never arrives -> app sits on "Thinking"
+        // until the stall watchdog fires and the user re-asks (double
+        // billing). Electron on the same 9119 endpoint never hit this
+        // because Node's WS has no message-size cap. Raise it well above
+        // the largest plausible tool result (gateway emits one-shot base64
+        // file.attach frames up to ~16MiB per the uvicorn comment, so 64MB
+        // is a safe ceiling).
+        task.maximumMessageSize = 64 * 1024 * 1024
         task.resume()
         self.task = task
         startKeepalive()
