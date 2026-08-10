@@ -402,7 +402,13 @@ struct ChatScreen: View {
     /// preferring it here means the chip updates the moment a switch
     /// succeeds instead of waiting for the next command-catalog refresh.
     private var displayedModelName: String? {
-        modelStore.activeModel?.name ?? chatStore.activeModelName ?? hostStore.currentHost?.heraldModel
+        // Build 53: an EMPTY model name (not nil) must fall through to the
+        // fallback labels, otherwise the iPad pill renders just the context
+        // ring with no text - a bare circle that hides both the model and
+        // the failure state. Treat blank/whitespace as "no model".
+        let raw = modelStore.activeModel?.name ?? chatStore.activeModelName ?? hostStore.currentHost?.heraldModel
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return raw
     }
 
     private var effectiveContextWindow: Int? {

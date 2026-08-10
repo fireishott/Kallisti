@@ -40,7 +40,15 @@ struct AppRootView: View {
         hasTerminalLegacyFailure: Bool
     ) -> Bool {
         if isNative {
-            return !isLaunchReady || (isRecovering && hasStoredLogin)
+            // Build 53: the full-screen surface is for LAUNCH only. It used
+            // to also cover every mid-session reconnect (isRecovering &&
+            // hasStoredLogin), which made the app flash an opaque "reconnect
+            // attempt N" window over the chat on every gateway restart or
+            // network blip - amateurish next to the electron app, which just
+            // reconnects under the hood. Mid-session reconnects now stay in
+            // the chat UI with the existing connection banner / status chip;
+            // the surface only appears when the app is actually booting.
+            return !isLaunchReady
         }
         return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
     }

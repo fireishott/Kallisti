@@ -628,6 +628,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
             if let source = native.source?.lowercased(), source == "cron" {
                 continue
             }
+            // Build 53: honor the All Devices toggle client-side. The native
+            // gateway has no server-side device scoping (one profile = one
+            // shared session DB), so session.list returns everything and the
+            // toggle was a no-op on iPad / hidden on iPhone. The app tags its
+            // own sessions with source "ios" at create time (legacy app
+            // sessions are "tui"), so "this device" = sessions the app owns.
+            if !allDevices {
+                let src = (native.source ?? "").lowercased()
+                if src != "ios" && src != "tui" {
+                    continue
+                }
+            }
             // CRITICAL: resolve the app-side UUID AND register the reverse
             // mapping when it's missing. Previously listSessions minted a
             // fresh UUID() that was NEVER registered in idMap, so any
@@ -661,12 +673,35 @@ final class NativeKallistiClient: HeraldClientProtocol {
         guard let result = response.result else { return [] }
         let data = try JSONEncoder().encode(result)
         let decoded = try JSONDecoder().decode(NativeSessionListResult.self, from: data)
-        return decoded.sessions.map { native in
-            SessionSummary(
+        // Build 53: mirror the listSessions filter so search honors the
+        // All Devices toggle too. Also resolve/register the UUID the
+        // same way listSessions does (CRITICAL: never mint unregistered
+        // UUIDs - they 4001 on follow-up). Note: async idMap access means
+        // this must be a for-loop, not compactMap (Swift 6 concurrency).
+        var sessions: [SessionSummary] = []
+        for native in decoded.sessions {
+            if let source = native.source?.lowercased(), source == "cron" { continue }
+            if !allDevices {
+                let src = (native.source ?? "").lowercased()
+                if src != "ios" && src != "tui" { continue }
+            }
+            let uuid: UUID
+            if let existing = await idMap.uuid(for: native.sessionId) {
+                uuid = existing
+            } else {
+                uuid = UUID()
+                await idMap.register(uuid: uuid, nativeId: native.sessionId)
+            }
+            sessions.append(SessionSummary(
+                id: uuid,
                 title: native.title ?? "Untitled",
-                previewText: native.previewText ?? ""
-            )
+                previewText: native.previewText ?? "",
+                lastActivity: native.lastActivity.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now,
+                isPinned: native.isPinned ?? false,
+                isArchived: native.isArchived ?? false
+            ))
         }
+        return sessions
     }
 
     /// Protocol-conforming overload (HeraldClientProtocol requires the exact
@@ -686,7 +721,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // probes (5s), this does real server-side work (creating a session
         // row) so it gets the same 8s bound as the other real-work calls
         // (ticket mint, token refresh) rather than the 5s probe timeout.
-        let response = try await client.send(method: "session.create", params: ["title": title], timeoutNanos: 8_000_000_000)
+        // Build 53: tag app-created sessions with source "ios" so the
+        // client-side All Devices filter can distinguish this device's
+        // sessions from CLI/desktop/cron sessions on the shared gateway DB.
+        let response = try await client.send(method: "session.create", params: ["title": title, "source": "ios"], timeoutNanos: 8_000_000_000)
         if let error = response.error { throw error }
         guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
         let data = try JSONEncoder().encode(result)
@@ -747,7 +785,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func loadConversation(id: UUID) async throws -> Conversation {
         guard let client else { throw NativeGatewayClientError.notConnected }
-        guard let nativeId = await idMap.nativeId(for: id) else { throw NativeGatewayClientError.unexpectedFrame }
+        // Build 53: a persisted idMap entry can point at a session the
+        // gateway reaped (restart, test-build purge). ensureSessionForSwitch
+        // probes with session.status, unregisters the stale mapping, and
+        // recreates a fresh session - so tapping a purgatory row from an
+        // old build lands in a working chat instead of 4001 "session not
+        // found" + an error alert.
+        guard await ensureSessionForSwitch(id: id),
+              let nativeId = await idMap.nativeId(for: id) else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
         connectionStage = .restoring
         defer {
             if connectionStatus == .connected {

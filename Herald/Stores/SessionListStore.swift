@@ -42,6 +42,36 @@ final class SessionListStore {
     var activeFilter: SessionFilter = .all
     var errorMessage: String?
 
+    /// Build 53: connectivity failures that resolve themselves (gateway
+    /// restart, wifi blip, reconnect in progress) should never pop the
+    /// "Error" alert - the connection banner already communicates state.
+    /// Errors that match are swallowed in performLoad/search paths.
+    static func isTransientConnectivityError(_ error: Error) -> Bool {
+        if let native = error as? NativeGatewayClientError {
+            switch native {
+            case .notConnected, .transportClosed, .requestTimeout:
+                return true
+            default:
+                return false
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorCannotConnectToHost,
+                 NSURLErrorNetworkConnectionLost,
+                 NSURLErrorNotConnectedToInternet,
+                 NSURLErrorTimedOut,
+                 NSURLErrorDNSLookupFailed,
+                 NSURLErrorCannotFindHost:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+
     /// Total session count from last fetch (for pagination).
     private var totalCount = 0
     /// Current page offset for pagination.
@@ -148,6 +178,14 @@ final class SessionListStore {
             saveCachedSessions()
         } catch {
             // Don't clear existing sessions on error
+            // Build 53: transient connectivity errors (gateway restart, wifi
+            // blip, reconnect in progress) must NOT pop the "Error" alert.
+            // The connection banner and status chip already communicate the
+            // state; an alert on every reconnect is what made the app feel
+            // amateurish. Only surface real (non-transport) failures.
+            if Self.isTransientConnectivityError(error) {
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -165,6 +203,7 @@ final class SessionListStore {
             splitSessions(allSessions)
             saveCachedSessions()
         } catch {
+            if Self.isTransientConnectivityError(error) { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -182,6 +221,10 @@ final class SessionListStore {
             let results = try await heraldClient.searchSessions(query: query, allDevices: showAllDevices)
             searchResults = results
         } catch {
+            if Self.isTransientConnectivityError(error) {
+                searchResults = []
+                return
+            }
             errorMessage = error.localizedDescription
             searchResults = []
         }
@@ -253,8 +296,29 @@ final class SessionListStore {
             // switching back to a conversation submits its queued items.
             await chatStore.submitNextEligible(for: conversation.id)
         } catch {
+            // Build 53: a session that no longer exists on the host (reaped
+            // by a gateway restart, or purgatory rows from old test builds)
+            // should be purged from the list, not frozen as a permanently
+            // broken row that errors on every tap. loadConversation already
+            // heals stale idMap entries by recreating a fresh session, so
+            // reaching this catch means the conversation is genuinely gone.
+            if let native = error as? NativeGatewayClientError, native == .unexpectedFrame {
+                purgeSession(session)
+                return
+            }
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Build 53: drop a session that no longer exists on the host from all
+    /// local lists and the cache, without a server call. Used when switching
+    /// to a purgatory row (previous test builds, gateway-reaped sessions).
+    private func purgeSession(_ session: SessionSummary) {
+        pinnedSessions.removeAll { $0.id == session.id }
+        recentSessions.removeAll { $0.id == session.id }
+        archivedSessions.removeAll { $0.id == session.id }
+        searchResults?.removeAll { $0.id == session.id }
+        saveCachedSessions()
     }
 
     func deleteSession(_ session: SessionSummary) async {
