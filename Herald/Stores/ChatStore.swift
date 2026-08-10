@@ -139,6 +139,16 @@ final class ChatStore {
     /// The continuous watchdog checks this to detect mid-stream stalls.
     private var streamingProgressAt: Date = .now
 
+    /// Build 55: number of tool calls currently in flight. Image generation
+    /// (Nano Banana, gpt-5.4-image, codex) runs 2-5 minutes with NO streaming
+    /// events after toolStarted - the tool is legitimately executing
+    /// server-side but emits no deltas. The stall watchdog must NOT kill a
+    /// turn while a tool is in flight; only the absolute deadline applies.
+    /// Incremented on toolStarted, decremented on toolCompleted /
+    /// toolFailed. @MainActor so the consumer event loop and the watchdog
+    /// agree on the count.
+    @MainActor private var activeToolCount = 0
+
     /// When the app was backgrounded while a stream was in flight (if any).
     /// The watchdog pauses while the app is suspended - iOS freezes the task,
     /// no events can arrive, and counting that wall time would make every
@@ -1577,6 +1587,10 @@ final class ChatStore {
 
                 case .toolStarted(let activity):
                     self.streamingProgressAt = .now
+                    // Build 55: mark a tool as in-flight. Long tool calls
+                    // (image gen) emit no further events until completion, so
+                    // the stall watchdog must exempt this window.
+                    self.activeToolCount += 1
                     progressContinuation?.yield(())
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
@@ -1590,6 +1604,10 @@ final class ChatStore {
 
                 case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
                     self.streamingProgressAt = .now
+                    // Build 55: tool finished - clear the in-flight marker.
+                    // Only decrement if we saw the matching start; guards
+                    // against out-of-order/duplicated terminal events.
+                    if self.activeToolCount > 0 { self.activeToolCount -= 1 }
                     progressContinuation?.yield(())
                     if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
                        let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }) {
@@ -2043,7 +2061,15 @@ final class ChatStore {
 
             let elapsed = Duration.seconds(Date.now.timeIntervalSince(self.streamingProgressAt))
 
-            if elapsed > Self.watchdogTimeout {
+            // Build 55: while a tool is in flight, the no-progress stall
+            // watchdog is DISABLED. Long tool calls (image gen via Nano
+            // Banana / gpt-5.4-image / codex, terminal pipelines) run 2-5
+            // minutes with zero stream events after toolStarted - the tool is
+            // genuinely executing server-side. Killing the turn here marked
+            // it stalled, the outbox auto-retried, and the SAME image gen ran
+            // again: double billing and the "took too long" restart loop.
+            // Only the absolute deadline above still applies as the hard cap.
+            if elapsed > Self.watchdogTimeout && self.activeToolCount == 0 {
                 self.streamingPhase = .stalled
                 stallDetected = true
                 break
@@ -2101,7 +2127,11 @@ final class ChatStore {
             }
 
             let elapsed = Duration.seconds(self.foregroundElapsedSinceLastProgress)
-            if elapsed > Self.watchdogTimeout {
+            // Build 55: same tool-in-flight exemption as the continuous
+            // watchdog - long tool calls (image gen) legitimately run minutes
+            // with no deltas, so the no-progress stall must not fire while a
+            // tool is executing. The absolute deadline above is the hard cap.
+            if elapsed > Self.watchdogTimeout && self.activeToolCount == 0 {
                 let jobID = self.acceptedJobID ?? UUID()
                 Self.logger.warning(
                     "attemptWatchdog: no progress for \(Int(elapsed.components.seconds))s — returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
