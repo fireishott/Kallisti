@@ -100,3 +100,42 @@ def test_native_auth_forwards_gateway_session_cookie():
         "http://127.0.0.1:9119/api/auth/me",
         headers={"Cookie": "hermes_session=session-value"},
     )
+
+
+def test_push_register_uses_native_or_paired_auth_not_bare_require_auth(tmp_path, monkeypatch):
+    """Build 51 native clients send the gateway OAuth bearer token.
+
+    push/register must accept it via require_native_or_paired_auth (same dual
+    path as media) instead of bare require_auth (connector tokens only),
+    otherwise the phone 401s even with Caddy routing fixed. Regression guard:
+    if the route ever reverts to require_auth, this test fails because the
+    mocked require_auth raises 401.
+    """
+    import kallisti_connector.http_facade as facade
+
+    async def boom(request):
+        raise Exception("route used bare require_auth - regression")
+
+    with patch(
+        "kallisti_connector.http_facade.require_native_or_paired_auth",
+        new=AsyncMock(return_value="native-bearer"),
+    ), patch(
+        "kallisti_connector.http_facade.require_auth",
+        new=boom,
+    ), patch(
+        "kallisti_connector.http_facade.get_context",
+        new=lambda: SimpleNamespace(
+            push_register=AsyncMock(return_value={"registered": True})
+        ),
+    ):
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/push/register",
+                json={
+                    "apnsToken": "apns-test-token",
+                    "pushEnvironment": "production",
+                    "tokenKind": "device",
+                },
+            )
+            assert response.status_code == 200
+            assert response.json() == {"registered": True, "environment": "production"}
