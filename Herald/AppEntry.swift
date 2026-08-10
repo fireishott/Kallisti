@@ -209,6 +209,18 @@ struct HeraldApp: App {
             // next launch can show a "resuming" indicator instead of a blank screen.
             Task { @MainActor in
                 AppContainer.sharedDefault().chatStore.persistInFlightCheckpointIfActive()
+                // Schedule a local notification so the user knows we were
+                // mid-turn when iOS revoked the background task.
+                let content = UNMutableNotificationContent()
+                content.title = "Kallisti"
+                content.body = "Still working on your last message - reopen the app to catch up."
+                content.sound = nil  // silent state-signal, not an alert
+                let request = UNNotificationRequest(
+                    identifier: "kallisti.backgroundExpiry",
+                    content: content,
+                    trigger: nil  // deliver immediately
+                )
+                UNUserNotificationCenter.current().add(request)
             }
             endGatewayKeepAwake()
         }
