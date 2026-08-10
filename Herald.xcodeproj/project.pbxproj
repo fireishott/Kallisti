@@ -348,6 +348,9 @@
 		FBA83254776BE6645D5B15E1 /* PairedRelayConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF7771986FA2150AEF34153 /* PairedRelayConfiguration.swift */; };
 		FD1A7CCB5C60D388ACD3BF74 /* SharedTokenBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C4E0B1E61D42039379EE86D /* SharedTokenBridge.swift */; };
 		FE3391F23CEA84FF6BBDEE01 /* HeraldHostStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C23E7E8A2081D4B773D3E0 /* HeraldHostStatus.swift */; };
+		DCD41E42BFA840909EECB60D /* InFlightCheckpointStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */; };
+		C3CA152EA9FC4BDEAA0F42AD /* DraftPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */; };
+		3E1205F261F047D3908167B9 /* ConnectionOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F27F8AD89D4729A5B71CC8 /* ConnectionOverlayTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -789,6 +792,9 @@
 		FEDA79420C236E3DE93E9073 /* GatewayDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDTOs.swift; sourceTree = "<group>"; };
 		FFD1CFB386F902E262624380 /* TalkTurnClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkTurnClient.swift; sourceTree = "<group>"; };
 		FFDB6498238FCB0CFD3C359B /* PermissionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsStore.swift; sourceTree = "<group>"; };
+		79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InFlightCheckpointStoreTests.swift; sourceTree = "<group>"; };
+		34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftPersistenceTests.swift; sourceTree = "<group>"; };
+		61F27F8AD89D4729A5B71CC8 /* ConnectionOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionOverlayTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1065,6 +1071,7 @@
 			isa = PBXGroup;
 			children = (
 				75BF891F08C36ADC7C5C8A8C /* Fixtures */,
+				8B1C76D235914A35A2D93616 /* Store */,
 				6CCC3719B4208AAB5BE25BED /* Mocks */,
 				98D3F32D3E5255536CC268D1 /* NativeGateway */,
 				0ADE46E79E09EBB1EA65F059 /* AppleTTSServiceTests.swift */,
@@ -1540,6 +1547,16 @@
 				015C51BD9068AF348B5E50D8 /* tts_streaming_response.json */,
 			);
 			path = Mimo;
+			sourceTree = "<group>";
+		};
+		8B1C76D235914A35A2D93616 /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */,
+				34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */,
+				61F27F8AD89D4729A5B71CC8 /* ConnectionOverlayTests.swift */,
+			);
+			path = Store;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -2169,6 +2186,9 @@
 				DA2E6C455282B0BF2CA4DFDD /* NotesIntegrationTests.swift in Sources */,
 				168840175BDDD24BFAE23F93 /* NotesRepositoryTests.swift in Sources */,
 				422039EA83E0F2BC341D9F4C /* NotesStoreTests.swift in Sources */,
+				3E1205F261F047D3908167B9 /* ConnectionOverlayTests.swift in Sources */,
+				C3CA152EA9FC4BDEAA0F42AD /* DraftPersistenceTests.swift in Sources */,
+				DCD41E42BFA840909EECB60D /* InFlightCheckpointStoreTests.swift in Sources */,
 				4AE5212518AC87A9EC16C414 /* OutboxDurableTests.swift in Sources */,
 				BA33ECA6584CC4C75FAC971B /* PushRegistrationTests.swift in Sources */,
 				C46E11479CA9618C4347D56D /* QuickNotesTests.swift in Sources */,
