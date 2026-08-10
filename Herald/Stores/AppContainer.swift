@@ -1129,6 +1129,25 @@ final class AppContainer {
 
     /// Registers the APNs device token with the relay so it can send silent push notifications.
     func registerPushTokenIfNeeded(_ token: String) async {
+        // Native gateway path: uses native-gateway bearer auth and the
+        // connector facade URL, bypassing legacy pairing/apiClient entirely.
+        if let nativeGatewayClient {
+            guard settingsStore.settings.notificationsEnabled else {
+                sessionStore.state.pushTokenRegistered = false
+                return
+            }
+            let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedToken.isEmpty else { return }
+            let pushEnvironment = Self.apnsEnvironment
+            let accepted = await nativeGatewayClient.registerPushToken(
+                normalizedToken,
+                pushEnvironment: pushEnvironment
+            )
+            sessionStore.state.pushTokenRegistered = accepted
+            await notificationService?.markPushTokenRegistered(accepted)
+            return
+        }
+
         guard pairingStore.isPaired,
               let apiClient,
               let notificationService
@@ -1138,7 +1157,7 @@ final class AppContainer {
         // If disabled, deactivate any existing registration on the relay
         // so the user actually stops receiving pushes.
         guard settingsStore.settings.notificationsEnabled else {
-            // Always attempt deactivation — the relay may have an active
+            // Always attempt deactivation -- the relay may have an active
             // registration from a previous session even if the local flag is false.
             await deactivatePushRegistration()
             await notificationService.markPushTokenRegistered(false)
@@ -1183,7 +1202,7 @@ final class AppContainer {
             await notificationService.markPushTokenRegistered(didRegister ?? false)
             sessionStore.state.pushTokenRegistered = didRegister ?? false
         } catch {
-            // Non-critical — token will be retried on next app launch
+            // Non-critical -- token will be retried on next app launch
             await notificationService.markPushTokenRegistered(false)
             sessionStore.state.pushTokenRegistered = false
         }
@@ -1234,10 +1253,65 @@ final class AppContainer {
         await registerPushTokenIfNeeded(storedToken)
     }
 
-    /// Register a Live Activity push token with the relay so it can push
+    /// Register a Live Activity push token with the connector so it can push
     /// remote updates to the Lock Screen / Dynamic Island activity.
-    /// Uses the standard push/register endpoint with transport=liveactivity.
+    ///
+    /// Uses the standard push/register endpoint with tokenKind=liveActivity.
+    /// The connector returns a flat {registered: true, environment: ...} --
+    /// NOT the wrapped {data: {registered: ...}} envelope that the relay
+    /// uses. Native-gateway mode authenticates with the native bearer token
+    /// against the connector facade URL; legacy mode uses the relay client.
     private func registerLiveActivityPushToken(_ token: String) async {
+        let pushEnvironment = Self.apnsEnvironment
+        let bundleId = Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti"
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else { return }
+
+        // Native path: use native bearer + connector facade URL.
+        if let nativeGatewayClient {
+            guard let accessToken = await nativeGatewayClient.nativeAccessToken(),
+                  !accessToken.isEmpty else {
+                Logger.app.warning("registerLiveActivityPushToken: no native access token")
+                return
+            }
+            guard let facadeBase = await nativeGatewayClient.facadeBaseURLString(),
+                  let url = URL(string: "\(facadeBase)/v1/push/register") else {
+                Logger.app.warning("registerLiveActivityPushToken: invalid facade URL")
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 8
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let body: [String: Any] = [
+                "apnsToken": normalizedToken,
+                "pushEnvironment": pushEnvironment,
+                "bundleId": bundleId,
+                "tokenKind": "liveActivity",
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // Connector returns flat {registered: true, environment: "..."}
+                // NOT the wrapped {data: {registered: ...}} envelope.
+                if status == 200,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   json["registered"] as? Bool == true {
+                    Logger.app.info("registerLiveActivityPushToken: accepted (native, environment=\(pushEnvironment))")
+                    return
+                }
+                Logger.app.warning("registerLiveActivityPushToken: native HTTP \(status)")
+            } catch {
+                Logger.app.warning("registerLiveActivityPushToken failed (native): \(error.localizedDescription)")
+            }
+            return
+        }
+
+        // Legacy path: use relay client.
         guard let accessToken = await sessionStore.currentAccessToken(),
               let relayURL = settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? pairingStore.pairedRelayConfiguration?.baseURLString,
@@ -1252,36 +1326,57 @@ final class AppContainer {
             let apnsToken: String
             let pushEnvironment: String
             let bundleId: String
-            // Distinguishes this from the device's own alert-push token —
+            // Distinguishes this from the device's own alert-push token --
             // ActivityKit gives each Live Activity its own push-to-update
             // token, which the connector must store and address separately
             // (see ConnectorState.live_activity_push_token). Without this,
-            // every Live Activity token rotation — i.e. every chat turn —
+            // every Live Activity token rotation -- i.e. every chat turn --
             // silently overwrote the device's real alert-push token.
             let tokenKind: String = "liveActivity"
         }
         struct RegisterResponse: Decodable {
-            struct Data: Decodable {
+            private struct WrappedData: Decodable {
                 let registered: Bool
-                let updatedAt: String?
             }
-            let data: Data
+
+            let registered: Bool
+            let environment: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case registered
+                case environment
+                case data
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if let flat = try container.decodeIfPresent(Bool.self, forKey: .registered) {
+                    registered = flat
+                } else {
+                    registered = try container.decode(WrappedData.self, forKey: .data).registered
+                }
+                environment = try container.decodeIfPresent(String.self, forKey: .environment)
+            }
         }
         let body = Body(
             deviceId: deviceID.uuidString.lowercased(),
             transport: "direct",
-            apnsToken: token,
-            pushEnvironment: Self.apnsEnvironment,
-            bundleId: Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti"
+            apnsToken: normalizedToken,
+            pushEnvironment: pushEnvironment,
+            bundleId: bundleId
         )
         do {
-            let _: RegisterResponse = try await client.post(
+            let response: RegisterResponse = try await client.post(
                 path: "push/register",
                 body: body,
                 accessToken: accessToken
             )
+            if response.registered {
+                Logger.app.info("registerLiveActivityPushToken: accepted (legacy, environment=\(pushEnvironment))")
+            }
         } catch {
-            // Non-critical — will be retried on next token rotation
+            // Non-critical -- will be retried on next token rotation
+            Logger.app.warning("registerLiveActivityPushToken failed (legacy): \(error.localizedDescription)")
         }
     }
 

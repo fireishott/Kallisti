@@ -58,10 +58,25 @@ protocol HeraldClientProtocol {
     /// Get the authoritative status of a job.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
 
+    /// Reattach to a gateway session that is still running a job after the
+    /// app was suspended (desktop parity: Electron calls session.resume on
+    /// reconnect). Returns true when the session is live and still running,
+    /// so the caller can keep the stream alive instead of declaring a stall.
+    func resumeActiveSessionIfNeeded() async -> Bool
+
     /// Send a message to a specific conversation with a specific client message ID.
     /// Used by notification actions where the target conversation may not be the current one.
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message
 
     /// Cancel a running or queued job.
     func cancelJob(jobID: UUID) async throws
+}
+
+// MARK: - Default implementations
+extension HeraldClientProtocol {
+    /// Default: no-op for clients that do not support session resume (mocks,
+    /// legacy relay path). The native gateway client overrides this.
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        false
+    }
 }

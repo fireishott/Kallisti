@@ -1336,6 +1336,12 @@ extension LiveHeraldClient {
         )
     }
 
+    /// Legacy relay path: resume is a native-gateway concept. Return false so
+    /// the caller falls through to its existing recovery behavior.
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        false
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         let effort = reasoningEffortProvider?()
         // Build 108 Workstream E: separate displayText from client context

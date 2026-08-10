@@ -52,21 +52,55 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.keepaliveInterval)
-                guard !Task.isCancelled, let task = self?.task else { return }
-                let pingOK = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-                    task.sendPing { error in
-                        continuation.resume(returning: error == nil)
-                    }
-                }
+                guard !Task.isCancelled else { return }
+                // Capture the live task BEFORE the ping so a reconnect that
+                // replaces self.task during the await doesn't get nulled.
+                guard let task = self?.task else { return }
+                let pingOK = await Self.oneShotSendPing(task)
                 if !pingOK {
                     // Socket is gone but receive() may never surface the error
                     // (iOS suspends WS tasks silently). Tear it down so the
                     // client's receive loop errors and the reconnect loop
                     // kicks in instead of leaving a phantom connection.
+                    //
+                    // Only clear self.task if it's STILL the same task that
+                    // failed the ping - a concurrent reconnect may have already
+                    // installed a fresh socket, and nulling it would kill the
+                    // new connection.
                     task.cancel(with: .goingAway, reason: nil)
-                    self?.task = nil
+                    if self?.task === task {
+                        self?.task = nil
+                    }
                     return
                 }
+            }
+        }
+    }
+
+    private final class PingContinuationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ value: Bool) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
+        }
+    }
+
+    /// Bridges sendPing's callback while guaranteeing one continuation resume
+    /// even if URLSession invokes the callback more than once.
+    private static func oneShotSendPing(_ task: URLSessionWebSocketTask) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let gate = PingContinuationGate(continuation)
+            task.sendPing { error in
+                gate.resume(error == nil)
             }
         }
     }

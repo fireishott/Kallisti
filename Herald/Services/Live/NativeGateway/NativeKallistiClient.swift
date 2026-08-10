@@ -105,15 +105,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Resolve the current gateway base URL (live, not cached).
     private var gatewayBaseURL: String { gatewayBaseURLProvider() }
 
-    /// Connector HTTP facade base URL (same scheme+host, port 8010).
+    /// Connector HTTP facade base URL (same scheme+host, port 8010 on LAN).
     /// Used for /gw/logs and /gw/logs/stream - the facade reads journald
     /// directly (no cli.exec 48K truncation) and answers native-gateway
     /// bearer tokens (dual-auth, same as /v1/native/watch).
+    ///
+    /// Public HTTPS hosts route /v1/push/register through Caddy on 443 -
+    /// adding :8010 makes the URL unreachable from WAN (connection refused).
+    /// Port 8010 is only correct for LAN hosts.
     func facadeBaseURLString() async -> String? {
         let base = gatewayBaseURL
         guard let url = URL(string: base), let host = url.host else { return nil }
-        let scheme = url.scheme == "https" ? "https" : "http"
-        return "\(scheme)://\(host):8010"
+        return Self.facadeBaseURL(for: base)
     }
 
     /// Current native-gateway access token for facade requests.
@@ -124,6 +127,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private let transportFactory: @Sendable () -> any NativeGatewayTransport
     private(set) var client: NativeGatewayClient?
     private var transport: (any NativeGatewayTransport)?
+    /// Stream handlers keyed by native session id. connect() replaces
+    /// `client` with a fresh NativeGatewayClient, which would orphan any
+    /// handler registered on the old client (its eventHandlers die with it).
+    /// Re-registering from this registry on every connect keeps an in-flight
+    /// stream alive across a suspension - the gateway parks the session,
+    /// session.resume reattaches it, and the terminal event reaches a handler
+    /// listening on the CURRENT client.
+    private var activeStreamHandlers: [String: StreamEventHandler] = [:]
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     /// prompt.submit is only an acknowledgement that the gateway accepted the
@@ -234,16 +245,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
               let accessToken = await authCoordinator.currentAccessToken()
         else { return }
 
-        // APNs watch registration lives on the connector's HTTP facade
-        // (port 8010), NOT the gateway (9119). The gateway has no
-        // /v1/native/watch route and its auth gate redirects the POST (302),
-        // so posting to gatewayBaseURL silently failed and the connector
-        // never watched the session -> no backgrounded-turn push. Derive the
-        // facade URL the same way NativeGatewayFeatureClient.connectorVersion
-        // does: same scheme+host, port 8010.
-        guard let base = URL(string: gatewayBaseURL),
-              let host = base.host,
-              let url = URL(string: "\(base.scheme ?? "http")://\(host):8010/v1/native/watch")
+        // APNs watch registration lives on the connector's HTTP facade,
+        // NOT the gateway (9119). The gateway has no /v1/native/watch route
+        // and its auth gate redirects the POST (302), so posting to
+        // gatewayBaseURL silently failed and the connector never watched the
+        // session -> no backgrounded-turn push. Derive the facade URL using
+        // the same LAN-aware logic as facadeBaseURLString.
+        guard let facadeBase = Self.facadeBaseURL(for: gatewayBaseURL),
+              let url = URL(string: "\(facadeBase)/v1/native/watch")
         else { return }
 
         var request = URLRequest(url: url)
@@ -251,11 +260,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // LATENCY (build 35): this had no timeout override, so it inherited
         // URLSession's 60s default. registerNativeWatch was called with
         // `await` directly in the hot _sendStreaming path BEFORE
-        // prompt.submit — every send blocked on this call finishing. It only
+        // prompt.submit - every send blocked on this call finishing. It only
         // no-ops (instant) when there's no stored APNs token yet, which is
         // why the FIRST message after a fresh app launch was fast but every
         // follow-up (token now registered) paid the full round trip, or the
-        // full 60s hang if port 8010 was slow/unreachable — with nothing
+        // full 60s hang if port 8010 was slow/unreachable - with nothing
         // showing in gateway logs since prompt.submit was never reached.
         // An 8s bound is generous for a same-network POST.
         request.timeoutInterval = 8
@@ -275,6 +284,54 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
         } catch {
             Self.logger.warning("native watch registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Register the APNs device token with the connector's push registration
+    /// endpoint using native-gateway authentication. Public traffic routes
+    /// through the gateway host on port 443 (routed by Caddy); port 8010 is
+    /// only correct for LAN hosts.
+    ///
+    /// Returns true if the connector accepted the registration.
+    func registerPushToken(_ token: String, pushEnvironment: String) async -> Bool {
+        guard let accessToken = await authCoordinator.currentAccessToken(),
+              !accessToken.isEmpty else {
+            Self.logger.warning("registerPushToken: no native access token")
+            return false
+        }
+        guard let facadeBase = await facadeBaseURLString(),
+              let url = URL(string: "\(facadeBase)/v1/push/register") else {
+            Self.logger.warning("registerPushToken: invalid facade URL")
+            return false
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = [
+            "apnsToken": token,
+            "pushEnvironment": pushEnvironment,
+            "bundleId": Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
+            "tokenKind": "device",
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               json["registered"] as? Bool == true {
+                Self.logger.info("registerPushToken: accepted (environment=\(pushEnvironment))")
+                return true
+            }
+            Self.logger.warning("registerPushToken: HTTP \(status)")
+            return false
+        } catch {
+            Self.logger.warning("registerPushToken failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -339,6 +396,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
             self.transport = transport
             self.client = client
+            // Build 52 (sleep recovery): a reconnect swaps in a fresh
+            // NativeGatewayClient whose eventHandlers are empty. Re-register
+            // every still-live stream handler so terminal events for a
+            // resumed (parked) session reach the consumer instead of hanging
+            // until the absolute job deadline.
+            for (sid, handler) in activeStreamHandlers {
+                await client.onEvent { event in
+                    handler.handle(event)
+                }
+            }
+            // Prune handlers that completed while we were disconnected (their
+            // continuation already got .finished; keeping them would re-run a
+            // stale message.complete if the gateway replayed it).
+            activeStreamHandlers = activeStreamHandlers.filter { !$0.value.isCompleted }
             // NOT resetting reconnectAttempt here: a socket can pass the
             // verification above and still be new/flaky. The counter is
             // reset only once a connection has proven itself durable (see
@@ -498,7 +569,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private static let probeTimeoutNanos: UInt64 = 5_000_000_000
 
     /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
-    /// then retries `connect()`. Called from onboarding's "Open app" step —
+    /// then retries `connect()`. Called from onboarding's "Open app" step -
     /// `connect()` alone can never trigger this itself, since a failed
     /// mintTicket() there has nowhere to present a login screen from.
     /// Redeems the connector-issued one-time pairing code, then connects through
@@ -909,6 +980,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
             }
         )
+        handler.onComplete = { [weak self] in
+            self?.activeStreamHandlers.removeValue(forKey: sid)
+        }
+        activeStreamHandlers[sid] = handler
         await client.onEvent { event in
             handler.handle(event)
         }
@@ -919,7 +994,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // notice). Best-effort: a failure here costs a notification, never
         // the turn itself.
         // LATENCY (build 35): fire-and-forget. This was `await`ed directly
-        // in the hot send path — every prompt.submit waited on this HTTP
+        // in the hot send path - every prompt.submit waited on this HTTP
         // call finishing first, even though it's a best-effort push
         // registration whose own doc comment says a failure "costs a
         // notification, never the turn itself." The code didn't match the
@@ -1038,11 +1113,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // as a failure placeholder. Port 8010 is only correct when the gateway
         // base itself is a LAN host.
         guard let base = URL(string: gatewayBaseURL), let host = base.host else { return nil }
-        let isLANHost = host.hasPrefix("192.168.") || host.hasPrefix("10.") || host.hasPrefix("172.16.") || host.hasSuffix(".local")
         var components = URLComponents()
         components.scheme = base.scheme == "https" ? "https" : "http"
         components.host = host
-        if isLANHost {
+        if Self.isLANHost(host) {
             components.port = 8010
         }
         components.path = "/v1/native/media"
@@ -1051,6 +1125,23 @@ final class NativeKallistiClient: HeraldClientProtocol {
         let normalizedPath = Self.normalizeMediaPath(path)
         components.queryItems = [URLQueryItem(name: "path", value: normalizedPath)]
         return components.url
+    }
+
+    /// Pure helper: connector facade base URL from a gateway base URL.
+    /// LAN hosts get scheme://host:8010; public HTTPS gets scheme://host
+    /// (Caddy on 443 routes /v1/push/register, /v1/native/media, etc.).
+    nonisolated static func facadeBaseURL(for gatewayBaseURL: String) -> String? {
+        guard let url = URL(string: gatewayBaseURL), let host = url.host else { return nil }
+        let scheme = url.scheme == "https" ? "https" : "http"
+        if isLANHost(host) {
+            return "\(scheme)://\(host):8010"
+        }
+        return "\(scheme)://\(host)"
+    }
+
+    /// Returns true when the host is a LAN/rFC1918 address or mDNS name.
+    nonisolated static func isLANHost(_ host: String) -> Bool {
+        host.hasPrefix("192.168.") || host.hasPrefix("10.") || host.hasPrefix("172.16.") || host.hasSuffix(".local")
     }
 
     /// Normalize a raw MEDIA path to a stable relative key the connector
@@ -1139,9 +1230,47 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
 
+    /// Reattach to a parked gateway session (desktop parity: Electron calls
+    /// session.resume on reconnect). The gateway parks a live session when the
+    /// WS detaches; resume rebinds the transport so a still-running job's
+    /// terminal events flow again. Returns true when the session is live and
+    /// still running - the caller then keeps the stream alive and resets the
+    /// watchdog instead of declaring "took too long".
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        guard let client else { return false }
+        guard let currentConversation,
+              let nativeId = await idMap.nativeId(for: currentConversation.id) else { return false }
+        do {
+            let response = try await client.send(
+                method: "session.resume",
+                params: ["session_id": nativeId],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            guard response.error == nil, let result = response.result else { return false }
+            // The resume payload carries  and ; a live
+            // in-flight job reports running=true. If the job already
+            // finished, running=false and the transcript refresh in
+            // recoverStalledStream picks up the completed response.
+            let data = try JSONEncoder().encode(result)
+            let decoded = try JSONDecoder().decode(NativeResumeResult.self, from: data)
+            return decoded.running == true
+        } catch {
+            return false
+        }
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
     }
+}
+
+
+/// Result envelope for session.resume. `running` mirrors the gateway's live
+/// session payload so the app can distinguish a still-working job from a
+/// finished one after a suspension.
+private struct NativeResumeResult: Decodable {
+    let running: Bool?
+    let status: String?
 }
 
 // MARK: - Stream Event Handler
@@ -1149,6 +1278,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
 /// Processes gateway events for a single streaming turn.
 private final class StreamEventHandler: @unchecked Sendable {
     let sessionId: String
+    var isCompleted: Bool { completed }
+    /// Invoked once when the stream terminally completes (message.complete).
+    /// Lets the owning client drop the handler from its reconnect registry.
+    var onComplete: (@MainActor () -> Void)?
     let continuation: AsyncStream<StreamingUpdate>.Continuation
     private var completed = false
     private let mediaURLProvider: @Sendable (String) -> URL?
@@ -1205,6 +1338,13 @@ private final class StreamEventHandler: @unchecked Sendable {
                 continuation.yield(.finished(msg, usage, nil, nil))
                 completed = true
                 continuation.finish()
+                // Release the registry entry: the stream is done and the
+                // next reconnect should not re-register a finished handler.
+                // The handler is nonisolated; hop to MainActor for the
+                // registry mutation.
+                if let onComplete {
+                    Task { @MainActor in onComplete() }
+                }
             }
         default:
             break

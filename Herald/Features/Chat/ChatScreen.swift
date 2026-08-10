@@ -450,7 +450,7 @@ struct ChatScreen: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "brain.head.profile")
-                        Text(profileStore.activeProfileName ?? "Select Profile")
+                        Text(profileStore.displayProfileName)
                             .font(.caption)
                     }
                     .padding(.horizontal, 8)

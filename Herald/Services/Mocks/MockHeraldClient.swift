@@ -172,6 +172,10 @@ extension MockHeraldClient {
         nil
     }
 
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        false
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         Message(sender: .user, content: text, status: .sent)
     }
