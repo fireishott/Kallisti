@@ -58,10 +58,10 @@ enum ConnectionStage: String, CaseIterable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .preparing:      "Preparing secure session"
+        case .preparing:      "Connecting..."
         case .contacting:     "Contacting gateway"
         case .authenticating: "Authenticating"
-        case .openingChannel: "Opening secure channel"
+        case .openingChannel: "Connecting..."
         case .verifying:      "Verifying session"
         case .restoring:      "Restoring conversations"
         case .connected:      "Connected"
