@@ -144,6 +144,9 @@ from .telemetry import TelemetryService
 from .gateway_control import GatewayController
 from .log_service import LogService
 
+# Build 59: connector internal URL for native push proxy.
+CONNECTOR_INTERNAL_URL = "http://192.168.10.118:8010"
+
 
 def success(data: dict) -> dict:
     return {
@@ -2092,12 +2095,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return success({"revoked": True})
 
     @app.post("/v1/push/register")
-    def register_push(
+    async def register_push(
+        request: Request,
         payload: PushRegisterRequest,
-        auth: AuthContext = Depends(get_auth_context),
         db: Session = Depends(get_db),
         settings: Settings = Depends(get_settings),
     ) -> dict:
+        # Build 59: Native-mode push registration proxy.
+        # When the iOS app connects through the relay in native mode, it sends
+        # a native gateway bearer token (not a relay pairing token). The relay's
+        # get_auth_context only validates relay tokens, so native bearer requests
+        # 401. Proxy to the connector which handles native bearer auth via the
+        # gateway's /api/auth/me endpoint.
+        has_relay_fields = any([
+            payload.relayHandle,
+            payload.sendGrant,
+            payload.relayId,
+            payload.relayPublicKey,
+        ])
+        auth_header = request.headers.get("authorization", "")
+        is_native_bearer = (
+            auth_header.lower().startswith("bearer ")
+            and not has_relay_fields
+            and payload.transport == "direct"
+        )
+
+        if is_native_bearer:
+            connector_url = f"{CONNECTOR_INTERNAL_URL}/v1/push/register"
+            forward_headers = {"authorization": auth_header}
+            forward_body = {
+                "apnsToken": payload.apnsToken,
+                "pushEnvironment": payload.pushEnvironment,
+                "bundleId": payload.bundleId,
+                "tokenKind": "device",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.post(
+                        connector_url,
+                        json=forward_body,
+                        headers=forward_headers,
+                    )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.warning(
+                    "register_push: connector proxy returned %d, trying relay auth",
+                    resp.status_code,
+                )
+            except Exception:
+                logger.exception("register_push: connector proxy failed")
+
+        # Standard relay-mode path: inline auth validation.
+        # get_auth_context is a FastAPI DI function; we inline its logic here
+        # because we removed it from the function signature to allow the
+        # native bearer path to skip relay auth entirely.
+        credentials = None
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+            credentials = token
+
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing bearer token.",
+            )
+
+        token_hash = hash_token(credentials)
+        auth_session = db.scalar(
+            select(AuthSession).where(
+                AuthSession.access_token_hash == token_hash,
+                AuthSession.revoked_at.is_(None),
+            )
+        )
+        if auth_session is None or normalize_datetime(auth_session.access_expires_at) < utcnow():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Expired or invalid access token.",
+            )
+        device = db.get(Device, auth_session.device_id)
+        user = db.get(User, auth_session.user_id)
+        if device is None or user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid auth context.",
+            )
+        auth = AuthContext(auth_session=auth_session, device=device, user=user)
+
         if str(payload.deviceId) != auth.device.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot register push token for another device.")
 
