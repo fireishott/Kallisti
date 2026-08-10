@@ -229,11 +229,14 @@ struct LoadingSurface: View {
                     .tint(Design.Brand.accent)
                     .padding(.top, Design.Spacing.sm)
 
-                if reconnectAttempt > 1 {
-                    Text("Reconnect attempt \(reconnectAttempt)")
+                if reconnectAttempt >= 5 {
+                    Text("Connection struggling - attempt \(reconnectAttempt)")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.danger)
+                } else if reconnectAttempt > 1 {
+                    Text("Reconnecting... (\(reconnectAttempt))")
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.tertiaryForeground)
-                        .transition(.opacity)
                 }
 
                 Spacer()
