@@ -254,15 +254,8 @@ def _create_hermes_session_via_api(
             if existing:
                 logger.info("create_session_via_api: %s already exists", existing)
                 return str(existing)
-        # 400 = invalid_title or other validation error — log the body
-        # for debugging, then return None so caller can fall back.
-        try:
-            err_body = json.loads(exc.read())
-            err_msg = err_body.get("error", {}).get("message", exc.reason)
-        except Exception:
-            err_msg = exc.reason
         logger.warning(
-            "create_session_via_api: HTTP %s — %s", exc.code, err_msg
+            "create_session_via_api: HTTP %s — %s", exc.code, exc.reason
         )
         return None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

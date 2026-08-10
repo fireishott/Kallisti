@@ -20,7 +20,7 @@ from urllib.parse import quote
 import httpx
 import websockets
 
-from .herald_api_executor import StreamEvent
+from .herald_runner import StreamEvent
 from .herald_runner import HeraldChatResult, HeraldConversationMessage
 
 logger = logging.getLogger(__name__)
@@ -215,6 +215,18 @@ class TuiGatewayExecutor:
                     # thought card and visible answer.  The text also arrives
                     # on assistant.delta / message.delta.
                     pass
+                elif event == "thinking.delta":
+                    # Spinner-frame noise (KawaiiSpinner faces like
+                    # "(°□°) analyzing...") emitted by the gateway's
+                    # thinking_callback on every tool-call round.  Not
+                    # reasoning — forwarding it makes the thought card
+                    # stack up faces.  Drop it; real CoT arrives on
+                    # reasoning.delta.
+                    pass
+                elif event == "reasoning.delta":
+                    text = data.get("text") or ""
+                    if text:
+                        yield StreamEvent(type="reasoning_delta", data=str(text))
                 elif event == "tool.started":
                     yield StreamEvent(type="tool_started", label=str(data.get("tool") or data.get("name") or "tool"), data=json.dumps({"toolCallId": data.get("tool_call_id") or data.get("toolCallId") or "", "argsPreview": data.get("preview") or data.get("args") or "", "emoji": data.get("emoji") or ""}))
                 elif event == "tool.completed":
