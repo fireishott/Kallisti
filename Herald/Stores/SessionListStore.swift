@@ -47,6 +47,10 @@ final class SessionListStore {
     /// "Error" alert - the connection banner already communicates state.
     /// Errors that match are swallowed in performLoad/search paths.
     static func isTransientConnectivityError(_ error: Error) -> Bool {
+        // Build 60: CancellationError from task cancellation (toggle, scope
+        // change) is EXPECTED behavior, not a real error.
+        if error is CancellationError { return true }
+
         if let native = error as? NativeGatewayClientError {
             switch native {
             case .notConnected, .transportClosed, .requestTimeout:
@@ -177,7 +181,8 @@ final class SessionListStore {
             lastLoadAt = Date()
             saveCachedSessions()
         } catch {
-            // Don't clear existing sessions on error
+            // Stale generation = this load was superseded. Don't touch UI.
+            guard loadGeneration == capturedGeneration else { return }
             // Build 53: transient connectivity errors (gateway restart, wifi
             // blip, reconnect in progress) must NOT pop the "Error" alert.
             // The connection banner and status chip already communicate the

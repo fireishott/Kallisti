@@ -472,7 +472,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 hasStoredLogin = false
             }
             connectionStatus = hasStoredLogin ? .reconnecting : .disconnected
-            connectionStage = .preparing
+            // Build 60: only reset stage on cold launch. After first connect,
+            // the stage stays .connected and the connection banner handles state.
+            if !hasConnectedOnce {
+                connectionStage = .preparing
+            }
             Self.logger.error("Failed to connect: \(error)")
             scheduleReconnect()
         }
@@ -492,7 +496,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
         connectedAt = nil
         Self.logger.warning("Native gateway transport closed unexpectedly - reconnecting")
         connectionStatus = .reconnecting
-        connectionStage = .preparing
+        // Build 60: only reset stage on cold launch.
+        if !hasConnectedOnce {
+            connectionStage = .preparing
+        }
         client = nil
         transport = nil
         scheduleReconnect()
@@ -547,7 +554,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         // Start a fresh authenticated connection.
         connectionStatus = .connecting
-        connectionStage = .preparing
+        // Build 60: only reset stage on cold launch.
+        if !hasConnectedOnce {
+            connectionStage = .preparing
+        }
         await connect()
     }
 
