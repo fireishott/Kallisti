@@ -88,6 +88,39 @@ struct NativeUsagePayload: Decodable {
     let calls: Int?
 }
 
+/// `tool.start` — a tool invocation has begun.
+/// Shape: `{"tool_call_id":"...","name":"...","preview":"...","emoji":"..."}`
+struct NativeToolStartPayload: Decodable {
+    let toolCallID: String?
+    let name: String?
+    let preview: String?
+    let emoji: String?
+
+    enum CodingKeys: String, CodingKey {
+        case toolCallID = "tool_call_id"
+        case name
+        case preview
+        case emoji
+    }
+}
+
+/// `tool.complete` — a tool invocation has finished.
+/// Shape: `{"tool_call_id":"...","output":"...","is_error":false,"duration_ms":123}`
+struct NativeToolCompletePayload: Decodable {
+    let toolCallID: String?
+    let output: String?
+    let isError: Bool?
+    let durationMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case toolCallID = "tool_call_id"
+        case output
+        case isError = "is_error"
+        case durationMs = "duration_ms"
+    }
+}
+
+
 /// `message.start` — signals a turn has begun.
 struct NativeMessageStartPayload: Decodable {
     // Empty payload confirmed from capture
@@ -257,4 +290,6 @@ enum NativeGatewayStreamingEventType: String {
     case thinkingDelta = "thinking.delta"
     case sessionInfo = "session.info"
     case gatewayReady = "gateway.ready"
+    case toolStart = "tool.start"
+    case toolComplete = "tool.complete"
 }
