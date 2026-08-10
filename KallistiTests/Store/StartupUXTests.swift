@@ -6,7 +6,8 @@ final class StartupUXTests: XCTestCase {
         XCTAssertTrue(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: false, isRecovering: true,
             hasStoredLogin: true, isBootstrapping: false,
-            hasTerminalLegacyFailure: false
+            hasTerminalLegacyFailure: false,
+            reconnectDebounced: false
         ))
     }
 
@@ -14,7 +15,8 @@ final class StartupUXTests: XCTestCase {
         XCTAssertTrue(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: true,
             hasStoredLogin: true, isBootstrapping: false,
-            hasTerminalLegacyFailure: false
+            hasTerminalLegacyFailure: false,
+            reconnectDebounced: true
         ))
     }
 
@@ -22,7 +24,8 @@ final class StartupUXTests: XCTestCase {
         XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: false,
             hasStoredLogin: true, isBootstrapping: false,
-            hasTerminalLegacyFailure: false
+            hasTerminalLegacyFailure: false,
+            reconnectDebounced: false
         ))
     }
 
@@ -30,7 +33,8 @@ final class StartupUXTests: XCTestCase {
         XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
             isNative: false, isLaunchReady: true, isRecovering: false,
             hasStoredLogin: false, isBootstrapping: false,
-            hasTerminalLegacyFailure: true
+            hasTerminalLegacyFailure: true,
+            reconnectDebounced: false
         ))
     }
 }
