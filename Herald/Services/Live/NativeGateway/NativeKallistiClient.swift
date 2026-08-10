@@ -1439,6 +1439,31 @@ private final class StreamEventHandler: @unchecked Sendable {
                     Task { @MainActor in onComplete() }
                 }
             }
+        // ── Tool lifecycle ──────────────────────────────────────────────
+        case "tool.start":
+            if let tool = event.params.decodePayload(NativeToolStartPayload.self) {
+                let label = tool.name ?? "tool"
+                let activity = ToolActivity(
+                    label: label,
+                    toolCallID: tool.toolCallID,
+                    name: tool.name,
+                    emoji: tool.emoji,
+                    argsPreview: tool.preview
+                )
+                continuation.yield(.toolStarted(activity))
+            }
+        case "tool.complete":
+            if let tool = event.params.decodePayload(NativeToolCompletePayload.self) {
+                continuation.yield(.toolCompleted(
+                    toolCallID: tool.toolCallID ?? "",
+                    resultPreview: tool.output,
+                    isError: tool.isError ?? false,
+                    durationMs: tool.durationMs
+                ))
+            }
+        case "tool.generating":
+            // Transient — analogous to thinking.delta spinner frames. Drop.
+            break
         default:
             break
         }
