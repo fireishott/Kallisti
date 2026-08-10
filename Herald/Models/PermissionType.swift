@@ -73,5 +73,8 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     }
 
     /// Permissions shown during onboarding.
-    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .camera, .motion, .photos]
+    /// Build 54: speechRecognition was missing - the enum and request path
+    /// existed, but onboarding never asked for it, so dictation stayed
+    /// silently unauthorized until the user dug into Settings.
+    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .camera, .motion, .photos, .speechRecognition]
 }

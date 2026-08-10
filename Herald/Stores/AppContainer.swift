@@ -780,6 +780,18 @@ final class AppContainer {
                 if status == .connected {
                     await container.registerStoredPushTokenIfNeeded()
                 }
+                // Build 54: reload data that only exists after the socket is
+                // live. loadModels() runs once at ChatScreen .task (usually
+                // before the first connect finishes) and errors out silently -
+                // the model pill then sits as a bare green dot until the user
+                // opens the picker, which forces a reload. Same for the host
+                // row and session list: refresh them on every reconnect so
+                // the UI reflects the live gateway without user action.
+                if status == .connected {
+                    await container.modelStore.loadModels(force: true)
+                    await container.hostStore.refresh()
+                    await container.sessionListStore.loadSessions(forceRefresh: true)
+                }
             }
         }
 
