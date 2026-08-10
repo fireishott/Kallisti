@@ -123,6 +123,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     func nativeAccessToken() async -> String? {
         await authCoordinator.currentAccessToken()
     }
+
+    /// Refreshed native-gateway access token, for connector facade calls
+    /// (push registration, /gw/logs) that must present a LIVE bearer. The WS
+    /// path refreshes via mintTicket, but facade HTTP calls were reading the
+    /// raw stored token — an expired bearer 401s the connector even while the
+    /// socket is healthy. Refresh is a no-op when the token is still valid;
+    /// returns nil only when there is no stored session at all.
+    func refreshAccessToken() async -> String? {
+        try? await authCoordinator.refreshAccessTokenIfNeeded()
+    }
     private let idMap = NativeSessionIdMap()
     private let transportFactory: @Sendable () -> any NativeGatewayTransport
     private(set) var client: NativeGatewayClient?
@@ -148,6 +158,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// When the current socket was opened, used to tell a working connection
     /// that later dropped from one that never came up at all.
     private var connectedAt: Date?
+    /// Build 55: set true the first time a connect() succeeds and NEVER reset
+    /// on subsequent drops. The loading surface in AppRootView uses this to
+    /// distinguish "cold launch, first connection attempt still resolving"
+    /// (show the surface) from "mid-session reconnect churn" (stay in the
+    /// chat UI). The old check (connectionStatus != .connecting) treated every
+    /// reconnect as a cold launch, which tore down AdaptiveRootView, wiped the
+    /// composer's @State draft text, and re-synced the stale Settings tab.
+    private(set) var hasConnectedOnce = false
     /// Set by disconnect() so an intentional teardown isn't fought by the
     /// reconnect loop.
     private var isDeliberatelyDisconnected = false
@@ -294,7 +312,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     ///
     /// Returns true if the connector accepted the registration.
     func registerPushToken(_ token: String, pushEnvironment: String) async -> Bool {
-        guard let accessToken = await authCoordinator.currentAccessToken(),
+        // Build 55: refresh the access token FIRST, not just read it. The WS
+        // connect path (mintTicket) refreshes before every ticket, but this
+        // register path read the raw stored bearer — so after the token
+        // expired (typically 1h), every register attempt sent a dead bearer,
+        // the connector 401'd on /v1/push/register, and the app sat at
+        // "Not Registered" forever even though the socket was healthy. The
+        // connector delegates bearer verification to the gateway
+        // (/api/auth/me), so an expired token is indistinguishable from no
+        // token. Refresh is a no-op when the token is still valid.
+        guard let accessToken = try? await authCoordinator.refreshAccessTokenIfNeeded(),
               !accessToken.isEmpty else {
             Self.logger.warning("registerPushToken: no native access token")
             return false
@@ -416,6 +443,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // handleUnexpectedDisconnect below).
             connectedAt = Date()
             hasStoredLogin = true
+            hasConnectedOnce = true
             connectionStatus = .connected
             connectionStage = .connected
             Self.logger.info("Connected to native gateway")

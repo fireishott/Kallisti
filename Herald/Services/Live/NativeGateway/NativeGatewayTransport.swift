@@ -103,7 +103,16 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
     /// torn down, and the app sits "connected" while every request fails
     /// with transportClosed - the constant-disconnect experience. The gate
     /// makes a late callback a no-op, so racing the timeout is safe.
-    private static let pingTimeout: Duration = .seconds(8)
+    ///
+    /// Build 55: 8s was too aggressive — the gateway's event loop can stall
+    /// for 10-20s+ during heavy turns (long tool calls, image generation),
+    /// and the client was killing a HEALTHY socket whose pong merely arrived
+    /// late, then reconnecting into churn (which also flashed the loading
+    /// surface and ate typed text). The server itself reaps dead peers at
+    /// 20s (ws_ping_interval/ws_ping_timeout on 0.0.0.0 binds), so the
+    /// client must be strictly MORE tolerant: 45s gives stalled loops room
+    /// to breathe while still tearing down genuinely dead sockets.
+    private static let pingTimeout: Duration = .seconds(45)
 
     private static func oneShotSendPing(_ task: URLSessionWebSocketTask) async -> Bool {
         await withCheckedContinuation { continuation in

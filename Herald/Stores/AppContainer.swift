@@ -214,11 +214,31 @@ final class AppContainer {
         self.secureStore = secureStore
         self.hostStatusStream = hostStatusStream ?? HostStatusStreamService(
             apiClient: apiClient ?? RelayAPIClient { "" },
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { [nativeGatewayClient] in
+                // Build 55: native mode never sets the legacy pairing token
+                // (SecureKeys.accessToken), so the old provider returned nil
+                // and every gateway restart / status call failed with "Not
+                // authenticated — please pair your device first." Present the
+                // native gateway bearer when it exists; fall back to the
+                // relay session token for basic/pairing auth modes.
+                if let nativeGatewayClient,
+                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+                   !nativeToken.isEmpty {
+                    return nativeToken
+                }
+                return await sessionStore.currentAccessToken()
+            }
         )
         self.gatewayControl = gatewayControl ?? GatewayControlService(
             apiClient: apiClient ?? RelayAPIClient { "" },
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { [nativeGatewayClient] in
+                if let nativeGatewayClient,
+                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+                   !nativeToken.isEmpty {
+                    return nativeToken
+                }
+                return await sessionStore.currentAccessToken()
+            }
         )
 
         // Observe Live Activity push token updates and register with relay
@@ -257,7 +277,20 @@ final class AppContainer {
             // at all -- wait for the silent connect() attempt (using any
             // stored Nous token) to resolve one way or the other before
             // deciding whether to show onboarding or the main app.
-            return nativeGatewayClient.connectionStatus != .connecting
+            //
+            // Build 55: use hasConnectedOnce, NOT `connectionStatus !=
+            // .connecting`. connectionStatus flips to .connecting on EVERY
+            // reconnect, so the old check made AppRootView re-show the full
+            // opaque loading surface mid-session whenever the socket dropped
+            // (which the 8s ping timeout triggered during long tool calls).
+            // The surface swap tore AdaptiveRootView down and rebuilt it,
+            // wiping the composer draft (@State messageText) and re-syncing
+            // the stale router.selectedTab — the "random refreshing that
+            // drops you in Settings and eats your typed text" bug. Once the
+            // app has connected at least once, reconnects stay in the chat
+            // UI; the surface only appears on genuine cold launch.
+            return nativeGatewayClient.hasConnectedOnce
+                || nativeGatewayClient.connectionStatus != .connecting
         }
         if !pairingStore.isPaired { return true }
         if isInitialized && !sessionStore.isBootstrapping { return true }
@@ -1291,7 +1324,11 @@ final class AppContainer {
 
         // Native path: use native bearer + connector facade URL.
         if let nativeGatewayClient {
-            guard let accessToken = await nativeGatewayClient.nativeAccessToken(),
+            // Build 55: refresh first — same expired-bearer bug as
+            // registerPushToken. A stale token 401s the connector even
+            // though the socket is fine, leaving the Live Activity without
+            // push-update capability silently.
+            guard let accessToken = try? await nativeGatewayClient.refreshAccessToken(),
                   !accessToken.isEmpty else {
                 Logger.app.warning("registerLiveActivityPushToken: no native access token")
                 return
