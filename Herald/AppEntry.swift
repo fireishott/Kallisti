@@ -205,9 +205,11 @@ struct HeraldApp: App {
     private func beginGatewayKeepAwake() {
         guard gatewayKeepAwakeTaskID == .invalid else { return }
         gatewayKeepAwakeTaskID = UIApplication.shared.beginBackgroundTask(withName: "kallisti.gateway.keepalive") {
-            // Expired - iOS will suspend us. Nothing to clean up beyond
-            // marking the task done; the socket heals via reconnectIfNeeded()
-            // on the next foreground.
+            // Expired - iOS will suspend us. Persist in-flight state so the
+            // next launch can show a "resuming" indicator instead of a blank screen.
+            Task { @MainActor in
+                AppContainer.sharedDefault().chatStore.persistInFlightCheckpointIfActive()
+            }
             endGatewayKeepAwake()
         }
     }
