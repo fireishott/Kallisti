@@ -865,6 +865,24 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 if response.error == nil {
                     return true
                 }
+                // Build 54: the status probe 4001s for sessions the gateway
+                // reaped from memory (restart, idle, background suspension).
+                // Before giving up and minting a NEW empty session (which is
+                // what made old chats open blank), try session.resume - the
+                // gateway rebuilds the session from its persisted state.db
+                // row, so the history and title come back intact. This is
+                // exactly what the desktop/electron client does on reconnect.
+                if let resumeError = response.error {
+                    Self.logger.info("ensureSessionForSwitch: status failed (\\(resumeError)), trying session.resume for \(nativeId)")
+                }
+                let resume = try await client.send(
+                    method: "session.resume",
+                    params: ["session_id": nativeId],
+                    timeoutNanos: Self.probeTimeoutNanos
+                )
+                if resume.error == nil {
+                    return true
+                }
             } catch {
                 // Treat any probe failure as stale; fall through to recreate.
             }

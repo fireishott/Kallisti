@@ -434,22 +434,29 @@ struct ChatWallpaperBackground: View {
     }
 
     /// Kallisti default wallpaper: the seated-Eris relief art on dark
-    /// themes (brand asset), falling back to the procedural brand field
-    /// in light mode where a near-black image would read as broken.
+    /// themes (brand asset), and the seated figure cropped from the light
+    /// banner in light mode. Both render aspect-fit and centered so the
+    /// figure stays fully visible on iPad landscape - scaledToFill on a
+    /// portrait image in a landscape frame cropped the subject out and
+    /// left only the dark field, which read as a faded/blank wallpaper.
     @ViewBuilder
     private var defaultBackground: some View {
-        if colorScheme == .dark {
-            GeometryReader { proxy in
+        GeometryReader { proxy in
+            if colorScheme == .dark {
                 Image("KallistiWallpaper")
                     .resizable()
-                    .scaledToFill()
+                    .scaledToFit()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+            } else {
+                Image("KallistiWallpaperLight")
+                    .resizable()
+                    .scaledToFit()
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
             }
-            .ignoresSafeArea()
-        } else {
-            KallistiBrandField(isReadingSurface: true)
         }
+        .ignoresSafeArea()
     }
 
     @ViewBuilder
