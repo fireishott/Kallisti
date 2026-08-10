@@ -5,52 +5,80 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.2.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
 
-Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects directly to a Hermes gateway for chat and uses the optional Kallisti connector for mobile services such as push notifications, sensors, and authenticated media delivery.
+Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects directly to a Hermes gateway over a native WebSocket for chat and sessions, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, sensors, and authenticated media delivery.
 
-## Build 50 highlights
+There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Your conversations, credentials, and media stay on infrastructure you control.
 
-- Full-screen branded connection overlay with real-time truthful stages during reconnect and relaunch
-- Manual Reset Connection action from the overlay and Settings (idempotent, non-destructive)
-- Historical images remain accessible after gateway restart through normalized media path resolution
-- Connector resolves both current default-profile and legacy per-profile media roots
-- Regression coverage for connection stages, overlay visibility, reset idempotency, and media path normalization
+## Highlights
 
-## Build 49 highlights
+- Native WebSocket chat with durable session and outbox recovery
+- Streaming Markdown, code blocks, tool activity, and reasoning status
+- Authenticated inline rendering for agent-generated images
+- Push notifications, Live Activities, widgets, and watch support
+- Voice mode with configurable ASR/TTS providers and Apple speech fallback
+- Optional HealthKit, CoreLocation, and CoreMotion synchronization
+- Gateway status, logs, restart operations, and update checks
+- Keychain-backed credentials and fully self-hosted transport
 
-- Direct native WebSocket chat with durable session and outbox recovery
-- Fast follow-up delivery without waiting on stale stream leases
-- One live thinking placeholder per active turn
-- Authenticated inline rendering for agent-generated `MEDIA:` images
-- Image uploads through the native `image.attach_bytes` RPC
-- Cookie, native bearer, and paired-device authentication for mobile media
-- Push registration and Live Activity lifecycle fixes
+## Release 0.2.1 highlights
+
+- Root-cause fix for long image-generation turns: the WebSocket client now accepts frames up to 64 MB, so large tool results and inline images stream to completion instead of dropping the connection mid-turn
+- Tool-in-flight watchdog exemption: long-running tool calls (image generation, analysis) no longer trigger false stall detection or duplicate re-submission
+- Push, logs, and restart operations refresh the native gateway bearer before every request
+- Stable connection lifecycle: no more mid-session loading-surface teardown, typed text survives reconnect
+- Model pill reloads on connect; iPad layout fixed
+- Live Activity heartbeat keeps lockscreen status current
+- Session resume fallback restores previous sessions after gateway restarts
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete history.
 
 ## Features
 
-- Streaming Markdown chat, code blocks, tool activity, and reasoning status
+### Chat
+
+- Streaming Markdown chat with syntax-highlighted code blocks
+- Real-time tool activity and reasoning status
 - Session history, model selection, and profile selection
-- Voice mode with configurable ASR/TTS providers and Apple speech fallback
-- Optional HealthKit, CoreLocation, and CoreMotion synchronization
-- Push notifications, widgets, Live Activities, and watch support
-- Gateway status, logs, restart operations, and update checks
-- Keychain-backed credentials and authenticated self-hosted transport
+- One live thinking placeholder per active turn
+- Durable outbox with deadline-aware recovery
+
+### Media
+
+- Agent responses containing local `MEDIA:` paths render inline as authenticated images
+- Native image uploads stage through the gateway before prompt submission
+- Historical images stay accessible after gateway restarts
+- Media serving is restricted to configured Hermes media roots
+
+### Mobile
+
+- Push notifications for background turns
+- Live Activities on the lockscreen with elapsed-time heartbeat
+- Widgets and watch support
+- Voice mode with configurable ASR/TTS and Apple speech fallback
+- Optional HealthKit, CoreLocation, and CoreMotion sync
+
+### Gateway control
+
+- Connection status with real, truthful stages
+- Manual reset connection
+- Gateway logs, restart, and update checks
 
 ## Architecture
 
 ```text
 Kallisti iOS
-  -> Hermes gateway WebSocket for chat and sessions
-  -> Kallisti connector for push, sensors, and authenticated media
+  -> Hermes gateway WebSocket (chat, sessions, models, profiles)
+  -> Kallisti connector (push, sensors, authenticated media)
   -> optional public reverse proxy for remote access
 ```
 
-Kallisti does not require a hosted vendor backend. Operators provide their own Hermes gateway, connector, TLS endpoint, and Apple signing configuration.
+The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, and authenticated media delivery. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway.
 
 ## Requirements
 

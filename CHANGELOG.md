@@ -2,6 +2,45 @@
 
 All notable Kallisti changes are documented here.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.1] - 2026-08-09
+
+### Fixed
+
+- WebSocket frames over 1 MB no longer kill the connection. Image-generation
+  tool results routinely exceed 2-4 MB as base64, and the previous 1 MB
+  receive cap silently dropped the terminal event, leaving the app stuck on
+  "Thinking" until the stall watchdog fired and the turn was re-submitted
+  (double billing). The client now accepts frames up to 64 MB.
+- Long-running tool calls no longer trip the stall watchdog. The watchdog
+  skips its check while a tool is in flight, so image generation and other
+  multi-minute tool executions complete without a false "took too long" and
+  without re-running the same job.
+- Push registration, gateway logs, restart, and live activity registration
+  now refresh the native gateway bearer before every request, eliminating
+  401s caused by expired stored tokens.
+- The loading surface no longer tears down mid-session on reconnect. A
+  `hasConnectedOnce` flag keeps the chat UI mounted during recovery, so typed
+  text and scroll position survive connection churn.
+- Ping timeout raised to 45 seconds so a stalled gateway event loop during a
+  heavy turn cannot kill a healthy socket.
+- The model pill reloads from the gateway on connect, so it no longer shows a
+  bare green dot until manually opened.
+- iPad model pill layout fixed: the model name text now has layout priority
+  and renders instead of being compressed to zero width.
+- Live Activity lockscreen status now includes an elapsed-time heartbeat, so
+  the lockscreen no longer freezes on "Thinking".
+- Opening a previous session falls back to `session.resume` before creating a
+  blank chat, restoring the correct transcript after gateway restarts.
+
+### Added
+
+- Tool-in-flight watchdog exemption with an absolute job deadline safety net.
+- Native bearer token priority for all connector-facing HTTP calls.
+- Speech recognition permission included in onboarding permission requests.
+
 ## [0.2.0-build.50] - 2026-08-09
 
 ### Added
