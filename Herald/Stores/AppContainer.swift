@@ -99,6 +99,10 @@ final class AppContainer {
     private var didMigrateLegacyAPNsToken = false
     private var isInitialized = false
     private var isInitializing = false
+    /// Set to true on launch if a persisted in-flight checkpoint was found
+    /// and is less than 10 minutes old. The root view reads this to show
+    /// a "resuming" indicator instead of a blank/failed screen.
+    private(set) var isResumingFromBackground = false
     private var lastCommandCatalogRefreshAt: Date?
     private var lastKnownHostOnline = false
 
@@ -894,6 +898,16 @@ final class AppContainer {
         updateWidgetData()
         isInitialized = true
         sessionStore.launchState = .ready
+
+        // Check for a persisted in-flight checkpoint from a prior background-task expiry.
+        // If present and less than 10 minutes old, set the resuming flag so the root
+        // view can show a "resuming" indicator. Clear the checkpoint after reading (one-shot).
+        if let checkpoint = InFlightCheckpointStore.load(),
+           Date().timeIntervalSince(checkpoint.backgroundedAt) < 600 {
+            isResumingFromBackground = true
+            Logger.app.info("Launch: resuming from background checkpoint (conversation \(checkpoint.conversationID.uuidString.prefix(8)))")
+        }
+        InFlightCheckpointStore.clear()
 
         // Process any notification route that arrived during initialization
         await processPendingNotificationRoute()

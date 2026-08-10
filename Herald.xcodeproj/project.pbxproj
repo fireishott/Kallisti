@@ -34,6 +34,7 @@
 		12648E5115A86EDD713C2180 /* InboxActionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */; };
 		12D203F5060B491595624C0E /* GatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A530495C77CC7DEAB43D47 /* GatewayClient.swift */; };
 		13A463667EAEFABFB058FB98 /* stream_v2_reasoning.json in Resources */ = {isa = PBXBuildFile; fileRef = C677AA2ECC8EF8AEC72843DD /* stream_v2_reasoning.json */; };
+		1558FA75A1F4BCEA7A164C69 /* NativeGatewayFeatureClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */; };
 		168840175BDDD24BFAE23F93 /* NotesRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E6C547FF047D3B32B2551B1 /* NotesRepositoryTests.swift */; };
 		16C1D88911E1C70CC2F4B27D /* stream_v3_error.json in Resources */ = {isa = PBXBuildFile; fileRef = 3E26B342DD92EA76CCB7EE68 /* stream_v3_error.json */; };
 		17D72433834F3A5277290B56 /* MessageSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61996BD68D8533169E0A7F24 /* MessageSender.swift */; };
@@ -104,7 +105,6 @@
 		444CF386B72E96CD470EEC7E /* LiveInboxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA5308BC6B8AC2338133CE4 /* LiveInboxService.swift */; };
 		44E5211460E9D6829AFE8179 /* KallistiIntents.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75B435EB96C4457174C8AB8 /* KallistiIntents.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		450323BE1687C596366E6627 /* NativeKallistiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */; };
-		AA000001B0000001000000AA /* LoopbackCallbackListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001B0000001000000AB /* LoopbackCallbackListener.swift */; };
 		45757CDEA0530170E7CBD72A /* IntentHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C50D91C1CB57831078FF853 /* IntentHandler.swift */; };
 		45FF4288AB4DAA520750BC59 /* TalkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314A5630FAA9C2DB346843A3 /* TalkStore.swift */; };
 		46F010C877203AC24BEED328 /* VoiceOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF288BDAEA5CA4F148345BB0 /* VoiceOrb.swift */; };
@@ -167,7 +167,6 @@
 		79D006106865B65A82FFB7C6 /* LaunchState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF3EE1C00C431CC2F12EC8B5 /* LaunchState.swift */; };
 		7A05198BE10C2DEB80BD436B /* MockHeraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6608E31D839BA3FB64BD247 /* MockHeraldClient.swift */; };
 		7A8566F7986037CB40CAF9D0 /* NativeGatewayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B49A4AD692A488C7BA0AEA1 /* NativeGatewayClientTests.swift */; };
-		A37C7E8BEE65B951AAF720CA /* NativeKallistiClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC9A2E91837C26848158B741 /* NativeKallistiClientTests.swift */; };
 		7B59FEBA3C1BB4118E08515E /* RestartGatewayControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A8AF9FE99363BD2C00C5CCB /* RestartGatewayControl.swift */; };
 		7B9E68CEFD3E8C4D4AEB2979 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = E66F09D4A3113913594E4724 /* README.md */; };
 		7BD1AE4158A8A41F4A50B7C0 /* InboxItemStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B882729C3C40D34D8EA0BE /* InboxItemStatus.swift */; };
@@ -222,11 +221,13 @@
 		A0910B5BC11ECC31192734E5 /* LiveNotesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E22AE756CAA68BCFE44F141 /* LiveNotesClient.swift */; };
 		A0B9A7D696DF95EFA711B1FF /* NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */; };
 		A36D6C05ECE9BA2154590F2A /* LiveMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 860E5A710E08ADEC8B39EFE6 /* LiveMediaService.swift */; };
+		A37C7E8BEE65B951AAF720CA /* NativeKallistiClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC9A2E91837C26848158B741 /* NativeKallistiClientTests.swift */; };
 		A3D6D65994DA6DCB9337424F /* DeviceCapability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D7991C58D1F60670363B82 /* DeviceCapability.swift */; };
 		A40CFE9CDBA89B16D4663D86 /* ReasoningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D69DEDE530EB264AE44DC06 /* ReasoningView.swift */; };
 		A58A3A7BBF9D632643A86225 /* NativeGatewayWireTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE3B71F147ACE72E07C2C12C /* NativeGatewayWireTypes.swift */; };
 		A6205ED0807251DED1AD3A1E /* SessionSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68D7AC8132364CDFA88AF6CA /* SessionSummary.swift */; };
 		A9A3BDFEC9C183B41739782C /* InboxItemRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = E852C152AE4E1E57CCC8AB12 /* InboxItemRow.swift */; };
+		AA000001B0000001000000AA /* LoopbackCallbackListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001B0000001000000AB /* LoopbackCallbackListener.swift */; };
 		AA36CA789052F3DFF6FA5640 /* B18TerminalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03F11BD9ADF34586C0274E9D /* B18TerminalStateTests.swift */; };
 		AB8A02C8A6922F627D52BE51 /* stream_v2_text_only.json in Resources */ = {isa = PBXBuildFile; fileRef = 5FABCE034A4B6710AFB3E462 /* stream_v2_text_only.json */; };
 		AC669D011CA3FDD307ABC2D3 /* MockSecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BE9F404D1E7B4F3B5519665 /* MockSecureStore.swift */; };
@@ -325,11 +326,11 @@
 		ECC14EA3349A037A34E38AAC /* NoteDirective.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87729377A0556194DF8BFBF7 /* NoteDirective.swift */; };
 		ECC779E7138D092D7D5A6866 /* View+Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95BEC1861B50F0421425D09 /* View+Glass.swift */; };
 		ED0566070B5E0A73092ECBDF /* NoteRecognitionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 522EB9981B7B69D68F141D86 /* NoteRecognitionCoordinatorTests.swift */; };
+		EF41D4ED415DB8B76D46E340 /* InFlightCheckpointStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7321445D18B30E938BFBD361 /* InFlightCheckpointStore.swift */; };
 		EFD14E7F85AC61DC72716DB1 /* stream_v3_reasoning.json in Resources */ = {isa = PBXBuildFile; fileRef = D5F1442032DA28C8E94FBAE8 /* stream_v3_reasoning.json */; };
 		F1517FFDFD7C1F9B984C64F0 /* HermesTalkCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0227FAE49C18261AC5197C07 /* HermesTalkCoordinator.swift */; };
 		F18BC36F51FFEA6EB5221656 /* QuickNoteActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554C23328FBA8D6CA2E44BDB /* QuickNoteActivity.swift */; };
 		F205A7FEF397AF02BD9B882B /* NativeGatewayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */; };
-		1558FA75A1F4BCEA7A164C69 /* NativeGatewayFeatureClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */; };
 		F395DD90C3B6C14969BD48FD /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FAE9B85C6D21633EEE9A6F5 /* AppIcon.png */; };
 		F3C5FED2BFA959D2802BA087 /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EE6F7624BD43C7E5123259 /* ModelStore.swift */; };
 		F5DD47C150BD0C1A49205E39 /* RelaySetupCodePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = A345E28CCF2EEEA52D22C3AD /* RelaySetupCodePayload.swift */; };
@@ -478,7 +479,6 @@
 		17D020123D7F5CF82E35E7EC /* ConnectHeraldHostScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectHeraldHostScreen.swift; sourceTree = "<group>"; };
 		1818276733B8FCA5971A00A7 /* TranscriptIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdentity.swift; sourceTree = "<group>"; };
 		1821F765D87B75A6FE30AA55 /* NativeGatewayTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayTransport.swift; sourceTree = "<group>"; };
-		FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayFeatureClient.swift; sourceTree = "<group>"; };
 		1885D85B5424877D7D4832AC /* MimoVoiceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimoVoiceCatalogTests.swift; sourceTree = "<group>"; };
 		1AFBD1A002B69B9B6A0274B2 /* KallistiWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = KallistiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BA09989B0B2BCC2519D8DD5 /* SkillsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsBrowserView.swift; sourceTree = "<group>"; };
@@ -503,7 +503,6 @@
 		2E5B53E8562C62901D062529 /* PendingAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingAttachment.swift; sourceTree = "<group>"; };
 		2E784AB16C39E6C64F9EAF6D /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
 		2F12398DF7F84FA90B1E95D6 /* NativeKallistiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKallistiClient.swift; sourceTree = "<group>"; };
-		AA000001B0000001000000AB /* LoopbackCallbackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackCallbackListener.swift; sourceTree = "<group>"; };
 		2F2D09B0484E5E3255AC0165 /* MockHandwritingRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHandwritingRecognizer.swift; sourceTree = "<group>"; };
 		2FC131E1A52D3BB62EDB05AE /* PencilCanvasRepresentable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PencilCanvasRepresentable.swift; sourceTree = "<group>"; };
 		300CB67C9089E643FB2B1B7D /* LiveHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveHeraldClient.swift; sourceTree = "<group>"; };
@@ -584,7 +583,6 @@
 		6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayLogsScreen.swift; sourceTree = "<group>"; };
 		6AE22DD28D0A4330BCD941BB /* NotePaperBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePaperBackground.swift; sourceTree = "<group>"; };
 		6B49A4AD692A488C7BA0AEA1 /* NativeGatewayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayClientTests.swift; sourceTree = "<group>"; };
-		FC9A2E91837C26848158B741 /* NativeKallistiClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKallistiClientTests.swift; sourceTree = "<group>"; };
 		6C151929BD23EE7F7F5B3B34 /* MockMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockMediaService.swift; sourceTree = "<group>"; };
 		6C47B0EEFCF9E67C01A57B76 /* HostEnrollmentCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEnrollmentCode.swift; sourceTree = "<group>"; };
 		6C4E0B1E61D42039379EE86D /* SharedTokenBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTokenBridge.swift; sourceTree = "<group>"; };
@@ -599,6 +597,7 @@
 		70FEA71E52EA99A61A45677F /* SharedTokenMigrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTokenMigrator.swift; sourceTree = "<group>"; };
 		7174B3AFA99DEC47A8964E9F /* KallistiUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = KallistiUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		71EBD1CFF7886DDC671DEFFA /* ConnectionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatus.swift; sourceTree = "<group>"; };
+		7321445D18B30E938BFBD361 /* InFlightCheckpointStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InFlightCheckpointStore.swift; path = InFlightCheckpointStore.swift; sourceTree = "<group>"; };
 		746936AE9FD6C4CAF14CF03A /* RecognizedTextReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecognizedTextReviewView.swift; sourceTree = "<group>"; };
 		74751CD6E17E567461B95789 /* AppleTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTTSService.swift; sourceTree = "<group>"; };
 		76EDF1EB04107F5912314FBC /* HeraldLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeraldLiveActivity.swift; sourceTree = "<group>"; };
@@ -672,6 +671,7 @@
 		A90C11E2E04E9FBBD0B875F1 /* VoiceOverlayScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOverlayScreen.swift; sourceTree = "<group>"; };
 		A94D5780D164E87A1D7A54EF /* JobEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobEvent.swift; sourceTree = "<group>"; };
 		A96DFEDEE338BADEBA23892E /* StatusCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusCardView.swift; sourceTree = "<group>"; };
+		AA000001B0000001000000AB /* LoopbackCallbackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackCallbackListener.swift; sourceTree = "<group>"; };
 		AA1983D2D61C7DC8E9FAF7F3 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
 		AA3929DC58D9DA4514F44DBD /* stream_v2_commentary.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_commentary.json; sourceTree = "<group>"; };
 		AC6686C9A33220A9771A0387 /* LegacySpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySpeechService.swift; sourceTree = "<group>"; };
@@ -782,6 +782,8 @@
 		FBE7679F4118D199193E9D63 /* SlashCommandMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommandMenu.swift; sourceTree = "<group>"; };
 		FC1B6413F9460B03B43C31CA /* stream_v3_multi_tools.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v3_multi_tools.json; sourceTree = "<group>"; };
 		FC4E70C23E1F85B7058B2E1D /* VoiceSessionServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionServiceProtocol.swift; sourceTree = "<group>"; };
+		FC9A2E91837C26848158B741 /* NativeKallistiClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKallistiClientTests.swift; sourceTree = "<group>"; };
+		FD08815F51B5622E69C664D5 /* NativeGatewayFeatureClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGatewayFeatureClient.swift; sourceTree = "<group>"; };
 		FD3E52CD9E61F44EE499B062 /* VisionHandwritingRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionHandwritingRecognizer.swift; sourceTree = "<group>"; };
 		FE863F3296A2748FD9FAD626 /* VoiceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceState.swift; sourceTree = "<group>"; };
 		FEDA79420C236E3DE93E9073 /* GatewayDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDTOs.swift; sourceTree = "<group>"; };
@@ -1315,6 +1317,7 @@
 				4277E0A1CE15889FAB92BFF7 /* ResilientSessionBootstrapService.swift */,
 				6C4E0B1E61D42039379EE86D /* SharedTokenBridge.swift */,
 				2B875D95C20954055A8C8FC6 /* UserDefaultsAppPersistenceStore.swift */,
+				7321445D18B30E938BFBD361 /* InFlightCheckpointStore.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -1555,8 +1558,6 @@
 				42BA575D7DCA1AD3EA802414 /* PBXTargetDependency */,
 			);
 			name = KallistiWidgets;
-			packageProductDependencies = (
-			);
 			productName = KallistiWidgets;
 			productReference = 1AFBD1A002B69B9B6A0274B2 /* KallistiWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -1574,8 +1575,6 @@
 				24F580D8676499401264D2C3 /* PBXTargetDependency */,
 			);
 			name = KallistiTests;
-			packageProductDependencies = (
-			);
 			productName = KallistiTests;
 			productReference = A03ED706E385625D048AD9F9 /* KallistiTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -1593,8 +1592,6 @@
 				26274046841BD67ABD2555A7 /* PBXTargetDependency */,
 			);
 			name = KallistiNotificationService;
-			packageProductDependencies = (
-			);
 			productName = KallistiNotificationService;
 			productReference = 6614D5D1CEDC62A1DA839C6B /* KallistiNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -1611,8 +1608,6 @@
 			dependencies = (
 			);
 			name = KallistiSupport;
-			packageProductDependencies = (
-			);
 			productName = KallistiSupport;
 			productReference = BB230C28AA046403EB107F6A /* libKallistiSupport.a */;
 			productType = "com.apple.product-type.library.static";
@@ -1635,8 +1630,6 @@
 				8948F4C113444C2841CFB648 /* PBXTargetDependency */,
 			);
 			name = Kallisti;
-			packageProductDependencies = (
-			);
 			productName = Kallisti;
 			productReference = 06F748EC1132D7A00889C420 /* Kallisti.app */;
 			productType = "com.apple.product-type.application";
@@ -1654,8 +1647,6 @@
 				DF0AF983E74E52C03558FEAA /* PBXTargetDependency */,
 			);
 			name = KallistiControls;
-			packageProductDependencies = (
-			);
 			productName = KallistiControls;
 			productReference = 3F1C53C42A6904528993F947 /* KallistiControls.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -1672,8 +1663,6 @@
 				370B60DDAF9882B3B1B05FA6 /* PBXTargetDependency */,
 			);
 			name = KallistiUITests;
-			packageProductDependencies = (
-			);
 			productName = KallistiUITests;
 			productReference = 7174B3AFA99DEC47A8964E9F /* KallistiUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -1691,8 +1680,6 @@
 				870F71C709B29F607CC08605 /* PBXTargetDependency */,
 			);
 			name = KallistiIntents;
-			packageProductDependencies = (
-			);
 			productName = KallistiIntents;
 			productReference = E75B435EB96C4457174C8AB8 /* KallistiIntents.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -1709,8 +1696,6 @@
 			dependencies = (
 			);
 			name = KallistiWatch;
-			packageProductDependencies = (
-			);
 			productName = KallistiWatch;
 			productReference = 2C81D00ED6092082696BE8E6 /* KallistiWatch.app */;
 			productType = "com.apple.product-type.application";
@@ -1771,6 +1756,7 @@
 			mainGroup = C960DD9679960831752746A9;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 54;
+			productRefGroup = 4C98655825F92734D14D2DAB /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -2126,6 +2112,7 @@
 				96D4B515516E72241821CBE9 /* iPadRightPanelView.swift in Sources */,
 				57D331E674B5BF4FBC7930B6 /* iPadSidebarView.swift in Sources */,
 				CA48F92674E0BDF2E21125E8 /* iPhoneSessionDrawer.swift in Sources */,
+				EF41D4ED415DB8B76D46E340 /* InFlightCheckpointStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
