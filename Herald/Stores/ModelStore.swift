@@ -41,6 +41,10 @@ final class ModelStore {
     }
 
     private(set) var models: [HeraldModel] = []
+    /// Generation token bumped on every switchModel call. Any loadModels
+    /// response that was in flight when a switch started MUST NOT overwrite
+    /// the optimistic write.
+    private var switchGeneration: UInt64 = 0
     private(set) var activeModel: ActiveModel?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -141,7 +145,11 @@ final class ModelStore {
                         )
                     }
                 }
-                if let model = info.model {
+                // Build 60: capture generation BEFORE touching activeModel. If a switch
+                // started while we were awaiting modelOptions, drop the activeModel
+                // write to avoid clobbering the optimistic switch result.
+                let genAtEntry = switchGeneration
+                if let model = info.model, genAtEntry == switchGeneration {
                     activeModel = ActiveModel(
                         name: model,
                         provider: info.provider,
@@ -242,10 +250,18 @@ final class ModelStore {
     func switchModel(to name: String, provider: String) async throws {
         if let featureClient = nativeFeatureClientProvider() {
             do {
+                // Build 60: bump generation BEFORE slash.exec so any in-flight
+                // loadModels is invalidated against the optimistic write.
+                switchGeneration &+= 1
                 try await featureClient.switchModel(name, provider: provider)
-                // Optimistic — reload the catalog to confirm the switch.
+                // Optimistic: slash.exec returned success, gateway applied
+                // the switch. Do NOT call loadModels here -- it re-enters
+                // currentSessionIdProvider -> ensureSessionForSwitch which
+                // can hit a phantom socket and recreate the session, after
+                // which model.options returns the session default, clobbering
+                // this write. The next natural loadModels call will refresh
+                // against the now-correct session scope.
                 activeModel = ActiveModel(name: name, provider: provider, contextWindow: nil)
-                await loadModels(force: true)
                 return
             } catch {
                 // NATIVE mode: do NOT fall through to the legacy relay path.
