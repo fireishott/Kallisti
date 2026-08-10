@@ -2,6 +2,8 @@ import SwiftUI
 
 struct AppRootView: View {
     @Environment(AppContainer.self) private var container
+    @State private var reconnectDebounced = false
+    @State private var reconnectStartedAt: Date?
 
     /// Whether the single opaque loading surface should be shown.
     /// Covers: initial launch, reconnect, auth, verification, restoration,
@@ -27,7 +29,8 @@ struct AppRootView: View {
             isRecovering: status == .connecting || status == .reconnecting,
             hasStoredLogin: nativeClient?.hasStoredLogin ?? false,
             isBootstrapping: container.sessionStore.isBootstrapping,
-            hasTerminalLegacyFailure: terminalLegacyFailure
+            hasTerminalLegacyFailure: terminalLegacyFailure,
+            reconnectDebounced: reconnectDebounced
         )
     }
 
@@ -37,18 +40,17 @@ struct AppRootView: View {
         isRecovering: Bool,
         hasStoredLogin: Bool,
         isBootstrapping: Bool,
-        hasTerminalLegacyFailure: Bool
+        hasTerminalLegacyFailure: Bool,
+        reconnectDebounced: Bool = false
     ) -> Bool {
         if isNative {
-            // Build 53: the full-screen surface is for LAUNCH only. It used
-            // to also cover every mid-session reconnect (isRecovering &&
-            // hasStoredLogin), which made the app flash an opaque "reconnect
-            // attempt N" window over the chat on every gateway restart or
-            // network blip - amateurish next to the electron app, which just
-            // reconnects under the hood. Mid-session reconnects now stay in
-            // the chat UI with the existing connection banner / status chip;
-            // the surface only appears when the app is actually booting.
-            return !isLaunchReady
+            if !isLaunchReady { return true }  // always show during launch
+            // Mid-session reconnect: show after 1.5s debounce to avoid
+            // flashing on quick reconnects (<1.5s).
+            if isRecovering && hasStoredLogin {
+                return reconnectDebounced
+            }
+            return false
         }
         return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
     }
@@ -115,6 +117,21 @@ struct AppRootView: View {
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
         .animation(Design.Motion.standard, value: container.nativeGatewayClient?.connectionStatus)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
+        .onChange(of: container.nativeGatewayClient?.connectionStatus) { _, newStatus in
+            if newStatus == .connecting || newStatus == .reconnecting {
+                reconnectStartedAt = Date()
+                reconnectDebounced = false
+                Task {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    if reconnectStartedAt != nil {
+                        reconnectDebounced = true
+                    }
+                }
+            } else {
+                reconnectStartedAt = nil
+                reconnectDebounced = false
+            }
+        }
     }
 
     private var authFailureView: some View {
