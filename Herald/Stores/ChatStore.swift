@@ -2496,6 +2496,30 @@ final class ChatStore {
         }
     }
 
+
+    // MARK: - In-Flight Checkpoint (Build 52+)
+
+    /// Persists a checkpoint of the current in-flight turn state so the next
+    /// launch can immediately show a "resuming" indicator. Called from the
+    /// background-task expiry handler in AppEntry.
+    func persistInFlightCheckpointIfActive() {
+        guard isStreaming, let conversation else { return }
+        let checkpoint = InFlightCheckpoint(
+            conversationID: conversation.id,
+            nativeSessionID: conversation.id.uuidString,
+            jobID: acceptedJobID,
+            backgroundedAt: streamBackgroundedAt ?? Date()
+        )
+        InFlightCheckpointStore.save(checkpoint)
+        Self.logger.info("Persisted in-flight checkpoint for conversation \(conversation.id.uuidString.prefix(8))")
+    }
+
+    /// Clears any persisted in-flight checkpoint. Called when a turn completes
+    /// cleanly (terminal message received) or when the user explicitly cancels.
+    func clearInFlightCheckpoint() {
+        InFlightCheckpointStore.clear()
+    }
+
     // MARK: - Outbox Queue (Build 31 → Build 33 WSB durable)
 
     /// Enqueue a message to be sent after the active turn finishes.
