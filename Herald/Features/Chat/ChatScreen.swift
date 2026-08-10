@@ -362,11 +362,22 @@ struct ChatScreen: View {
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(Design.Colors.foreground)
                             .lineLimit(1)
+                            // Build 56: layoutPriority(1) so the model name
+                            // never collapses to zero width in tight toolbar
+                            // slots. The context ring has a fixed 16pt frame
+                            // and is incompressible, so SwiftUI was shrinking
+                            // the Text to nothing first - the iPad pill
+                            // rendered as a bare green dot even though the
+                            // model name was loaded (the iPhone principal
+                            // slot had enough width, the iPad leading slot
+                            // didn't).
+                            .layoutPriority(1)
                     } else if modelStore.isLoading {
                         Text("Model…")
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .lineLimit(1)
+                            .layoutPriority(1)
                     } else {
                         // Never render an unlabeled status capsule on iPad.
                         // It looked like a toggle in compact split-view widths
@@ -375,6 +386,7 @@ struct ChatScreen: View {
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .lineLimit(1)
+                            .layoutPriority(1)
                     }
 
                     contextRing(progress: contextProgress)
