@@ -1854,8 +1854,16 @@ async def get_inbox(request: Request) -> JSONResponse:
 
 
 async def push_register(request: Request) -> JSONResponse:
-    """Persist the current device's APNs token for direct delivery."""
-    await require_auth(request)
+    """Persist the current device's APNs token for direct delivery.
+
+    Native-gateway clients (Build 51+) authenticate with the gateway's
+    OAuth bearer token, not a connector pairing token. require_auth
+    only accepts connector credentials (hd_ / shared), so a Build 51
+    phone's POST landed here with 401 even after Caddy routed it correctly.
+    Use the same dual-path auth the media route uses: gateway bearer,
+    gateway cookie, then connector token fallback.
+    """
+    await require_native_or_paired_auth(request)
     try:
         body = await request.json()
     except Exception:
