@@ -329,30 +329,86 @@ struct BlinkingCursor: View {
 
 // MARK: - Streaming Placeholder Text
 
-/// Tiered status text shown while a stream is open but no content has arrived
-/// yet. Replaces a bare blinking cursor so the user gets feedback about how
-/// long they have been waiting. Mirrors the tiered logic in
-/// `MessageBubble.streamingPlaceholder` for consistency.
+/// Tiered, deliberately-shaped status pill shown while a stream is open but no
+/// content has arrived yet. Replaces the bare blinking cursor that used to
+/// appear for thinking models whose reasoning/CoT was still streaming while
+/// `message.content` was empty.
+///
+/// Tier thresholds:
+/// - < 5s   "Connecting to Hermes..."
+/// - < 30s  "Thinking... Xs"
+/// - < 60s  "Model is working on your request..."
+/// - >=60s  "This is taking longer than usual..."
 struct StreamingPlaceholderText: View {
     let startedAt: Date
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
             let elapsed = context.date.timeIntervalSince(startedAt)
-            let text: String
-            if elapsed < 5 {
-                text = "Connecting to Hermes..."
-            } else if elapsed < 30 {
-                text = "Thinking... \(Int(elapsed))s"
-            } else if elapsed < 60 {
-                text = "Model is working on your request..."
-            } else {
-                text = "This is taking longer than usual..."
+            let text = Self.tierText(for: elapsed)
+            HStack(spacing: Design.Spacing.xs) {
+                PulsingStatusDot(tint: Design.Brand.accent)
+                Text(text)
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.tertiaryForeground)
+                    .italic()
+                    .monospacedDigit()
             }
-            return Text(text)
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.tertiaryForeground)
-                .italic()
+            .padding(.horizontal, Design.Spacing.sm)
+            .padding(.vertical, Design.Spacing.xxs)
+            .background(
+                Capsule().fill(Design.Colors.surface)
+            )
+            .overlay(
+                Capsule().stroke(Design.Colors.border.opacity(0.6), lineWidth: 0.5)
+            )
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Kallisti is generating a response")
+    }
+
+    /// The four tiered status strings. Exposed at type scope so callers and
+    /// tests can assert on the exact strings. The order is significant:
+    /// "Connecting" -> "Thinking" -> "Model is working" -> "longer than usual".
+    static func tierText(for elapsed: TimeInterval) -> String {
+        if elapsed < 5 {
+            return "Connecting to Hermes..."
+        } else if elapsed < 30 {
+            let seconds = max(1, Int(elapsed))
+            return "Thinking... \(seconds)s"
+        } else if elapsed < 60 {
+            return "Model is working on your request..."
+        } else {
+            let seconds = Int(elapsed)
+            let minutes = seconds / 60
+            let rem = seconds % 60
+            return rem == 0
+                ? "This is taking longer than usual... \(minutes)m"
+                : "This is taking longer than usual... \(minutes)m \(rem)s"
+        }
+    }
+}
+
+// MARK: - Pulsing Status Dot
+
+/// Small breathing dot used as the live indicator in `StreamingPlaceholderText`.
+/// Pulses in opacity (not size) so it reads as a status heartbeat rather than
+/// a spinner. Used as a struct so SwiftUI can render it without a wrapping
+/// AnyView (no `[weak self]` concerns).
+private struct PulsingStatusDot: View {
+    let tint: Color
+
+    @State private var alive: Bool = true
+
+    var body: some View {
+        Circle()
+            .fill(tint)
+            .frame(width: 6, height: 6)
+            .opacity(alive ? 1.0 : 0.35)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                    alive = false
+                }
+            }
     }
 }

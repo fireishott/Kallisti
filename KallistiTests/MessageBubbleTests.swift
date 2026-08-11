@@ -118,6 +118,94 @@ struct MessageBubbleStreamingPlaceholderTests {
                 "BlinkingCursor must still be instantiated somewhere in the view body.")
     }
 
+    // MARK: - Tier text is locked end-to-end
+
+    /// `StreamingPlaceholderText.tierText(for:)` is the single source of
+    /// truth for the user-visible status strings. Lock the exact mapping
+    /// so a future edit cannot silently change "Thinking... 5s" to
+    /// "Thinking - 5s" or skip a tier entirely.
+    @Test("StreamingPlaceholderText.tierText produces the locked tier strings")
+    func tierTextMappingIsLocked() {
+        // < 5s
+        #expect(StreamingPlaceholderText.tierText(for: 0) == "Connecting to Hermes...")
+        #expect(StreamingPlaceholderText.tierText(for: 4.99) == "Connecting to Hermes...")
+        // 5s ... < 30s
+        #expect(StreamingPlaceholderText.tierText(for: 5).hasPrefix("Thinking... "),
+                "5s boundary must roll into the 'Thinking' tier")
+        #expect(StreamingPlaceholderText.tierText(for: 5).contains("5s"))
+        #expect(StreamingPlaceholderText.tierText(for: 29).hasPrefix("Thinking... "))
+        // < 60s
+        #expect(StreamingPlaceholderText.tierText(for: 30) == "Model is working on your request...")
+        #expect(StreamingPlaceholderText.tierText(for: 59.99) == "Model is working on your request...")
+        // >= 60s
+        #expect(StreamingPlaceholderText.tierText(for: 60).hasPrefix("This is taking longer than usual"))
+        #expect(StreamingPlaceholderText.tierText(for: 65).hasPrefix("This is taking longer than usual"))
+        #expect(StreamingPlaceholderText.tierText(for: 65).contains("1m 5s"),
+                "After 60s the elapsed time should render as 'Xm Ys'")
+    }
+
+    // MARK: - Placeholder looks intentional (not a bare cursor)
+
+    /// The polished placeholder wraps the status string in a Capsule + a
+    /// pulsing accent dot. Source-shape guard: if the rewrite ever
+    /// regresses to a bare italic `Text(...)`, this test fails and tells
+    /// the engineer the placeholder is "amateur" again.
+    @Test("StreamingPlaceholderText renders a capsule-pill, not bare text")
+    func placeholderRendersCapsulePill() throws {
+        let url = try locateSourceFile(
+            relativeTo: #filePath,
+            segments: ["Herald", "Features", "Chat", "MarkdownContentView.swift"]
+        )
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("Capsule()"),
+                "Placeholder must wrap the status in a Capsule surface, not render as bare text.")
+        #expect(source.contains("PulsingStatusDot"),
+                "Placeholder must include a live status dot so it reads as intentional, not as a hung cursor.")
+        #expect(source.contains(".background("),
+                "Placeholder must declare a background surface for visual weight.")
+    }
+
+    // MARK: - MessageBubble DRYs to the shared component
+
+    /// `MessageBubble.streamingPlaceholder` should delegate to
+    /// `StreamingPlaceholderText` so the bubble and the markdown fallback
+    /// render identically. If a future edit re-introduces a separate
+    /// `TimelineView` literal in the bubble, the two placeholders will
+    /// drift visually and the user will see two different "still working"
+    /// shapes depending on which view fires first.
+    @Test("MessageBubble.streamingPlaceholder delegates to StreamingPlaceholderText")
+    func bubbleUsesSharedPlaceholder() throws {
+        let url = try locateSourceFile(
+            relativeTo: #filePath,
+            segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
+        )
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("StreamingPlaceholderText(startedAt: message.timestamp)"),
+                "MessageBubble.streamingPlaceholder must reuse StreamingPlaceholderText so the bubble and the markdown fallback render identically.")
+        // The duplicated tierText copy must be gone.
+        #expect(!source.contains("\"Connecting to Hermes...\""),
+                "MessageBubble must not hold its own copy of the tier strings; it should delegate to StreamingPlaceholderText.")
+        #expect(!source.contains("TimelineView(.periodic(from: message.timestamp"),
+                "MessageBubble must not own its own TimelineView; that responsibility lives in StreamingPlaceholderText.")
+    }
+
+    // MARK: - Dead inner fallback is gone
+
+    /// The inner `else if message.isStreaming && message.reasoning.isEmpty`
+    /// fallback was reachable only in theory but still contained the
+    /// `reasoning.isEmpty` guard. Lock the removal so the guard can't
+    /// accidentally be re-introduced in a future refactor.
+    @Test("MessageBubble no longer has the inner empty-content reasoning guard")
+    func innerReasoningGuardRemoved() throws {
+        let url = try locateSourceFile(
+            relativeTo: #filePath,
+            segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
+        )
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(!source.contains("message.isStreaming && message.reasoning.isEmpty"),
+                "The inner `isStreaming && reasoning.isEmpty` guard must be removed; the empty-content placeholder is now always-on via the outer guard.")
+    }
+
     // MARK: - Helpers
 
     /// Walk up from a test-file path to the repo root by climbing until
