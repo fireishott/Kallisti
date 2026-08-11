@@ -608,6 +608,22 @@ final class ChatStore {
 
     // MARK: - Durable Outbox — Phase 2 (submit)
 
+    /// D1: called when iOS expires the gateway keep-awake background task
+    /// (typically ~30s after the app is backgrounded). The Live Activity for
+    /// the in-flight turn is already owned by `chatLiveActivity`; we just
+    /// bump its phase to "Needs attention" so the Lock Screen / Dynamic
+    /// Island reflects the deferred state instead of remaining frozen on
+    /// the last streaming phase.
+    func notifyBackgroundExpiry() {
+        chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
+    }
+
+    /// D2: most recent dynamic stall message written by the polling
+    /// fallback in `runAttemptLoop`. The ChatScreen stall banner reads this
+    /// so users see elapsed-time progress ("Host is slow to respond… 45s")
+    /// instead of a single frozen string. nil when not stalled.
+    var lastStallMessage: String?
+
     /// Phase 2 of the two-phase send. Submits the next `.queued` outbox item
     /// for `conversationID` (defaults to the current conversation) using a
     /// compare-and-set lease:
@@ -1391,12 +1407,26 @@ final class ChatStore {
                 return
             }
 
-            // Update waiting indicator with elapsed time
-            if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
+            // Update waiting indicator with elapsed time. Every 5 poll
+            // iterations (the loop's existing `pollCount`) we rotate the
+            // displayed text through four phases based on elapsed seconds,
+            // and mirror the same string into `lastStallMessage` so the
+            // ChatScreen stall banner reads dynamic progress instead of
+            // freezing on a single string. Hyphens are intentional - the
+            // em-dash would not render in the same width as the surrounding
+            // banner copy.
+            if pollCount > 0 && pollCount % 5 == 0,
+               let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
                 let elapsedSecs = Int(Date.now.timeIntervalSince(jobAcceptedAt))
-                if elapsedSecs > 0 {
-                    conversation?.messages[idx].toolActivity = "Waiting... (\(elapsedSecs)s)"
+                let stallText: String
+                switch elapsedSecs {
+                case 0..<30:    stallText = "Waiting for host... \(elapsedSecs)s"
+                case 30..<90:   stallText = "Host is slow to respond... \(elapsedSecs)s"
+                case 90..<180:  stallText = "Still waiting... \(elapsedSecs)s - Hermes is being patient"
+                default:        stallText = "Reconnecting to Hermes... \(elapsedSecs)s elapsed"
                 }
+                conversation?.messages[idx].toolActivity = stallText
+                lastStallMessage = stallText
             }
         }
     }

@@ -11,8 +11,8 @@ final class KallistiAppState: @unchecked Sendable {
     static let shared = KallistiAppState()
 
     private let defaults: UserDefaults = {
-        guard let suite = UserDefaults(suiteName: "group.net.fihonline.herald") else {
-            fatalError("App Group 'group.net.fihonline.herald' not available — check provisioning profile.")
+        guard let suite = UserDefaults(suiteName: "group.net.fihonline.kallisti") else {
+            fatalError("App Group 'group.net.fihonline.kallisti' not available — check provisioning profile.")
         }
         return suite
     }()

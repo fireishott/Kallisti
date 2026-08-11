@@ -13,6 +13,11 @@ struct MarkdownContentView: View {
     var showReasoning: Bool = true
     var hasStreamedReasoning: Bool = false
     var toolActivities: [ToolActivity] = []
+    /// Timestamp the bubble started streaming. Drives the tiered status text
+    /// rendered when content is empty but we are still streaming (e.g. while
+    /// a thinking model produces its first prose token). Defaults to "now"
+    /// so existing call sites keep working.
+    var startedAt: Date = Date()
 
     @State private var fullscreenImage: MarkdownSegment?
     @State private var cachedSegments: [MarkdownSegment] = []
@@ -34,7 +39,7 @@ struct MarkdownContentView: View {
         let segments = currentSegments()
 
         if segments.isEmpty && showCursor {
-            BlinkingCursor()
+            StreamingPlaceholderText(startedAt: startedAt)
         } else {
             VStack(alignment: .leading, spacing: Design.Spacing.xs) {
                 ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
@@ -319,5 +324,35 @@ struct BlinkingCursor: View {
                     isVisible = false
                 }
             }
+    }
+}
+
+// MARK: - Streaming Placeholder Text
+
+/// Tiered status text shown while a stream is open but no content has arrived
+/// yet. Replaces a bare blinking cursor so the user gets feedback about how
+/// long they have been waiting. Mirrors the tiered logic in
+/// `MessageBubble.streamingPlaceholder` for consistency.
+struct StreamingPlaceholderText: View {
+    let startedAt: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+            let elapsed = context.date.timeIntervalSince(startedAt)
+            let text: String
+            if elapsed < 5 {
+                text = "Connecting to Hermes..."
+            } else if elapsed < 30 {
+                text = "Thinking... \(Int(elapsed))s"
+            } else if elapsed < 60 {
+                text = "Model is working on your request..."
+            } else {
+                text = "This is taking longer than usual..."
+            }
+            return Text(text)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.tertiaryForeground)
+                .italic()
+        }
     }
 }

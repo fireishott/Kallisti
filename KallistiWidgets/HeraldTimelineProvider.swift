@@ -30,7 +30,7 @@ struct KallistiTimelineProvider: TimelineProvider {
         if let custom = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_ID") as? String, !custom.isEmpty {
             return custom
         }
-        return "group.net.fihonline.herald"
+        return "group.net.fihonline.kallisti"
     }()
     private static let dataKey = "herald.widget.data"
 
