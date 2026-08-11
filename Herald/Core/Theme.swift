@@ -391,6 +391,7 @@ struct ChatWallpaperBackground: View {
     var tint: Color = .accentColor
 
     @Environment(\.colorScheme) private var colorScheme
+    @State private var cachedWallpaperImage: UIImage?
     @State private var cachedCustomImage: UIImage?
 
     var body: some View {
@@ -442,21 +443,21 @@ struct ChatWallpaperBackground: View {
     @ViewBuilder
     private var defaultBackground: some View {
         GeometryReader { proxy in
-            if colorScheme == .dark {
-                Image("KallistiWallpaper")
+            if let image = cachedWallpaperImage {
+                Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
             } else {
-                Image("KallistiWallpaperLight")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
+                Color.clear
             }
         }
         .ignoresSafeArea()
+        .task(id: colorScheme) {
+            let imageName = colorScheme == .dark ? "KallistiWallpaper" : "KallistiWallpaperLight"
+            cachedWallpaperImage = await ChatWallpaperImageCache.image(named: imageName)
+        }
     }
 
     @ViewBuilder
@@ -471,6 +472,50 @@ struct ChatWallpaperBackground: View {
                     cachedCustomImage = UIImage(data: data)
                 }
         }
+    }
+}
+
+
+private enum ChatWallpaperImageCache {
+    nonisolated(unsafe) private static var images: [String: UIImage] = [:]
+    private static let lock = NSLock()
+
+    /// Synchronous cache read. Kept sync so NSLock is used from a
+    /// non-async context (Swift 6 forbids lock/unlock inside async).
+    private static func cached(_ name: String) -> UIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return images[name]
+    }
+
+    /// Synchronous cache write. See cached(_:) for the lock rationale.
+    private static func store(_ name: String, _ image: UIImage) {
+        lock.lock()
+        defer { lock.unlock() }
+        images[name] = image
+    }
+
+    static func image(named name: String) async -> UIImage? {
+        if let cachedImage = cached(name) {
+            return cachedImage
+        }
+
+        let image = await Task.detached(priority: .userInitiated) {
+            guard let source = UIImage(named: name), let cgImage = source.cgImage else {
+                return UIImage(named: name)
+            }
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = source.scale
+            let renderer = UIGraphicsImageRenderer(size: source.size, format: format)
+            return renderer.image { context in
+                context.cgContext.draw(cgImage, in: CGRect(origin: .zero, size: source.size))
+            }
+        }.value
+
+        if let image {
+            store(name, image)
+        }
+        return image
     }
 }
 
