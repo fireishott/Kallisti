@@ -90,7 +90,7 @@ targets:
       - path: KallistiWidgets/KallistiAppState.swift
       - path: KallistiWidgets/GatewayState.swift
       - path: KallistiWidgets/KallistiActivityAttributes.swift
-      - path: Kallisti/Services/Protocols/NotificationCategories.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     resources:
       - path: Kallisti/Resources
         optional: true
@@ -104,7 +104,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -188,7 +188,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -202,11 +202,11 @@ targets:
     platform: iOS
     sources:
       - path: KallistiNotificationService
-      - path: Kallisti/Services/Protocols/NotificationCategories.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     entitlements:
       path: KallistiNotificationService/KallistiNotificationService.entitlements
       properties:
-        aps-environment: development
+        aps-environment: production
         com.apple.security.application-groups:
           - group.net.fihonline.kallisti
         keychain-access-groups:
@@ -225,7 +225,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -266,7 +266,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -294,7 +294,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -330,7 +330,7 @@ targets:
     deploymentTarget: "11.0"
     sources:
       - path: KallistiWatch
-      - path: Kallisti/Services/Protocols/NotificationCategories.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     entitlements:
       path: KallistiWatch/KallistiWatch.entitlements
       properties:
@@ -350,7 +350,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "58"
+        CURRENT_PROJECT_VERSION: "61"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -367,7 +367,7 @@ targets:
       - path: KallistiWatchTests
       - path: KallistiWatch/WatchNotificationPayload.swift
       - path: KallistiWatch/WatchConnectivityCoordinator.swift
-      - path: Kallisti/Services/Protocols/NotificationCategories.swift
+      - path: Herald/Services/Protocols/NotificationCategories.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp.tests

@@ -12,6 +12,27 @@ struct PushRegistrationTests {
         var capturedBody: String?
     }
 
+
+    /// URLSession moves a request body into `httpBodyStream` before the
+    /// URLProtocol handler sees it, so `request.httpBody` is often nil here.
+    /// Drain the stream to recover the bytes for assertions.
+    private func bodyData(from request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
+
     private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         nonisolated(unsafe) static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
 
@@ -108,7 +129,7 @@ struct PushRegistrationTests {
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let data = try! JSONEncoder().encode(["registered": true])
+            let data = try! JSONEncoder().encode(["data": ["registered": true]])
             return (response, data)
         }
 
@@ -124,7 +145,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.herald",
+            bundleID: "net.fihonline.kallisti",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -141,7 +162,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.herald",
+            bundleID: "net.fihonline.kallisti",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -155,14 +176,14 @@ struct PushRegistrationTests {
         let capture = CaptureState()
 
         StubURLProtocol.requestHandler = { request in
-            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: bodyData(from: request), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let data = try! JSONEncoder().encode(["registered": true])
+            let data = try! JSONEncoder().encode(["data": ["registered": true]])
             return (response, data)
         }
 
@@ -177,7 +198,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.herald",
+            bundleID: "net.fihonline.kallisti",
             appVersion: "1.0.0",
             pushEnvironment: "development"
         )
@@ -192,14 +213,14 @@ struct PushRegistrationTests {
         let capture = CaptureState()
 
         StubURLProtocol.requestHandler = { request in
-            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: bodyData(from: request), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let data = try! JSONEncoder().encode(["registered": true])
+            let data = try! JSONEncoder().encode(["data": ["registered": true]])
             return (response, data)
         }
 
@@ -214,7 +235,7 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: UUID(),
             installationID: UUID(),
-            bundleID: "net.fihonline.herald",
+            bundleID: "net.fihonline.kallisti",
             appVersion: "1.0.0",
             pushEnvironment: "production"
         )
@@ -230,14 +251,14 @@ struct PushRegistrationTests {
         let deviceID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
 
         StubURLProtocol.requestHandler = { request in
-            capture.capturedBody = String(data: request.httpBody ?? Data(), encoding: .utf8)
+            capture.capturedBody = String(data: bodyData(from: request), encoding: .utf8)
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let data = try! JSONEncoder().encode(["registered": true])
+            let data = try! JSONEncoder().encode(["data": ["registered": true]])
             return (response, data)
         }
 
@@ -252,14 +273,14 @@ struct PushRegistrationTests {
             accessToken: "test-token",
             deviceID: deviceID,
             installationID: UUID(),
-            bundleID: "net.fihonline.herald",
+            bundleID: "net.fihonline.kallisti",
             appVersion: "2.0.0",
             pushEnvironment: "development"
         )
 
         let body = try #require(capture.capturedBody)
         #expect(body.contains("11111111-1111-1111-1111-111111111111"))
-        #expect(body.contains("net.fihonline.herald"))
+        #expect(body.contains("net.fihonline.kallisti"))
         #expect(body.contains("deadbeef"))
     }
 
@@ -293,7 +314,7 @@ struct PushRegistrationTests {
                 accessToken: "test-token",
                 deviceID: UUID(),
                 installationID: UUID(),
-                bundleID: "net.fihonline.herald",
+                bundleID: "net.fihonline.kallisti",
                 appVersion: "1.0.0",
                 pushEnvironment: "development"
             )
@@ -303,5 +324,35 @@ struct PushRegistrationTests {
             // This ensures the app knows the registration failed and can retry
             // on next launch (the short-circuit removal guarantees it always tries).
         }
+    }
+
+    // MARK: - Workstream D5: facade helper routes connector URL correctly
+
+    /// Public HTTPS relay host must collapse to bare scheme+host (port 443),
+    /// never the legacy hardcoded :8010 — otherwise the production relay
+    /// (hermes-relay.fihonline.net:8010 is closed) silently falls into the
+    /// wrong fallback path. Regression for the connectorMCPURL bug fixed
+    /// by switching AppContainer.swift to NativeKallistiClient.facadeBaseURL(for:).
+    @MainActor
+    @Test("Public relay facade URL drops the port suffix")
+    func test_connectorMCPURL_usesFacadeHelper_relayHost() {
+        let url = NativeKallistiClient.facadeBaseURL(
+            for: "https://hermes-relay.fihonline.net/v1"
+        )
+        #expect(url == "https://hermes-relay.fihonline.net")
+        #expect(!(url?.contains(":8010") ?? true))
+    }
+
+    /// LAN hosts (RFC1918 or .local) keep the explicit :8010 suffix because
+    /// the connector HTTP facade runs on that port locally. Regression for
+    /// the connectorMCPURL bug fixed by switching AppContainer.swift to
+    /// NativeKallistiClient.facadeBaseURL(for:).
+    @MainActor
+    @Test("LAN relay facade URL retains the explicit :8010 port")
+    func test_connectorMCPURL_usesFacadeHelper_lanHost() {
+        let url = NativeKallistiClient.facadeBaseURL(
+            for: "http://192.168.10.118:9119"
+        )
+        #expect(url == "http://192.168.10.118:8010")
     }
 }

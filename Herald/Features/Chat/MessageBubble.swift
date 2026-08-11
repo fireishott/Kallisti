@@ -273,7 +273,7 @@ struct MessageBubble: View, Equatable {
                     .padding(.vertical, Design.Spacing.xxs)
 
                 voiceModeLabel
-            } else if message.isStreaming && message.content.isEmpty && message.toolActivities.isEmpty && message.reasoning.isEmpty {
+            } else if message.isStreaming && message.content.isEmpty {
                 streamingPlaceholder
             } else {
                 if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
@@ -355,7 +355,8 @@ struct MessageBubble: View, Equatable {
             isStreaming: message.isStreaming,
             showCursor: message.isStreaming,
             showReasoning: settingsStore.settings.showReasoning,
-            hasStreamedReasoning: !message.reasoning.isEmpty
+            hasStreamedReasoning: !message.reasoning.isEmpty,
+            startedAt: message.timestamp
         )
         .foregroundStyle(Design.Colors.foreground)
         .textSelection(.enabled)

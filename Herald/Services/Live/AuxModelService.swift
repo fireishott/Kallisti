@@ -76,6 +76,34 @@ final class AuxModelService {
     }
 
     func set(task: String, provider: String, model: String) async {
+        let normalizedTask: String
+        switch task {
+        case "Vision": normalizedTask = "vision"
+        case "Web extract": normalizedTask = "web_extract"
+        case "Compression": normalizedTask = "compression"
+        default: normalizedTask = task.lowercased()
+        }
+
+        // Prefer the native gateway cli.exec path - the relay /v1/aux endpoint
+        // is dead in native mode (relay REST 401s on native bearer tokens).
+        if let featureClient = nativeFeatureClientProvider() {
+            do {
+                // "auto" means "use server default"; the gateway's config.set
+                // accepts an empty value for that case.
+                let providerValue = (provider.lowercased() == "auto") ? "" : provider
+                let providerArgv = ["config", "set", "auxiliary.\(normalizedTask).provider", providerValue]
+                _ = try await featureClient.cliExec(argv: providerArgv, timeout: 30)
+                let modelArgv = ["config", "set", "auxiliary.\(normalizedTask).model", model]
+                _ = try await featureClient.cliExec(argv: modelArgv, timeout: 30)
+                await load()
+                return
+            } catch {
+                lastError = error.localizedDescription
+                return
+            }
+        }
+
+        // Legacy relay fallback - preserved for non-native mode.
         do {
             let token = await accessTokenProvider()
             let _: AuxSetResponse = try await apiClient.post(

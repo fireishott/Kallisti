@@ -380,13 +380,7 @@ final class AppContainer {
             let relayBase = activePairingStore?.pairedRelayConfiguration?.baseURLString
                 ?? settingsStore.settings.relayConfiguration.activeBaseURLString
                 ?? ""
-            guard let source = URLComponents(string: relayBase),
-                  let host = source.host else { return nil }
-            var components = URLComponents()
-            components.scheme = source.scheme?.lowercased() == "https" ? "https" : "http"
-            components.host = host
-            components.port = 8010
-            return components.string
+            return NativeKallistiClient.facadeBaseURL(for: relayBase)
         }()
 
         let pushRegistrationCoordinator = PushRegistrationCoordinator(

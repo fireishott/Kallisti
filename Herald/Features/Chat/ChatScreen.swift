@@ -936,7 +936,11 @@ struct ChatScreen: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(Design.Colors.warning)
-                Text("Stream stalled — retrying…")
+                // D2: prefer the dynamic stall message written by the polling
+                // fallback in ChatStore.runAttemptLoop (rotates through four
+                // elapsed-time phases). Fall back to the static copy if the
+                // loop has not yet emitted a status.
+                Text(chatStore.lastStallMessage ?? "Stream stalled - retrying...")
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.warning)
             } else if chatStore.streamingPhase == .reconnecting {
