@@ -509,16 +509,6 @@ final class AppContainer {
             }
             heraldClient = nativeClient
             nativeGatewayClient = nativeClient
-            // Build 72: the legacy hostStatusStream SSE (connector/events) is
-            // dead for native-gateway users - it never emits .connected, so
-            // latency monitoring, model reload, and push re-registration never
-            // ran on cold start. Funnel the native client's REAL status into
-            // the same handler so that logic fires.
-            nativeClient.onConnectionStatusChanged = { [weak self] status in
-                Task { @MainActor [weak self] in
-                    self?.hostStatusStream.updateConnectionStatus(status)
-                }
-            }
         } else {
             let liveClient = LiveHeraldClient(
                 apiClient: apiClient,
@@ -843,6 +833,17 @@ final class AppContainer {
         }
 
         // Wire up WS-based connection status to update ChatStore
+        // Build 72: the legacy hostStatusStream SSE (connector/events) is
+        // dead for native-gateway users - it never emits .connected, so
+        // latency monitoring, model reload, and push re-registration never
+        // ran on cold start. Funnel the native client's REAL connection
+        // status into the same handler so that logic fires on the native
+        // signal.
+        nativeGatewayClient?.onConnectionStatusChanged = { [weak container] status in
+            Task { @MainActor [weak container] in
+                container?.hostStatusStream.updateConnectionStatus(status)
+            }
+        }
         container.hostStatusStream.onConnectionStatusChanged = { [weak container] (status: ConnectionStatus) in
             Task { @MainActor [weak container] in
                 guard let container else { return }
