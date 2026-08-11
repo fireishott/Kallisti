@@ -46,7 +46,13 @@ struct AppRootView: View {
             hasStoredLogin: nativeClient?.hasStoredLogin ?? false,
             hasConfiguredRelay: relayConfiguredAtLaunch ?? false,
             isBootstrapping: container.sessionStore.isBootstrapping,
-            hasTerminalLegacyFailure: terminalLegacyFailure
+            hasTerminalLegacyFailure: terminalLegacyFailure,
+            // Build 76: pass the init-resolution gate so the splash glimpse
+            // fix is honored at the same evaluation point. Until the init
+            // Task finishes probing keychain, the loading surface is the
+            // only thing the body should mount - returning users no longer
+            // see OnboardingFlowView for one frame while the Task races.
+            hasResolvedStoredLogin: nativeClient?.hasResolvedStoredLogin ?? false
         )
     }
 
@@ -58,9 +64,21 @@ struct AppRootView: View {
         hasConfiguredRelay: Bool = true,
         isBootstrapping: Bool,
         hasTerminalLegacyFailure: Bool,
-        reconnectDebounced: Bool = false
+        reconnectDebounced: Bool = false,
+        hasResolvedStoredLogin: Bool = true
     ) -> Bool {
         if isNative {
+            // Build 76: BEFORE the init Task has resolved credential state,
+            // AppRootView must keep the loading surface mounted. Otherwise
+            // a returning user with a stored login sees hasStoredLogin=false
+            // on first render and the body briefly mounts OnboardingFlowView
+            // before the init Task catches up and flips hasStoredLogin true.
+            // The resolution is a cheap keychain read but it lives on a Task
+            // hop, so the first render races it - this gate is the splash
+            // glimpse fix.
+            if !hasResolvedStoredLogin {
+                return true
+            }
             if !isLaunchReady {
                 // Before the first verified connect, show the launch surface
                 // ONLY when this device has something to actually connect to:
@@ -156,6 +174,11 @@ struct AppRootView: View {
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
         .animation(Design.Motion.standard, value: container.nativeGatewayClient?.connectionStatus)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
+        // Build 76: animate the resolution gate transition so the loading
+        // surface cross-fades into the resolved body (onboarding or chat)
+        // rather than snapping off. Only the resolution itself drives this;
+        // mid-session reconnect churn never sets the gate.
+        .animation(Design.Motion.gentle, value: container.nativeGatewayClient?.hasResolvedStoredLogin ?? false)
     }
 
     private var authFailureView: some View {

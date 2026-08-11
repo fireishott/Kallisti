@@ -207,6 +207,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     var onConnectionStatusChanged: (@MainActor (ConnectionStatus) -> Void)?
     var currentConversation: Conversation?
     private(set) var hasStoredLogin = false
+    /// Build 76: gate that flips true only AFTER the init-resolution Task has
+    /// finished probing `usesCookieAuth()` / `currentAccessToken()`. Until
+    /// this flips, AppRootView must keep the loading surface mounted so the
+    /// first SwiftUI render never sees hasStoredLogin=false on a returning
+    /// user and flashes OnboardingFlowView for one frame before the init
+    /// Task catches up. The init resolution is a cheap keychain read (no
+    /// network) so this gates almost immediately on first launch, but the
+    /// race window between view creation and Task hop was the splash
+    /// glimpse the user saw. Never reset.
+    private(set) var hasResolvedStoredLogin = false
 
     /// Typed feature calls (gateway status, model options, aux models) riding
     /// the SAME socket as chat. Stateless: each call fetches the current
@@ -268,6 +278,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // ride the session cookie instead, so currentAccessToken() alone
             // misses them. Either a stored cookie auth mode OR a stored bearer
             // token means this device has logged in before - skip onboarding.
+            //
+            // Build 76: must set hasResolvedStoredLogin = true in BOTH
+            // branches (and on any thrown error) before returning so
+            // AppRootView's first render always sees the resolved state.
+            // The cheap keychain reads below run synchronously in the same
+            // actor hop the init runs on, so there is no observable delay -
+            // but if either ever becomes async, do NOT forget to flip the
+            // gate on every exit path or the loading surface becomes a
+            // permanent splash on a fresh install.
+            defer { hasResolvedStoredLogin = true }
             let hasCookieAuth = await authCoordinator.usesCookieAuth()
             let hasBearerToken = await authCoordinator.currentAccessToken() != nil
             if hasCookieAuth || hasBearerToken {
@@ -1116,9 +1136,28 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 timestamp: msg.timestamp.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now
             )
         }
-        let conv = Conversation(id: id, title: decoded.title ?? "Untitled", messages: messages)
+        let conv = Conversation(
+            id: id,
+            title: decoded.title ?? "Untitled",
+            messages: Self.mapRestoredHistoryStatuses(messages)
+        )
         currentConversation = conv
         return conv
+    }
+
+    /// A restored user row is delivered when a later assistant reply appears
+    /// in the persisted history. A final user-only row was sent but has not
+    /// been acknowledged by a reply yet.
+    nonisolated static func mapRestoredHistoryStatuses(_ messages: [Message]) -> [Message] {
+        messages.enumerated().map { index, message in
+            guard message.sender == .user,
+                  messages.dropFirst(index + 1).contains(where: { $0.sender == .herald }) else {
+                return message
+            }
+            var mapped = message
+            mapped.status = .delivered
+            return mapped
+        }
     }
 
     func clearConversation() async throws -> Conversation {
