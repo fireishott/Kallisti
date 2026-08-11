@@ -33,13 +33,18 @@ final class LiveInboxService: InboxServiceProtocol {
         self.apiClient = apiClient
     }
 
+    private var installationIDQuery: String {
+        let installationID = AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased()
+        return "?installationId=\(installationID)"
+    }
+
     func fetchInbox(accessToken: String?) async throws -> [InboxItem] {
         // Build 67: pass the install UUID so the connector scopes the inbox
         // to THIS device. Cookie-auth clients (pairing/basic) can't be
         // resolved from the auth token alone, so the explicit id is required.
-        let installationID = AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased()
+        let path = "inbox" + installationIDQuery
         let response: InboxResponse = try await apiClient.get(
-            path: "inbox?installationId=\(installationID)",
+            path: path,
             accessToken: accessToken
         )
 
@@ -67,9 +72,9 @@ final class LiveInboxService: InboxServiceProtocol {
         actionID: String,
         accessToken: String?
     ) async throws -> InboxActionResult {
-        let installationID = AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased()
-        try await apiClient.post(
-            path: "inbox/\(itemID.uuidString.lowercased())/action?installationId=\(installationID)",
+        let path = "inbox/\(itemID.uuidString.lowercased())/action" + installationIDQuery
+        return try await apiClient.post(
+            path: path,
             body: ActionBody(actionID: actionID),
             accessToken: accessToken
         )
