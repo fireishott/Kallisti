@@ -206,10 +206,11 @@ struct LoadingSurface: View {
             VStack(spacing: Design.Spacing.lg) {
                 Spacer()
 
-                // Pulsing Kallisti icon.
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(Design.Brand.accent)
+                // Pulsing Kallisti Coin.
+                Image("KallistiSeal")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
                     .symbolEffect(.pulse, options: .repeating)
 
                 VStack(spacing: Design.Spacing.xs) {

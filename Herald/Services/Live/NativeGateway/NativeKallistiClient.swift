@@ -147,6 +147,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private var activeStreamHandlers: [String: StreamEventHandler] = [:]
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// Build 64: true while a connect() is in flight. connect() mints a
+    /// fresh ticket and opens a NEW socket each call, so two racing connects
+    /// (AppContainer launch trigger + scheduleReconnect backoff + a manual
+    /// reset) open parallel sockets that kill each other mid-verification -
+    /// the multi-socket churn seen server-side (8 sockets in 39s, each dying
+    /// 1-64 messages later with 1006/1001/send_failed). The guard makes
+    /// duplicate callers return immediately; the in-flight attempt's result
+    /// is the one that stands.
+    private var isConnecting = false
     /// prompt.submit is only an acknowledgement that the gateway accepted the
     /// turn. Model output arrives via stream events, so bound the ack rather
     /// than inheriting NativeGatewayClient's 60-second request default.
@@ -363,6 +372,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func connect() async {
+        // Build 64: collapse concurrent connect() calls. Each connect() mints
+        // a fresh ticket + socket, so racing callers (launch trigger,
+        // scheduleReconnect backoff, manual reset) opened parallel sockets
+        // that killed each other mid-verification. A duplicate caller
+        // returns immediately - the in-flight attempt sets connectionStatus
+        // when it settles, so the UI converges on that single result.
+        guard !isConnecting else {
+            Self.logger.info("connect() skipped - another connect is already in flight")
+            return
+        }
+        isConnecting = true
+        defer { isConnecting = false }
         connectionStatus = .connecting
         connectionStage = .preparing
         // Torn down in the catch block if the verification round-trip
@@ -919,6 +940,23 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     timeoutNanos: Self.probeTimeoutNanos
                 )
                 if resume.error == nil {
+                    // Build 64: the gateway registers the resumed session
+                    // under a NEW live session_id (the resume payload's
+                    // `session_id` field), NOT the original id the client
+                    // asked with. session.history/status look up the live
+                    // registry by the passed id, so the next call with the
+                    // stale original id 4001s "session not found" - the exact
+                    // error when opening a previous session. Re-point the
+                    // idMap at the resumed live id so the subsequent
+                    // session.history in loadConversation hits the live
+                    // session instead of the dead original.
+                    if let result = resume.result,
+                       let data = try? JSONEncoder().encode(result),
+                       let decoded = try? JSONDecoder().decode(NativeResumeResult.self, from: data),
+                       let resumedLiveID = decoded.sessionId, !resumedLiveID.isEmpty {
+                        await idMap.register(uuid: id, nativeId: resumedLiveID)
+                        Self.logger.info("ensureSessionForSwitch: re-pointed idMap \(id) -> \(resumedLiveID) after resume")
+                    }
                     return true
                 }
             } catch {
@@ -1372,8 +1410,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
 /// session payload so the app can distinguish a still-working job from a
 /// finished one after a suspension.
 private struct NativeResumeResult: Decodable {
+    /// Build 64: the gateway registers the resumed session under this NEW
+    /// live id. loadConversation must use it (not the original id) for the
+    /// follow-up session.history call, or the lookup 4001s "session not
+    /// found" against the live registry.
+    let sessionId: String?
     let running: Bool?
     let status: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case running
+        case status
+    }
 }
 
 // MARK: - Stream Event Handler

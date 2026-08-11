@@ -321,7 +321,13 @@ final class AppContainer {
         let isHTTPS = (url.scheme?.lowercased() == "https")
         let port = url.port ?? (isHTTPS ? 443 : 80)
         let scheme = isHTTPS ? "https" : "http"
-        return (host: host, port: port, baseURL: "\(scheme)://\(host)")
+        // Include the port explicitly in baseURL: the gateway WS endpoint
+        // (api/ws) lives on the dashboard port (9119) for LAN hosts, and
+        // the connector facade on 8010. Dropping the port made every
+        // native connect resolve to :80 and fail, so the app looped
+        // authenticating/verifying with zero traffic reaching the host.
+        let baseURL = port == (isHTTPS ? 443 : 80) ? "\(scheme)://\(host)" : "\(scheme)://\(host):\(port)"
+        return (host: host, port: port, baseURL: baseURL)
     }
 
     static func makeDefault(
