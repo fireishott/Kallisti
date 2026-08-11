@@ -239,6 +239,29 @@ struct NativeHistoryMessage: Decodable {
     let role: String
     let content: String
     let timestamp: String?
+
+    /// Build 69: the gateway's display projection emits `{"role", "text"}`
+    /// (not `content`) - see tui_gateway/server.py `_history_to_messages`.
+    /// Decoding a non-optional `content` threw keyNotFound on every
+    /// historical message ("The data couldn't be read because it is
+    /// missing.") and opening a previous chat failed. Accept `text` as the
+    /// primary key, fall back to `content`, and tolerate neither being
+    /// present (tool rows, markers) by defaulting to "".
+    enum CodingKeys: String, CodingKey {
+        case role
+        case text
+        case content
+        case timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decodeIfPresent(String.self, forKey: .role) ?? ""
+        content = (try container.decodeIfPresent(String.self, forKey: .text))
+            ?? (try container.decodeIfPresent(String.self, forKey: .content))
+            ?? ""
+        timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+    }
 }
 
 struct NativeSessionHistoryResult: Decodable {

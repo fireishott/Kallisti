@@ -2,8 +2,18 @@ import SwiftUI
 
 struct AppRootView: View {
     @Environment(AppContainer.self) private var container
-    @State private var reconnectDebounced = false
-    @State private var reconnectStartedAt: Date?
+    /// Build 69 (r2): relay-configured state SNAPSHOTTED at first appearance.
+    /// The old gate read `activeBaseURLString` live, so typing a full relay
+    /// URL on the onboarding relay step flipped hasConfiguredRelay true and
+    /// the loading surface covered onboarding mid-typing. This is captured
+    /// once at launch: a fresh install that starts with no relay configured
+    /// stays in onboarding no matter what the user types afterward.
+    @State private var relayConfiguredAtLaunch: Bool?
+
+    /// Build 69 (r1): the loading surface is a LAUNCH surface. Once
+    /// hasConnectedOnce flips true it must never come back; reconnect churn
+    /// is owned by the chat connection banner. This never gets reset.
+    @State private var hasShownConnectedApp = false
 
     /// Whether the single opaque loading surface should be shown.
     /// Covers: initial launch, reconnect, auth, verification, restoration,
@@ -23,15 +33,20 @@ struct AppRootView: View {
         }
         let nativeClient = container.nativeGatewayClient
         let status = nativeClient?.connectionStatus
+        // r2: first time this evaluates, freeze the relay state. Everything
+        // after that uses the frozen value, so typing a relay URL during
+        // onboarding can never flip the loading surface on.
+        if relayConfiguredAtLaunch == nil {
+            relayConfiguredAtLaunch = container.settingsStore.settings.relayConfiguration.activeBaseURLString != nil
+        }
         return Self.shouldShowLoadingSurface(
             isNative: nativeClient != nil,
             isLaunchReady: container.isLaunchReady,
             isRecovering: status == .connecting || status == .reconnecting,
             hasStoredLogin: nativeClient?.hasStoredLogin ?? false,
-            hasConfiguredRelay: container.settingsStore.settings.relayConfiguration.activeBaseURLString != nil,
+            hasConfiguredRelay: relayConfiguredAtLaunch ?? false,
             isBootstrapping: container.sessionStore.isBootstrapping,
-            hasTerminalLegacyFailure: terminalLegacyFailure,
-            reconnectDebounced: reconnectDebounced
+            hasTerminalLegacyFailure: terminalLegacyFailure
         )
     }
 
@@ -47,21 +62,27 @@ struct AppRootView: View {
     ) -> Bool {
         if isNative {
             if !isLaunchReady {
-                // Build 68: fresh install (no relay URL configured, no stored
-                // login) must reach onboarding, not spin on the localhost
-                // fallback. hasConnectedOnce can never become true for a
-                // device that has nothing to connect to, so without this the
-                // loading surface blocks onboarding forever.
+                // Before the first verified connect, show the launch surface
+                // ONLY when this device has something to actually connect to:
+                // a stored login (set by a verified connect) or a relay
+                // configured at launch. A fresh install (neither) goes
+                // straight to onboarding - hasConnectedOnce can never become
+                // true for a device with nothing to connect to, so without
+                // this the surface would block onboarding forever. The relay
+                // value here is the r2 launch-time SNAPSHOT, so typing a URL
+                // during onboarding cannot resurrect the surface.
                 if !hasStoredLogin && !hasConfiguredRelay {
                     return false
                 }
-                return true  // always show during launch
+                return true  // launch surface: cold start, connection pending
             }
-            // Mid-session reconnect: show after 1.5s debounce to avoid
-            // flashing on quick reconnects (<1.5s).
-            if isRecovering && hasStoredLogin {
-                return reconnectDebounced
-            }
+            // Build 69 (r1): after the first verified connect (isLaunchReady),
+            // NEVER show the loading surface again. Mid-session reconnects
+            // are communicated by the chat connection banner; the old
+            // `isRecovering && hasStoredLogin -> reconnectDebounced` branch
+            // re-showed the full opaque surface on every reconnect, producing
+            // the launch respring loop (content -> surface -> content 4-10x)
+            // whenever the socket connected then dropped during startup.
             return false
         }
         return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
@@ -129,21 +150,6 @@ struct AppRootView: View {
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
         .animation(Design.Motion.standard, value: container.nativeGatewayClient?.connectionStatus)
         .animation(Design.Motion.gentle, value: container.isLaunchReady)
-        .onChange(of: container.nativeGatewayClient?.connectionStatus) { _, newStatus in
-            if newStatus == .connecting || newStatus == .reconnecting {
-                reconnectStartedAt = Date()
-                reconnectDebounced = false
-                Task {
-                    try? await Task.sleep(for: .milliseconds(1500))
-                    if reconnectStartedAt != nil {
-                        reconnectDebounced = true
-                    }
-                }
-            } else {
-                reconnectStartedAt = nil
-                reconnectDebounced = false
-            }
-        }
     }
 
     private var authFailureView: some View {

@@ -68,6 +68,11 @@ struct SettingsScreen: View {
         .task {
             await hostStore.refresh()
             await permissionsStore.reloadCapabilities()
+            // Build 69: poll connector latency while Settings is visible.
+            startLatencyPolling()
+        }
+        .onDisappear {
+            stopLatencyPolling()
         }
         .sheet(isPresented: $showSafari) {
             if let url = safariURL {
@@ -145,6 +150,18 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // Build 69: live round-trip to the connector. Polled while
+                // this screen is visible so it always reflects the current
+                // connection, not a stale launch-time value.
+                settingsRow(
+                    icon: "timer",
+                    iconColor: latencyRowColor,
+                    title: "Latency",
+                    value: latencyRowValue
+                )
+
+                sectionDivider
+
                 if pairingStore.pairedRelayConfiguration != nil {
                     NavigationLink(value: Route.connectHost) {
                         HStack(spacing: Design.Spacing.sm) {
@@ -215,9 +232,20 @@ struct SettingsScreen: View {
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
     @State private var updateCheckResult: String?
+    @State private var latencyMs: Int?
+    @State private var latencyUpdatedAt: Date?
+    @State private var latencyPollTask: Task<Void, Never>?
     @State private var updateAgentResult: String?
     @State private var isCheckingForUpdate = false
     @State private var isUpdatingAgent = false
+    // Build 69 (r7): structured update info + changelog window state.
+    @State private var updateInfo: NativeKallistiClient.HermesUpdateInfo?
+    @State private var isChangelogPresented = false
+    @State private var skippedVersion: String?
+    private let skippedVersionKey = "kallisti.skippedUpdateVersion"
+    private var skippedVersionCurrent: String? {
+        UserDefaults.standard.string(forKey: skippedVersionKey)
+    }
 
     // Build 33: restart-safe Hermes agent restart state machine.
     // Restart Hermes Agent → preflight → confirmation → idempotent submit →
@@ -321,6 +349,48 @@ struct SettingsScreen: View {
                 }
             }
         }
+    }
+
+    private var latencyRowValue: String {
+        if let ms = latencyMs {
+            return "\(ms) ms"
+        }
+        if let nativeClient = container.nativeGatewayClient,
+           nativeClient.connectionStatus == .connected {
+            return "Measuring…"
+        }
+        return "—"
+    }
+
+    private var latencyRowColor: Color {
+        guard let ms = latencyMs else { return Design.Colors.secondaryForeground }
+        if ms < 100 { return Design.Colors.success }
+        if ms < 300 { return Design.Colors.warning }
+        return Design.Colors.danger
+    }
+
+    /// Poll the native client's latency every 3s while Settings is visible.
+    /// Native path only - legacy relay mode has no direct connector socket
+    /// to ping cheaply, so the row stays "—" there.
+    private func startLatencyPolling() {
+        guard latencyPollTask == nil else { return }
+        latencyPollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if let nativeClient = container.nativeGatewayClient {
+                    let ms = await nativeClient.measureLatency()
+                    latencyMs = ms
+                    latencyUpdatedAt = Date()
+                } else {
+                    latencyMs = nil
+                }
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    private func stopLatencyPolling() {
+        latencyPollTask?.cancel()
+        latencyPollTask = nil
     }
 
     private var hostStatusRowIcon: String {
@@ -433,22 +503,93 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Check for updates
-                gatewayActionButton(
-                    label: "Check for Updates",
-                    icon: "arrow.triangle.2.circlepath",
-                    isLoading: isCheckingForUpdate,
-                    result: updateCheckResult,
-                    action: { await checkForUpdates() }
-                )
+                // Build 69 (r7): expandable Software Update row.
+                softwareUpdateSection
+            }
+        }
+    }
 
-                // Update agent
-                gatewayActionButton(
-                    label: "Update Agent",
-                    icon: "arrow.down.to.line",
-                    isLoading: isUpdatingAgent,
-                    result: updateAgentResult,
-                    action: { await updateAgent() }
+    /// Check for Updates + (when available) an expandable "new version"
+    /// bar with a changelog link, Update Now, and Skip actions.
+    @ViewBuilder
+    private var softwareUpdateSection: some View {
+        VStack(spacing: Design.Spacing.xs) {
+            gatewayActionButton(
+                label: "Check for Updates",
+                icon: "arrow.triangle.2.circlepath",
+                isLoading: isCheckingForUpdate,
+                result: updateCheckResult,
+                action: { await checkForUpdates() }
+            )
+
+            if let info = updateInfo, info.updateAvailable == true,
+               let latest = info.latestVersion, latest != skippedVersionCurrent {
+                sectionDivider
+
+                Button {
+                    isChangelogPresented = true
+                } label: {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("New version available")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Hermes Agent \(latest)")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        Spacer()
+
+                        Text("Changelog")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Brand.accent)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let info = updateInfo, info.updateAvailable == false,
+               let latest = info.latestVersion {
+                sectionDivider
+
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Design.Colors.success)
+                        .frame(width: 20, alignment: .center)
+                    Text("Up to date (\(latest))")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Spacer()
+                }
+                .frame(minHeight: Design.Size.minTapTarget)
+            }
+        }
+        .sheet(isPresented: $isChangelogPresented) {
+            if let info = updateInfo {
+                UpdateChangelogSheet(
+                    info: info,
+                    isUpdating: $isUpdatingAgent,
+                    onUpdateNow: {
+                        Task { await updateAgent() }
+                    },
+                    onSkip: {
+                        if let latest = info.latestVersion {
+                            UserDefaults.standard.set(latest, forKey: skippedVersionKey)
+                            skippedVersion = latest
+                        }
+                        isChangelogPresented = false
+                    }
                 )
             }
         }
@@ -499,8 +640,32 @@ struct SettingsScreen: View {
         isCheckingForUpdate = true
         updateCheckResult = nil
 
-        // NATIVE mode: the gateway exposes `hermes update --check` through
-        // cli.exec - no relay facade, no bearer token needed.
+        // Build 69 (r7): native mode reads the connector's structured
+        // /v1/gw/update/check payload (cookie/bearer auth) so the row can
+        // show the real version + changelog. Falls back to `hermes update
+        // --check` text if the connector call returns nothing.
+        if let nativeClient = container.nativeGatewayClient {
+            if let info = await nativeClient.updateCheck() {
+                updateInfo = info
+                if let err = info.error, !err.isEmpty {
+                    updateCheckResult = "Check failed: \(err)"
+                } else if info.updateAvailable == true {
+                    updateCheckResult = "Update available"
+                } else if info.updateAvailable == false {
+                    updateCheckResult = "Up to date"
+                } else {
+                    updateCheckResult = "Update check complete"
+                }
+                if info.updateAvailable == true {
+                    isCheckingForUpdate = false
+                    return
+                }
+                if info.updateAvailable == false {
+                    isCheckingForUpdate = false
+                    return
+                }
+            }
+        }
         if let featureClient = container.nativeGatewayClient?.featureClient {
             do {
                 let output = try await featureClient.cliExec(argv: ["update", "--check"], timeout: 120)
@@ -2187,3 +2352,140 @@ struct SettingsScreen: View {
         }
     }
 }
+
+
+// MARK: - Build 69 (r7) · Update Changelog Window
+
+/// Modal changelog window shown from the Software Update row. Lists what
+/// changed in the pending Hermes Agent update and offers Update Now / Skip.
+private struct UpdateChangelogSheet: View {
+    let info: NativeKallistiClient.HermesUpdateInfo
+    @Binding var isUpdating: Bool
+    let onUpdateNow: () -> Void
+    let onSkip: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Design.Colors.background
+                    .ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Design.Spacing.lg) {
+                        // Version header
+                        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                            Text("Update Available")
+                                .font(Design.Typography.sectionTitle)
+                                .foregroundStyle(Design.Colors.foreground)
+                            if let current = info.currentVersion,
+                               let latest = info.latestVersion {
+                                Text("\(current) → \(latest)")
+                                    .font(Design.Typography.callout)
+                                    .foregroundStyle(Design.Brand.accent)
+                            } else if let latest = info.latestVersion {
+                                Text("Latest: \(latest)")
+                                    .font(Design.Typography.callout)
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                            if let behind = info.behindCount, behind > 0 {
+                                Text("\(behind) commit\(behind == 1 ? "" : "s") behind")
+                                    .font(Design.Typography.caption)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                        }
+
+                        sectionDivider
+
+                        // Changelog body
+                        Text("What's new")
+                            .font(Design.Typography.callout.weight(.semibold))
+                            .foregroundStyle(Design.Colors.foreground)
+                        if let changelog = info.changelog, !changelog.isEmpty {
+                            Text(changelog)
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                .textSelection(.enabled)
+                        } else {
+                            Text("No changelog available.")
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        if let urlString = info.releaseURL,
+                           let url = URL(string: urlString) {
+                            sectionDivider
+                            Link(destination: url) {
+                                HStack {
+                                    Text("View on GitHub")
+                                        .font(Design.Typography.callout)
+                                        .foregroundStyle(Design.Brand.accent)
+                                    Spacer()
+                                    Image(systemName: "arrow.up.right")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Design.Brand.accent)
+                                }
+                                .frame(minHeight: Design.Size.minTapTarget)
+                            }
+                        }
+
+                        sectionDivider
+
+                        // Actions
+                        VStack(spacing: Design.Spacing.sm) {
+                            Button {
+                                onUpdateNow()
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isUpdating {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(.white)
+                                    } else {
+                                        Text("Update Now")
+                                            .font(Design.Typography.callout.weight(.semibold))
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, Design.Spacing.sm)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Design.Brand.accent)
+                            .disabled(isUpdating)
+
+                            Button {
+                                onSkip()
+                            } label: {
+                                Text("Skip This Version")
+                                    .font(Design.Typography.callout)
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, Design.Spacing.sm)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isUpdating)
+                        }
+                    }
+                    .padding(Design.Spacing.lg)
+                }
+            }
+            .navigationTitle("Software Update")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(Design.Brand.accent)
+                }
+            }
+        }
+    }
+
+    private var sectionDivider: some View {
+        Rectangle()
+            .fill(Design.Colors.divider)
+            .frame(height: 0.5)
+    }
+}
+
