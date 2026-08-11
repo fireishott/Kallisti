@@ -91,6 +91,145 @@ final class ChatStore {
     /// guard — a late `.reconnecting` from the old stream coordinator would set
     /// `streamingPhase = .reconnecting` while a retry/replacement was active.
     private var activeAttemptID: UUID = UUID()
+    // Build 64: live stall snapshot. Set whenever the stream enters
+    // .stalled or .reconnecting; read by the ChatScreen banner to render
+    // honest, ticking progress (elapsed seconds, connection state, retry
+    // count, last activity) instead of a frozen string. Reset to nil the
+    // moment streaming progress resumes so the banner clears without a
+    // polling cycle. The snapshot itself does not tick, the view does,
+    // against Date.now inside a TimelineView closure.
+    private(set) var stallSnapshot: StallSnapshot?
+    // Build 64: human label for the most recent stream progress event
+    // (text/reasoning delta, tool start, .messageSent). Read by
+    // `stallSnapshot.lastActivity` so the banner can answer "what was the
+    // model doing last?" without the view mapping raw stream events to
+    // strings.
+    private var lastActivityLabel: String = "thinking"
+    private var lastActivityAt: Date = .now
+    // Build 64: retry counter for the active outbox item. Increments on
+    // every `markStalled`, surfaced in the banner so users see `attempt 2`
+    // instead of a generic "retrying". Reset to 0 in `clearStall` so a
+    // fresh attempt starts at 1.
+    private(set) var activeStallRetryCount: Int = 0
+    // Build 64: live-streaming progress marker. The streaming bubble can
+    // render this alongside (or instead of) the stall banner so the user
+    // sees "12 tokens" while the model streams. Reset to 0 at the start
+    // of every new attempt.
+    private(set) var streamingTokenCount: Int = 0
+
+    // Build 64: snapshot captured when the streaming watchdog declares
+    // a stall or the stream drops into .reconnecting. Read by the
+    // ChatScreen banner; never written from the view layer.
+    struct StallSnapshot: Equatable {
+        // Date the stall was first observed. The banner ticks against
+        // this so the elapsed-seconds counter advances every second.
+        let observedAt: Date
+        // Connection status at the moment the stall was observed. The
+        // banner displays this verbatim (e.g. "Reconnecting", "Connected")
+        // so users can see whether the transport is the bottleneck.
+        let connection: ConnectionStatus
+        // true when the stall was declared by the no-progress watchdog
+        // (the model is silent); false when the relay reported a
+        // transport-level reconnect. The banner uses this to choose
+        // its leading icon (warning triangle vs spinner). Captured
+        // as a Bool rather than a StreamingPhase case because
+        // StreamingPhase is Sendable but not Equatable, and the
+        // snapshot's Equatable conformance matters for the
+        // TimelineView's dependency tracking.
+        let isWatchdogStall: Bool
+        // 1-based attempt number for the in-flight outbox item.
+        let attemptNumber: Int
+        // Human-readable last-activity label (e.g. "model loading",
+        // "reading repo"). Frozen at the moment the stall started; the
+        // banner does not try to keep it live so users can see what
+        // the model was doing when the silence began.
+        let lastActivity: String
+        // Wall time of the last activity, for "Xs ago" relative copy.
+        let lastActivityAt: Date
+    }
+
+    // Build 64: computed shape read by the ChatScreen banner. Separate
+    // from StallSnapshot so the view layer never touches store internals.
+    struct StallBannerLine: Equatable {
+        let elapsedSeconds: Int
+        let connection: ConnectionStatus
+        let attemptNumber: Int
+        let lastActivity: String
+        let lastActivitySecondsAgo: Int
+        let isWatchdogStall: Bool
+    }
+
+    // Build 64: record the most recent stream progress. Called from each
+    // delta/tool/.messageSent handler in the consumer task. The label is
+    // intentionally short and human; no JSON.
+    private func recordStreamingActivity(label: String) {
+        lastActivityLabel = label
+        lastActivityAt = .now
+    }
+
+    // Build 64: enter the stall state. Captures a snapshot for the banner
+    // and bumps the retry counter. Idempotent within a 2s window of the
+    // same phase, so a fast loop that re-enters .stalled does not inflate
+    // the counter and the user does not see "attempt 1, 2, 3..." flip
+    // every second.
+    func markStalled() {
+        let phase = streamingPhase
+        // Snapshot the source-of-truth boolean BEFORE writing any
+        // new state so the snapshot's isWatchdogStall flag is honest
+        // (a .reconnecting after a .stalled is a transport recovery
+        // event, not a fresh watchdog declaration).
+        let isWatchdogStall = (phase == .stalled)
+        if let existing = stallSnapshot,
+           existing.isWatchdogStall == isWatchdogStall,
+           Date.now.timeIntervalSince(existing.observedAt) < 2.0 {
+            return
+        }
+        activeStallRetryCount += 1
+        let attemptNumber = outboxItems
+            .first(where: { $0.clientMessageID == streamingMessageID })?.attemptCount
+            ?? activeStallRetryCount
+        stallSnapshot = StallSnapshot(
+            observedAt: .now,
+            connection: connectionStatus,
+            isWatchdogStall: isWatchdogStall,
+            attemptNumber: max(attemptNumber, 1),
+            lastActivity: lastActivityLabel,
+            lastActivityAt: lastActivityAt
+        )
+        Self.logger.info("markStalled isWatchdogStall=\(isWatchdogStall) attempt=\(self.activeStallRetryCount) conn=\(self.connectionStatus.displayLabel)")
+    }
+
+    // Build 64: leave the stall state. Resets snapshot, counter, and live
+    // activity label so the banner hides and the next stall starts fresh.
+    // Called whenever streaming progress resumes (text/reasoning delta,
+    // tool activity, finish, or an explicit .cancelled / .failed).
+    func clearStall() {
+        guard stallSnapshot != nil else { return }
+        stallSnapshot = nil
+        activeStallRetryCount = 0
+        lastActivityLabel = "thinking"
+        lastActivityAt = .now
+        streamingTokenCount = 0
+    }
+
+    // Build 64: build a human-readable one-liner describing the active
+    // stall. Pure function of the snapshot so the view does not have to
+    // map domain types into strings. Returns nil when the stream is
+    // healthy so the view can early-exit the banner block.
+    func stallBannerLine(now: Date = .now) -> StallBannerLine? {
+        guard let snap = stallSnapshot else { return nil }
+        let elapsed = max(0, Int(now.timeIntervalSince(snap.observedAt)))
+        let activityAge = max(0, Int(now.timeIntervalSince(snap.lastActivityAt)))
+        return StallBannerLine(
+            elapsedSeconds: elapsed,
+            connection: snap.connection,
+            attemptNumber: snap.attemptNumber,
+            lastActivity: snap.lastActivity,
+            lastActivitySecondsAgo: activityAge,
+            isWatchdogStall: snap.isWatchdogStall
+        )
+    }
+
     /// Relay-assigned job ID for the active streaming attempt. Updated by the
     /// consumer when `.messageSent` arrives; read by the watchdog when it
     /// returns `.stalled(jobID)` so the polling fallback reattaches to the
@@ -1437,6 +1576,11 @@ final class ChatStore {
                 }
                 conversation?.messages[idx].toolActivity = stallText
                 lastStallMessage = stallText
+                // Build 64: refresh the banner snapshot so the
+                // ChatScreen TimelineView reads attempt count +
+                // connection state from the same source of truth that
+                // drives the toolActivity label.
+                markStalled()
             }
         }
     }
@@ -1460,6 +1604,11 @@ final class ChatStore {
         // and cancel bump activeAttemptID, instantly invalidating all in-flight
         // events from the old stream coordinator.
         let attemptID = activeAttemptID
+
+        // Build 64: reset streamingTokenCount on every fresh attempt so
+        // the streaming bubble's "N tokens" counter never carries over
+        // from a prior turn.
+        streamingTokenCount = 0
 
         let stream = heraldClient.sendStreaming(message: content, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext)
         var acceptedJobID: UUID?
@@ -1496,6 +1645,11 @@ final class ChatStore {
                     acceptedJobID = jobID
                     self.streamingPhase = .waitingForJob
                     self.sendPhase = .waitingForHermes
+                    // Build 64: surface a human lastActivity label for
+                    // the banner. "model loading" is the natural value
+                    // here because the relay has just accepted the job
+                    // and Hermes is still working server-side.
+                    self.recordStreamingActivity(label: "model loading")
                     // Durable outbox: job accepted — record the jobID so
                     // relaunch recovery can settle the job via the relay.
                     if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
@@ -1539,6 +1693,23 @@ final class ChatStore {
 
                 case .textDelta(let delta):
                     self.streamingProgressAt = .now
+                    // Build 64: any text delta proves the model is
+                    // producing. Reset the stall snapshot (auto-clearing
+                    // the banner) and increment the live token counter
+                    // so the bubble can show progress.
+                    self.streamingTokenCount += delta.utf8.count
+                    self.clearStall()
+                    // Build 64: surface a live token counter on the
+                    // streaming bubble's tool activity so the user sees
+                    // the model actively producing. The next flush
+                    // will clear it, which is fine; the placeholders'
+                    // built-in streaming indicator takes over for the
+                    // "still going" signal.
+                    if var conv = self.conversation,
+                       let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = "\(self.streamingTokenCount) tokens streamed"
+                        self.conversation = conv
+                    }
                     progressContinuation?.yield(())
                     self.streamingPhase = .streaming
                     self.sendPhase = .streaming
@@ -1607,6 +1778,10 @@ final class ChatStore {
 
                 case .reasoningDelta(let delta):
                     self.streamingProgressAt = .now
+                    // Build 64: a reasoning delta is also real progress.
+                    // Count it as tokens and clear the stall snapshot.
+                    self.streamingTokenCount += delta.utf8.count
+                    self.clearStall()
                     progressContinuation?.yield(())
                     self.chatLiveActivity.updatePhase("Thinking")
                     self.sendPhase = .streaming
@@ -1615,6 +1790,11 @@ final class ChatStore {
 
                 case .toolActivity(let label):
                     self.streamingProgressAt = .now
+                    // Build 64: a tool activity event is real progress;
+                    // record what the model was doing for the banner and
+                    // clear any existing stall snapshot.
+                    self.recordStreamingActivity(label: "tool: \(label)")
+                    self.clearStall()
                     progressContinuation?.yield(())
                     self.flushPendingDeltas(placeholderID: placeholderID)
                     if var conv = self.conversation,
@@ -1633,6 +1813,10 @@ final class ChatStore {
 
                 case .toolStarted(let activity):
                     self.streamingProgressAt = .now
+                    // Build 64: tool start is real progress too. Record
+                    // the label and clear any existing stall snapshot.
+                    self.recordStreamingActivity(label: "tool: \(activity.label)")
+                    self.clearStall()
                     // Build 55: mark a tool as in-flight. Long tool calls
                     // (image gen) emit no further events until completion, so
                     // the stall watchdog must exempt this window.
@@ -1673,6 +1857,9 @@ final class ChatStore {
 
                 case .finished(let finalMessage, let usage, let diff, let context):
                     guard self.activeAttemptID == attemptID else { break }
+                    // Build 64: turn terminated, clear any pending stall
+                    // snapshot so the banner hides.
+                    self.clearStall()
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     progressContinuation?.yield(())
                     self.heraldClient.connectionStatus = .connected
@@ -1936,6 +2123,11 @@ final class ChatStore {
                     // the new attempt's banner or placeholder.
                     guard self.activeAttemptID == attemptID else { break }
                     self.appendLog(level: .warn, "Stream reconnecting...")
+                    // Build 64: capture the snapshot so the banner reads the
+                    // current transport state instead of a frozen
+                    // "Stream stalled" string. clearStall on .finished below
+                    // ensures the banner hides as soon as content resumes.
+                    self.markStalled()
                     self.streamingPhase = .reconnecting
                     self.sendPhase = .restoringStream
                     // Reconnection attempts are transport recovery, not model
@@ -1958,6 +2150,9 @@ final class ChatStore {
 
                 case .cancelled:
                     guard self.activeAttemptID == attemptID else { break }
+                    // Build 64: turn cancelled, clear any pending stall
+                    // snapshot so the banner hides.
+                    self.clearStall()
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     self.appendLog(level: .info, "Job cancelled")
                     progressContinuation?.yield(())
@@ -1994,6 +2189,9 @@ final class ChatStore {
 
                 case .failed(let errorMessage, let category, let action):
                     guard self.activeAttemptID == attemptID else { break }
+                    // Build 64: turn failed, clear any pending stall
+                    // snapshot so the banner hides.
+                    self.clearStall()
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
@@ -2117,6 +2315,9 @@ final class ChatStore {
                 // absolute-deadline stall so the Lock Screen shows the user
                 // the turn timed out instead of a frozen "Thinking..." card.
                 self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
+                // Build 64: capture the snapshot so the banner reads
+                // attempt count + connection state.
+                markStalled()
                 stallDetected = true
                 break
             }
@@ -2139,6 +2340,9 @@ final class ChatStore {
                 // watchdog firing instead of staying frozen on the last
                 // streaming phase.
                 self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
+                // Build 64: capture the snapshot so the banner reads
+                // attempt count + connection state.
+                markStalled()
                 stallDetected = true
                 break
             }
@@ -2188,21 +2392,39 @@ final class ChatStore {
             let wallDeadline = Self.absoluteJobDeadline / .seconds(1)
             if wallElapsed >= wallDeadline {
                 let jobID = self.acceptedJobID ?? UUID()
+                // Build 64: capture the snapshot so the banner reads
+                // attempt count + connection state.
+                self.streamingPhase = .stalled
+                self.markStalled()
                 Self.logger.warning(
-                    "attemptWatchdog: absolute deadline exceeded (\(Int(wallElapsed))s) — returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
+                    "attemptWatchdog: absolute deadline exceeded (\(Int(wallElapsed))s) returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
                 )
                 return .stalled(jobID: jobID)
             }
 
             let elapsed = Duration.seconds(self.foregroundElapsedSinceLastProgress)
+            // Build 64: honor the same thinkingOnlyTimeout / sendPhase
+            // split the legacy watchdog already uses. The structured
+            // watchdog previously used Self.watchdogTimeout (300s)
+            // unconditionally, so a Hermes prefill that had not yet
+            // sent its first token sat in waitingForHermes for the full
+            // 300s no-progress window instead of the 60s thinking-only
+            // budget.
+            let stallTimeout: Duration = self.sendPhase == .waitingForHermes
+                ? Self.thinkingOnlyTimeout
+                : Self.watchdogTimeout
             // Build 55: same tool-in-flight exemption as the continuous
             // watchdog - long tool calls (image gen) legitimately run minutes
             // with no deltas, so the no-progress stall must not fire while a
             // tool is executing. The absolute deadline above is the hard cap.
-            if elapsed > Self.watchdogTimeout && self.activeToolCount == 0 {
+            if elapsed > stallTimeout && self.activeToolCount == 0 {
                 let jobID = self.acceptedJobID ?? UUID()
+                // Build 64: capture the snapshot so the banner reads
+                // attempt count + connection state.
+                self.streamingPhase = .stalled
+                self.markStalled()
                 Self.logger.warning(
-                    "attemptWatchdog: no progress for \(Int(elapsed.components.seconds))s — returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
+                    "attemptWatchdog: no progress for \(Int(elapsed.components.seconds))s returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
                 )
                 return .stalled(jobID: jobID)
             }

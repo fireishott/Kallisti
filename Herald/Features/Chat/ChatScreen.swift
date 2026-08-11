@@ -83,7 +83,14 @@ struct ChatScreen: View {
                 // D3: Belt-and-braces — require an actual in-flight stream
                 // before showing the banner, so a latched .reconnecting can't
                 // survive even if the store fix is bypassed.
-                if chatStore.isStreaming, chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
+                // Build 64: also show whenever the store has a live stall
+                // snapshot, so the banner appears the moment a stall is
+                // declared (the snapshot is set in `markStalled` from the
+                // same call sites that flip streamingPhase). Inside the
+                // view, the TimelineView body returns an empty view when
+                // no snapshot is present, so the outer `if` is purely
+                // for layout cost avoidance.
+                if chatStore.isStreaming, chatStore.stallSnapshot != nil || chatStore.streamingPhase == .stalled || chatStore.streamingPhase == .reconnecting {
                     streamingPhaseBanner
                 }
                 // Build 33: a gateway restart supersedes transport banners —
@@ -930,32 +937,72 @@ struct ChatScreen: View {
 
     /// Subtle streaming phase indicator — shown when the stream reconnects
     /// or stalls, so the user knows the app hasn't frozen.
+    ///
+    /// Build 64: the banner is a TimelineView that ticks every second off
+    /// `chatStore.stallSnapshot.observedAt`, so the elapsed-seconds counter
+    /// advances in real time. The snapshot is captured by the store at the
+    /// moment the stall was first observed, so connection state, retry
+    /// count, and last activity are honest and stable instead of a frozen
+    /// string. The banner auto-clears as soon as the store's
+    /// `clearStall()` runs (any text/reasoning/tool delta, or
+    /// .finished / .cancelled / .failed).
+    ///
+    /// `Design.Colors.tertiaryForeground` is the design token for the
+    /// secondary metadata line; the warning color stays on the headline.
     private var streamingPhaseBanner: some View {
-        HStack(spacing: 4) {
-            if chatStore.streamingPhase == .stalled {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Design.Colors.warning)
-                // D2: prefer the dynamic stall message written by the polling
-                // fallback in ChatStore.runAttemptLoop (rotates through four
-                // elapsed-time phases). Fall back to the static copy if the
-                // loop has not yet emitted a status.
-                Text(chatStore.lastStallMessage ?? "Stream stalled - retrying...")
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.warning)
-            } else if chatStore.streamingPhase == .reconnecting {
-                ProgressView()
-                    .scaleEffect(0.6)
-                    .tint(Design.Colors.warning)
-                Text("Reconnecting…")
-                    .font(Design.Typography.caption)
-                    .foregroundStyle(Design.Colors.warning)
-            }
-            Spacer()
+        TimelineView(.periodic(from: .now, by: 1.0)) { context in
+            streamingPhaseBannerBody(at: context.date)
         }
-        .padding(.horizontal, Design.Spacing.md)
-        .padding(.vertical, 4)
-        .background(Design.Colors.warning.opacity(0.08))
+    }
+
+    /// Body of `streamingPhaseBanner`, factored out so the TimelineView
+    /// closure stays a single-expression view (avoids the Swift
+    /// `@ViewBuilder` type-inference trap when local `let` bindings
+    /// share a closure with `if/let/else` branches).
+    @ViewBuilder
+    private func streamingPhaseBannerBody(at now: Date) -> some View {
+        if let bannerLine = chatStore.stallBannerLine(now: now) {
+            HStack(spacing: 6) {
+                if bannerLine.isWatchdogStall {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Design.Colors.warning)
+                } else {
+                    // Transport-level reconnect (snapshot captured from
+                    // .reconnecting, not the no-progress watchdog).
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .tint(Design.Colors.warning)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Stream stalled - \(bannerLine.elapsedSeconds)s elapsed - attempt \(bannerLine.attemptNumber)")
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.warning)
+                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                        Text(bannerLine.connection.displayLabel)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                        Text("-")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                        Text("last: \(bannerLine.lastActivity) (\(bannerLine.lastActivitySecondsAgo)s)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, 4)
+            .background(Design.Colors.warning.opacity(0.08))
+            .accessibilityLabel("Stream stalled, \(bannerLine.elapsedSeconds) seconds elapsed, attempt \(bannerLine.attemptNumber), connection \(bannerLine.connection.displayLabel)")
+        }
     }
 
     /// Build 33: shown while a Hermes gateway restart is in flight. Sends are
