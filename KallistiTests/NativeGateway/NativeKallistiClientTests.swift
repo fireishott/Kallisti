@@ -327,6 +327,28 @@ struct NativeKallistiClientTests {
         await sut.disconnect()
     }
 
+    @Test("restored history marks replied-to user rows delivered but final user-only row sent")
+    func restoredHistoryMapsDeliveryStatus() {
+        let firstUserID = UUID()
+        let assistantID = UUID()
+        let finalUserID = UUID()
+        let firstTimestamp = Date(timeIntervalSince1970: 100)
+        let assistantTimestamp = Date(timeIntervalSince1970: 101)
+        let finalTimestamp = Date(timeIntervalSince1970: 102)
+        let messages = [
+            Message(id: firstUserID, sender: .user, content: "First", timestamp: firstTimestamp),
+            Message(id: assistantID, sender: .herald, content: "Reply", timestamp: assistantTimestamp),
+            Message(id: finalUserID, sender: .user, content: "Final", timestamp: finalTimestamp),
+        ]
+
+        let restored = NativeKallistiClient.mapRestoredHistoryStatuses(messages)
+
+        #expect(restored.map(\.status) == [.delivered, .sent, .sent])
+        #expect(restored.map(\.id) == [firstUserID, assistantID, finalUserID])
+        #expect(restored.map(\.timestamp) == [firstTimestamp, assistantTimestamp, finalTimestamp])
+        #expect(restored[1].content == "Reply")
+    }
+
     // MARK: - facadeBaseURL: LAN vs public HTTPS
 
     @Test("facadeBaseURL for LAN host adds :8010")
