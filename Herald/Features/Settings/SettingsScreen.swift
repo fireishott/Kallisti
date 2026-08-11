@@ -14,11 +14,15 @@ struct SettingsScreen: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(TabRouter.self) private var router
     @State private var mimoAPIKey: String = ""
-    @State private var auxService: AuxModelService?
+    // Build 70: aux service lives on the container (loaded at connection).
+    private var auxService: AuxModelService? { container.auxService }
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
     @State private var showSafari = false
+    // Build 70: searchable aux model picker state.
+    @State private var auxPickerTask: AuxTask?
+    @State private var auxPickerSearchText = ""
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GatewayControlService.self) private var gatewayControl
@@ -68,16 +72,24 @@ struct SettingsScreen: View {
         .task {
             await hostStore.refresh()
             await permissionsStore.reloadCapabilities()
-            // Build 69: poll connector latency while Settings is visible.
-            startLatencyPolling()
-        }
-        .onDisappear {
-            stopLatencyPolling()
+            // Build 70: latency is monitored at the container level from
+            // connection time; Settings just renders the live value.
         }
         .sheet(isPresented: $showSafari) {
             if let url = safariURL {
                 SafariView(url: url)
             }
+        }
+        .sheet(item: $auxPickerTask) { task in
+            AuxModelPickerSheet(
+                task: task,
+                models: modelStore.models,
+                searchText: $auxPickerSearchText,
+                onSelect: { provider, model in
+                    Task { await auxService?.set(task: task.task, provider: provider, model: model) }
+                    auxPickerTask = nil
+                }
+            )
         }
         // Build 33: restart confirmation. Shown only from the
         // .awaitingConfirmation state; Cancel is a pure state reset with
@@ -157,7 +169,8 @@ struct SettingsScreen: View {
                     icon: "timer",
                     iconColor: latencyRowColor,
                     title: "Latency",
-                    value: latencyRowValue
+                    value: latencyRowValue,
+                    valueColor: latencyRowValueColor
                 )
 
                 sectionDivider
@@ -232,9 +245,9 @@ struct SettingsScreen: View {
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
     @State private var updateCheckResult: String?
-    @State private var latencyMs: Int?
-    @State private var latencyUpdatedAt: Date?
-    @State private var latencyPollTask: Task<Void, Never>?
+    // Build 70: latency is polled on the AppContainer (starts at connection
+    // time), so Settings just reads the live value - no local poller.
+    private var latencyMs: Int? { container.connectorLatencyMs }
     @State private var updateAgentResult: String?
     @State private var isCheckingForUpdate = false
     @State private var isUpdatingAgent = false
@@ -353,7 +366,7 @@ struct SettingsScreen: View {
 
     private var latencyRowValue: String {
         if let ms = latencyMs {
-            return "\(ms) ms"
+            return "\(ms)ms"
         }
         if let nativeClient = container.nativeGatewayClient,
            nativeClient.connectionStatus == .connected {
@@ -362,35 +375,18 @@ struct SettingsScreen: View {
         return "—"
     }
 
+    /// Build 70: the value itself turns danger-red when the connection is
+    /// hot; stays black otherwise (the icon keeps its traffic-light colors).
+    private var latencyRowValueColor: Color {
+        guard let ms = latencyMs else { return Design.Colors.secondaryForeground }
+        return ms >= 300 ? Design.Colors.danger : Design.Colors.foreground
+    }
+
     private var latencyRowColor: Color {
         guard let ms = latencyMs else { return Design.Colors.secondaryForeground }
         if ms < 100 { return Design.Colors.success }
         if ms < 300 { return Design.Colors.warning }
         return Design.Colors.danger
-    }
-
-    /// Poll the native client's latency every 3s while Settings is visible.
-    /// Native path only - legacy relay mode has no direct connector socket
-    /// to ping cheaply, so the row stays "—" there.
-    private func startLatencyPolling() {
-        guard latencyPollTask == nil else { return }
-        latencyPollTask = Task { @MainActor in
-            while !Task.isCancelled {
-                if let nativeClient = container.nativeGatewayClient {
-                    let ms = await nativeClient.measureLatency()
-                    latencyMs = ms
-                    latencyUpdatedAt = Date()
-                } else {
-                    latencyMs = nil
-                }
-                try? await Task.sleep(for: .seconds(3))
-            }
-        }
-    }
-
-    private func stopLatencyPolling() {
-        latencyPollTask?.cancel()
-        latencyPollTask = nil
     }
 
     private var hostStatusRowIcon: String {
@@ -1296,15 +1292,9 @@ struct SettingsScreen: View {
                                             .foregroundStyle(Design.Colors.secondaryForeground)
                                     }
                                     Spacer()
-                                    Menu {
-                                        Button("Auto") {
-                                            Task { await aux.set(task: task.task, provider: "auto", model: "auto") }
-                                        }
-                                        ForEach(modelStore.models, id: \.name) { m in
-                                            Button(m.name) {
-                                                Task { await aux.set(task: task.task, provider: m.provider, model: m.name) }
-                                            }
-                                        }
+                                    Button {
+                                        auxPickerTask = task
+                                        auxPickerSearchText = ""
                                     } label: {
                                         HStack(spacing: 4) {
                                             Text("Change")
@@ -1909,18 +1899,9 @@ struct SettingsScreen: View {
             }
             mimoAPIKey = await mimoKeychain.retrieve(key: "mimo.apiKey") ?? ""
 
-            // Load AUX model configuration
-            if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
-                let client = RelayAPIClient { relayBase }
-                let svc = AuxModelService(
-                    apiClient: client,
-                    accessTokenProvider: { await sessionStore.currentAccessToken() }
-                ) {
-                    container.nativeGatewayClient?.featureClient
-                }
-                auxService = svc
-                await svc.load()
-            }
+            // Build 70: AUX model configuration is loaded on the container
+            // at connection time (Infrastructure stays warm). Nothing to
+            // create here - container.auxService is already wired.
         }
     }
 
@@ -2208,7 +2189,7 @@ struct SettingsScreen: View {
             .overlay(Design.Colors.divider)
     }
 
-    private func settingsRow(icon: String, iconColor: Color, title: String, value: String?) -> some View {
+    private func settingsRow(icon: String, iconColor: Color, title: String, value: String?, valueColor: Color? = nil) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             Image(systemName: icon)
                 .font(.system(size: 14))
@@ -2224,7 +2205,7 @@ struct SettingsScreen: View {
             if let value {
                 Text(value)
                     .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .foregroundStyle(valueColor ?? Design.Colors.secondaryForeground)
             }
         }
         .frame(minHeight: Design.Size.minTapTarget)
@@ -2486,6 +2467,84 @@ private struct UpdateChangelogSheet: View {
         Rectangle()
             .fill(Design.Colors.divider)
             .frame(height: 0.5)
+    }
+}
+
+
+// Build 70: searchable model picker for auxiliary model assignment.
+private struct AuxModelPickerSheet: View {
+    let task: AuxTask
+    let models: [ModelStore.HeraldModel]
+    @Binding var searchText: String
+    let onSelect: (String, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var filteredModels: [ModelStore.HeraldModel] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return models }
+        return models.filter {
+            $0.name.lowercased().contains(q)
+                || $0.provider.lowercased().contains(q)
+                || $0.displayProviderName.lowercased().contains(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        onSelect("auto", "auto")
+                    } label: {
+                        HStack {
+                            Text("Auto (server default)")
+                                .foregroundStyle(Design.Colors.foreground)
+                            Spacer()
+                            if task.isAuto {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                        }
+                    }
+                }
+
+                Section("Models") {
+                    if filteredModels.isEmpty {
+                        Text("No models match \"\(searchText)\"")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    } else {
+                        ForEach(filteredModels) { m in
+                            Button {
+                                onSelect(m.provider, m.name)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(m.name)
+                                        .font(Design.Typography.callout)
+                                        .foregroundStyle(Design.Colors.foreground)
+                                    Text(m.displayProviderName)
+                                        .font(Design.Typography.caption)
+                                        .foregroundStyle(Design.Colors.secondaryForeground)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Model for \(task.task)")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter models")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(Design.Brand.accent)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
