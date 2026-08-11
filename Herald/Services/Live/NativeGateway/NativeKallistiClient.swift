@@ -268,50 +268,87 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private func registerNativeWatch(sessionId: String) async {
         guard let secureStore else { return }
         guard let deviceToken = await secureStore.retrieve(key: AppContainer.apnsTokenKeychainKey),
-              !deviceToken.isEmpty,
-              let accessToken = await authCoordinator.currentAccessToken()
+              !deviceToken.isEmpty
         else { return }
 
-        // APNs watch registration lives on the connector's HTTP facade,
-        // NOT the gateway (9119). The gateway has no /v1/native/watch route
-        // and its auth gate redirects the POST (302), so posting to
-        // gatewayBaseURL silently failed and the connector never watched the
-        // session -> no backgrounded-turn push. Derive the facade URL using
-        // the same LAN-aware logic as facadeBaseURLString.
-        guard let facadeBase = Self.facadeBaseURL(for: gatewayBaseURL),
-              let url = URL(string: "\(facadeBase)/v1/native/watch")
-        else { return }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        // LATENCY (build 35): this had no timeout override, so it inherited
-        // URLSession's 60s default. registerNativeWatch was called with
-        // `await` directly in the hot _sendStreaming path BEFORE
-        // prompt.submit - every send blocked on this call finishing. It only
-        // no-ops (instant) when there's no stored APNs token yet, which is
-        // why the FIRST message after a fresh app launch was fast but every
-        // follow-up (token now registered) paid the full round trip, or the
-        // full 60s hang if port 8010 was slow/unreachable - with nothing
-        // showing in gateway logs since prompt.submit was never reached.
-        // An 8s bound is generous for a same-network POST.
-        request.timeoutInterval = 8
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try? JSONEncoder().encode([
+        let body: [String: Any] = [
             "session_id": sessionId,
             "device_token": deviceToken,
             "token_kind": "alert",
-        ])
-
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status != 200 {
-                Self.logger.warning("native watch registration returned HTTP \(status)")
-            }
-        } catch {
-            Self.logger.warning("native watch registration failed: \(error.localizedDescription)")
+        ]
+        let status = await postFacadeJSON(
+            path: "/v1/native/watch",
+            body: body,
+            logTag: "native watch registration"
+        )
+        if status != 200 {
+            Self.logger.warning("native watch registration returned HTTP \(status)")
         }
+    }
+
+    /// POST a JSON body to the connector's HTTP facade with the live native
+    /// bearer. On 401 we force a bearer rotation (the cached `expiresAt` may
+    /// be stale even though the local check considers the token valid) and
+    /// retry exactly once before giving up. Returns the HTTP status of the
+    /// final attempt: a 200 means accepted, 401 means session is gone, any
+    /// other status is logged but not fatal so callers can decide.
+    ///
+    /// Centralizing this avoids the original bug pattern where
+    /// `registerPushToken` and `registerNativeWatch` each read the raw stored
+    /// bearer (or only refreshed it once) and gave up on the first 401 --
+    /// leaving Settings stuck on "Push: Not Registered" until the next app
+    /// launch forced a fresh `mintTicket` -> `refreshAccessTokenIfNeeded`.
+    private func postFacadeJSON(
+        path: String,
+        body: [String: Any],
+        logTag: String
+    ) async -> Int {
+        guard let facadeBase = Self.facadeBaseURL(for: gatewayBaseURL),
+              let url = URL(string: "\(facadeBase)\(path)")
+        else {
+            Self.logger.warning("\(logTag): invalid facade URL")
+            return -1
+        }
+        var attempt = 0
+        var lastStatus: Int = -1
+        while attempt < 2 {
+            attempt += 1
+            // First attempt uses the cached token (which refreshAccessTokenIfNeeded
+            // will rotate if expired); the retry path uses forceRefreshAccessToken
+            // to bypass the cached expiresAt after a server-side 401.
+            let tokenResult: String?
+            if attempt == 1 {
+                tokenResult = try? await authCoordinator.refreshAccessTokenIfNeeded()
+            } else {
+                tokenResult = try? await authCoordinator.forceRefreshAccessToken()
+            }
+            guard let accessToken = tokenResult, !accessToken.isEmpty else {
+                Self.logger.warning("\(logTag): no native access token")
+                return -1
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 8
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                lastStatus = status
+                if status == 401 && attempt == 1 {
+                    // Cached expiresAt is stale; force a real rotation and retry.
+                    Self.logger.info("\(logTag): 401 on first attempt, forcing bearer rotation")
+                    continue
+                }
+                return status
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return lastStatus >= 0 ? lastStatus : -1
+            }
+        }
+        return lastStatus
     }
 
     /// Register the APNs device token with the connector's push registration
@@ -321,54 +358,34 @@ final class NativeKallistiClient: HeraldClientProtocol {
     ///
     /// Returns true if the connector accepted the registration.
     func registerPushToken(_ token: String, pushEnvironment: String) async -> Bool {
-        // Build 55: refresh the access token FIRST, not just read it. The WS
-        // connect path (mintTicket) refreshes before every ticket, but this
-        // register path read the raw stored bearer — so after the token
-        // expired (typically 1h), every register attempt sent a dead bearer,
-        // the connector 401'd on /v1/push/register, and the app sat at
-        // "Not Registered" forever even though the socket was healthy. The
-        // connector delegates bearer verification to the gateway
-        // (/api/auth/me), so an expired token is indistinguishable from no
-        // token. Refresh is a no-op when the token is still valid.
-        guard let accessToken = try? await authCoordinator.refreshAccessTokenIfNeeded(),
-              !accessToken.isEmpty else {
-            Self.logger.warning("registerPushToken: no native access token")
-            return false
-        }
-        guard let facadeBase = await facadeBaseURLString(),
-              let url = URL(string: "\(facadeBase)/v1/push/register") else {
+        guard let facadeBase = await facadeBaseURLString() else {
             Self.logger.warning("registerPushToken: invalid facade URL")
             return false
         }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 8
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
             "apnsToken": token,
             "pushEnvironment": pushEnvironment,
             "bundleId": Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
             "tokenKind": "device",
         ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 200,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               json["registered"] as? Bool == true {
-                Self.logger.info("registerPushToken: accepted (environment=\(pushEnvironment))")
-                return true
-            }
-            Self.logger.warning("registerPushToken: HTTP \(status)")
-            return false
-        } catch {
-            Self.logger.warning("registerPushToken failed: \(error.localizedDescription)")
-            return false
+        // Build 65: route through `postFacadeJSON` so a stale cached bearer
+        // (server-side expired while the local `expiresAt` is still ahead)
+        // gets one forced-rotation retry instead of logging "HTTP 401" and
+        // leaving Settings on "Not Registered" until next app launch. The
+        // connector delegates bearer verification to the gateway's
+        // `/api/auth/me`, so a dead bearer is indistinguishable from no
+        // token from the app's side.
+        let status = await postFacadeJSON(
+            path: "/v1/push/register",
+            body: body,
+            logTag: "registerPushToken"
+        )
+        if status == 200 {
+            Self.logger.info("registerPushToken: accepted (environment=\(pushEnvironment))")
+            return true
         }
+        Self.logger.warning("registerPushToken: HTTP \(status)")
+        return false
     }
 
     func connect() async {
