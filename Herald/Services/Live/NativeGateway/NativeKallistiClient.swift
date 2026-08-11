@@ -193,7 +193,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     // MARK: - HeraldClientProtocol
 
-    var connectionStatus: ConnectionStatus = .disconnected
+    var connectionStatus: ConnectionStatus = .disconnected {
+        didSet {
+            if oldValue != connectionStatus {
+                onConnectionStatusChanged?(connectionStatus)
+            }
+        }
+    }
+    /// Build 72: fired on every connectionStatus transition so the container
+    /// can react to the REAL native signal (start/stop latency monitoring,
+    /// reload models) instead of the legacy relay SSE which never fires for
+    /// native-gateway users.
+    var onConnectionStatusChanged: (@MainActor (ConnectionStatus) -> Void)?
     var currentConversation: Conversation?
     private(set) var hasStoredLogin = false
 
