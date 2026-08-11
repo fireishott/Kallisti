@@ -17,6 +17,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,11 @@ class NativeWatchRegistry:
             return
         if not entries:
             del self._watchers[session_id]
+
+    def clear_session(self, *, session_id: str) -> None:
+        """Build 72: drop every watcher for a session after its turn went
+        terminal via polling, so a finished session is never re-fired."""
+        self._watchers.pop(session_id, None)
 
 
 class NativeWatchTokens:
@@ -160,6 +167,24 @@ class NativeWatchTokens:
             )
 
 
+# Build 72: session.status poll cadence. The gateway routes turn.end /
+# turn.error ONLY to the session-owning transport (tui_gateway/server.py
+# write_json), which in native mode is the iOS app's WS - never this watcher's
+# separate peer. Polling session.status (read-only, works for any live session)
+# is the reliable terminal detection for native turns.
+POLL_INTERVAL_SECS = float(os.environ.get("KALLISTI_NATIVE_WATCH_POLL_SECS", "4"))
+_POLL_AGENT_RUNNING_RE = re.compile(r"Agent Running:\s*(Yes|No)", re.IGNORECASE)
+
+
+def _session_status_is_running(output: str) -> bool | None:
+    """Parse session.status text output. True=still running, False=idle,
+    None=unparseable (caller should keep polling)."""
+    m = _POLL_AGENT_RUNNING_RE.search(output or "")
+    if not m:
+        return None
+    return m.group(1).strip().lower() == "yes"
+
+
 async def run_watcher(
     registry: NativeWatchRegistry,
     tokens: NativeWatchTokens,
@@ -229,27 +254,14 @@ async def run_watcher(
             )
             async with websockets.connect(uri) as ws:
                 backoff = 1.0
-                async for raw in ws:
-                    try:
-                        frame = json.loads(raw)
-                    except (ValueError, TypeError):
-                        continue
-                    params = (
-                        frame.get("params") if isinstance(frame, dict) else None
-                    )
-                    if (
-                        not isinstance(params, dict)
-                        or params.get("type") not in terminal_event_types
-                    ):
-                        continue
-                    session_id = params.get("session_id")
-                    if not session_id:
-                        continue
+
+                async def fire_terminal(session_id: str) -> None:
+                    """Shared terminal handling: push each watcher + remote-end
+                    the Live Activity unconditionally (Build 34 behaviour)."""
                     watchers = registry.watchers_for(session_id)
                     if watchers:
                         logger.info(
-                            "Native turn %s for session=%s — notifying %d device(s)",
-                            params.get("type"),
+                            "Native turn terminal for session=%s — notifying %d device(s)",
                             session_id,
                             len(watchers),
                         )
@@ -290,6 +302,127 @@ async def run_watcher(
                             "live activity end-push error (non-fatal)",
                             exc_info=True,
                         )
+
+                # Build 72: poll every watched session's status so native turns
+                # (whose terminal events never reach this peer) still get
+                # remote-ended. Responses come back as JSON-RPC frames with the
+                # matching id in the main read loop below.
+                #
+                # Build 73 fix (leak guard): pending_polls grew unbounded when
+                # the gateway WS wedged (responses never arrived) and registry
+                # entries never cleared, so every cycle polled MORE dead
+                # sessions -> 12k-msg flood + 700MB RSS. Caps + expiry below.
+                poll_counter = 0
+                pending_polls: dict[str, str] = {}  # rpc id -> session_id
+                pending_poll_time: dict[str, float] = {}  # rpc id -> monotonic sent
+                MAX_PENDING_POLLS = 100
+                POLL_ANSWER_TIMEOUT_S = 30.0
+                MAX_UNANSWERED_CYCLES = 3
+                # Per-session consecutive-unanswered counter; sessions that stop
+                # answering get remote-ended and dropped so they don't pile up.
+                unanswered: dict[str, int] = {}
+
+                async def poll_loop() -> None:
+                    nonlocal poll_counter
+                    while True:
+                        try:
+                            await asyncio.sleep(POLL_INTERVAL_SECS)
+                            now = time.monotonic()
+                            # Expire stale unanswered polls (gateway wedged or
+                            # session gone) and count them against the session.
+                            for rid in list(pending_poll_time):
+                                if now - pending_poll_time[rid] > POLL_ANSWER_TIMEOUT_S:
+                                    sid = pending_polls.pop(rid, None)
+                                    pending_poll_time.pop(rid, None)
+                                    if sid is None:
+                                        continue
+                                    unanswered[sid] = unanswered.get(sid, 0) + 1
+                                    if unanswered[sid] >= MAX_UNANSWERED_CYCLES:
+                                        logger.warning(
+                                            "Native watch poll: session=%s unresponsive "
+                                            "(%d unanswered) - remote-ending",
+                                            sid,
+                                            unanswered[sid],
+                                        )
+                                        await fire_terminal(sid)
+                                        registry.clear_session(session_id=sid)
+                                        unanswered.pop(sid, None)
+                            for sid in list(registry._watchers.keys()):
+                                # Already being dropped by the expiry above.
+                                if unanswered.get(sid, 0) >= MAX_UNANSWERED_CYCLES:
+                                    continue
+                                # Response pipe is stuck: stop growing the dict
+                                # instead of leaking another entry per cycle.
+                                if len(pending_polls) >= MAX_PENDING_POLLS:
+                                    break
+                                poll_counter += 1
+                                rid = f"watch-poll-{poll_counter}"
+                                pending_polls[rid] = sid
+                                pending_poll_time[rid] = time.monotonic()
+                                await ws.send(
+                                    json.dumps(
+                                        {
+                                            "jsonrpc": "2.0",
+                                            "id": rid,
+                                            "method": "session.status",
+                                            "params": {"session_id": sid},
+                                        }
+                                    )
+                                )
+                        except Exception:
+                            logger.debug(
+                                "native watch poll send failed (non-fatal)",
+                                exc_info=True,
+                            )
+
+                poll_task = asyncio.create_task(poll_loop())
+                try:
+                    async for raw in ws:
+                        try:
+                            frame = json.loads(raw)
+                        except (ValueError, TypeError):
+                            continue
+                        if not isinstance(frame, dict):
+                            continue
+
+                        # JSON-RPC response to one of our status polls.
+                        rpc_id = frame.get("id")
+                        if rpc_id in pending_polls:
+                            sid = pending_polls.pop(rpc_id)
+                            pending_poll_time.pop(rpc_id, None)
+                            unanswered.pop(sid, None)  # answered — reset counter
+                            error = frame.get("error")
+                            result = frame.get("result") or {}
+                            output = (
+                                result.get("output") if isinstance(result, dict) else ""
+                            )
+                            running = None if error else _session_status_is_running(output)
+                            if running is False or error is not None:
+                                # Idle or session gone (4001) — terminal. Fire
+                                # once, then drop the watch so we don't spam.
+                                logger.info(
+                                    "Native watch poll: session=%s terminal "
+                                    "(running=%s err=%s)",
+                                    sid,
+                                    running,
+                                    bool(error),
+                                )
+                                await fire_terminal(sid)
+                                registry.clear_session(session_id=sid)
+                            continue
+
+                        params = frame.get("params")
+                        if (
+                            not isinstance(params, dict)
+                            or params.get("type") not in terminal_event_types
+                        ):
+                            continue
+                        session_id = params.get("session_id")
+                        if not session_id:
+                            continue
+                        await fire_terminal(session_id)
+                finally:
+                    poll_task.cancel()
         except Exception:
             logger.exception(
                 "native watch connection dropped, reconnecting in %.1fs",
