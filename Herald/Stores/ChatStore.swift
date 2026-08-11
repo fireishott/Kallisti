@@ -1954,6 +1954,7 @@ final class ChatStore {
                         let placeholder = self.conversation?.messages[idx]
                         let activities = placeholder?.toolActivities ?? []
                         let streamedReasoning = placeholder?.reasoning ?? ""
+                        Self.logger.info("REASON_DBG finished placeholder=\(placeholderID.uuidString.prefix(8)) streamedReasoningLen=\(streamedReasoning.count) finalMessageReasoningLen=\(finalMessage.reasoning.count)")
                         // A terminal event carrying empty content must never erase
                         // text that already streamed into the placeholder. Build 41
                         // dropped this guard (it arrived in B35 as `c5069af`), which
@@ -3408,6 +3409,8 @@ final class ChatStore {
         buf.chunks.append(delta)
         buf.bytes += delta.utf8.count
 
+        Self.logger.info("REASON_DBG enqueue placeholder=\(placeholderID.uuidString.prefix(8)) deltaBytes=\(delta.utf8.count) bufferedBytes=\(buf.bytes) chunks=\(buf.chunks.count)")
+
         if buf.bytes >= Self.deltaFlushByteThreshold {
             reasoningBuffers[placeholderID] = buf
             flushPendingReasoning(placeholderID: placeholderID)
@@ -3430,7 +3433,10 @@ final class ChatStore {
 
     /// Flush all buffered reasoning deltas onto the placeholder message.
     private func flushPendingReasoning(placeholderID: UUID) {
-        guard var buf = reasoningBuffers[placeholderID] else { return }
+        guard var buf = reasoningBuffers[placeholderID] else {
+            Self.logger.warning("REASON_DBG flush NO_BUFFER placeholder=\(placeholderID.uuidString.prefix(8))")
+            return
+        }
         buf.flushTask?.cancel()
         buf.flushTask = nil
 
@@ -3443,14 +3449,19 @@ final class ChatStore {
 
         guard var conv = conversation,
               let idx = conv.messages.firstIndex(where: { $0.id == placeholderID })
-        else { return }
+        else {
+            Self.logger.error("REASON_DBG flush PLACEHOLDER_NOT_FOUND placeholder=\(placeholderID.uuidString.prefix(8)) chunks=\(buf.chunks.count) bytes=\(totalBytes) - DELTAS DROPPED")
+            return
+        }
 
+        let prevLen = conv.messages[idx].reasoning.count
         // Single concat for all buffered chunks
         var buffer = conv.messages[idx].reasoning
         buffer.reserveCapacity(buffer.count + totalBytes)
         for chunk in buf.chunks { buffer.append(chunk) }
         conv.messages[idx].reasoning = buffer
         conversation = conv
+        Self.logger.info("REASON_DBG flush OK placeholder=\(placeholderID.uuidString.prefix(8)) idx=\(idx) prevLen=\(prevLen) newLen=\(buffer.count) chunks=\(buf.chunks.count)")
     }
 
     private func enqueueDelta(_ delta: String, placeholderID: UUID) {
@@ -3724,10 +3735,17 @@ final class ChatStore {
             }
 
             if !local.reasoning.isEmpty {
+                if refreshedConversation.messages[index].reasoning.isEmpty {
+                    Self.logger.info("REASON_DBG merge COPY_LOCAL_TO_REFRESHED idx=\(index) localLen=\(local.reasoning.count) remoteLen=\(refreshedConversation.messages[index].reasoning.count)")
+                } else {
+                    Self.logger.warning("REASON_DBG merge OVERWRITE_NONEMPTY idx=\(index) localLen=\(local.reasoning.count) remoteLen=\(refreshedConversation.messages[index].reasoning.count) - remote wins (this is the bug if it happens)")
+                }
                 refreshedConversation.messages[index].reasoning = local.reasoning
                 if local.reasoningDuration != nil {
                     refreshedConversation.messages[index].reasoningDuration = local.reasoningDuration
                 }
+            } else if !refreshedConversation.messages[index].reasoning.isEmpty {
+                Self.logger.info("REASON_DBG merge LOCAL_EMPTY idx=\(index) remoteLen=\(refreshedConversation.messages[index].reasoning.count) - remote reasoning kept, no local to copy")
             }
 
             if !local.attachments.isEmpty {
