@@ -184,6 +184,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// so the overlay can show "Reconnect attempt 3" when appropriate.
     var currentReconnectAttempt: Int { reconnectAttempt }
 
+    /// Build 69: last measured round-trip to the connector (ms), or nil when
+    /// not connected / measurement failed. Updated by measureLatency(); the
+    /// Settings Connection section polls it while visible.
+    var latencyMs: Int? = nil
+    /// Timestamp of the last successful latency measurement.
+    var latencyMeasuredAt: Date? = nil
+
     // MARK: - HeraldClientProtocol
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -372,6 +379,122 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
         }
         return lastStatus
+    }
+
+    /// POST to the connector facade and return the decoded response body
+    /// (build 69 / r7). Same auth flow as postFacadeJSON (cookie-auth
+    /// sessions ride the gateway cookie; bearer sessions rotate once on
+    /// 401) but returns Data instead of discarding it. Used by
+    /// updateCheck() to read /v1/gw/update/check's structured payload.
+    private func postFacadeJSONData(
+        path: String,
+        body: [String: Any],
+        logTag: String
+    ) async -> Data? {
+        guard let facadeBase = Self.facadeBaseURL(for: gatewayBaseURL),
+              let url = URL(string: "\(facadeBase)\(path)")
+        else {
+            Self.logger.warning("\(logTag): invalid facade URL")
+            return nil
+        }
+        let cookieAuth = await authCoordinator.usesCookieAuth()
+        if cookieAuth {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 15
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                Self.logger.info("\(logTag): cookie-auth status \(status)")
+                guard status == 200 else { return nil }
+                return data
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return nil
+            }
+        }
+        var attempt = 0
+        while attempt < 2 {
+            attempt += 1
+            let tokenResult: String?
+            if attempt == 1 {
+                tokenResult = try? await authCoordinator.refreshAccessTokenIfNeeded()
+            } else {
+                tokenResult = try? await authCoordinator.forceRefreshAccessToken()
+            }
+            guard let accessToken = tokenResult, !accessToken.isEmpty else {
+                Self.logger.warning("\(logTag): no native access token")
+                return nil
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 15
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 && attempt == 1 {
+                    Self.logger.info("\(logTag): 401 on first attempt, forcing bearer rotation")
+                    continue
+                }
+                guard status == 200 else {
+                    Self.logger.warning("\(logTag): HTTP \(status)")
+                    return nil
+                }
+                return data
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// Build 69 (r7): pull the structured update check from the connector.
+    /// Returns nil on auth/network failure or when the endpoint has no data.
+    /// The payload shape (envelope-wrapped) matches the connector's
+    /// gateway_update_check response:
+    ///   { "data": { "components": { "hermes-agent": { currentVersion,
+    ///     latestVersion, updateAvailable, behindCount, releaseURL,
+    ///     changelog, lastCheckedAt, error } } } }
+    struct HermesUpdateInfo: Decodable {
+        var currentVersion: String?
+        var latestVersion: String?
+        var updateAvailable: Bool?
+        var behindCount: Int?
+        var releaseURL: String?
+        var changelog: String?
+        var lastCheckedAt: String?
+        var error: String?
+    }
+
+    func updateCheck() async -> HermesUpdateInfo? {
+        struct Envelope: Decodable {
+            struct DataBox: Decodable {
+                struct ComponentsBox: Decodable {
+                    let hermesAgent: HermesUpdateInfo?
+                    enum CodingKeys: String, CodingKey { case hermesAgent = "hermes-agent" }
+                }
+                let components: ComponentsBox?
+            }
+            let data: DataBox?
+        }
+        guard let payload = await postFacadeJSONData(
+            path: "/v1/gw/update/check",
+            body: [:],
+            logTag: "updateCheck"
+        ) else { return nil }
+        do {
+            let envelope = try JSONDecoder().decode(Envelope.self, from: payload)
+            return envelope.data?.components?.hermesAgent
+        } catch {
+            Self.logger.warning("updateCheck: decode failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Register the APNs device token with the connector's push registration
@@ -568,6 +691,36 @@ final class NativeKallistiClient: HeraldClientProtocol {
         client = nil
         transport = nil
         scheduleReconnect()
+    }
+
+    /// Build 69: measure round-trip latency to the connector via a cheap
+    /// session.list probe (limit 1, short timeout). Returns ms or nil if the
+    /// socket isn't live. Safe to call on a timer - it never mints a ticket
+    /// or opens a socket, it reuses the live client.
+    func measureLatency() async -> Int? {
+        guard let client, connectionStatus == .connected else {
+            latencyMs = nil
+            latencyMeasuredAt = nil
+            return nil
+        }
+        let clock = ContinuousClock()
+        do {
+            let start = clock.now
+            _ = try await client.send(
+                method: "session.list",
+                params: SessionListParams(limit: 1, offset: 0, allDevices: nil),
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            let elapsed = clock.now - start
+            let ms = Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+            latencyMs = ms
+            latencyMeasuredAt = Date()
+            return ms
+        } catch {
+            latencyMs = nil
+            latencyMeasuredAt = nil
+            return nil
+        }
     }
 
     private func scheduleReconnect() {
@@ -914,7 +1067,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // The raw MEDIA: directives are converted to authenticated inline
         // image Markdown using the same normalized path logic as streaming.
         let mediaBaseURL = gatewayBaseURL
-        let messages = decoded.messages.map { msg -> Message in
+        let messages = decoded.messages.compactMap { msg -> Message? in
+            // Build 69: tool rows come through as {"role":"tool","name",
+            // "context"} with no display text; system markers are
+            // scaffolding. Skip them instead of rendering blank bubbles.
+            if msg.role == "tool" { return nil }
+            if msg.role == "system" && msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return nil
+            }
             let resolvedContent: String
             if msg.role == "assistant" {
                 resolvedContent = Self.resolveNativeMedia(
