@@ -309,6 +309,29 @@ final class NativeKallistiClient: HeraldClientProtocol {
             Self.logger.warning("\(logTag): invalid facade URL")
             return -1
         }
+        // Build 66: cookie-auth sessions (basic / kallisti-pairing) authenticate
+        // facade calls with the gateway session cookie URLSession carries
+        // automatically - the connector accepts gateway cookies and delegates
+        // verification to /api/auth/me. Pairing login deletes the keychain
+        // access token, so the old code path could never mint a Bearer here
+        // and push registration died with -1/401.
+        let cookieAuth = await authCoordinator.usesCookieAuth()
+        if cookieAuth {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 8
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                Self.logger.info("\(logTag): cookie-auth status \(status)")
+                return status
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return -1
+            }
+        }
         var attempt = 0
         var lastStatus: Int = -1
         while attempt < 2 {
