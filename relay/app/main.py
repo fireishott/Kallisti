@@ -145,7 +145,7 @@ from .gateway_control import GatewayController
 from .log_service import LogService
 
 # Build 59: connector internal URL for native push proxy.
-CONNECTOR_INTERNAL_URL = "http://192.168.10.118:8010"
+CONNECTOR_INTERNAL_URL = os.getenv("CONNECTOR_INTERNAL_URL", "http://localhost:8010")
 
 
 def success(data: dict) -> dict:

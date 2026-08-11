@@ -351,8 +351,8 @@ struct PushRegistrationTests {
     @Test("LAN relay facade URL retains the explicit :8010 port")
     func test_connectorMCPURL_usesFacadeHelper_lanHost() {
         let url = NativeKallistiClient.facadeBaseURL(
-            for: "http://192.168.10.118:9119"
+            for: "http://192.168.1.10:9119"
         )
-        #expect(url == "http://192.168.10.118:8010")
+        #expect(url == "http://192.168.1.10:8010")
     }
 }
