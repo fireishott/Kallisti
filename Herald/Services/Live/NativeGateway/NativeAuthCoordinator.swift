@@ -342,6 +342,27 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
             // Still valid for at least a minute -- use as-is.
             return stored
         }
+        return try await performTokenRefresh()
+    }
+
+    /// Force a bearer rotation, ignoring the cached `expiresAt` value. The
+    /// connector delegates bearer verification to the gateway's
+    /// `/api/auth/me`; if the cached `expiresAt` is ahead of reality (clock
+    /// drift, server-side revocation, replay window expired), every
+    /// connector-direct call returns 401 even though the local check
+    /// considers the token valid. Used by registerPushToken and
+    /// registerNativeWatch to recover from that 401 in a single retry.
+    func forceRefreshAccessToken() async throws -> String {
+        await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
+        return try await performTokenRefresh()
+    }
+
+    /// Shared refresh implementation: POST the stored refresh token to
+    /// `/auth/native/refresh` and persist the rotated access + refresh +
+    /// expiresAt. Throws `.notLoggedIn` when no refresh token is stored or
+    /// the refresh itself fails (callers treat that as a fatal session-loss
+    /// signal -- the keychain is wiped so the app falls back to onboarding).
+    private func performTokenRefresh() async throws -> String {
         guard let refreshToken = await secureStore.retrieve(key: "nativeGatewayRefreshToken") else {
             throw NativeAuthError.notLoggedIn
         }
