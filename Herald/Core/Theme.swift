@@ -500,15 +500,19 @@ private enum ChatWallpaperImageCache {
             return cachedImage
         }
 
-        let image = await Task.detached(priority: .userInitiated) {
-            guard let source = UIImage(named: name), let cgImage = source.cgImage else {
-                return UIImage(named: name)
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let source = UIImage(named: name) else {
+                return nil
             }
             let format = UIGraphicsImageRendererFormat()
             format.scale = source.scale
             let renderer = UIGraphicsImageRenderer(size: source.size, format: format)
             return renderer.image { context in
-                context.cgContext.draw(cgImage, in: CGRect(origin: .zero, size: source.size))
+                // Draw the UIImage (not its cgImage) so the renderer applies
+                // UIImage orientation. Drawing cgImage directly flips the
+                // image vertically because CG coordinates use a bottom-left
+                // origin while UIKit uses top-left.
+                source.draw(in: CGRect(origin: .zero, size: source.size))
             }
         }.value
 

@@ -263,7 +263,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
         self.secureStore = secureStore
         self.transportFactory = transportFactory
         Task { @MainActor in
-            if await authCoordinator.currentAccessToken() != nil {
+            // Returning-user detection at init. Cookie-auth modes (basic /
+            // kallisti-pairing) DELETE the keychain access token on login and
+            // ride the session cookie instead, so currentAccessToken() alone
+            // misses them. Either a stored cookie auth mode OR a stored bearer
+            // token means this device has logged in before - skip onboarding.
+            let hasCookieAuth = await authCoordinator.usesCookieAuth()
+            let hasBearerToken = await authCoordinator.currentAccessToken() != nil
+            if hasCookieAuth || hasBearerToken {
                 self.hasStoredLogin = true
             }
         }
