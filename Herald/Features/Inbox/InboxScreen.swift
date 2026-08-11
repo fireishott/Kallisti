@@ -3,6 +3,7 @@ import SwiftUI
 struct InboxScreen: View {
     @Environment(InboxStore.self) private var inboxStore
     @Environment(TabRouter.self) private var router
+    @State private var presentedNotification: InboxItem?
 
     var body: some View {
         ZStack {
@@ -22,6 +23,20 @@ struct InboxScreen: View {
             // that landed while the user was elsewhere appears immediately.
             Task { await inboxStore.loadInbox() }
         }
+        .sheet(item: $presentedNotification) { item in
+            NotificationDetailSheet(
+                item: item,
+                onPrimary: {
+                    Task { await inboxStore.performPrimaryAction(for: item) }
+                },
+                onDismiss: {
+                    Task { await inboxStore.dismiss(item) }
+                },
+                onSnooze: { until in
+                    inboxStore.snooze(item, until: until)
+                }
+            )
+        }
     }
 
     // MARK: - List
@@ -33,13 +48,24 @@ struct InboxScreen: View {
                     InboxItemRow(
                         item: item,
                         onPrimaryAction: {
-                            Task { await inboxStore.performPrimaryAction(for: item) }
+                            // Build 68: notification-type items (no conversation
+                            // reference) open the notification action window
+                            // instead of dead-ending on a no-op submitAction.
+                            if item.type != .approval,
+                               item.payload?["conversationId"] == nil {
+                                presentedNotification = item
+                            } else {
+                                Task { await inboxStore.performPrimaryAction(for: item) }
+                            }
                         },
                         onSecondaryAction: {
                             Task { await inboxStore.dismiss(item) }
                         },
                         onOpenDetails: {
-                            // Inbox detail navigation deprecated — no-op
+                            if item.type != .approval,
+                               item.payload?["conversationId"] == nil {
+                                presentedNotification = item
+                            }
                         }
                     )
                 }
@@ -57,7 +83,7 @@ struct InboxScreen: View {
         ContentUnavailableView(
             "All Caught Up",
             systemImage: "tray",
-            description: Text("No new items from Herald. Check back later.")
+            description: Text("No new items from Kallisti. Check back later.")
                 .foregroundStyle(Design.Colors.secondaryForeground)
         )
     }
@@ -68,7 +94,7 @@ struct InboxScreen: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             if inboxStore.unreadCount > 0 {
-                Text("\(inboxStore.unreadCount) new")
+                Text("\\(inboxStore.unreadCount) new")
                     .brandEyebrow()
             }
         }

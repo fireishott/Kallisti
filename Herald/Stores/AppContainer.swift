@@ -482,8 +482,20 @@ final class AppContainer {
                 authCoordinator: auth,
                 secureStore: secureStore
             )
-            Task { @MainActor in
-                await nativeClient.connect()
+            // Build 68: only auto-connect when a relay URL is actually
+            // configured. On a fresh install (UserDefaults wiped, Keychain
+            // may still hold an old authMode from a previous install),
+            // resolveNativeGatewayHost falls back to http://localhost:9119
+            // and connect() loops "Connection struggling" forever against
+            // the device itself - the loading surface never releases to
+            // onboarding because hasConnectedOnce stays false. Skip the
+            // silent connect; onboarding's startPairingLogin / startBasicLogin
+            // / startInteractiveLogin all call connect() themselves after the
+            // user enters a real relay URL.
+            if settingsStore.settings.relayConfiguration.activeBaseURLString != nil {
+                Task { @MainActor in
+                    await nativeClient.connect()
+                }
             }
             heraldClient = nativeClient
             nativeGatewayClient = nativeClient
@@ -1039,15 +1051,21 @@ final class AppContainer {
             break
         }
 
-        // Read action or default tap — navigate to chat tab
+        // Read action or default tap. A notification that references a
+        // conversation opens that chat. A generic notification (test push,
+        // system alert) has no conversation ID - take the user to the Inbox
+        // tab where the full item with its action buttons lives, instead of
+        // dumping them on the current chat with nothing to act on.
         router.activeSheet = nil
         router.popToRoot()
-        router.switchToTab(.chat)
 
         guard let conversationID = route.conversationID else {
-            Logger.app.info("Notification route: no conversation ID, staying on current chat")
+            router.switchToTab(.inbox)
+            Logger.app.info("Notification route: no conversation ID, opening Inbox tab")
             return
         }
+
+        router.switchToTab(.chat)
 
         // Load the specific conversation by ID — never fall back to "current" conversation.
         // Clear any stale streaming state first: if the app was suspended mid-stream,
@@ -1119,7 +1137,7 @@ final class AppContainer {
         await hostStatusStream.start()
     }
 
-    func handleRemoteNotificationWake() async {
+    func handleRemoteNotificationWake(pushCategory: String? = nil) async {
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }
 
@@ -1132,6 +1150,12 @@ final class AppContainer {
         await talkStore.refreshReadiness()
         reconcileLiveActivities()
         updateWidgetData()
+        // Build 68: a HERALD_MESSAGE_READY push means the turn is done - settle
+        // any latched streaming state before reloading, so the chat never sits
+        // on a perpetual "thinking" placeholder after a push.
+        if pushCategory == NotificationCategoryID.messageReady.rawValue {
+            chatStore.settleStreamFromCompletionPush()
+        }
         chatStore.reconcileStreamingPhase()  // D3: Same gap as handleAppDidBecomeActive
         await chatStore.loadConversation()
         await inboxStore.loadInbox(force: true)

@@ -72,11 +72,24 @@ struct PendingAttachment: Identifiable, Sendable {
         }
         guard jpegData.count <= maxFileSize else { return nil }
 
-        // Create thumbnail
+        // Create thumbnail - aspect-fit into a 120x120 square. Drawing the
+        // full image into the square directly (the pre-Build-68 approach)
+        // squashed non-square photos (portrait shots looked stretched).
         let thumbSize = CGSize(width: 120, height: 120)
         let renderer = UIGraphicsImageRenderer(size: thumbSize)
         let thumbImage = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: thumbSize))
+            let imageSize = image.size
+            guard imageSize.width > 0, imageSize.height > 0 else {
+                image.draw(in: CGRect(origin: .zero, size: thumbSize))
+                return
+            }
+            let scale = min(thumbSize.width / imageSize.width, thumbSize.height / imageSize.height)
+            let scaled = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+            let origin = CGPoint(
+                x: (thumbSize.width - scaled.width) / 2,
+                y: (thumbSize.height - scaled.height) / 2
+            )
+            image.draw(in: CGRect(origin: origin, size: scaled))
         }
         let thumbData = thumbImage.jpegData(compressionQuality: 0.6)
 

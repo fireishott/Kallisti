@@ -21,6 +21,12 @@ final class InboxStore {
     /// UUID and should navigate the UI to that chat.
     var onOpenConversation: (@MainActor (UUID) -> Void)?
 
+    /// Called when the user taps "Open" on a notification-type inbox item
+    /// that does NOT reference a conversation (test push, system alert).
+    /// The handler receives the item and should present a notification
+    /// action window (full body, action buttons, dismiss, snooze).
+    var onOpenNotification: (@MainActor (InboxItem) -> Void)?
+
     init(
         inboxService: any InboxServiceProtocol,
         persistence: any AppPersistenceStoreProtocol,
@@ -37,7 +43,31 @@ final class InboxStore {
     }
 
     var unreadCount: Int {
-        items.filter { !$0.isRead }.count
+        visibleItems.filter { !$0.isRead }.count
+    }
+
+    /// Items with snoozed items filtered out.
+    private var visibleItems: [InboxItem] {
+        let now = Date()
+        return items.filter { item in
+            guard let until = localState.snoozedItemIDs[item.stableIdentifier] else { return true }
+            return until <= now
+        }
+    }
+
+    /// Items currently hidden by snooze (for potential "undo" or display).
+    var snoozedCount: Int {
+        let now = Date()
+        return items.filter { item in
+            guard let until = localState.snoozedItemIDs[item.stableIdentifier] else { return false }
+            return until > now
+        }.count
+    }
+
+    /// True if the item is currently snoozed (hidden) until a future date.
+    func isSnoozed(_ item: InboxItem) -> Bool {
+        guard let until = localState.snoozedItemIDs[item.stableIdentifier] else { return false }
+        return until > Date()
     }
 
     func loadInbox(force: Bool = false) async {
@@ -51,6 +81,7 @@ final class InboxStore {
             let token = await sessionStore.currentAccessToken()
             let fetchedItems = try await inboxService.fetchInbox(accessToken: token)
             items = applyLocalState(to: fetchedItems)
+            pruneExpiredSnoozes()
         } catch {
             lastErrorMessage = error.localizedDescription
             // Never show demo data for paired users — they have a real relay
@@ -77,11 +108,55 @@ final class InboxStore {
             return
         }
 
+        // Notification-type item with no conversation reference: present the
+        // notification action window (full body, actions, dismiss, snooze).
+        // Build 68: previously this fell through to submitAction("open")
+        // which the server treats as a no-op, so Open appeared dead.
+        if item.type != .approval {
+            if let convIdString = item.payload?["conversationId"],
+               let convId = UUID(uuidString: convIdString) {
+                // conversation-reference case handled above
+            } else {
+                onOpenNotification?(item)
+                return
+            }
+        }
+
         let actionID = item.primaryAction?.id ?? "approve"
         await submitAction(for: item, actionID: actionID)
     }
 
+    /// Snooze a notification item: hide it until `until`, then it reappears
+    /// actionable. Local-only; the server item is untouched.
+    func snooze(_ item: InboxItem, until: Date) {
+        localState.snoozedItemIDs[item.stableIdentifier] = until
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].isRead = true
+            items[idx].isActionable = false
+        }
+    }
+
+    /// Bring a snoozed item back immediately (undo snooze).
+    func unsnooze(_ item: InboxItem) {
+        localState.snoozedItemIDs.removeValue(forKey: item.stableIdentifier)
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].isRead = false
+            items[idx].isActionable = true
+            items[idx].status = .pending
+        }
+    }
+
+    /// Drop snooze entries whose time has passed.
+    private func pruneExpiredSnoozes() {
+        let now = Date()
+        let expired = localState.snoozedItemIDs.filter { $0.value <= now }
+        for (id, _) in expired {
+            localState.snoozedItemIDs.removeValue(forKey: id)
+        }
+    }
+
     func dismiss(_ item: InboxItem) async {
+        localState.snoozedItemIDs.removeValue(forKey: item.stableIdentifier)
         await submitAction(for: item, actionID: item.secondaryAction?.id ?? "dismiss")
     }
 
@@ -133,6 +208,10 @@ final class InboxStore {
     private func applyLocalState(to items: [InboxItem]) -> [InboxItem] {
         items.compactMap { item in
             guard !localState.dismissedItemIDs.contains(item.stableIdentifier) else { return nil }
+            // Snoozed items stay hidden until their time passes.
+            if let until = localState.snoozedItemIDs[item.stableIdentifier], until > Date() {
+                return nil
+            }
 
             var adjustedItem = item
             if localState.readItemIDs.contains(item.stableIdentifier) {
@@ -150,4 +229,12 @@ final class InboxStore {
         localState = InboxLocalState()
         persistence.clearInboxState()
     }
+
+    /// Snooze presets for the detail sheet.
+    static let snoozeOptions: [(title: String, interval: TimeInterval)] = [
+        ("15 minutes", 15 * 60),
+        ("1 hour", 60 * 60),
+        ("3 hours", 3 * 60 * 60),
+        ("Tomorrow", 24 * 60 * 60),
+    ]
 }
