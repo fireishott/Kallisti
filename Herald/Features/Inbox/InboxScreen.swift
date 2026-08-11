@@ -17,6 +17,11 @@ struct InboxScreen: View {
         }
         .navigationTitle("Inbox")
         .toolbar { toolbarContent }
+        .onAppear {
+            // Build 67: refresh every time the tab is shown so a response
+            // that landed while the user was elsewhere appears immediately.
+            Task { await inboxStore.loadInbox() }
+        }
     }
 
     // MARK: - List
