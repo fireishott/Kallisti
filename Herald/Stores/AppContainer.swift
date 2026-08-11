@@ -509,6 +509,16 @@ final class AppContainer {
             }
             heraldClient = nativeClient
             nativeGatewayClient = nativeClient
+            // Build 72: the legacy hostStatusStream SSE (connector/events) is
+            // dead for native-gateway users - it never emits .connected, so
+            // latency monitoring, model reload, and push re-registration never
+            // ran on cold start. Funnel the native client's REAL status into
+            // the same handler so that logic fires.
+            nativeClient.onConnectionStatusChanged = { [weak self] status in
+                Task { @MainActor [weak self] in
+                    self?.hostStatusStream.updateConnectionStatus(status)
+                }
+            }
         } else {
             let liveClient = LiveHeraldClient(
                 apiClient: apiClient,

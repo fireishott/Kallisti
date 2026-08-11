@@ -123,7 +123,13 @@ struct AppRootView: View {
             } else {
                 Group {
                     if let nativeClient = container.nativeGatewayClient {
-                        if nativeClient.connectionStatus == .connected || nativeClient.hasStoredLogin {
+                        // Build 72: a relay configured at launch means a returning
+                        // user - cold start must land in the chat UI, never onboarding.
+                        // The chat UI owns its own connection banner for the brief
+                        // not-yet-connected window.
+                        if nativeClient.connectionStatus == .connected
+                            || nativeClient.hasStoredLogin
+                            || (relayConfiguredAtLaunch ?? false) {
                             AdaptiveRootView()
                         } else {
                             OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
