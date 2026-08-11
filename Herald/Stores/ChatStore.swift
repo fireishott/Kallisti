@@ -1060,6 +1060,21 @@ final class ChatStore {
                     terminalMessageID: response.id
                 )
                 sendPhase = .completed
+                // Build 78: sweep orphaned streaming placeholders.
+                // When delegate_task or any long tool is in-flight, the
+                // .finished handler clears activeStreams but a placeholder
+                // from a prior turn can remain with isStreaming=true
+                // indefinitely. The watchdog resets on every event, so
+                // trickle-events let it run forever. Settle any
+                // placeholder that no longer has an active stream.
+                let _owned78a = Set(self.activeStreams.values)
+                if let _conv78a = self.conversation {
+                    for _idx78a in _conv78a.messages.indices where _conv78a.messages[_idx78a].isStreaming {
+                        if !_owned78a.contains(_conv78a.messages[_idx78a].id) {
+                            self.conversation?.messages[_idx78a].isStreaming = false
+                        }
+                    }
+                }
             }
         }
 
@@ -1232,6 +1247,18 @@ final class ChatStore {
                 terminalMessageID: status.message?.id
             )
             sendPhase = .completed
+            // Build 78: sweep orphaned streaming placeholders.
+            // Same rationale as the send path above — settle any
+            // isStreaming placeholder that is no longer backed by an
+            // active stream entry.
+            let _owned78b = Set(self.activeStreams.values)
+            if let _conv78b = self.conversation {
+                for _idx78b in _conv78b.messages.indices where _conv78b.messages[_idx78b].isStreaming {
+                    if !_owned78b.contains(_conv78b.messages[_idx78b].id) {
+                        self.conversation?.messages[_idx78b].isStreaming = false
+                    }
+                }
+            }
         case "failed":
             let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed"
             failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
@@ -1910,6 +1937,15 @@ final class ChatStore {
                     self.heraldClient.connectionStatus = .connected
                     self.activeStreams.removeAll()
                     self.streamingPhase = .idle
+                    // Build 78: sweep orphaned streaming placeholders.
+                    // activeStreams was just cleared above; any remaining
+                    // isStreaming placeholder is now ownerless and would
+                    // otherwise animate forever.
+                    if let _conv78c = self.conversation {
+                        for _idx78c in _conv78c.messages.indices where _conv78c.messages[_idx78c].isStreaming {
+                            self.conversation?.messages[_idx78c].isStreaming = false
+                        }
+                    }
                     Self.logger.info("stream finished content=\(finalMessage.content.count) chars")
                     self.flushPendingReasoning(placeholderID: placeholderID)
                     self.flushPendingDeltas(placeholderID: placeholderID)
@@ -2668,6 +2704,23 @@ final class ChatStore {
         // Identity / generation check #3: refuse to overwrite a newer selection.
         guard conversation?.id == sessionID,
               conversationGeneration == capturedGeneration else { return }
+
+        // Build 78: do not overwrite an in-progress conversation with
+        // truncated server history. When ensureConversation had to
+        // recreate a reaped session, the server returns an empty or
+        // near-empty history while the local state already holds the
+        // submitted user message and any in-flight deltas. Merging the
+        // truncated payload would visibly push the user message to the
+        // top of the thread. Skip the message merge and just refresh
+        // metadata if the server is behind and a stream is live.
+        let _serverCount78 = refreshed.messages.count
+        let _localCount78 = conversation?.messages.count ?? 0
+        if _serverCount78 < _localCount78 && self.sendPhase != .idle {
+            if !refreshed.title.isEmpty && refreshed.title != "New Chat" {
+                conversation?.title = refreshed.title
+            }
+            return
+        }
 
         conversation = mergeConversationMetadata(from: conversation, into: refreshed)
         if sendPhase == .idle {
