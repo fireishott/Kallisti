@@ -1039,6 +1039,59 @@ def _read_hermes_latest_version() -> tuple[str | None, int | None, str | None]:
     return (None, None, None)
 
 
+# Build 69 (r7): changelog for the update UI. Reads ONLY the install's git
+# log (HEAD..origin/main, newest 12) - no Hermes code is modified, no
+# subprocess writes anything. Cached in-memory for 10 minutes so the
+# Settings screen polling doesn't shell out on every tap.
+_hermes_changelog_cache: tuple[float, str | None] = (0.0, None)
+
+
+def _read_hermes_behind_count() -> int | None:
+    """Read-only git rev-list count of commits on origin/main not in HEAD."""
+    repo = Path(os.path.expanduser("~/.hermes")) / "hermes-agent"
+    try:
+        if not (repo / ".git").is_dir():
+            return None
+        result = _run_subprocess(
+            ["git", "-C", str(repo), "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        count = int(result.stdout.strip())
+        return count
+    except Exception as exc:
+        logger.debug("behind count read failed: %s", exc)
+        return None
+
+
+def _read_hermes_changelog() -> str | None:
+    global _hermes_changelog_cache
+    now = time.time()
+    cached_ts, cached = _hermes_changelog_cache
+    if cached_ts and now - cached_ts < 600:
+        return cached
+    repo = Path(os.path.expanduser("~/.hermes")) / "hermes-agent"
+    try:
+        if not (repo / ".git").is_dir():
+            return None
+        result = _run_subprocess(
+            ["git", "-C", str(repo), "log", "--oneline", "-12", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return "Up to date."
+        changelog = "\n".join(lines)
+        _hermes_changelog_cache = (now, changelog)
+        return changelog
+    except Exception as exc:
+        logger.debug("changelog read failed: %s", exc)
+        return None
+
+
 async def _read_active_model(ctx: "FacadeContext") -> str | None:
     """Best-effort: return the active model name without raising."""
     try:
@@ -3377,7 +3430,12 @@ async def gateway_update_check(request: Request) -> JSONResponse:
     Returns component-level metadata + a typed ``error`` field (null on
     success). A failed check is **never** reported as "up to date".
     """
-    await require_auth(request)
+    # Build 69 (r7): native iOS clients authenticate with a gateway cookie or
+    # native bearer token, not the connector credential - same rationale as
+    # /v1/push/register. Switch to require_native_or_paired_auth so the app's
+    # Settings > Software Update can read the same structured payload the
+    # relay path uses.
+    await require_native_or_paired_auth(request)
     ctx = get_context()
 
     checked_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -3427,6 +3485,15 @@ async def gateway_update_check(request: Request) -> JSONResponse:
                 hermes_error = f"check_refresh_failed: {exc}"
                 logger.warning("hermes update --check failed: %s", exc)
 
+    # Build 69 (r7): the .update_check file's behind field is unreliable
+    # (the CLI writes -1 even when an update exists). When it's missing or
+    # negative, derive the real count read-only from the install git repo so
+    # the app's Software Update row is truthful.
+    if hermes_behind is None or hermes_behind < 0:
+        git_behind = _read_hermes_behind_count()
+        if git_behind is not None:
+            hermes_behind = git_behind
+
     update_available: bool | None
     if hermes_latest and hermes_current != "unknown":
         if hermes_behind is not None:
@@ -3444,7 +3511,7 @@ async def gateway_update_check(request: Request) -> JSONResponse:
             "behindCount": hermes_behind,
             "releaseDate": None,
             "releaseURL": "https://github.com/NousResearch/hermes-agent/releases",
-            "changelog": None,
+            "changelog": _read_hermes_changelog(),
             "error": hermes_error,
             "lastCheckedAt": last_checked,
         },
