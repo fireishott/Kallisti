@@ -134,21 +134,23 @@ struct ChatScreen: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             chatStore.setPollingEnabled(true)
-            await hostStore.refresh()
-            await chatStore.loadConversationIfNeeded()
+            async let hostRefresh: Void = hostStore.refresh()
+            async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
             // The active profile belongs to the connector, not the local chat
             // session cache. Refresh it whenever Chat becomes active so a
             // stale pre-pairing value such as ".hermes" is never retained in
             // the composer after the host reconnects or changes profile.
-            await profileStore.loadProfiles(force: true)
-            await modelStore.loadModels()
-            // Build 33 WSB: reconcile the durable outbox — settle accepted
+            async let profileLoad: Void = profileStore.loadProfiles(force: true)
+            async let modelLoad: Void = modelStore.loadModels()
+            // Build 33 WSB: reconcile the durable outbox - settle accepted
             // jobs against the relay, resubmit items whose backoff elapsed,
             // and submit queued items for this conversation.
-            await chatStore.recoverOutbox()
+            async let outboxRecovery: Void = chatStore.recoverOutbox()
+            await conversationLoad
             // Scroll to most recent messages after loading
             try? await Task.sleep(for: .milliseconds(150))
             scrollToBottom()
+            _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery)
         }
         .task {
             while !Task.isCancelled {

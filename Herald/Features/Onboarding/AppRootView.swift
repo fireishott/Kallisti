@@ -107,50 +107,50 @@ struct AppRootView: View {
             Design.Colors.background
                 .ignoresSafeArea()
 
-            if showLoadingSurface {
-                // Single opaque loading surface: covers launch, reconnect,
-                // auth, verification, restoration, and initial model/profile
-                // readiness. Truthful stages from actual work -- no fake timers.
-                LoadingSurface(
-                    stage: loadingStage,
-                    reconnectAttempt: container.nativeGatewayClient?.currentReconnectAttempt ?? 0,
-                    onResetConnection: showResetButton ? {
-                        Task { await container.nativeGatewayClient?.resetConnection() }
-                    } : nil
-                )
-                .transition(.opacity)
-                .zIndex(10)
-            } else {
-                Group {
-                    if let nativeClient = container.nativeGatewayClient {
-                        // Build 72: a relay configured at launch means a returning
-                        // user - cold start must land in the chat UI, never onboarding.
-                        // The chat UI owns its own connection banner for the brief
-                        // not-yet-connected window.
-                        if nativeClient.connectionStatus == .connected
-                            || nativeClient.hasStoredLogin
-                            || (relayConfiguredAtLaunch ?? false) {
-                            AdaptiveRootView()
-                        } else {
-                            OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
-                        }
-                    } else if !container.pairingStore.isPaired {
-                        OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
-                    } else if container.pairingStore.needsPermissionsOnboarding {
-                        OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
+            Group {
+                if let nativeClient = container.nativeGatewayClient {
+                    // Build 72: a relay configured at launch means a returning
+                    // user - cold start must land in the chat UI, never onboarding.
+                    // The chat UI owns its own connection banner for the brief
+                    // not-yet-connected window.
+                    if nativeClient.connectionStatus == .connected
+                        || nativeClient.hasStoredLogin
+                        || (relayConfiguredAtLaunch ?? false) {
+                        AdaptiveRootView()
                     } else {
-                        switch container.sessionStore.launchState {
-                        case .authFailure:
-                            authFailureView
-                        case .networkFailure(let message):
-                            networkFailureView(message: message)
-                        default:
-                            AdaptiveRootView()
-                        }
+                        OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
+                    }
+                } else if !container.pairingStore.isPaired {
+                    OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
+                } else if container.pairingStore.needsPermissionsOnboarding {
+                    OnboardingFlowView(initialStep: .permissions, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
+                } else {
+                    switch container.sessionStore.launchState {
+                    case .authFailure:
+                        authFailureView
+                    case .networkFailure(let message):
+                        networkFailureView(message: message)
+                    default:
+                        AdaptiveRootView()
                     }
                 }
-                .transition(.opacity)
             }
+            .opacity(showLoadingSurface ? 0 : 1)
+            .allowsHitTesting(!showLoadingSurface)
+
+            // Keep the loading surface mounted during the cross-fade so the
+            // background is never exposed between launch and app content.
+            LoadingSurface(
+                stage: loadingStage,
+                reconnectAttempt: container.nativeGatewayClient?.currentReconnectAttempt ?? 0,
+                onResetConnection: showResetButton ? {
+                    Task { await container.nativeGatewayClient?.resetConnection() }
+                } : nil
+            )
+            .opacity(showLoadingSurface ? 1 : 0)
+            .allowsHitTesting(showLoadingSurface)
+            .accessibilityHidden(!showLoadingSurface)
+            .zIndex(10)
         }
         .animation(Design.Motion.standard, value: container.pairingStore.isPaired)
         .animation(Design.Motion.standard, value: container.pairingStore.needsPermissionsOnboarding)
