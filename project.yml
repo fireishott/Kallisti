@@ -104,8 +104,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
-        DEVELOPMENT_TEAM: ""
+        CURRENT_PROJECT_VERSION: "73"
+        DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Kallisti
@@ -188,11 +188,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
+        CURRENT_PROJECT_VERSION: "73"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - target: KallistiSupport
@@ -225,10 +225,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
+        CURRENT_PROJECT_VERSION: "73"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
@@ -266,10 +266,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
+        CURRENT_PROJECT_VERSION: "73"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
@@ -294,10 +294,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
+        CURRENT_PROJECT_VERSION: "73"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "1,2"
         APPLICATION_EXTENSION_API_ONLY: YES
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -317,7 +317,7 @@ targets:
         SWIFT_VERSION: "6.2"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         APPLICATION_EXTENSION_API_ONLY: YES
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES
@@ -350,10 +350,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "72"
+        CURRENT_PROJECT_VERSION: "73"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 58U7UPFS53
         TARGETED_DEVICE_FAMILY: "4"
         SUPPORTED_PLATFORMS: "watchsimulator watchos"
         SDKROOT: watchos
