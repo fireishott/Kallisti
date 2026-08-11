@@ -330,16 +330,16 @@ struct PushRegistrationTests {
 
     /// Public HTTPS relay host must collapse to bare scheme+host (port 443),
     /// never the legacy hardcoded :8010 — otherwise the production relay
-    /// (relay.example.com:8010 is closed) silently falls into the
+    /// (hermes-relay.fihonline.net:8010 is closed) silently falls into the
     /// wrong fallback path. Regression for the connectorMCPURL bug fixed
     /// by switching AppContainer.swift to NativeKallistiClient.facadeBaseURL(for:).
     @MainActor
     @Test("Public relay facade URL drops the port suffix")
     func test_connectorMCPURL_usesFacadeHelper_relayHost() {
         let url = NativeKallistiClient.facadeBaseURL(
-            for: "https://relay.example.com/v1"
+            for: "https://hermes-relay.fihonline.net/v1"
         )
-        #expect(url == "https://relay.example.com")
+        #expect(url == "https://hermes-relay.fihonline.net")
         #expect(!(url?.contains(":8010") ?? true))
     }
 
