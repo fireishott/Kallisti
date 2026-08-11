@@ -1736,37 +1736,37 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					04D07E970B525F5FAC61A68F = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					2BD1B4F1ADCDAF178C006E63 = {
 						TestTargetID = 686AE8A63BCF6445A1BFF4E5;
 					};
 					354B72BC3591763BAAB3F043 = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					366CC5513F0803C7ACA49A23 = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					686AE8A63BCF6445A1BFF4E5 = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					8BD3E7CB96F105E9B1F78D8D = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					91F319DB127274E3F650794C = {
 						TestTargetID = 686AE8A63BCF6445A1BFF4E5;
 					};
 					9378087654464AF9183AB315 = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					9CDBFC6FD9513D1679376355 = {
-						DevelopmentTeam = 58U7UPFS53;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -2318,7 +2318,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2339,7 +2339,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2361,7 +2361,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 0.2.3;
@@ -2396,7 +2396,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
@@ -2417,7 +2417,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
@@ -2436,7 +2436,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2458,7 +2458,7 @@
 				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.support;
 				PRODUCT_NAME = KallistiSupport;
@@ -2533,7 +2533,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2554,7 +2554,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2575,7 +2575,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				OTHER_LDFLAGS = (
@@ -2597,7 +2597,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 0.2.3;
@@ -2619,7 +2619,7 @@
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 0.2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
@@ -2639,7 +2639,7 @@
 				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.support;
 				PRODUCT_NAME = KallistiSupport;
@@ -2656,7 +2656,7 @@
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 70;
-				DEVELOPMENT_TEAM = 58U7UPFS53;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;

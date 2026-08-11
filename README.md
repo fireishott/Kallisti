@@ -1,42 +1,33 @@
 # Kallisti
 
 <p align="center">
-  <img src="docs/assets/kallisti/banner-dark.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
+  <img src="docs/assets/rebrand/github/readme-banner-1600x480.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.2.3-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
 
-Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects directly to a Hermes gateway over a native WebSocket for chat and sessions, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, sensors, and authenticated media delivery.
+Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects to a Hermes gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
 
-There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Your conversations, credentials, and media stay on infrastructure you control.
+There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Conversations, credentials, and media stay on infrastructure you control.
 
 ## Highlights
 
 - Native WebSocket chat with durable session and outbox recovery
 - Streaming Markdown, code blocks, tool activity, and reasoning status
+- One-time pairing-code sign-in with native gateway mode
 - Authenticated inline rendering for agent-generated images
-- Push notifications, Live Activities, widgets, and watch support
+- Push notifications with per-device routing and an in-app inbox
+- Live Activities on the lockscreen with elapsed-time heartbeat
+- Widgets, watch, and notification-service extensions
 - Voice mode with configurable ASR/TTS providers and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion synchronization
-- Gateway status, logs, restart operations, and update checks
-- Keychain-backed credentials and fully self-hosted transport
-
-## Release 0.2.1 highlights
-
-- Root-cause fix for long image-generation turns: the WebSocket client now accepts frames up to 64 MB, so large tool results and inline images stream to completion instead of dropping the connection mid-turn
-- Tool-in-flight watchdog exemption: long-running tool calls (image generation, analysis) no longer trigger false stall detection or duplicate re-submission
-- Push, logs, and restart operations refresh the native gateway bearer before every request
-- Stable connection lifecycle: no more mid-session loading-surface teardown, typed text survives reconnect
-- Model pill reloads on connect; iPad layout fixed
-- Live Activity heartbeat keeps lockscreen status current
-- Session resume fallback restores previous sessions after gateway restarts
-
-See [CHANGELOG.md](CHANGELOG.md) for the complete history.
+- Gateway status, logs, restart, software update checks, and truthful connection stages
+- Connection latency monitoring and searchable auxiliary model switching
 
 ## Features
 
@@ -45,29 +36,35 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete history.
 - Streaming Markdown chat with syntax-highlighted code blocks
 - Real-time tool activity and reasoning status
 - Session history, model selection, and profile selection
-- One live thinking placeholder per active turn
 - Durable outbox with deadline-aware recovery
+- Draft text persists across reconnect and view recreation
+- One live thinking placeholder per active turn
+- Opens to your last active conversation, or a fresh session on first launch
 
 ### Media
 
-- Agent responses containing local `MEDIA:` paths render inline as authenticated images
+- Agent responses with local `MEDIA:` paths render inline as authenticated images
 - Native image uploads stage through the gateway before prompt submission
 - Historical images stay accessible after gateway restarts
 - Media serving is restricted to configured Hermes media roots
+- Aspect-fit thumbnails for consistent chat layout
 
 ### Mobile
 
-- Push notifications for background turns
+- Push notifications for background turns, scoped per device via installation ID
 - Live Activities on the lockscreen with elapsed-time heartbeat
-- Widgets and watch support
+- In-app notification inbox with dismiss and snooze actions
+- Widgets, watch, and notification-service extensions
 - Voice mode with configurable ASR/TTS and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion sync
+- Handwriting note recognition (when configured)
 
 ### Gateway control
 
 - Connection status with real, truthful stages
 - Manual reset connection
-- Gateway logs, restart, and update checks
+- Gateway logs, restart, and software update checks
+- Realtime connector latency readout in Settings
 
 ## Architecture
 
@@ -78,7 +75,9 @@ Kallisti iOS
   -> optional public reverse proxy for remote access
 ```
 
-The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, and authenticated media delivery. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway.
+The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, and authenticated media delivery. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
+
+Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MODES.md), production architecture in [docs/PRODUCTION_ARCHITECTURE.md](docs/PRODUCTION_ARCHITECTURE.md), and the threat model in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Requirements
 
@@ -88,7 +87,9 @@ The gateway WebSocket carries chat and session traffic. The connector adds mobil
 - Python 3.11 or newer for the optional connector
 - An Apple Developer account for device builds and push capabilities
 
-## Build the app
+## Quick start
+
+### Build the app
 
 ```bash
 git clone https://github.com/fireishott/Kallisti.git
@@ -96,9 +97,9 @@ cd Kallisti
 open Herald.xcodeproj
 ```
 
-Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device.
+Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-## Run the connector
+### Run the connector
 
 ```bash
 cd connector
@@ -108,7 +109,19 @@ pip install -e .
 kallisti run
 ```
 
-Configure secrets and environment-specific URLs outside the repository. Do not commit credentials, private keys, device identifiers, internal hostnames, or production logs.
+Configure secrets and environment-specific URLs outside the repository. Do not commit credentials, private keys, device identifiers, internal hostnames, or production logs. The connector serves the HTTP facade for push registration, Live Activities, and authenticated media on the port you configure.
+
+### Sign in on device
+
+1. Launch Kallisti and choose the native gateway mode.
+2. Generate a one-time pairing code from your Hermes host.
+3. Enter the code in the app. The code is never persisted on the device.
+
+## Push notifications
+
+Push delivery uses APNs through the connector. The app registers an APNs token keyed by its installation ID, so multi-device setups route notifications to the right device. Live Activity registration uses a separate token kind.
+
+See [docs/PUSH_RELAY.md](docs/PUSH_RELAY.md) for the relay and push broker architecture, and [docs/IOS_CAPABILITIES.md](docs/IOS_CAPABILITIES.md) for capability setup (background modes, push entitlements, Live Activities).
 
 ## Native media delivery
 
@@ -140,10 +153,11 @@ Use a simulator destination installed on your Xcode host.
 - Credentials are stored in the iOS Keychain.
 - Gateway passwords are not embedded in the app or repository.
 - Media and control endpoints require authentication.
+- Pairing codes are single-use and never persisted.
 - Sensor synchronization is optional and self-hosted.
 - Public bug reports must not include tokens, private URLs, device IDs, personal data, or raw production logs.
 
-See [SECURITY.md](SECURITY.md) for responsible disclosure guidance.
+See [SECURITY.md](SECURITY.md) for supported versions and responsible disclosure guidance, and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full threat model.
 
 ## Release history
 
