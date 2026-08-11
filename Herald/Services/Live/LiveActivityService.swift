@@ -41,6 +41,10 @@ final class LiveActivityService {
     /// widget also renders Text(timerInterval:) which ticks natively, so the
     /// heartbeat mainly re-asserts phase/status for the push-capable state.
     private var heartbeatTask: Task<Void, Never>?
+    /// Build 64: tracks the sessionType of the currently active activity so the
+    /// 10s elapsed heartbeat can re-assert the correct telemetry session type
+    /// instead of hardcoding "tool". Mirrors startThinking/startToolCall/etc.
+    private var currentSessionType: String = "chat"
 
     var isAvailable: Bool {
         ActivityAuthorizationInfo().areActivitiesEnabled
@@ -59,6 +63,7 @@ final class LiveActivityService {
         )
         if currentActivity != nil {
             startedAt = now
+            currentSessionType = "voice"
             updateActivity(with: state)
             return
         }
@@ -69,6 +74,7 @@ final class LiveActivityService {
                 pushType: .token
             )
             startedAt = now
+            currentSessionType = "voice"
             observePushTokens()
         } catch {
             // Live Activities not supported or disabled — silently ignore
@@ -97,6 +103,7 @@ final class LiveActivityService {
         )
         if currentActivity != nil {
             startedAt = now
+            currentSessionType = "chat"
             updateActivity(with: state)
             return
         }
@@ -107,6 +114,7 @@ final class LiveActivityService {
                 pushType: .token
             )
             startedAt = now
+            currentSessionType = "chat"
             observePushTokens()
         } catch {
             // Live Activities not supported or disabled — silently ignore
@@ -141,6 +149,7 @@ final class LiveActivityService {
         )
         if currentActivity != nil {
             startedAt = now
+            currentSessionType = "tool"
             updateActivity(with: state)
             return
         }
@@ -151,6 +160,7 @@ final class LiveActivityService {
                 pushType: .token
             )
             startedAt = now
+            currentSessionType = "tool"
             observePushTokens()
         } catch {
             // Silently ignore
@@ -257,7 +267,7 @@ final class LiveActivityService {
                     phase: self.lockScreenPhase,
                     elapsedSeconds: elapsed,
                     startDate: self.startedAt,
-                    sessionType: "tool"
+                    sessionType: self.currentSessionType
                 )
                 self.updateActivity(with: state)
             }
@@ -276,6 +286,22 @@ final class LiveActivityService {
     /// the widget uses Text(timerInterval:) which ticks natively via the OS.
     func handleAppDidBecomeActive() {
         adoptExistingActivityIfNeeded()
+    }
+
+    /// Build 64: called when the app returns to foreground with a stream still
+    /// in flight. If the Lock Screen / Dynamic Island was bumped to
+    /// `.needsAttention` by `notifyBackgroundExpiry` while the app was
+    /// suspended, restore the activity to `.responding` so the user sees
+    /// active progress the moment they unlock the phone. No-op when no
+    /// activity is live or when we never marked needsAttention.
+    func markStreamForegrounded() {
+        guard currentActivity != nil else { return }
+        guard lockScreenPhase == .needsAttention else { return }
+        // Best-guess phase for a recovering stream: "responding" covers both
+        // tool calls (which re-enter as text deltas) and pure text deltas.
+        // The very next stream event from the relay will refine this to
+        // .thinking or .usingTools via updatePhase().
+        updatePhase(LiveActivityPhase.responding.rawValue)
     }
 
     static func endAllActivities() {
