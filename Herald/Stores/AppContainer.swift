@@ -841,7 +841,8 @@ final class AppContainer {
         // signal.
         nativeGatewayClient?.onConnectionStatusChanged = { [weak container] status in
             Task { @MainActor [weak container] in
-                container?.hostStatusStream.updateConnectionStatus(status)
+                guard let container else { return }
+                await container.hostStatusStream.updateConnectionStatus(status)
             }
         }
         container.hostStatusStream.onConnectionStatusChanged = { [weak container] (status: ConnectionStatus) in
