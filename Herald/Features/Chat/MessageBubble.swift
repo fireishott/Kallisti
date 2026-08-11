@@ -274,6 +274,14 @@ struct MessageBubble: View, Equatable {
 
                 voiceModeLabel
             } else if message.isStreaming && message.content.isEmpty {
+                // Empty content while streaming - show tiered status pill.
+                // This branch fires for ALL empty-content streaming cases,
+                // including thinking models whose reasoning/CoT is still
+                // arriving. Do not gate on reasoning.isEmpty or
+                // toolActivities.isEmpty: doing so makes thinking models
+                // fall through to a bare blinking cursor in the rendered
+                // markdown, which the user reads as "hung app".
+                // Regression-guarded by MessageBubbleStreamingPlaceholderTests.
                 streamingPlaceholder
             } else {
                 if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
@@ -287,9 +295,6 @@ struct MessageBubble: View, Equatable {
 
                 if !message.content.isEmpty {
                     streamingText
-                } else if message.isStreaming && message.reasoning.isEmpty {
-                    // Content still empty but tool activities exist — show a subtle placeholder
-                    streamingPlaceholder
                 }
 
                 if !message.toolActivities.isEmpty {
@@ -363,34 +368,15 @@ struct MessageBubble: View, Equatable {
         .padding(.vertical, Design.Spacing.xxs)
     }
 
+    /// The streaming placeholder for the empty-content streaming case. Uses
+    /// the same tiered pill as `StreamingPlaceholderText` (defined in
+    /// `MarkdownContentView.swift`) so the bubble and the markdown fallback
+    /// render identically. The reasoning behind a single source of truth is
+    /// that the user should never see two different shapes for "Hermes is
+    /// working" depending on which view happened to render first.
     private var streamingPlaceholder: some View {
-        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
-            TypingDotsView()
-            TimelineView(.periodic(from: message.timestamp, by: 1)) { context in
-                let elapsed = context.date.timeIntervalSince(message.timestamp)
-                let text: String
-                if elapsed < 5 {
-                    text = "Connecting to Hermes..."
-                } else if elapsed < 30 {
-                    text = "Thinking... \(formatElapsed(elapsed))"
-                } else if elapsed < 60 {
-                    text = "Model is working on your request..."
-                } else {
-                    text = "This is taking longer than usual..."
-                }
-                return Text(text)
-                    .brandEyebrow(Design.Colors.tertiaryForeground)
-            }
-        }
-        .padding(.vertical, Design.Spacing.sm)
-    }
-
-    private func formatElapsed(_ interval: TimeInterval) -> String {
-        let seconds = Int(interval)
-        if seconds < 60 {
-            return "\(seconds)s"
-        }
-        return "\(seconds / 60)m \(seconds % 60)s"
+        StreamingPlaceholderText(startedAt: message.timestamp)
+            .padding(.vertical, Design.Spacing.sm)
     }
 
     private func toolActivityPill(_ label: String) -> some View {
