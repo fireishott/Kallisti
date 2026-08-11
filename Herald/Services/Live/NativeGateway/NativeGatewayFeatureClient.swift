@@ -442,10 +442,10 @@ struct NativeGatewayFeatureClient {
         // any auxiliary.* key the gateway returns flows through without a
         // code change. We then iterate the catalog above so menu order stays
         // deterministic and the label is owned client-side.
-        let auxiliary = decoded.config?.auxiliary ?? [:]
+        let auxiliary = decoded.config?.auxiliary
         var rows: [AuxTaskInfo] = []
         for entry in Self.auxiliaryCatalog {
-            let task = auxiliary[entry.key]
+            let task = auxiliary?[entry.key]
             rows.append(AuxTaskInfo(
                 key: entry.key,
                 label: entry.label,
