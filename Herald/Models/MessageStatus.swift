@@ -11,7 +11,7 @@ enum MessageStatus: String, Codable, Hashable, Sendable {
         switch self {
         case .sending: "arrow.up.circle"
         case .sent: "checkmark"
-        case .delivered: "checkmark.circle.fill"
+        case .delivered: "circle.fill"
         case .failed: "exclamationmark.circle.fill"
         case .interrupted: "stop.circle.fill"
         }

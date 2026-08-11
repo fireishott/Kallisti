@@ -452,7 +452,11 @@ final class ChatStore {
     }
 
     func loadConversationIfNeeded() async {
-        if conversation == nil {
+        // Build 70: only restore the unscoped cache when a session was
+        // explicitly persisted (last active chat). When there is no persisted
+        // session (fresh install, cleared state), open a fresh session like
+        // the desktop app instead of resurrecting an arbitrary cached chat.
+        if conversation == nil, persistence.currentSessionId != nil {
             conversation = persistence.loadConversationCache()
             // IMPORTANT: Do NOT trust cached contextPercent or latestUsage —
             // they're stale by definition (the model's context window may have

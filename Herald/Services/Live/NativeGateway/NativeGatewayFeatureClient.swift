@@ -59,19 +59,21 @@ struct NativeGatewayFeatureClient {
         return raw
     }
 
-    /// Connector version from the HTTP facade /v1/version on the same host.
-    /// The facade (port 8010) answers unauthenticated for this endpoint.
+    /// Connector version from the HTTP facade /v1/version.
+    /// Uses the facade base URL so it works for both LAN hosts (host:8010)
+    /// and public relay hosts (Caddy routes /v1/version to the connector).
+    /// The endpoint answers unauthenticated.
     func connectorVersion() async -> String? {
         let gatewayBase = await gatewayBaseURLProvider()
-        guard let base = URL(string: gatewayBase), let host = base.host else { return nil }
+        guard let facadeBase = NativeKallistiClient.facadeBaseURL(for: gatewayBase) else { return nil }
         struct VersionEnvelope: Decodable { struct VersionData: Decodable { let version: String? }; let data: VersionData? }
-        if NativeKallistiClient.isLANHost(host) {
-            let scheme = base.scheme == "https" ? "https" : "http"
-            guard let url = URL(string: "\(scheme)://\(host):8010/v1/version") else { return nil }
-            var request = URLRequest(url: url); request.timeoutInterval = 8
-            do { let (data, response) = try await URLSession.shared.data(for: request); guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }; return try? JSONDecoder().decode(VersionEnvelope.self, from: data).data?.version } catch { return nil }
-        }
-        do { let output = try await cliExec(argv: ["shell", "--", "curl", "-s", "http://127.0.0.1:8010/v1/version"], timeout: 10); return try? JSONDecoder().decode(VersionEnvelope.self, from: Data(output.utf8)).data?.version } catch { return nil }
+        guard let url = URL(string: facadeBase.hasSuffix("/") ? facadeBase + "v1/version" : facadeBase + "/v1/version") else { return nil }
+        var request = URLRequest(url: url); request.timeoutInterval = 8
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            return try? JSONDecoder().decode(VersionEnvelope.self, from: data).data?.version
+        } catch { return nil }
     }
 
     // MARK: - Gateway Status

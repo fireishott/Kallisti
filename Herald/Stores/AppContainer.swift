@@ -106,6 +106,16 @@ final class AppContainer {
     private var lastCommandCatalogRefreshAt: Date?
     private var lastKnownHostOnline = false
 
+    // Build 70: connector latency, polled while the native gateway is
+    // connected (not just while Settings is visible) so the Settings row is
+    // instantly ready and stays live.
+    private(set) var connectorLatencyMs: Int?
+    private var latencyMonitorTask: Task<Void, Never>?
+
+    // Build 70: aux model service hoisted from Settings so the Infrastructure
+    // section loads at connection time, not when Settings first appears.
+    var auxService: AuxModelService?
+
     // Notification routing: stores a pending route while initialization is incomplete
     struct PendingNotificationRoute: Sendable {
         let conversationID: UUID?
@@ -717,6 +727,16 @@ final class AppContainer {
             secureStore: secureStore
         )
 
+        // Build 70: hoist the aux model service so Infrastructure loads at
+        // connection time (Settings previously created it lazily on appear).
+        if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
+            container.auxService = AuxModelService(
+                apiClient: RelayAPIClient { relayBase },
+                accessTokenProvider: { await sessionStore.currentAccessToken() },
+                nativeFeatureClientProvider: { nativeGatewayClient?.featureClient }
+            )
+        }
+
         chatStore.profileStore = container.profileStore
         // Streaming forced on — the sync (non-streaming) path has known bugs
         // with progress tracking, watchdog management, and LiveActivity lifecycle.
@@ -838,11 +858,42 @@ final class AppContainer {
                     await container.modelStore.loadModels(force: true)
                     await container.hostStore.refresh()
                     await container.sessionListStore.loadSessions(forceRefresh: true)
+                    // Build 70: preload infra + latency at connection time so
+                    // Settings shows live values the moment it opens.
+                    container.startLatencyMonitoring()
+                    if let aux = container.auxService, aux.tasks.isEmpty {
+                        await aux.load()
+                    }
+                } else {
+                    container.stopLatencyMonitoring()
                 }
             }
         }
 
         return container
+    }
+
+    /// Build 70: begin polling connector latency on a 3s cadence. The value
+    /// is stored on the container so any view (Settings > Connection) reads
+    /// the latest without triggering its own measurement.
+    func startLatencyMonitoring() {
+        guard latencyMonitorTask == nil else { return }
+        latencyMonitorTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if let nativeClient = nativeGatewayClient {
+                    connectorLatencyMs = await nativeClient.measureLatency()
+                } else {
+                    connectorLatencyMs = nil
+                }
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    func stopLatencyMonitoring() {
+        latencyMonitorTask?.cancel()
+        latencyMonitorTask = nil
+        connectorLatencyMs = nil
     }
 
     func initialize() async {
