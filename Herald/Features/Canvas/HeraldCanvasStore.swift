@@ -8,6 +8,20 @@ import Foundation
 final class HeraldCanvasStore {
     var activeArtifact: KallistiArtifact?
 
+    /// Live tool activities from the current streaming message. Set by
+    /// ChatStore when toolActivity events arrive. Drives the Live tab in
+    /// the canvas panel (build 78).
+    var liveToolActivities: [ToolActivity] = []
+
+    /// Selected tab in the canvas panel. Auto-switches to .live when
+    /// liveToolActivities becomes non-empty.
+    var activeTab: CanvasTab = .artifact
+
+    /// True when there is at least one live tool activity to show.
+    var isLiveActivityVisible: Bool { !liveToolActivities.isEmpty }
+
+    enum CanvasTab: Hashable { case artifact, live }
+
     private let defaults = UserDefaults.standard
     private let storageKey = "herald.canvas.artifacts"
 

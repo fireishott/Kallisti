@@ -245,6 +245,44 @@ struct ChatScreen: View {
             CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                // Build 78: pipe live tool activities from the current
+                // streaming message into the canvas store so the Live tab
+                // updates in real time. Clear them when the canvas dismisses.
+                .onAppear {
+                    let streamingID = chatStore.streamingMessageID
+                    if let sID = streamingID,
+                       let msg = chatStore.conversation?.messages.first(where: { $0.id == sID }) {
+                        canvasStore.liveToolActivities = msg.toolActivities
+                    } else {
+                        canvasStore.liveToolActivities = []
+                    }
+                }
+                .onDisappear {
+                    canvasStore.liveToolActivities = []
+                    canvasStore.activeTab = .artifact
+                }
+        }
+        // Build 78: keep canvasStore.liveToolActivities in sync with the
+        // streaming message's tool activity list. When the canvas is
+        // presented, changes to tool activities push through here so
+        // the Live tab list stays live.
+        .onChange(of: chatStore.streamingMessageID) { _, sid in
+            guard showCanvas else { return }
+            if let sid = sid,
+               let msg = chatStore.conversation?.messages.first(where: { $0.id == sid }) {
+                canvasStore.liveToolActivities = msg.toolActivities
+            } else {
+                canvasStore.liveToolActivities = []
+            }
+        }
+        .onChange(of: chatStore.conversation?.messages.count) { _, _ in
+            guard showCanvas,
+                  let sid = chatStore.streamingMessageID,
+                  let msg = chatStore.conversation?.messages.first(where: { $0.id == sid }) else { return }
+            // Cheap re-pull on message updates; onChange(of: toolActivities)
+            // would be more targeted but Message is a value type whose
+            // mutations don't propagate as array-element changes.
+            canvasStore.liveToolActivities = msg.toolActivities
         }
     }
 
