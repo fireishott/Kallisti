@@ -296,6 +296,17 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         await secureStore.retrieve(key: "nativeGatewayAccessToken")
     }
 
+    /// True when this session authenticates with the gateway session cookie
+    /// (basic / kallisti-pairing password login) rather than a stored native
+    /// bearer token. Facade HTTP calls (push registration, native watch) must
+    /// mirror mintTicket() and ride the cookie in this mode - login deletes
+    /// the keychain access token, so forcing a Bearer either fails outright
+    /// or presents a stale token the connector rejects with 401.
+    func usesCookieAuth() async -> Bool {
+        let authMode = await secureStore.retrieve(key: "nativeGatewayAuthMode")
+        return authMode == "basic" || authMode == "kallisti-pairing"
+    }
+
     func mintTicket() async throws -> String {
         let authMode = await secureStore.retrieve(key: "nativeGatewayAuthMode")
         let cookieAuth = authMode == "basic" || authMode == "kallisti-pairing"
