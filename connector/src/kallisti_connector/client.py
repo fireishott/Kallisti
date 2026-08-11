@@ -2132,6 +2132,26 @@ class HeraldConnector:
             target_device_ids = [did for did, entry in devices.items()
                                  if (entry.get("deviceToken") or "").strip()]
 
+        # Build 68: dedupe by TOKEN, not device id. A reinstall can leave two
+        # installation_ids holding the same APNs token (physical device +
+        # bundle determines the token), and a broadcast to "all devices"
+        # would then push twice to the same phone. Send once per unique
+        # token; prefer the entry that owns the conversation when both
+        # exist. (record_push_token also prunes on next register, but the
+        # send path must not depend on a future registration to be correct.)
+        token_to_device: dict[str, str] = {}
+        for device_id in target_device_ids:
+            entry = devices.get(device_id, {})
+            token = (entry.get("deviceToken") or "").strip()
+            if not token:
+                continue
+            if token not in token_to_device:
+                token_to_device[token] = device_id
+            elif device_id == owner_id:
+                # The conversation owner wins when a token is shared.
+                token_to_device[token] = device_id
+        target_device_ids = list(token_to_device.values())
+
         # Inbox: persist the completed response for the owning device so the
         # Inbox tab shows it. The owner may not have a registered token yet
         # (first turn before APNs token lands) - still write the item so the

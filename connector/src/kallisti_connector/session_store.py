@@ -108,7 +108,16 @@ def record_push_token(
     environment: str = "production",
     token_kind: str = "device",
 ) -> None:
-    """Store (or rotate) a push token for a specific installation."""
+    """Store (or rotate) a push token for a specific installation.
+
+    Build 67/68: prune STALE duplicate entries that share the same token.
+    A reinstall generates a fresh installation_id but the APNs device token
+    is tied to the physical device + bundle, so the same token can end up
+    under two installation_ids (the old install + the reinstall). Leaving
+    both entries makes every broadcast send the push twice to the same
+    physical device. When a token is (re)registered under one installation,
+    remove any OTHER installation entry that holds the exact same token.
+    """
     if not installation_id or not token:
         return
     registry = _load_device_registry()
@@ -127,6 +136,25 @@ def record_push_token(
         entry["deviceToken"] = token
         entry["deviceTokenEnvironment"] = environment
     entry["lastRegisteredAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Prune stale duplicates: any OTHER installation holding this same token
+    # for the same token_kind is a leftover from a reinstall. Keep the newest
+    # registration (this one); drop the old entry so broadcasts don't
+    # double-send to one physical device.
+    if token_kind == "liveactivity":
+        for other_id, other_entry in list(devices.items()):
+            if other_id == installation_id:
+                continue
+            if isinstance(other_entry, dict) and other_entry.get("liveActivityToken") == token:
+                other_entry["liveActivityToken"] = None
+                other_entry["liveActivityTokenEnvironment"] = None
+    else:
+        for other_id, other_entry in list(devices.items()):
+            if other_id == installation_id:
+                continue
+            if isinstance(other_entry, dict) and other_entry.get("deviceToken") == token:
+                other_entry["deviceToken"] = None
+                other_entry["deviceTokenEnvironment"] = None
     _save_device_registry(registry)
 
 
