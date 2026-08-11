@@ -259,16 +259,34 @@ final class SessionListStore {
         do {
             let session = try await heraldClient.createSession(title: title)
             recentSessions.insert(session, at: 0)
-            // Bind the session to Hermes BEFORE switching.
-            // Without this, loadConversation returns empty because no
-            // state.db row exists yet — the connector's POST /v1/sessions
-            // only creates a sidecar entry.
-            let established = await heraldClient.ensureConversation(id: session.id)
-            if !established {
-                Logger.app.warning("createNewSession: ensureConversation deferred, will bind on first send")
+            // Build 77: immediate new-chat UI handoff.
+            //
+            // Previously we waited for `ensureConversation` (server-side bind)
+            // + `loadConversation` (authoritative history) serially before
+            // calling `switchToSession`, which itself awaited `loadConversation`.
+            // The user saw the OLD conversation for the full duration of those
+            // round trips. Now we install an empty local conversation the
+            // instant we have the new session UUID, then background the
+            // ensure/load work. The background path is identity- and
+            // generation-guarded so a slow or stale response cannot overwrite
+            // a session the user has since switched away from.
+            let capturedGeneration = chatStore.installLocalConversation(id: session.id, title: title)
+            let newSessionID = session.id
+            Task { [weak self, weak chatStore] in
+                guard let self, let chatStore else { return }
+                await chatStore.loadConversationInBackground(
+                    id: newSessionID,
+                    capturedGeneration: capturedGeneration,
+                    errorRelay: { [weak self] message in
+                        self?.errorMessage = message
+                    }
+                )
+                // Cache save runs after the background work regardless of
+                // whether the response merged, discarded, or errored — the
+                // sidebar list itself is already up to date (we inserted at
+                // index 0 above).
+                self.saveCachedSessions()
             }
-            await switchToSession(session)
-            saveCachedSessions()
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -1196,8 +1196,15 @@ final class AppContainer {
         // and queued items for the current conversation are resubmitted.
         await chatStore.recoverOutbox()
 
-        // Start real-time host status stream while foregrounded
-        await hostStatusStream.start()
+        // Native gateway users get authoritative status directly from the
+        // WebSocket callback wired above. The legacy connector/events SSE
+        // loop emits connecting/disconnected when it cannot reach the old
+        // endpoint and overwrites the real native connected state.
+        if nativeGatewayClient == nil {
+            await hostStatusStream.start()
+        } else {
+            await hostStatusStream.stop()
+        }
     }
 
     func handleRemoteNotificationWake(pushCategory: String? = nil) async {
