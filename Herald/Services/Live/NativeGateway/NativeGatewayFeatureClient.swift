@@ -393,14 +393,37 @@ struct NativeGatewayFeatureClient {
 
     // MARK: - Aux models
 
-    /// Auxiliary task overrides from config (vision, web_extract, compression).
+    /// Auxiliary task overrides from config. Mirrors the dashboard menu so
+    /// every aux task the gateway can route is editable from the app
+    /// (vision, compression, web_extract, session_search, browser_vision,
+    /// moa_reference, moa_aggregator). The wire format is decoded as a
+    /// [String: TaskConfig] dictionary, so adding a new auxiliary.* key on
+    /// the server only requires a corresponding entry in
+    /// `auxiliaryCatalog` below.
     struct AuxTaskInfo {
+        /// Canonical config key (snake_case), e.g. "browser_vision".
+        /// Stable across reconnects and safe to use as a row identifier.
+        var key: String
+        /// Human label shown in the Settings menu.
         var label: String
         var provider: String
         var model: String
 
         var isOverride: Bool { provider != "auto" || !model.isEmpty }
     }
+
+    /// Static catalog of auxiliary tasks. Order here is the order shown in
+    /// the Settings menu and matches the connector AUX_TASKS so the app
+    /// and the dashboard agree on which tasks exist.
+    static let auxiliaryCatalog: [(key: String, label: String)] = [
+        ("vision",         "Vision"),
+        ("compression",    "Compression"),
+        ("web_extract",    "Web extract"),
+        ("session_search", "Session search"),
+        ("browser_vision", "Browser Vision"),
+        ("moa_reference",  "MOA Reference"),
+        ("moa_aggregator", "MOA Aggregator"),
+    ]
 
     func auxiliaryModels() async throws -> [AuxTaskInfo] {
         guard let client = await clientProvider() else {
@@ -415,31 +438,19 @@ struct NativeGatewayFeatureClient {
             return []
         }
 
-        let auxiliary = decoded.config?.auxiliary
-        let vision = auxiliary?.vision
-        let webExtract = auxiliary?.webExtract
-        let compression = auxiliary?.compression
-
+        // AuxiliarySection is decoded as a [String: TaskConfig] dictionary so
+        // any auxiliary.* key the gateway returns flows through without a
+        // code change. We then iterate the catalog above so menu order stays
+        // deterministic and the label is owned client-side.
+        let auxiliary = decoded.config?.auxiliary ?? [:]
         var rows: [AuxTaskInfo] = []
-        if let vision {
+        for entry in Self.auxiliaryCatalog {
+            let task = auxiliary[entry.key]
             rows.append(AuxTaskInfo(
-                label: "Vision",
-                provider: vision.provider ?? "auto",
-                model: vision.model ?? ""
-            ))
-        }
-        if let webExtract {
-            rows.append(AuxTaskInfo(
-                label: "Web extract",
-                provider: webExtract.provider ?? "auto",
-                model: webExtract.model ?? ""
-            ))
-        }
-        if let compression {
-            rows.append(AuxTaskInfo(
-                label: "Compression",
-                provider: compression.provider ?? "auto",
-                model: compression.model ?? ""
+                key: entry.key,
+                label: entry.label,
+                provider: task?.provider ?? "auto",
+                model: task?.model ?? ""
             ))
         }
         return rows
@@ -494,14 +505,33 @@ struct NativeGatewayFeatureClient {
                 let provider: String?
                 let model: String?
             }
-            let vision: TaskConfig?
-            let webExtract: TaskConfig?
-            let compression: TaskConfig?
+            // Generic dictionary keyed by the canonical auxiliary.* key
+            // (e.g. "vision", "browser_vision", "moa_aggregator"). The
+            // previous version hard-coded three TaskConfig fields, which
+            // silently dropped session_search / browser_vision /
+            // moa_reference / moa_aggregator from the Settings menu even
+            // though the dashboard could configure them.
+            let tasks: [String: TaskConfig]
 
-            enum CodingKeys: String, CodingKey {
-                case vision, compression
-                case webExtract = "web_extract"
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: DynamicKey.self)
+                var collected: [String: TaskConfig] = [:]
+                for key in container.allKeys {
+                    if let value = try? container.decode(TaskConfig.self, forKey: key) {
+                        collected[key.stringValue] = value
+                    }
+                }
+                self.tasks = collected
             }
+
+            private struct DynamicKey: CodingKey {
+                let stringValue: String
+                var intValue: Int? { nil }
+                init?(stringValue: String) { self.stringValue = stringValue }
+                init?(intValue: Int) { return nil }
+            }
+
+            subscript(key: String) -> TaskConfig? { tasks[key] }
         }
         struct Config: Decodable {
             let auxiliary: AuxiliarySection?
