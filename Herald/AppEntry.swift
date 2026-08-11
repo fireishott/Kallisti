@@ -71,9 +71,11 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         // Handle silent push without marking the app foreground.
+        let category = (userInfo["category"] as? String)
+            ?? (userInfo["aps"] as? [String: Any])?["category"] as? String
         Task { @MainActor in
             let container = AppContainer.sharedDefault()
-            await container.handleRemoteNotificationWake()
+            await container.handleRemoteNotificationWake(pushCategory: category)
             completionHandler(.newData)
         }
     }
@@ -102,10 +104,19 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
     ) {
         let notificationConversationId =
             notification.request.content.userInfo["conversationId"] as? String
+        let category = notification.request.content.categoryIdentifier
         let complete = UncheckedSendableBox(value: completionHandler)
 
         Task { @MainActor in
             let container = AppContainer.sharedDefault()
+            // Build 68: a completion push is the terminal event for the turn.
+            // If the SSE task died without one (suspension, WS churn), the chat
+            // would otherwise sit on a perpetual "thinking" placeholder even
+            // though the response is ready. Settle before deciding whether to
+            // show the banner.
+            if category == NotificationCategoryID.messageReady.rawValue {
+                container.chatStore.settleStreamFromCompletionPush()
+            }
             guard container.settingsStore.settings.notificationsEnabled else {
                 complete.value([])
                 return

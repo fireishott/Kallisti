@@ -28,6 +28,7 @@ struct AppRootView: View {
             isLaunchReady: container.isLaunchReady,
             isRecovering: status == .connecting || status == .reconnecting,
             hasStoredLogin: nativeClient?.hasStoredLogin ?? false,
+            hasConfiguredRelay: container.settingsStore.settings.relayConfiguration.activeBaseURLString != nil,
             isBootstrapping: container.sessionStore.isBootstrapping,
             hasTerminalLegacyFailure: terminalLegacyFailure,
             reconnectDebounced: reconnectDebounced
@@ -39,12 +40,23 @@ struct AppRootView: View {
         isLaunchReady: Bool,
         isRecovering: Bool,
         hasStoredLogin: Bool,
+        hasConfiguredRelay: Bool = true,
         isBootstrapping: Bool,
         hasTerminalLegacyFailure: Bool,
         reconnectDebounced: Bool = false
     ) -> Bool {
         if isNative {
-            if !isLaunchReady { return true }  // always show during launch
+            if !isLaunchReady {
+                // Build 68: fresh install (no relay URL configured, no stored
+                // login) must reach onboarding, not spin on the localhost
+                // fallback. hasConnectedOnce can never become true for a
+                // device that has nothing to connect to, so without this the
+                // loading surface blocks onboarding forever.
+                if !hasStoredLogin && !hasConfiguredRelay {
+                    return false
+                }
+                return true  // always show during launch
+            }
             // Mid-session reconnect: show after 1.5s debounce to avoid
             // flashing on quick reconnects (<1.5s).
             if isRecovering && hasStoredLogin {

@@ -2787,6 +2787,48 @@ final class ChatStore {
     }
 
 
+    /// Build 68: a HERALD_MESSAGE_READY push means the server-side turn has
+    /// completed. If the app is stuck in a streaming state (SSE task died on
+    /// suspension without a terminal event), settle it now - the push IS the
+    /// terminal event. Unlike cancelStreaming(), do NOT cancel the server job
+    /// (it is done) and do NOT mark the placeholder interrupted - the response
+    /// exists server-side and the conversation reload that follows the push
+    /// will fetch it.
+    func settleStreamFromCompletionPush() {
+        guard streamingMessageID != nil || !activeStreams.isEmpty || streamingPhase != .idle else { return }
+
+        streamingTask?.cancel()
+        streamingTask = nil
+        activeAttemptID = UUID()
+        chatLiveActivity.endActivity()
+        ttsService?.stop()
+
+        // Flush buffered deltas onto the placeholder before it settles.
+        if let sid = streamingMessageID {
+            flushPendingReasoning(placeholderID: sid)
+            flushPendingDeltas(placeholderID: sid)
+        }
+
+        // Finalize streaming placeholders as complete (not interrupted) - the
+        // response is ready server-side and the reload will replace them.
+        if var conv = conversation {
+            var changed = false
+            for i in conv.messages.indices where conv.messages[i].isStreaming {
+                conv.messages[i].isStreaming = false
+                changed = true
+            }
+            if changed { conversation = conv }
+        }
+        activeStreams.removeAll()
+        pendingStreamPlaceholders.removeAll()
+        pendingMessageSentAt = nil
+        streamingPhase = .idle
+        sendPhase = .idle
+        sendPhaseOwner = nil
+
+        Logger.app.info("settleStreamFromCompletionPush: stream settled after completion push")
+    }
+
     // MARK: - In-Flight Checkpoint (Build 52+)
 
     /// Persists a checkpoint of the current in-flight turn state so the next
