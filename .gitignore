@@ -97,3 +97,6 @@ ExportOptions*.plist
 
 # Signed app archives contain provisioning profiles (device identifiers) - never track.
 builds/*.ipa
+
+# Local-only config backups carrying real signing values - never track.
+*.local

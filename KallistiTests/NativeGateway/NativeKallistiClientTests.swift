@@ -230,13 +230,13 @@ struct NativeKallistiClientTests {
         let path = "/home/operator/.hermes/profiles/default/cache/images/funny cat.png"
         let text = "Here it is.\n\nMEDIA:\(path)\n\nDone."
         let resolved = NativeKallistiClient.resolveNativeMedia(in: text) { remotePath in
-            var components = URLComponents(string: "https://hermes-relay.fihonline.net/v1/native/media")!
+            var components = URLComponents(string: "https://relay.example.com/v1/native/media")!
             components.queryItems = [URLQueryItem(name: "path", value: remotePath)]
             return components.url
         }
 
         #expect(!resolved.contains("MEDIA:"))
-        #expect(resolved.contains("![image](https://hermes-relay.fihonline.net/v1/native/media?"))
+        #expect(resolved.contains("![image](https://relay.example.com/v1/native/media?"))
         #expect(resolved.contains("path="))
         #expect(resolved.contains("funny%20cat.png"))
         #expect(resolved.hasSuffix("Done."))
@@ -349,8 +349,8 @@ struct NativeKallistiClientTests {
 
     @Test("facadeBaseURL for public HTTPS omits port")
     func facadeBaseURLForPublicHTTPS() {
-        let result = NativeKallistiClient.facadeBaseURL(for: "https://hermes-relay.fihonline.net")
-        #expect(result == "https://hermes-relay.fihonline.net")
+        let result = NativeKallistiClient.facadeBaseURL(for: "https://relay.example.com")
+        #expect(result == "https://relay.example.com")
     }
 
     @Test("facadeBaseURL for public HTTP omits port")
@@ -372,7 +372,7 @@ struct NativeKallistiClientTests {
         #expect(NativeKallistiClient.isLANHost("10.0.0.1"))
         #expect(NativeKallistiClient.isLANHost("172.16.0.1"))
         #expect(NativeKallistiClient.isLANHost("fihadmin.local"))
-        #expect(!NativeKallistiClient.isLANHost("hermes-relay.fihonline.net"))
+        #expect(!NativeKallistiClient.isLANHost("relay.example.com"))
         #expect(!NativeKallistiClient.isLANHost("relay.example.com"))
     }
 

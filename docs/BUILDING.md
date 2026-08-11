@@ -45,7 +45,7 @@ xcodebuild \
   -destination 'generic/platform=iOS' \
   build \
   -allowProvisioningUpdates \
-  DEVELOPMENT_TEAM=58U7UPFS53
+  DEVELOPMENT_TEAM=YOUR_TEAM_ID
 
 # Install
 xcrun devicectl device install app \

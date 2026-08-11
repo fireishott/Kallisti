@@ -312,7 +312,7 @@ final class AppContainer {
     }
 
     /// Derives the native gateway's connection details from the relay base
-    /// URL string (e.g. "https://hermes-relay.fihonline.net/v1") -- same
+    /// URL string (e.g. "https://relay.example.com/v1") -- same
     /// setting the legacy connector path uses, so there's exactly one
     /// user-facing "where's my server" field, not a second hidden one.
     static func resolveNativeGatewayHost(

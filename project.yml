@@ -105,7 +105,7 @@ targets:
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "0.2.3"
         CURRENT_PROJECT_VERSION: "70"
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
         INFOPLIST_KEY_CFBundleDisplayName: Kallisti
@@ -133,8 +133,8 @@ targets:
         NSSpeechRecognitionUsageDescription: "Kallisti uses speech recognition for voice commands and local transcription."
         APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
         APP_HOSTED_RELAY_ENABLED: true
-        APP_PRIVACY_URL: "https://kallisti.fihonline.net/privacy.html"
-        APP_TERMS_URL: "https://herald.fihonline.net/terms.html"
+        APP_PRIVACY_URL: "https://example.com/privacy.html"
+        APP_TERMS_URL: "https://example.com/terms.html"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false
@@ -192,7 +192,7 @@ targets:
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - target: KallistiSupport
@@ -228,7 +228,7 @@ targets:
         CURRENT_PROJECT_VERSION: "70"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
@@ -269,7 +269,7 @@ targets:
         CURRENT_PROJECT_VERSION: "70"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
@@ -297,7 +297,7 @@ targets:
         CURRENT_PROJECT_VERSION: "70"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "1,2"
         APPLICATION_EXTENSION_API_ONLY: YES
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -317,7 +317,7 @@ targets:
         SWIFT_VERSION: "6.2"
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         APPLICATION_EXTENSION_API_ONLY: YES
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES
@@ -353,7 +353,7 @@ targets:
         CURRENT_PROJECT_VERSION: "70"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 58U7UPFS53
+        DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "4"
         SUPPORTED_PLATFORMS: "watchsimulator watchos"
         SDKROOT: watchos

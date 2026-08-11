@@ -5,6 +5,58 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-08-11
+
+### Added
+
+- Per-device inbox with installation-ID scoping, so push notifications land in the right device's inbox on multi-device setups.
+- Inbox notification action window with dismiss and snooze actions from the notification detail sheet.
+- Realtime connector latency readout in Settings, polled while the gateway is connected (not just while Settings is visible), with danger coloring above 300 ms.
+- Searchable auxiliary model picker: filter by model name, provider ID, or provider display name, with the server default pinned at top.
+- Software update check in Settings backed by the connector: truthful behind-count from git history, expandable changelog, and Update Now / Skip actions.
+- Stall banner with realtime ticking snapshot, token counter, and a 60-second thinking-only timeout so a dead stream never looks like a live turn.
+- Live Activity phase mirrors for stall and error states, with session-type tracking and foreground marking.
+- Launch behavior matches desktop: opens the last active conversation, or a fresh ready-to-go session when there is none.
+- Authenticated update-check endpoint on the connector, available to paired devices.
+
+### Fixed
+
+- Push registration in pairing mode: the app now rides the gateway session cookie for facade calls instead of demanding a bearer token that pairing-mode login no longer stores. This eliminated the persistent 401 loop on `POST /v1/push/register` and got real APNs tokens registered.
+- Auxiliary model switching now uses `cli.exec` config-set through the native gateway, surfaces real errors instead of generic failures, and covers the full dynamic 7-task catalog.
+- WebSocket churn on connect: an in-flight guard prevents minting multiple tickets and opening duplicate sockets when `connect()` is called concurrently.
+- Session-not-found after resume: the app now re-points its session map to the live resumed session ID instead of continuing with the stale original.
+- All-devices filter no longer includes cron/kanban/tool/subagent noise, so the session list shows real user sessions.
+- Model switching no longer spins and reverts; the loading surface no longer flickers during mid-session reconnect; typed drafts survive reconnect and view recreation.
+- Live Activity lock-screen status stays current instead of freezing on "Thinking"; the activity is cleaned up on expiry.
+- Dark wallpaper brightened to a usable watermark; light wallpaper rebuilt at the correct scale with feathered edges.
+- Stream settles on completion push, so a test notification no longer leaves the chat looking like it is still thinking.
+- Chat image thumbnails render aspect-fit instead of squished.
+- Fresh-install onboarding no longer loops; once connected, the app never tears down to the splash surface again.
+- History decode handles both `text` and `content` wire shapes from the gateway, so older chats open correctly.
+- Default keychain access group restored before the shared group, fixing credential lookup on reinstall.
+
+### Security
+
+- Removed internal LAN addresses, Apple Developer team identifiers from export options, a personal-domain privacy URL, and signed IPA artifacts from the public repository and its history.
+- Signed application archives are no longer tracked; export configuration with team identifiers stays local.
+
+## [0.2.2] - 2026-08-10
+
+### Added
+
+- In-flight checkpoint persistence on background-task expiry: an interrupted turn can be resumed instead of lost.
+- Local notification when a background task expires, so the user knows the turn did not finish.
+- Connection overlay extended to mid-session reconnects with debounce, so churn does not flash raw errors.
+- Tool `start` / `complete` events wired through the native WebSocket path.
+- Regression tests for checkpoint recovery, draft persistence, and connection overlay behavior.
+- Push registration endpoint accepts native gateway bearer authentication, not just connector tokens.
+
+### Fixed
+
+- Draft text survives reconnect view recreation.
+- Version display, reconnect UX, and status text corrected in Settings.
+- Stall detection no longer mislabels healthy long turns as stalled.
+
 ## [0.2.1] - 2026-08-09
 
 ### Fixed
