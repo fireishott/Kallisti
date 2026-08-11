@@ -833,7 +833,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Liveness probe timeout: 5 seconds. Short enough that a phantom dead
     /// socket is detected before the user notices, long enough that a
     /// genuinely slow gateway doesn't cause spurious reconnects.
-    private static let probeTimeoutNanos: UInt64 = 5_000_000_000
+    private static let probeTimeoutNanos: UInt64 = 12_000_000_000
 
     /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
     /// then retries `connect()`. Called from onboarding's "Open app" step -
