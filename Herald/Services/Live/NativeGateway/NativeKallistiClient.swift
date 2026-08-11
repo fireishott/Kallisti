@@ -390,6 +390,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
             "pushEnvironment": pushEnvironment,
             "bundleId": Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
             "tokenKind": "device",
+            // Build 67: send the install UUID so the connector keeps this
+            // device's token separate from other devices (iPad vs iPhone).
+            // Matches the installationID the pairing flow uses.
+            "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
         ]
         // Build 65: route through `postFacadeJSON` so a stale cached bearer
         // (server-side expired while the local `expiresAt` is still ahead)
