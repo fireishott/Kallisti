@@ -185,6 +185,11 @@ final class ChatStore {
     /// the parked session or let the watchdog fire.
     func markStreamForegrounded() {
         streamBackgroundedAt = nil
+        // Build 64: clear the Lock Screen / Dynamic Island "needsAttention"
+        // state set by notifyBackgroundExpiry so the user sees active
+        // progress the moment they unlock the phone. No-op if the activity
+        // is already on a healthy phase.
+        chatLiveActivity.markStreamForegrounded()
     }
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
@@ -1255,6 +1260,11 @@ final class ChatStore {
 
         // — Stream stalled — start parallel polling —
         streamingPhase = .stalled
+        // Build 64: bump the Live Activity to "waitingForHost" so the Lock
+        // Screen / Dynamic Island reflects the stall. The polling fallback
+        // below will refine the phase on each tick; the terminal
+        // .finished/.failed/.cancelled handlers end the activity normally.
+        chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
         if let idx = conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
             conversation?.messages[idx].toolActivity = "Waiting for host..."
         }
@@ -1930,6 +1940,10 @@ final class ChatStore {
                     self.sendPhase = .restoringStream
                     // Reconnection attempts are transport recovery, not model
                     // progress. Do not reset the watchdog.
+                    // Build 64: mirror the in-app reconnect banner onto the
+                    // Lock Screen / Dynamic Island so the user sees progress
+                    // recovery instead of the frozen last phase.
+                    self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
                     if var conv = self.conversation,
                        let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
                         conv.messages[idx].toolActivity = "Restoring response stream…"
@@ -1991,6 +2005,14 @@ final class ChatStore {
                     // Store error context for the UI
                     self.lastErrorCategory = category
                     self.lastErrorAction = action
+
+                    // Build 64: push the Live Activity to needsAttention BEFORE
+                    // ending it so the Lock Screen / Dynamic Island briefly
+                    // shows the warning state (per Apple HIG: an activity
+                    // should reflect a meaningful end-state for users who
+                    // arrive late via the lock screen). The next endActivity
+                    // call below dismisses the activity with .immediate.
+                    self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
 
                     // Show actionable guidance based on error category
                     let guidance: String
@@ -2091,6 +2113,10 @@ final class ChatStore {
             if wallElapsed >= wallDeadline {
                 appendLog(level: .warn, "SSE stream exceeded absolute deadline (\(Int(wallElapsed))s)")
                 streamingPhase = .stalled
+                // Build 64: bump the Live Activity to needsAttention on the
+                // absolute-deadline stall so the Lock Screen shows the user
+                // the turn timed out instead of a frozen "Thinking..." card.
+                self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
                 stallDetected = true
                 break
             }
@@ -2108,6 +2134,11 @@ final class ChatStore {
             // Only the absolute deadline above still applies as the hard cap.
             if elapsed > stallTimeout && self.activeToolCount == 0 {
                 self.streamingPhase = .stalled
+                // Build 64: mirror the no-progress stall onto the Live
+                // Activity so the Lock Screen / Dynamic Island reflects the
+                // watchdog firing instead of staying frozen on the last
+                // streaming phase.
+                self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
                 stallDetected = true
                 break
             }
