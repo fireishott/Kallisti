@@ -1316,16 +1316,57 @@ final class ChatStore {
             }
             switch status.status {
             case "completed", "delivered", "succeeded", "success", "terminal":
-                var updated = item
-                updated.state = .terminal
-                updated.terminalMessageID = updated.terminalMessageID ?? status.message?.id
-                updated.lastError = nil
-                updated.nextAttemptAt = nil
-                if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) {
-                    outboxItems[idx] = updated
+                // Build 77: live delivery-state settlement hardening.
+                //
+                // The previous direct mutation of `outboxItems[idx]` left the
+                // local user row at `.sent` (single grey check) when the
+                // turn completed while the app was suspended (background,
+                // force-quit, transport drop, conversation switch). The
+                // relay-confirmed terminal response is the authoritative
+                // "the assistant has answered" signal, but it never reached
+                // the user-row status because only `terminalizeOutboxItem`
+                // writes that field, and this branch never called it.
+                //
+                // Safe condition (verified against Build 76 source on
+                // 2026-08-11):
+                //   * `clientMessageID` is the iOS-issued identity that
+                //     travels from enqueue -> outbox -> relay -> response
+                //     (matched on identity, never on content/timestamp).
+                //   * `status.message?.id` is the canonical terminal
+                //     assistant message id the relay reports only AFTER
+                //     persisting the assistant row.  Without it the relay
+                //     returns status=terminal but no message id, and we
+                //     conservatively skip the user-row upgrade; the next
+                //     conversation refresh reconciles it.
+                //   * `terminalizeOutboxItem` performs the
+                //     `clientMessageID`-keyed lookup itself, sets
+                //     `outboxItems[idx].state = .terminal`, and stamps
+                //     `conv.messages[msgIdx].status = .delivered` only when
+                //     the matching user row exists -- preserving the B23
+                //     "do not upgrade without a credible terminal signal"
+                //     invariant.
+                if status.message?.id != nil,
+                   outboxItems.contains(where: { $0.clientMessageID == item.clientMessageID }) {
+                    terminalizeOutboxItem(
+                        item,
+                        canonicalUserMessageID: item.clientMessageID,
+                        terminalMessageID: status.message?.id
+                    )
+                } else {
+                    // Defensive: relay reports terminal but no message id
+                    // (or outbox item already pruned).  Preserve the legacy
+                    // outbox-only settlement so the FIFO can drain; the
+                    // user row stays .sent until the next refresh.
+                    var updated = item
+                    updated.state = .terminal
+                    updated.lastError = nil
+                    updated.nextAttemptAt = nil
+                    if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == item.clientMessageID }) {
+                        outboxItems[idx] = updated
+                    }
+                    persistOutbox()
+                    outboxStore.removeStagedAttachments(for: updated)
                 }
-                persistOutbox()
-                outboxStore.removeStagedAttachments(for: updated)
             case "failed":
                 let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
                 failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
@@ -2550,6 +2591,102 @@ final class ChatStore {
         onConversationChanged?()
         pollingTask?.cancel()
         pollingTask = nil
+    }
+
+    /// Build 77: synchronously install an empty local conversation for a freshly
+    /// minted session UUID so the new-chat UI hands off without waiting for the
+    /// server-side `ensureConversation` + `loadConversation` round trip.
+    ///
+    /// Cancels any in-flight stream from the previous session, bumps
+    /// `conversationGeneration` so any in-flight poll/refresh for the prior
+    /// conversation is discarded by the generation guard, clears stale
+    /// token/context state, and writes the empty conversation into the store
+    /// immediately. Persistence is set to the new session ID; the on-disk
+    /// cache is NOT rewritten — `loadConversationInBackground` will overwrite
+    /// it with the authoritative payload once the relay responds.
+    ///
+    /// - Returns: the bumped generation token the caller must capture so its
+    ///   background fetch can detect when the user has since switched again.
+    @discardableResult
+    func installLocalConversation(id sessionID: UUID, title: String = "New Chat") -> UInt64 {
+        cancelStreaming()
+        lastTokenUsage = nil
+        lastContextInfo = nil
+        pendingMessageSentAt = nil
+        conversationGeneration &+= 1
+        let captured = conversationGeneration
+        persistence.currentSessionId = sessionID
+        let fresh = Conversation(id: sessionID, title: title)
+        conversation = fresh
+        if sendPhase == .idle {
+            streamingPhase = .idle
+        }
+        onConversationChanged?()
+        return captured
+    }
+
+    /// Build 77: background the `ensureConversation` + `loadConversation` work
+    /// for a freshly installed local conversation. Returns when the
+    /// authoritative payload has been merged (or discarded by an identity /
+    /// generation guard, or failed).
+    ///
+    /// The caller passes the `sessionID` it just installed and the generation
+    /// token returned by `installLocalConversation`. If the user has since
+    /// selected a different session — chatStore.conversation?.id != sessionID
+    /// — or `conversationGeneration` has moved past `capturedGeneration`, the
+    /// result is discarded and no error is surfaced. Errors that do still
+    /// apply to the active session are routed through the session list store's
+    /// `errorRelay` closure so the user sees the same banner as before.
+    func loadConversationInBackground(
+        id sessionID: UUID,
+        capturedGeneration: UInt64,
+        errorRelay: @escaping (String) -> Void
+    ) async {
+        // 1) ensureConversation (server-side session binding)
+        let established = await heraldClient.ensureConversation(id: sessionID)
+        // Identity check #1: did the user switch away while we were awaiting?
+        guard conversation?.id == sessionID else { return }
+        if !established {
+            // Same fallback as SessionListStore.createNewSession: the next send
+            // will bind the conversation. Surface a soft warning rather than a
+            // blocking error — the new chat UI is already on screen.
+            Logger.app.warning("loadConversationInBackground: ensureConversation deferred for \(sessionID.uuidString.prefix(8))")
+        }
+
+        // 2) loadConversation (authoritative history)
+        let refreshed: Conversation
+        do {
+            refreshed = try await heraldClient.loadConversation(id: sessionID)
+        } catch {
+            // Identity check #2: only surface the error if this session is still
+            // selected. Errors on a stale session belong to the prior chat.
+            guard conversation?.id == sessionID,
+                  conversationGeneration == capturedGeneration else { return }
+            errorRelay(error.localizedDescription)
+            return
+        }
+        // Identity / generation check #3: refuse to overwrite a newer selection.
+        guard conversation?.id == sessionID,
+              conversationGeneration == capturedGeneration else { return }
+
+        conversation = mergeConversationMetadata(from: conversation, into: refreshed)
+        if sendPhase == .idle {
+            streamingPhase = .idle
+        }
+        // Persist with transient fields stripped — same convention as the
+        // explicit loadConversation path.
+        var cacheCopy = conversation
+        cacheCopy?.contextPercent = nil
+        cacheCopy?.latestUsage = nil
+        if let cacheCopy {
+            persistence.saveConversationCache(cacheCopy)
+            onConversationChanged?()
+        }
+        // Build 33 WSB: queued outbox items for this conversation can submit
+        // now that the conversation is bound and the relay has acknowledged it.
+        if let conversation {
+            await submitNextEligible(for: conversation.id)
+        }
     }
 
     /// Recover from a stalled stream after app foregrounding.

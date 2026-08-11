@@ -436,6 +436,184 @@ struct OutboxDurableTests {
         #expect(unknownRecord.nextAttemptAt == nil, "ambiguous jobs must not auto-resubmit")
     }
 
+    // MARK: - Build 77: live delivery-state settlement hardening
+
+    @Test("recoverOutbox upgrades the user row to .delivered when relay returns a terminal assistant message id")
+    func recoveryUpgradesUserRowWhenTerminalMessagePresent() async throws {
+        // Scenario: app was force-quit mid-turn; on relaunch, the outbox has
+        // an .accepted record with a known jobID and the conversation has the
+        // optimistic user row whose clientMessageID matches.  The relay
+        // confirms the job is "completed" and returns the canonical terminal
+        // assistant message id.  recoverOutbox must stamp the user row
+        // .delivered so the green checkmark dot appears.
+        let jobID = UUID()
+        let assistantMessageID = UUID()
+        let clientMessageID = UUID()
+        let conversationID = UUID()
+
+        let client = TerminalAssistantClient(
+            jobID: jobID,
+            reportedStatus: "completed",
+            assistantMessageID: assistantMessageID
+        )
+
+        // Pre-populate the conversation with the optimistic user row so
+        // terminalizeOutboxItem finds a target to stamp.  In production the
+        // conversation is loaded by the parallel conversationLoad async let
+        // (ChatScreen.swift:143 and AppContainer.swift:1186); for the test we
+        // set it directly after relaunch.
+        let userRow = Message(
+            id: clientMessageID,
+            clientMessageID: clientMessageID,
+            sender: .user,
+            content: "Sent before relaunch",
+            jobID: jobID,
+            status: .sent
+        )
+        let conversation = Conversation(
+            id: conversationID,
+            title: "Relaunch",
+            messages: [userRow]
+        )
+
+        // Persist the accepted record from a prior process.
+        let record = ChatOutboxRecord(
+            schemaVersion: OutboxManifestStore.schemaVersion,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            createdAt: .now,
+            sequence: 1,
+            cleanText: "Sent before relaunch",
+            continuationContext: nil,
+            attachmentRefs: [],
+            state: .accepted,
+            jobID: jobID,
+            canonicalUserMessageID: clientMessageID,
+            terminalMessageID: nil,
+            attemptCount: 1,
+            nextAttemptAt: nil,
+            lastError: nil,
+            updatedAt: .now
+        )
+        let scratch = makeScratchDirectory()
+        OutboxManifestStore(baseDirectory: scratch).save(
+            ChatOutboxManifest(
+                schemaVersion: OutboxManifestStore.schemaVersion,
+                items: [record],
+                nextSequence: 2
+            )
+        )
+
+        let persistence = makePersistence()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: persistence,
+            outboxBaseDirectory: scratch
+        )
+        store.conversation = conversation
+
+        await store.recoverOutbox()
+
+        // Outbox record moved to .terminal and recorded the canonical
+        // assistant message id (identity-evidenced settlement).
+        let settled = try #require(store.outboxItems.first)
+        #expect(settled.state == .terminal)
+        #expect(settled.terminalMessageID == assistantMessageID)
+
+        // The user row in the conversation was upgraded to .delivered.
+        // Without this assertion the Build 76 symptom (single grey check
+        // after a foreground rehydrate) returns.
+        let userAfter = try #require(
+            store.conversation?.messages.first(where: { $0.id == clientMessageID })
+        )
+        #expect(userAfter.status == .delivered,
+                "user row must be .delivered when relay returns a terminal assistant message id")
+    }
+
+    @Test("recoverOutbox leaves the user row .sent when relay reports terminal without an assistant message id")
+    func recoveryLeavesUserRowSentWhenTerminalMessageMissing() async throws {
+        // Safe-condition negative path: relay says "completed" but the
+        // response carries no `message` field (e.g. transient relay race or
+        // a job whose assistant row was not yet persisted).  The fix must
+        // NOT stamp the user row .delivered; that would be the
+        // "never just when message accepted" anti-pattern from the parent's
+        // rule.  The outbox record still moves to .terminal so the FIFO can
+        // drain, and a later refresh reconciles the user status.
+        let jobID = UUID()
+        let clientMessageID = UUID()
+        let conversationID = UUID()
+
+        let client = TerminalAssistantClient(
+            jobID: jobID,
+            reportedStatus: "completed",
+            assistantMessageID: nil
+        )
+
+        let userRow = Message(
+            id: clientMessageID,
+            clientMessageID: clientMessageID,
+            sender: .user,
+            content: "Sent before relaunch",
+            jobID: jobID,
+            status: .sent
+        )
+        let conversation = Conversation(
+            id: conversationID,
+            title: "Relaunch",
+            messages: [userRow]
+        )
+
+        let record = ChatOutboxRecord(
+            schemaVersion: OutboxManifestStore.schemaVersion,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            createdAt: .now,
+            sequence: 1,
+            cleanText: "Sent before relaunch",
+            continuationContext: nil,
+            attachmentRefs: [],
+            state: .accepted,
+            jobID: jobID,
+            canonicalUserMessageID: clientMessageID,
+            terminalMessageID: nil,
+            attemptCount: 1,
+            nextAttemptAt: nil,
+            lastError: nil,
+            updatedAt: .now
+        )
+        let scratch = makeScratchDirectory()
+        OutboxManifestStore(baseDirectory: scratch).save(
+            ChatOutboxManifest(
+                schemaVersion: OutboxManifestStore.schemaVersion,
+                items: [record],
+                nextSequence: 2
+            )
+        )
+
+        let persistence = makePersistence()
+        let store = ChatStore(
+            heraldClient: client,
+            persistence: persistence,
+            outboxBaseDirectory: scratch
+        )
+        store.conversation = conversation
+
+        await store.recoverOutbox()
+
+        // Outbox record still settled (FIFO can drain).
+        let settled = try #require(store.outboxItems.first)
+        #expect(settled.state == .terminal)
+
+        // User row stays .sent: no identity evidence for a terminal
+        // assistant message, so the safe condition for the upgrade is not
+        // met.
+        let userAfter = try #require(
+            store.conversation?.messages.first(where: { $0.id == clientMessageID })
+        )
+        #expect(userAfter.status == .sent,
+                "user row must stay .sent when relay has no canonical assistant message id")
+    }
+
     // MARK: - Follow-up wedge fix (Build 7)
 
     /// Helper: a mock client whose `sendStreaming` yields `.messageSent(jobID:)`
@@ -771,5 +949,75 @@ private final class JobStatusClient: HeraldClientProtocol {
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         Message(sender: .user, content: text, status: .sent)
     }
+    func cancelJob(jobID: UUID) async throws {}
+}
+
+
+// MARK: - Build 77 helper: returns a terminal assistant message with a
+// configurable id so the recovery test can assert the exact canonical id
+// propagated into the outbox record (and the negative-path test can omit
+// the message entirely to verify the safe-condition guard).
+private final class TerminalAssistantClient: HeraldClientProtocol {
+    var connectionStatus: ConnectionStatus = .connected
+    var currentConversation: Conversation?
+    private let jobID: UUID
+    private let reportedStatus: String
+    private let assistantMessageID: UUID?
+
+    init(jobID: UUID, reportedStatus: String, assistantMessageID: UUID?) {
+        self.jobID = jobID
+        self.reportedStatus = reportedStatus
+        self.assistantMessageID = assistantMessageID
+    }
+
+    func connect() async {}
+    func disconnect() async {}
+
+    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) async -> Message {
+        Message(sender: .herald, content: "reply", status: .delivered)
+    }
+
+    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { $0.finish() }
+    }
+
+    func loadConversation() async -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+    func clearConversation() async throws -> Conversation { Conversation(title: "Herald") }
+    func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation { Conversation(title: "Herald") }
+    func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse { SessionListResponse(sessions: [], total: 0) }
+    func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] { [] }
+    func createSession(title: String) async throws -> SessionSummary { SessionSummary(title: title, previewText: "New conversation", source: "ios") }
+    func ensureConversation(id: UUID) async -> Bool { true }
+    func deleteSession(id: UUID) async throws {}
+    func archiveSession(id: UUID) async throws {}
+    func togglePinSession(id: UUID) async throws -> SessionSummary { SessionSummary(id: id, title: "Pinned", isPinned: true) }
+    func renameSession(id: UUID, title: String) async throws -> SessionSummary { SessionSummary(id: id, title: title) }
+    func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "New Chat" }
+    func loadConversation(id: UUID) async throws -> Conversation { currentConversation ?? Conversation(title: "Herald") }
+
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+        guard jobId == jobID else { return nil }
+        let assistantMessage: Message? = assistantMessageID.map { id in
+            Message(id: id, sender: .herald, content: "Completed reply", status: .delivered)
+        }
+        return LiveHeraldClient.JobStatusResponse(
+            status: reportedStatus,
+            conversationId: nil,
+            message: assistantMessage,
+            error: reportedStatus == "failed" ? "The job failed" : nil,
+            usage: nil,
+            context: nil,
+            diff: nil,
+            attempt: nil,
+            lastSeq: nil,
+            errorCategory: nil,
+            errorAction: nil
+        )
+    }
+
+    func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+        Message(sender: .user, content: text, status: .sent)
+    }
+
     func cancelJob(jobID: UUID) async throws {}
 }
