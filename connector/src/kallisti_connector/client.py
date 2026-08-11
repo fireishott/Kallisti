@@ -2026,14 +2026,33 @@ class HeraldConnector:
         Live Activity's own push-to-update token (see ConnectorState.
         live_activity_push_token) — they are different tokens with different
         APNs push types and must never share storage.
+
+        Build 67: each installation_id owns its own tokens in the device
+        registry, so an iPad and iPhone keep separate alert tokens. The
+        legacy single-slot state fields stay in sync with the most recently
+        registered device so older code paths keep working.
         """
         token = str(params.get("token") or "").strip()
         environment = str(params.get("environment") or "production").strip().lower()
         token_kind = str(params.get("tokenKind") or "device").strip().lower()
+        installation_id = str(params.get("installationId") or "").strip()[:255]
         if not token:
             return {"registered": False}
         if environment not in {"production", "development"}:
             return {"registered": False}
+
+        # Per-device storage in the registry (multi-device support).
+        if installation_id:
+            try:
+                from .session_store import record_push_token
+                record_push_token(
+                    installation_id,
+                    token,
+                    environment=environment,
+                    token_kind=token_kind,
+                )
+            except Exception:
+                logger.debug("Per-device push token record failed (non-fatal)", exc_info=True)
 
         state = self.state_store.load()
         if token_kind == "liveactivity":
@@ -2043,7 +2062,8 @@ class HeraldConnector:
         else:
             state.device_token = token
             state.device_token_environment = environment
-            logger.info("APNs device token registered (environment=%s)", environment)
+            logger.info("APNs device token registered (environment=%s, device=%s)",
+                        environment, installation_id[:12] or "unknown")
         self.state_store.save(state)
         self._state = state
         return {"registered": True, "environment": environment}
@@ -2056,14 +2076,17 @@ class HeraldConnector:
         category: str | None = None,
         conversation_id: str | None = None,
     ) -> None:
-        """Send a remote push notification directly via APNs."""
+        """Send a remote push notification directly via APNs.
+
+        Build 67: routes to the device that owns the conversation (via the
+        delivery-store binding), so an iPad turn pushes to the iPad and an
+        iPhone turn pushes to the iPhone. Falls back to broadcasting to every
+        registered device when the owning device can't be resolved or has no
+        alert token. Also persists an inbox item for the owning device so the
+        Inbox tab has the completed response for viewing/retrieval.
+        """
         state = self.state_store.load()
         if not state.user_id:
-            return
-
-        device_token = state.device_token
-        if not device_token:
-            logger.debug("Push skipped: no device_token registered")
             return
 
         body = body_text.strip()
@@ -2082,26 +2105,103 @@ class HeraldConnector:
                 return
 
         user_info = {"conversationId": conversation_id} if conversation_id else None
-        environment = state.device_token_environment or "production"
 
+        # Resolve target device(s): the conversation's owner first, then all
+        # registered devices as a fallback (legacy single-device behavior).
+        from .session_store import (
+            all_push_devices,
+            device_id_for_session,
+        )
+        target_device_ids: list[str] = []
+        owner_id = ""
+        if conversation_id:
+            owner_id = device_id_for_session(conversation_id) or ""
+            if not owner_id:
+                try:
+                    from .delivery_store import get_delivery_store
+                    binding = get_delivery_store().get_binding(conversation_id)
+                    if binding:
+                        owner_id = binding.get("ownerDeviceId") or ""
+                except Exception:
+                    owner_id = ""
+            if owner_id:
+                target_device_ids = [owner_id]
+
+        devices = all_push_devices()
+        if not target_device_ids:
+            target_device_ids = [did for did, entry in devices.items()
+                                 if (entry.get("deviceToken") or "").strip()]
+
+        # Inbox: persist the completed response for the owning device so the
+        # Inbox tab shows it. The owner may not have a registered token yet
+        # (first turn before APNs token lands) - still write the item so the
+        # response is retrievable once the app registers and opens Inbox.
         try:
-            from .apns_client import PushResult
-            result = await self._apns_client.send_alert_push(
-                device_token,
-                title="Kallisti",
-                body=body[:100],
-                category=category,
-                environment=environment,
-                user_info=user_info,
-            )
-            if result == PushResult.SENT:
-                logger.info("Push sent for job %s", job_id[:8])
-            elif result == PushResult.TOKEN_INVALID:
-                logger.warning("Device token is invalid — iOS app should re-register")
-            else:
-                logger.warning("Push send result: %s", result.value)
+            from .inbox_store import get_inbox_store
+            inbox_store = get_inbox_store()
+            inbox_targets = list(dict.fromkeys(target_device_ids + [owner_id] if owner_id else target_device_ids))
+            for did in inbox_targets:
+                if not did:
+                    continue
+                inbox_store.add_item(
+                    installation_id=did,
+                    title="Response ready",
+                    body=body[:300],
+                    kind="notification",
+                    conversation_id=conversation_id,
+                    payload={"conversationId": conversation_id} if conversation_id else None,
+                    priority="normal",
+                )
         except Exception:
-            logger.debug("Push send error (non-fatal)", exc_info=True)
+            logger.debug("Inbox item persist failed (non-fatal)", exc_info=True)
+
+        sent_any = False
+        for device_id in target_device_ids:
+            entry = devices.get(device_id, {})
+            device_token = (entry.get("deviceToken") or "").strip() or (
+                state.device_token if device_id in (None, "") else ""
+            )
+            if not device_token:
+                continue
+            environment = (entry.get("deviceTokenEnvironment") or "production").strip()
+            try:
+                from .apns_client import PushResult
+                result = await self._apns_client.send_alert_push(
+                    device_token,
+                    title="Kallisti",
+                    body=body[:100],
+                    category=category,
+                    environment=environment,
+                    user_info=user_info,
+                )
+                if result == PushResult.SENT:
+                    sent_any = True
+                    logger.info("Push sent for job %s (device=%s)", job_id[:8], device_id[:12])
+                elif result == PushResult.TOKEN_INVALID:
+                    logger.warning("Device token is invalid (device=%s) — iOS app should re-register", device_id[:12])
+                else:
+                    logger.warning("Push send result: %s (device=%s)", result.value, device_id[:12])
+            except Exception:
+                logger.debug("Push send error (non-fatal)", exc_info=True)
+
+        if not sent_any and not devices and state.device_token:
+            # Legacy path: no per-device registry entries, send to the global slot.
+            try:
+                from .apns_client import PushResult
+                result = await self._apns_client.send_alert_push(
+                    state.device_token,
+                    title="Kallisti",
+                    body=body[:100],
+                    category=category,
+                    environment=state.device_token_environment or "production",
+                    user_info=user_info,
+                )
+                if result == PushResult.SENT:
+                    logger.info("Push sent for job %s (legacy slot)", job_id[:8])
+                else:
+                    logger.warning("Push send result: %s (legacy slot)", result.value)
+            except Exception:
+                logger.debug("Push send error (non-fatal)", exc_info=True)
 
     async def _send_live_activity_end(self, status: str = "Done") -> None:
         """Remote-end the user's Live Activity via its own push-to-update token.

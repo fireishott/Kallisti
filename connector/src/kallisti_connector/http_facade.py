@@ -1848,9 +1848,169 @@ async def get_sessions(request: Request) -> JSONResponse:
 
 
 async def get_inbox(request: Request) -> JSONResponse:
-    """Return inbox (stub)."""
-    await require_auth(request)
-    return JSONResponse({"items": []})
+    """Return inbox items for the requesting device.
+
+    Build 67: was a stub returning {"items": []}. Completed chat turns now
+    persist an inbox item (see client._send_push_for_job), scoped to the
+    installation that owns the conversation, so the app's Inbox tab shows
+    real retrievable responses. The response shape matches what
+    LiveInboxService decodes: id, kind, title, body, priority, status,
+    payload, createdAt, primaryActionTitle, secondaryActionTitle.
+    """
+    auth_token = await require_native_or_paired_auth(request)
+    installation_id = ""
+    # Build 67: cookie-auth clients (pairing/basic) can't be resolved from
+    # the token alone, so the app passes its installationId explicitly.
+    installation_id = str(request.query_params.get("installationId") or "").strip()[:255]
+    if not installation_id:
+        try:
+            from .session_store import device_id_for_token
+            installation_id = device_id_for_token(auth_token) or ""
+        except Exception:
+            installation_id = ""
+    if not installation_id:
+        # Paired-token auth without a registry entry: no scoped inbox.
+        return JSONResponse({"items": []})
+
+    try:
+        from .inbox_store import get_inbox_store
+        items = get_inbox_store().list_items(installation_id, limit=100)
+    except Exception as exc:
+        logger.warning("get_inbox: store unavailable: %s", exc)
+        return JSONResponse({"items": []})
+
+    def _payload_for(item: dict) -> dict:
+        payload = dict(item.get("payload") or {})
+        if item.get("conversationId") and "conversationId" not in payload:
+            payload["conversationId"] = item["conversationId"]
+        return payload
+
+    return JSONResponse({
+        "items": [
+            {
+                "id": item["id"],
+                "kind": item["kind"],
+                "title": item["title"],
+                "body": item["body"],
+                "priority": item["priority"],
+                "status": item["status"],
+                "payload": _payload_for(item),
+                "createdAt": item["createdAt"],
+                "primaryActionTitle": "Open",
+                "secondaryActionTitle": "Dismiss",
+            }
+            for item in items
+        ]
+    })
+
+
+async def inbox_action(request: Request) -> JSONResponse:
+    """POST /v1/inbox/{id}/action - mark an inbox item opened/dismissed.
+
+    The app's LiveInboxService posts {"actionId": "open"|"approve"|"dismiss"}.
+    Non-approval items navigate client-side when tapped (InboxStore reads
+    payload.conversationId), so the only server mutations that matter are
+    status transitions: open -> opened, dismiss -> dismissed.
+    """
+    auth_token = await require_native_or_paired_auth(request)
+    item_id = request.path_params.get("id", "")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action_id = str(body.get("actionId") or "open").strip().lower()
+    status = {"open": "opened", "approve": "completed", "dismiss": "dismissed"}.get(action_id, "opened")
+
+    installation_id = str(request.query_params.get("installationId") or "").strip()[:255]
+    if not installation_id:
+        try:
+            from .session_store import device_id_for_token
+            installation_id = device_id_for_token(auth_token) or ""
+        except Exception:
+            installation_id = ""
+    if not installation_id:
+        return JSONResponse({"applied": False, "status": "not_implemented"}, status_code=404)
+
+    try:
+        from .inbox_store import get_inbox_store
+        updated = get_inbox_store().set_status(item_id, installation_id, status)
+    except Exception as exc:
+        logger.warning("inbox_action: store unavailable: %s", exc)
+        return JSONResponse({"applied": False, "status": "error"}, status_code=500)
+
+    if updated is None:
+        return JSONResponse({"applied": False, "status": "not_found"}, status_code=404)
+    return JSONResponse({"applied": True, "status": updated["status"]})
+
+
+async def push_test(request: Request) -> JSONResponse:
+    """POST /v1/push/test - fire a real APNs push to the registered device.
+
+    Uses the exact completion path a finished chat turn uses
+    (send_completion_push -> _send_push_for_job), so it validates the full
+    chain: registered device token -> APNs -> lock screen notification.
+    Lets you test push reliability without running a full agent turn.
+    """
+    await require_native_or_paired_auth(request)
+
+    # Read the registered token from the same state file the connector uses,
+    # so the response can distinguish a real token from a placeholder.
+    from .state import ConnectorStateStore
+    state = ConnectorStateStore().load()
+    token = (state.device_token or "").strip()
+    if not token or token in {"abc", "e2e-test-token-1234567890abcdef"}:
+        return JSONResponse(
+            {
+                "sent": False,
+                "reason": "no_device_token",
+                "detail": "No APNs device token registered. Open Kallisti once "
+                          "so it re-registers its token at launch, then retry.",
+            },
+            status_code=409,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    text = str(body.get("body") or "Test push from Kallisti").strip()[:100]
+    device_id = str(body.get("deviceId") or "").strip()[:255]
+
+    ctx = get_context()
+    if ctx.send_completion_push is None:
+        raise HTTPException(status_code=503, detail="Push delivery is unavailable")
+
+    # Seed the target device's inbox so the Inbox tab shows the test too.
+    if device_id:
+        try:
+            from .inbox_store import get_inbox_store
+            get_inbox_store().add_item(
+                installation_id=device_id,
+                title="Response ready",
+                body=text,
+                kind="notification",
+                payload={"conversationId": None} ,
+                priority="normal",
+            )
+        except Exception:
+            logger.debug("push_test: inbox seed failed (non-fatal)", exc_info=True)
+
+    await ctx.send_completion_push(
+        "test",
+        text,
+        category="HERALD_MESSAGE_READY",
+    )
+    logger.info("Test push dispatched (job=test, env=%s)", state.device_token_environment or "production")
+    return JSONResponse(
+        {
+            "sent": True,
+            "body": text,
+            "environment": state.device_token_environment or "production",
+            "note": "Check the connector log for 'Push sent for job test' to confirm APNs accepted it.",
+        }
+    )
 
 
 async def push_register(request: Request) -> JSONResponse:
@@ -1881,6 +2041,19 @@ async def push_register(request: Request) -> JSONResponse:
     if environment not in {"production", "development"}:
         raise HTTPException(status_code=400, detail="pushEnvironment must be production or development")
 
+    # Build 67: multi-device. The app sends its installationId so an iPad and
+    # iPhone each keep their own token instead of clobbering a single global
+    # slot. Fall back to resolving it from the auth token when the body omits
+    # it (older clients).
+    installation_id = str(body.get("installationId") or "").strip()[:255]
+    if not installation_id:
+        try:
+            from .session_store import device_id_for_token
+            auth_token = await require_native_or_paired_auth(request)
+            installation_id = device_id_for_token(auth_token) or ""
+        except Exception:
+            installation_id = ""
+
     # 2026-08-07: a Live Activity's ActivityKit pushToken: .token gives it its
     # OWN APNs token, distinct from the device's regular alert-push token —
     # it needs the liveactivity push type and a ContentState payload, never a
@@ -1898,10 +2071,14 @@ async def push_register(request: Request) -> JSONResponse:
         raise HTTPException(status_code=503, detail="Push registration is unavailable")
     result = await ctx.push_register({
         "token": token, "environment": environment, "tokenKind": token_kind,
+        "installationId": installation_id,
     })
     if result.get("registered") is not True:
         raise HTTPException(status_code=503, detail="Push registration was not accepted")
-    logger.info("Push registration accepted (environment=%s)", environment)
+    logger.info(
+        "Push registration accepted (environment=%s, kind=%s, device=%s)",
+        environment, token_kind, installation_id[:12] or "unknown",
+    )
     return JSONResponse({"registered": True, "environment": environment})
 
 
@@ -3602,8 +3779,9 @@ routes = [
     Route("/v1/sessions/{id}", session_delete, methods=["DELETE"]),
     Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/inbox", get_inbox, methods=["GET"]),
-    Route("/v1/inbox/{id}/action", stub_inbox_action, methods=["POST"]),
+    Route("/v1/inbox/{id}/action", inbox_action, methods=["POST"]),
     Route("/v1/push/register", push_register, methods=["POST"]),
+    Route("/v1/push/test", push_test, methods=["POST"]),
     Route("/v1/push/deactivate", stub_push_deactivate, methods=["POST"]),
     Route("/v1/push-broker/challenge", stub_push_broker_challenge, methods=["POST"]),
     Route("/v1/push-broker/register", stub_push_broker_register, methods=["POST"]),
