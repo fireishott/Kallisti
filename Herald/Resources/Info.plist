@@ -7,7 +7,7 @@
 	<key>APP_HOSTED_RELAY_URL</key>
 	<string></string>
 	<key>APP_PRIVACY_URL</key>
-	<string>https://example.com/privacy.html</string>
+	<string>https://kallisti.fihonline.net/privacy.html</string>
 	<key>APP_TERMS_URL</key>
 	<string>https://kallisti.app/terms.html</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
