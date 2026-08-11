@@ -257,8 +257,8 @@ struct NativeHistoryMessage: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         role = try container.decodeIfPresent(String.self, forKey: .role) ?? ""
-        content = (try container.decodeIfPresent(String.self, forKey: .text))
-            ?? (try container.decodeIfPresent(String.self, forKey: .content))
+        content = try container.decodeIfPresent(String.self, forKey: .text)
+            ?? container.decodeIfPresent(String.self, forKey: .content)
             ?? ""
         timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
     }
