@@ -346,7 +346,12 @@ struct ChatScreen: View {
     /// so SwiftUI never synthesizes a `…` overflow menu.
     @ToolbarContentBuilder
     private var adaptiveToolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
+        // Build 84: pill moved from .topBarLeading to .principal. In the iPad
+        // NavigationSplitView the leading slot is shared with the system
+        // sidebar toggle, which squeezed the text to zero width even with
+        // layoutPriority(1). .principal (same slot iPhone uses) gives the
+        // pill its own width budget - proven working on iPhone.
+        ToolbarItem(placement: .principal) {
             ViewThatFits(in: .horizontal) {
                 // Wide: profile + model + timer
                 HStack(spacing: Design.Spacing.sm) {
