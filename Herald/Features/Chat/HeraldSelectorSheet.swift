@@ -36,6 +36,7 @@ struct HeraldSelectorSheet: View {
     }
 
     @State private var selectedTab: Tab
+    @State private var searchText = ""
     @State private var setAsGlobalDefault = false
     @State private var isSwitching = false
     @State private var switchingModelID: String?
@@ -70,6 +71,34 @@ struct HeraldSelectorSheet: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, Design.Spacing.md)
                 .padding(.vertical, Design.Spacing.sm)
+
+                // Search field
+                HStack(spacing: Design.Spacing.xs) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    TextField("Filter models or providers...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                }
+                .padding(.horizontal, Design.Spacing.sm)
+                .padding(.vertical, Design.Spacing.xs)
+                .background(Design.Colors.surface)
+                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                        .stroke(Design.Colors.border, lineWidth: 1)
+                )
+                .padding(.horizontal, Design.Spacing.md)
+                .padding(.bottom, Design.Spacing.xs)
 
                 // Content
                 Group {
@@ -166,7 +195,7 @@ struct HeraldSelectorSheet: View {
                 )
             } else {
                 List {
-                    ForEach(modelStore.modelsByProvider, id: \.provider) { group in
+                    ForEach(filteredModelGroups, id: \.provider) { group in
                         Section(group.provider) {
                             ForEach(group.models) { model in
                                 modelRow(model)
@@ -347,6 +376,21 @@ struct HeraldSelectorSheet: View {
     }
 
     // MARK: - Actions
+
+
+    private var filteredModelGroups: [(provider: String, models: [ModelStore.HeraldModel])] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return modelStore.modelsByProvider }
+        return modelStore.modelsByProvider.compactMap { group in
+            let matchingModels = group.models.filter { model in
+                model.name.lowercased().contains(trimmed) ||
+                group.provider.lowercased().contains(trimmed) ||
+                model.id.lowercased().contains(trimmed)
+            }
+            if matchingModels.isEmpty { return nil }
+            return (provider: group.provider, models: matchingModels)
+        }
+    }
 
     private func selectModel(_ model: ModelStore.HeraldModel) {
         switchError = nil

@@ -817,9 +817,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
         transport = nil
         connectedAt = nil
 
+        // Build 82: If resetting while disconnected/unauthenticated, clear credentials & stored flags
+        // so the app returns cleanly to Onboarding instead of looping infinitely.
+        if connectionStatus != .connected && !hasStoredLogin {
+            await authCoordinator.clearLocalCredentials()
+            hasConnectedOnce = false
+            hasStoredLogin = false
+        }
+
         // Start a fresh authenticated connection.
         connectionStatus = .connecting
-        // Build 60: only reset stage on cold launch.
         if !hasConnectedOnce {
             connectionStage = .preparing
         }
