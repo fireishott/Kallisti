@@ -288,10 +288,23 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // gate on every exit path or the loading surface becomes a
             // permanent splash on a fresh install.
             defer { hasResolvedStoredLogin = true }
+            // Build 83: iOS preserves Keychain across uninstall, so a fresh
+            // install can inherit a stale cookie-auth marker or bearer token
+            // from a deleted build. That marker alone is NOT proof of a
+            // returning user: with no relay URL configured there is no host
+            // to authenticate against, and granting hasStoredLogin on the
+            // stale marker alone bypasses onboarding into a dead-end chat.
+            // Require BOTH a credential marker AND a user-configured relay.
             let hasCookieAuth = await authCoordinator.usesCookieAuth()
             let hasBearerToken = await authCoordinator.currentAccessToken() != nil
-            if hasCookieAuth || hasBearerToken {
-                self.hasStoredLogin = true
+            let configuredBase = gatewayBaseURLProvider()
+            let hasConfiguredRelay = !configuredBase.isEmpty
+                && !configuredBase.contains("localhost")
+            self.hasStoredLogin = (hasCookieAuth || hasBearerToken) && hasConfiguredRelay
+            if (hasCookieAuth || hasBearerToken) && !hasConfiguredRelay {
+                // Stale credential marker with no configured host: purge it so
+                // the next fresh launch is clean and onboarding is unblocked.
+                await authCoordinator.clearLocalCredentials()
             }
         }
     }
@@ -817,13 +830,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
         transport = nil
         connectedAt = nil
 
-        // Build 82: If resetting while disconnected/unauthenticated, clear credentials & stored flags
-        // so the app returns cleanly to Onboarding instead of looping infinitely.
-        if connectionStatus != .connected && !hasStoredLogin {
-            await authCoordinator.clearLocalCredentials()
-            hasConnectedOnce = false
-            hasStoredLogin = false
-        }
+        // Build 83: Reset always purges local credentials and auth state,
+        // regardless of the stored-login flag. The old gate (only clear when
+        // !hasStoredLogin) was backwards: a device that LOOKS logged in via a
+        // stale keychain marker never cleared anything, so Reset appeared to
+        // do nothing. Every Reset is a deliberate wipe back to onboarding.
+        await authCoordinator.clearLocalCredentials()
+        hasConnectedOnce = false
+        hasStoredLogin = false
 
         // Start a fresh authenticated connection.
         connectionStatus = .connecting

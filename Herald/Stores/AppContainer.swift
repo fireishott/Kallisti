@@ -1164,8 +1164,12 @@ final class AppContainer {
             Logger.app.info("Notification route: loaded conversation \(conversationID.uuidString.prefix(8))")
         } catch {
             Logger.app.warning("Notification route: failed to load conversation \(conversationID.uuidString.prefix(8)): \(error.localizedDescription)")
-            // Show a recoverable error state rather than crashing
-            // The user will see the chat tab with whatever conversation was last loaded
+            // Build 83: a push can carry a conversationId for a session that
+            // no longer exists on this device (fresh install, reaped session).
+            // Landing on a blank chat thread is a dead end. Fall back to the
+            // Inbox tab where the notification item with its action buttons
+            // lives, so the user has something to act on.
+            router.switchToTab(.inbox)
         }
     }
 

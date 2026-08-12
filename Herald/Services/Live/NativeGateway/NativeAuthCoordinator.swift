@@ -369,6 +369,12 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
         await secureStore.delete(key: "nativeGatewayBasicUsername")
         await secureStore.delete(key: "nativeGatewayBasicPassword")
+        // Build 83: the auth-mode marker is what usesCookieAuth() keys off.
+        // Deleting the tokens alone left a stale marker that made reset look
+        // dead: the client re-read the surviving mode and re-flagged the
+        // device as a returning user. Purge it so Reset truly returns the
+        // app to onboarding.
+        await secureStore.delete(key: "nativeGatewayAuthMode")
     }
 
     func forceRefreshAccessToken() async throws -> String {
