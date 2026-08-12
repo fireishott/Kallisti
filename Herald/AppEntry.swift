@@ -36,6 +36,26 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         }
         scheduleBackgroundRefresh()
 
+        // Build 84 Option C-C (stream watchdog): register the
+        // BGProcessingTask that wakes the app during a long backgrounded
+        // stream, probes the socket, and reconnects if dead. The identifier
+        // was already declared in Info.plist
+        // (net.fihonline.KallistiBGProcessing) with UIBackgroundModes
+        // "processing" - it just was never registered. iOS runs processing
+        // tasks opportunistically (usually minutes later, often when
+        // charging/on Wi-Fi), which is fine: it is belt-and-suspenders on
+        // top of the keep-awake re-arm (Option C-B). When it fires,
+        // handleStreamWatchdog probes the transport and re-schedules while
+        // a stream is still in flight.
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "net.fihonline.KallistiBGProcessing",
+            using: nil
+        ) { task in
+            Task { @MainActor in
+                await AppContainer.sharedDefault().handleStreamWatchdog(task as! BGProcessingTask)
+            }
+        }
+
         // Register for remote (silent push) notifications
         application.registerForRemoteNotifications()
 
@@ -226,6 +246,10 @@ struct HeraldApp: App {
             }
             endGatewayKeepAwake()
         }
+        // Build 84 Option C-C: with a stream in flight, also arm the
+        // BGProcessingTask watchdog so iOS can wake us later to probe the
+        // socket even after this ~30s background window expires.
+        AppContainer.sharedDefault().scheduleStreamWatchdog()
     }
 
     private func endGatewayKeepAwake() {

@@ -273,11 +273,13 @@ struct MessageBubble: View, Equatable {
                     .padding(.vertical, Design.Spacing.xxs)
 
                 voiceModeLabel
-            } else if message.isStreaming && message.content.isEmpty && message.reasoning.isEmpty {
+            } else if message.isStreaming && message.content.isEmpty && message.reasoning.isEmpty && message.toolActivities.isEmpty {
                 // Before the first visible prose token, show the honest status pill
-                // only while no reasoning is available. Once reasoning deltas arrive,
-                // fall through to ReasoningView so the live thought tail is visible
-                // instead of being hidden behind a generic spinner.
+                // only while no reasoning is available AND no tool is in flight.
+                // Once reasoning deltas arrive — or a tool call starts — fall
+                // through so the live thought tail (ReasoningView) and the tool
+                // rail (ToolActivityRail) render instead of being hidden behind
+                // a generic spinner.
                 streamingPlaceholder
             } else {
                 if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
