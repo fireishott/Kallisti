@@ -426,7 +426,7 @@ private struct WelcomeStepView: View {
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
 
-                Text("Ancient signal.\nModern interface.")
+                Text("The most beautiful way\nto meet your agent.")
                     .font(Design.Typography.editorialItalic)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1186,6 +1186,7 @@ private extension PermissionType {
         case .camera: "CAMERA"
         case .photos: "PHOTOS"
         case .speechRecognition: "SPEECH"
+        case .liveActivities: "LIVE ACTIVITY"
         }
     }
 
@@ -1199,6 +1200,7 @@ private extension PermissionType {
         case .camera: "Attach frames to the context."
         case .photos: "Organize and surface library items."
         case .speechRecognition: "On-device dictation in the composer."
+        case .liveActivities: "Live progress on the Lock Screen."
         }
     }
 
@@ -1212,6 +1214,7 @@ private extension PermissionType {
         case .camera: "VISION TOOLS"
         case .photos: "LIBRARY"
         case .speechRecognition: "DICTATION"
+        case .liveActivities: "LIVE STATUS"
         }
     }
 }

@@ -926,7 +926,7 @@ struct ChatScreen: View {
                 if showScrollArrow {
                     Button {
                         isUserScrolling = false
-                        scrollToBottom(animate: false)
+                        scrollToBottom(animate: false, force: true)
                     } label: {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 32))
@@ -1424,7 +1424,7 @@ struct ChatScreen: View {
         scrollToBottom()
     }
 
-    private func scrollToBottom(animate: Bool = true) {
+    private func scrollToBottom(animate: Bool = true, force: Bool = false) {
         // Build 31: always target the stable "bottom" sentinel, never a
         // mutable message UUID.  If a message row is removed (delete, retry
         // truncation, placeholder settle), a message-id scrollTo silently
@@ -1434,11 +1434,11 @@ struct ChatScreen: View {
         // bottom.  Once the user scrolls away, auto-scroll stops until they
         // tap Jump to Latest (which calls with animate: false for a clean snap).
         if chatStore.isStreaming {
-            guard !isUserScrolling, isNearBottom else { return }
+            guard force || (!isUserScrolling && isNearBottom) else { return }
             autoScrollTask?.cancel()
             autoScrollTask = Task { @MainActor in
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
-                guard !Task.isCancelled, !isUserScrolling, isNearBottom else { return }
+                guard !Task.isCancelled, (force || (!isUserScrolling && isNearBottom)) else { return }
                 if animate {
                     withAnimation(Design.Motion.standard) {
                         scrollProxy?.scrollTo("bottom", anchor: .bottom)
@@ -1451,7 +1451,7 @@ struct ChatScreen: View {
         }
         // Non-streaming: respect user scroll position.  Don't yank a user
         // who is reading history just because a poll merge changed the count.
-        guard !isUserScrolling else { return }
+        guard force || !isUserScrolling else { return }
         if animate {
             withAnimation(Design.Motion.standard) {
                 scrollProxy?.scrollTo("bottom", anchor: .bottom)
