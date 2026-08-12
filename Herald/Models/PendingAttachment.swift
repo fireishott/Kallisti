@@ -22,6 +22,16 @@ struct PendingAttachment: Identifiable, Sendable {
     /// so individual attachments still need additional aggregate request-size validation.
     static let maxFileSize = 350 * 1024
     static let maxAttachmentsPerMessage = 10
+    /// Build 78.7: video files ride the file.attach data_url path (WS cap 384 MB).
+    static let maxVideoFileSize = 150 * 1024 * 1024
+
+    private static let supportedVideoMimeTypes: Set<String> = [
+        "video/mp4",
+        "video/quicktime",
+        "video/x-m4v",
+        "video/x-msvideo",
+        "video/3gpp",
+    ]
 
     private static let supportedTextMimeTypes: Set<String> = [
         "text/plain",
@@ -40,6 +50,7 @@ struct PendingAttachment: Identifiable, Sendable {
 
     static func supportsMimeType(_ mimeType: String) -> Bool {
         mimeType.hasPrefix("image/") || supportedTextMimeTypes.contains(mimeType)
+            || supportedVideoMimeTypes.contains(mimeType)
     }
 
     /// Create an image attachment from a UIImage.
@@ -110,12 +121,13 @@ struct PendingAttachment: Identifiable, Sendable {
 
         guard let data = try? Data(contentsOf: url) else { return nil }
         let isImage = mimeType.hasPrefix("image/")
+        let isVideo = supportedVideoMimeTypes.contains(mimeType)
 
         if isImage, let image = UIImage(data: data) {
             return Self.image(image, fileName: url.lastPathComponent)
         }
 
-        guard data.count <= maxFileSize else { return nil }
+        guard data.count <= (isVideo ? maxVideoFileSize : maxFileSize) else { return nil }
 
         var thumbData: Data?
         if let image = UIImage(data: data) {
@@ -163,7 +175,7 @@ struct PendingAttachment: Identifiable, Sendable {
         thumbnailData?.base64EncodedString()
     }
 
-    private static func mimeType(for url: URL) -> String {
+    static func mimeType(for url: URL) -> String {
         let ext = url.pathExtension.lowercased()
         let map: [String: String] = [
             "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -175,11 +187,16 @@ struct PendingAttachment: Identifiable, Sendable {
             "html": "text/html", "css": "text/css",
             "xml": "text/xml", "yml": "application/yaml",
             "yaml": "application/yaml",
+            "mp4": "video/mp4",
+            "mov": "video/quicktime",
+            "m4v": "video/x-m4v",
+            "avi": "video/x-msvideo",
+            "3gp": "video/3gpp",
         ]
         return map[ext] ?? "application/octet-stream"
     }
 
-    private static func stageLocally(data: Data, preferredFileName: String) -> String? {
+    static func stageLocally(data: Data, preferredFileName: String) -> String? {
         let fileManager = FileManager.default
         guard let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil

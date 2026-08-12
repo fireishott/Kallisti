@@ -247,10 +247,9 @@ struct AttachmentPickerSheet: View {
         }
     }
 
-    /// Pull a recording out of Photos, sample it locally, then send the
-    /// representative frames through the already-supported image attachment
-    /// transport. This is intentional: the native gateway only accepts image
-    /// bytes today, so we never present a video picker that silently drops data.
+    /// Build 78.7: deliver the actual video file instead of frame-sampling.
+    /// The native gateway now has file.attach RPC that accepts any mime type
+    /// via data_url, so there's no reason to split a video into image frames.
     private func prepareScreenRecording(_ item: PhotosPickerItem) {
         isPreparing = true
         preparationError = nil
@@ -260,11 +259,12 @@ struct AttachmentPickerSheet: View {
                 guard let movie = try await item.loadTransferable(type: ScreenRecordingTransfer.self) else {
                     throw PreparationError.unreadableVideo
                 }
-                let frames = try await Self.representativeFrames(from: movie.url)
-                guard !frames.isEmpty else { throw PreparationError.unreadableVideo }
-                for frame in frames {
-                    onAttachmentPicked?(.image(frame))
+                // Validate file size before delivering
+                let fileData = try Data(contentsOf: movie.url)
+                guard fileData.count <= PendingAttachment.maxVideoFileSize else {
+                    throw PreparationError.videoTooLarge
                 }
+                onAttachmentPicked?(.file(movie.url))
                 selectedVideoItem = nil
                 dismiss()
             } catch {
@@ -328,6 +328,7 @@ struct AttachmentPickerSheet: View {
         case inaccessibleFile
         case emptyFile
         case unreadableVideo
+        case videoTooLarge
 
         var errorDescription: String? {
             switch self {
@@ -335,6 +336,7 @@ struct AttachmentPickerSheet: View {
             case .inaccessibleFile: "The selected file is not accessible."
             case .emptyFile: "The selected file is empty."
             case .unreadableVideo: "The video could not be prepared."
+            case .videoTooLarge: "Video is too large to upload."
             }
         }
     }

@@ -1432,6 +1432,32 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 }
             }
 
+            // Build 78.7: stage file attachments via file.attach RPC.
+            var fileRefTexts: [String] = []
+            for attachment in attachments where attachment.kind == .file {
+                let upload = try await client.send(
+                    method: "file.attach",
+                    params: NativeFileAttachParams(
+                        sessionId: sid,
+                        contentBase64: attachment.base64Data,
+                        filename: attachment.fileName,
+                        mimeType: attachment.mimeType
+                    ),
+                    timeoutNanos: 10_000_000_000
+                )
+                if let error = upload.error {
+                    throw error
+                }
+                fileRefTexts.append("@file:\(attachment.fileName)")
+            }
+
+            // Append file references to the message text so the agent
+            // knows about attached files.
+            var finalMessage = message
+            if !fileRefTexts.isEmpty {
+                finalMessage += "\n\n" + fileRefTexts.joined(separator: "\n")
+            }
+
             // prompt.submit returns a quick "streaming" acknowledgement;
             // the actual model turn arrives through gateway events. Never give
             // this acknowledgement the client's 60-second default timeout,
@@ -1439,7 +1465,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // no work has reached the host.
             let response = try await client.send(
                 method: "prompt.submit",
-                params: PromptSubmitParams(sessionId: sid, text: message),
+                params: PromptSubmitParams(sessionId: sid, text: finalMessage),
                 timeoutNanos: Self.submitAckTimeoutNanos
             )
             if let error = response.error {
@@ -1468,6 +1494,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                         await client.onEvent { event in
                             freshHandler.handle(event)
                         }
+                        var retryFileRefs: [String] = []
                         for attachment in attachments where attachment.kind == .image {
                             let upload = try await client.send(
                                 method: "image.attach_bytes",
@@ -1482,9 +1509,29 @@ final class NativeKallistiClient: HeraldClientProtocol {
                                 throw uploadError
                             }
                         }
+                        for attachment in attachments where attachment.kind == .file {
+                            let upload = try await client.send(
+                                method: "file.attach",
+                                params: NativeFileAttachParams(
+                                    sessionId: freshSid,
+                                    contentBase64: attachment.base64Data,
+                                    filename: attachment.fileName,
+                                    mimeType: attachment.mimeType
+                                ),
+                                timeoutNanos: 10_000_000_000
+                            )
+                            if let uploadError = upload.error {
+                                throw uploadError
+                            }
+                            retryFileRefs.append("@file:\(attachment.fileName)")
+                        }
+                        var retryMessage = message
+                        if !retryFileRefs.isEmpty {
+                            retryMessage += "\n\n" + retryFileRefs.joined(separator: "\n")
+                        }
                         let retry = try await client.send(
                             method: "prompt.submit",
-                            params: PromptSubmitParams(sessionId: freshSid, text: message),
+                            params: PromptSubmitParams(sessionId: freshSid, text: retryMessage),
                             timeoutNanos: Self.submitAckTimeoutNanos
                         )
                         if let retryError = retry.error {
@@ -1816,6 +1863,21 @@ private struct NativeImageAttachParams: Encodable {
         case sessionId = "session_id"
         case contentBase64 = "content_base64"
         case filename
+    }
+}
+
+// Build 78.7: file attachment RPC for videos and non-image files.
+private struct NativeFileAttachParams: Encodable {
+    let sessionId: String
+    let contentBase64: String
+    let filename: String
+    let mimeType: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case contentBase64 = "content_base64"
+        case filename
+        case mimeType = "mime_type"
     }
 }
 

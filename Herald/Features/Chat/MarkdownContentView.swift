@@ -314,6 +314,28 @@ struct ImageViewerScreen: View {
 
     @State private var saveError: String?
 
+    /// Build 78.7: nonisolated helper that bridges PHPhotoLibrary's GCD
+    /// completion handler to async without inheriting MainActor isolation.
+    /// The previous `try await performChanges { ... }` captured @MainActor
+    /// context in the Photos completion block, which dispatch_assert_queue
+    /// crashes when Photos calls back on a background queue (TF3 crash).
+    private nonisolated static func saveImageToPhotos(_ image: UIImage) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            }, completionHandler: { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? NSError(
+                        domain: "PhotoSave", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to save photo"]
+                    ))
+                }
+            })
+        }
+    }
+
     private func downloadToPhotos() {
         Task {
             do {
@@ -343,11 +365,10 @@ struct ImageViewerScreen: View {
                     return
                 }
 
-                // Save using PHPhotoLibrary for proper completion handling
-                try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetChangeRequest.creationRequestForAsset(from: uiImage)
-                }
-                withAnimation { savedToPhotos = true }
+                // Build 78.7: use nonisolated helper to avoid MainActor capture
+                // in the PHPhotoLibrary completion block (TF3 crash fix).
+                try await Self.saveImageToPhotos(uiImage)
+                await MainActor.run { withAnimation { savedToPhotos = true } }
             } catch {
                 withAnimation { saveError = "Save failed" }
             }
