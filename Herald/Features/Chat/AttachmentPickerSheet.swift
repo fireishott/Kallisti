@@ -57,7 +57,7 @@ struct AttachmentPickerSheet: View {
                 sourceRow(
                     icon: "video.fill",
                     color: .orange,
-                    title: "Screen Recording",
+                    title: "Video Library",
                     description: "Choose a video from your Photo Library",
                     action: { selectedVideoItem = nil; showVideoPicker = true }
                 )
@@ -334,7 +334,7 @@ struct AttachmentPickerSheet: View {
             case .invalidImage: "The selected image could not be decoded."
             case .inaccessibleFile: "The selected file is not accessible."
             case .emptyFile: "The selected file is empty."
-            case .unreadableVideo: "The screen recording could not be prepared."
+            case .unreadableVideo: "The video could not be prepared."
             }
         }
     }

@@ -77,7 +77,7 @@ struct AppRootView: View {
             // hop, so the first render races it - this gate is the splash
             // glimpse fix.
             if !hasResolvedStoredLogin {
-                return true
+                return !hasStoredLogin
             }
             if !isLaunchReady {
                 // Before the first verified connect, show the launch surface
