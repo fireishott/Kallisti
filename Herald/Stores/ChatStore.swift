@@ -377,15 +377,22 @@ final class ChatStore {
     /// are suspended, and the status indicator reports the restart.
     private(set) var restartInProgress = false
 
+    // Build 78.7: cached connection status avoids a Swift exclusivity
+    // violation (TF4 crash) when SettingsScreen reads connectionStatus
+    // while updateConnectionStatus is writing via heraldClient. The
+    // getter now reads from the local cache; the setter updates both.
+    private var _cachedConnectionStatus: ConnectionStatus = .disconnected
+
     /// Connection status, overridden by an in-flight gateway restart: the
     /// underlying transport's status is meaningless while the gateway is
     /// being replaced, and the UI must say so instead of flapping.
     var connectionStatus: ConnectionStatus {
         if restartInProgress { return .restarting }
-        return heraldClient.connectionStatus
+        return _cachedConnectionStatus
     }
 
     func updateConnectionStatus(_ status: ConnectionStatus) {
+        _cachedConnectionStatus = status
         heraldClient.connectionStatus = status
     }
 
