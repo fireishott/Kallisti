@@ -282,6 +282,40 @@ final class ChatStore {
     /// The continuous watchdog checks this to detect mid-stream stalls.
     private var streamingProgressAt: Date = .now
 
+    /// Build 84 Option C-A (probe-through-phantom): last time the stall
+    /// watchdog forced a real transport probe before declaring a stall.
+    /// Throttled so a genuinely dead gateway is probed at most once per
+    /// interval instead of spinning on every 100ms watchdog tick.
+    private var lastPhantomProbeAt: Date = .distantPast
+
+    /// Build 84 Option C-A: minimum spacing between forced socket probes
+    /// from the stall watchdog. 60s keeps the probe from hammering a dead
+    /// gateway while still healing a zombie socket within a minute of the
+    /// stall condition first appearing (the stall timeouts themselves are
+    /// 60s thinking-only / 300s streaming, so the probe fires well before
+    /// the turn is abandoned).
+    private static let phantomProbeInterval: TimeInterval = 60
+
+    /// Build 84 Option C-B (keep-awake re-arm): background task that keeps
+    /// the process alive while a stream is in flight. Re-armed on every
+    /// streaming progress event so iOS does not suspend the process (and
+    /// silently kill the WebSocket) mid-turn. Mirror of the app-level
+    /// `beginGatewayKeepAwake` in AppEntry, but owned by ChatStore so the
+    /// consumer event loop can extend it as progress flows.
+    private var streamKeepAwakeTaskID: UIBackgroundTaskIdentifier = .invalid
+
+    /// Build 84 Option C-B: when the current keep-awake task was armed.
+    /// Re-arm is throttled to keepAwakeRearmInterval so the token/event
+    /// storm (dozens per second on a fast stream) does not churn
+    /// begin/endBackgroundTask on every delta.
+    private var streamKeepAwakeArmedAt: Date = .distantPast
+
+    /// Build 84 Option C-B: minimum age of the current keep-awake task
+    /// before a progress event re-arms it. iOS grants ~30s of background
+    /// execution per beginBackgroundTask; re-arming every 15s while
+    /// progress flows keeps the window from ever expiring mid-stream.
+    private static let keepAwakeRearmInterval: TimeInterval = 15
+
     /// Build 55: number of tool calls currently in flight. Image generation
     /// (Nano Banana, gpt-5.4-image, codex) runs 2-5 minutes with NO streaming
     /// events after toolStarted - the tool is legitimately executing
@@ -329,6 +363,55 @@ final class ChatStore {
         // progress the moment they unlock the phone. No-op if the activity
         // is already on a healthy phase.
         chatLiveActivity.markStreamForegrounded()
+        // Build 84 Option C-B: app is foregrounded - the process is
+        // unsuspended, so the keep-awake task is no longer needed.
+        endStreamKeepAwake()
+    }
+
+    // MARK: - Build 84 Option C-B: stream keep-awake re-arm
+
+    /// Single choke point for "streaming progress just happened". Updates
+    /// the watchdog clock AND re-arms the keep-awake background task so a
+    /// long multi-turn task stays alive while the user backgrounds the app.
+    private func noteStreamingProgress() {
+        streamingProgressAt = .now
+        rearmStreamKeepAwake()
+    }
+
+    /// Re-arms the background task that keeps the process alive while a
+    /// stream is in flight. Called from every streaming progress event
+    /// (textDelta, reasoningDelta, toolActivity, toolStarted,
+    /// toolCompleted). Throttled to keepAwakeRearmInterval: iOS grants
+    /// ~30s of background execution per beginBackgroundTask, so re-arming
+    /// every 15s while progress flows keeps the window from expiring
+    /// mid-turn - which is what silently killed the WebSocket (receive()
+    /// never surfaced the error) and stranded queued turns behind a dead
+    /// SSE lease during long multi-tool tasks.
+    private func rearmStreamKeepAwake() {
+        // Only meaningful while the app is backgrounded - in the foreground
+        // the process runs unsuspended regardless.
+        guard UIApplication.shared.applicationState == .background else { return }
+        let now = Date.now
+        guard now.timeIntervalSince(streamKeepAwakeArmedAt) >= Self.keepAwakeRearmInterval else { return }
+        if streamKeepAwakeTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(streamKeepAwakeTaskID)
+        }
+        streamKeepAwakeTaskID = UIApplication.shared.beginBackgroundTask(withName: "kallisti.stream.keepalive") {
+            // Expired - iOS will suspend us. Nothing to clean up here beyond
+            // invalidating the ID; the foreground/recovery paths handle
+            // resumption (recoverStalledStream + resumeActiveSessionIfNeeded).
+            Task { @MainActor [weak self] in
+                self?.streamKeepAwakeTaskID = .invalid
+            }
+        }
+        streamKeepAwakeArmedAt = now
+    }
+
+    private func endStreamKeepAwake() {
+        guard streamKeepAwakeTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(streamKeepAwakeTaskID)
+        streamKeepAwakeTaskID = .invalid
+        streamKeepAwakeArmedAt = .distantPast
     }
 
     // Delta coalescing — tokens arrive faster than SwiftUI can usefully redraw.
@@ -1767,11 +1850,11 @@ final class ChatStore {
                     // connection is alive. This keeps the continuous watchdog
                     // satisfied during long model loads (30-45s prefill on
                     // constrained hardware).
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     progressContinuation?.yield(())
 
                 case .textDelta(let delta):
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     // Build 64: any text delta proves the model is
                     // producing. Reset the stall snapshot (auto-clearing
                     // the banner) and increment the live token counter
@@ -1856,7 +1939,7 @@ final class ChatStore {
                     }
 
                 case .reasoningDelta(let delta):
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     // Build 64: a reasoning delta is also real progress.
                     // Count it as tokens and clear the stall snapshot.
                     self.streamingTokenCount += delta.utf8.count
@@ -1868,7 +1951,7 @@ final class ChatStore {
                     self.enqueueReasoningDelta(delta, placeholderID: placeholderID)
 
                 case .toolActivity(let label):
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     // Build 64: a tool activity event is real progress;
                     // record what the model was doing for the banner and
                     // clear any existing stall snapshot.
@@ -1891,7 +1974,7 @@ final class ChatStore {
                     self.chatLiveActivity.updateToolProgress(label)
 
                 case .toolStarted(let activity):
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     // Build 64: tool start is real progress too. Record
                     // the label and clear any existing stall snapshot.
                     self.recordStreamingActivity(label: "tool: \(activity.label)")
@@ -1912,7 +1995,7 @@ final class ChatStore {
                     self.chatLiveActivity.updateToolProgress(activity.label)
 
                 case .toolCompleted(let toolCallID, let resultPreview, let isError, let durationMs):
-                    self.streamingProgressAt = .now
+                    self.noteStreamingProgress()
                     // Build 55: tool finished - clear the in-flight marker.
                     // Only decrement if we saw the matching start; guards
                     // against out-of-order/duplicated terminal events.
@@ -2385,7 +2468,7 @@ final class ChatStore {
         // Also enforces the absolute job deadline — even if heartbeats or
         // occasional text deltas keep arriving, the stream is terminated
         // after absoluteJobDeadline to prevent infinite hangs.
-        self.streamingProgressAt = .now
+        self.noteStreamingProgress()
         let jobAcceptedAt = Date.now
         var stallDetected = false
         while !consumerFinished {
@@ -2423,6 +2506,26 @@ final class ChatStore {
             // again: double billing and the "took too long" restart loop.
             // Only the absolute deadline above still applies as the hard cap.
             if elapsed > stallTimeout && self.activeToolCount == 0 {
+                // Build 84 Option C-A (probe-through-phantom): before
+                // declaring a stall, force a REAL socket probe. A zombie
+                // socket (iOS suspended the WS, receive() never surfaced
+                // the error) still reports connectionStatus == .connected,
+                // so the normal reconnect path never fires and the polling
+                // fallback below would query job status over the SAME dead
+                // socket - failing silently and stranding the queue behind
+                // the dead lease. reconnectIfNeeded() probes with the short
+                // session.list timeout and forces a fresh connect when the
+                // probe fails; on a live socket it returns immediately.
+                // Throttled to phantomProbeInterval so a genuinely dead
+                // gateway is not hammered on every 100ms tick. After the
+                // probe we fall through to the normal stall declaration -
+                // the polling fallback then runs on the healed socket and
+                // picks up the completed response, unblocking queued turns.
+                if Date.now.timeIntervalSince(self.lastPhantomProbeAt) >= Self.phantomProbeInterval {
+                    self.lastPhantomProbeAt = .now
+                    appendLog(level: .info, "watchdog: no progress for \(Int(elapsed.components.seconds))s - probing socket before declaring stall")
+                    await self.heraldClient.reconnectIfNeeded()
+                }
                 self.streamingPhase = .stalled
                 // Build 64: mirror the no-progress stall onto the Live
                 // Activity so the Lock Screen / Dynamic Island reflects the
@@ -2815,7 +2918,7 @@ final class ChatStore {
         let resumedRunning = await heraldClient.resumeActiveSessionIfNeeded()
         if resumedRunning {
             appendLog(level: .info, "Session still running server-side after suspension - resumed, keeping stream alive")
-            streamingProgressAt = .now
+            noteStreamingProgress()
             streamBackgroundedAt = nil
             // Keep streamingPhase as-is (streaming) so the UI keeps the
             // thinking indicator; the watchdog gets a fresh window.
@@ -3809,6 +3912,14 @@ final class ChatStore {
                 guard let jobID = message.jobID,
                       let keepIndex = lastIndexForJob[jobID],
                       keepIndex != index else { continue }
+                // B84: never strip a still-streaming row. The live placeholder
+                // shares its jobId with server-persisted tool-boundary rows; the
+                // lastIndexForJob scan sees the persisted rows AFTER the
+                // placeholder and strips the placeholder's reasoning/tool rail
+                // mid-stream, which is the "thinking bubble disappears when tool
+                // bubbles appear below" report. A row that is streaming is the
+                // CURRENT projection — keep its live artifacts until it settles.
+                if message.isStreaming { continue }
                 if !refreshedConversation.messages[index].reasoning.isEmpty {
                     Self.logger.debug(
                         "Turn projection: stripping reasoning from row \(index) of jobId \(jobID) (kept on row \(keepIndex))"
@@ -3973,7 +4084,15 @@ final class ChatStore {
                 // content and the server row is a prefix/subset, keep
                 // the local row so it reaches the splice.
                 let localContent = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if localContent.isEmpty { continue }
+                if localContent.isEmpty {
+                    // B84: keep a LIVE streaming placeholder even when its content
+                    // is still empty (tools in flight, reasoning streaming). The
+                    // B28 guard below was written for *terminal* rows; dropping a
+                    // live placeholder here replaced the thinking bubble + tool
+                    // rail with a stale server row mid-turn, which reads as
+                    // "thinking gone once tool bubbles appear".
+                    if !message.isStreaming { continue }
+                }
                 // Non-empty local content: keep and let the splice
                 // anchor it.  The B39 T5 guard (above) already protects
                 // against empty/prefix server copies for matched rows;
@@ -4155,7 +4274,18 @@ final class ChatStore {
             let existing = refreshedConversation.messages[existingIndex]
             let existingLen = existing.content.trimmingCharacters(in: .whitespacesAndNewlines).count
             let candidateLen = message.content.trimmingCharacters(in: .whitespacesAndNewlines).count
-            if candidateLen > existingLen {
+            // B84: a still-streaming row is the CURRENT projection of the turn —
+            // keep it even when the server's persisted copy has more text, so a
+            // mid-turn refresh can't replace the live bubble (with its reasoning
+            // tail and tool rail) with a stale partial row.
+            if message.isStreaming != existing.isStreaming {
+                if message.isStreaming {
+                    duplicateIndices.append(existingIndex)
+                    bestIndexForJob[jobID] = index
+                } else {
+                    duplicateIndices.append(index)
+                }
+            } else if candidateLen > existingLen {
                 duplicateIndices.append(existingIndex)
                 bestIndexForJob[jobID] = index
             } else {

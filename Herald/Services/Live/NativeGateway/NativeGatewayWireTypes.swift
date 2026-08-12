@@ -89,7 +89,10 @@ struct NativeUsagePayload: Decodable {
 }
 
 /// `tool.start` — a tool invocation has begun.
-/// Shape: `{"tool_call_id":"...","name":"...","preview":"...","emoji":"..."}`
+/// The gateway (tui_gateway/server.py `_on_tool_start`) ships
+/// `{"tool_id","name","context","args"}` — note `tool_id`, not `tool_call_id`,
+/// and `context` as the display preview. Decode tolerantly against both
+/// spellings so the tool bubble renders and tool.complete can correlate.
 struct NativeToolStartPayload: Decodable {
     let toolCallID: String?
     let name: String?
@@ -98,14 +101,28 @@ struct NativeToolStartPayload: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case toolCallID = "tool_call_id"
+        case toolID = "tool_id"
         case name
         case preview
+        case context
         case emoji
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        toolCallID = try c.decodeIfPresent(String.self, forKey: .toolCallID)
+            ?? c.decodeIfPresent(String.self, forKey: .toolID)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        preview = try c.decodeIfPresent(String.self, forKey: .preview)
+            ?? c.decodeIfPresent(String.self, forKey: .context)
+        emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
     }
 }
 
 /// `tool.complete` — a tool invocation has finished.
-/// Shape: `{"tool_call_id":"...","output":"...","is_error":false,"duration_ms":123}`
+/// Gateway ships `{"tool_id","name","args","result","duration_s"}`. Decode
+/// tolerantly (`tool_id` alias, `result` for output, `duration_s` seconds for
+/// the app's `duration_ms` millis) so completion can mark the activity done.
 struct NativeToolCompletePayload: Decodable {
     let toolCallID: String?
     let output: String?
@@ -114,9 +131,37 @@ struct NativeToolCompletePayload: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case toolCallID = "tool_call_id"
+        case toolID = "tool_id"
         case output
+        case result
         case isError = "is_error"
+        case error
         case durationMs = "duration_ms"
+        case durationS = "duration_s"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        toolCallID = try c.decodeIfPresent(String.self, forKey: .toolCallID)
+            ?? c.decodeIfPresent(String.self, forKey: .toolID)
+        // The gateway ships `result` as a JSON value that may be a string,
+        // object or list (server.py `json.loads(result)`). decodeIfPresent
+        // THROWS on a type mismatch, so use try? and stringify objects.
+        if let v = try? c.decode(String.self, forKey: .output) {
+            output = v
+        } else if let v = try? c.decode(String.self, forKey: .result) {
+            output = v
+        } else if let v = try? c.decode([String: NativeJSONValue].self, forKey: .result) {
+            output = v.isEmpty ? nil : String(describing: v)
+        } else if let v = try? c.decode([NativeJSONValue].self, forKey: .result) {
+            output = v.isEmpty ? nil : String(describing: v)
+        } else {
+            output = nil
+        }
+        isError = try c.decodeIfPresent(Bool.self, forKey: .isError)
+            ?? (c.contains(.error) ? true : nil)
+        durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
+            ?? c.decodeIfPresent(Int.self, forKey: .durationS).map { Int($0 * 1000) }
     }
 }
 

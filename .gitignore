@@ -100,3 +100,6 @@ builds/*.ipa
 
 # Local-only config backups carrying real signing values - never track.
 *.local
+
+# Build scratch dirs
+build-*/

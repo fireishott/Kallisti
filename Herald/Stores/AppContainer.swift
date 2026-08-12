@@ -1289,6 +1289,71 @@ final class AppContainer {
         task.setTaskCompleted(success: true)
     }
 
+    // MARK: - Build 84 Option C-C: stream watchdog (BGProcessingTask)
+
+    /// Handler for the `net.fihonline.KallistiBGProcessing` BGProcessingTask.
+    /// iOS runs this opportunistically (usually minutes after scheduling,
+    /// often when charging / on Wi-Fi) while the app is backgrounded. Its
+    /// job: if a stream is still in flight, force a real socket probe so a
+    /// zombie connection (iOS suspended the WS, receive() never surfaced the
+    /// error) is torn down and re-established instead of stranding queued
+    /// turns behind a dead SSE lease. Then re-schedule while the stream is
+    /// still running so the watchdog keeps firing until the turn resolves.
+    func handleStreamWatchdog(_ task: BGProcessingTask) async {
+        // Re-arm the next wake BEFORE doing work, mirroring the
+        // handleBackgroundRefresh pattern - if we crash or the task is
+        // expired mid-probe, the next schedule is already in place.
+        scheduleStreamWatchdog()
+
+        guard pairingStore.isPaired else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+        guard await sessionStore.currentAccessToken() != nil else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+
+        let expiration = Task {
+            try? await Task.sleep(for: .seconds(25))
+            task.setTaskCompleted(success: false)
+        }
+
+        guard chatStore.isStreaming else {
+            expiration.cancel()
+            task.setTaskCompleted(success: true)
+            return
+        }
+
+        // Probe-through-phantom: reconnectIfNeeded() does an 8s session.list
+        // probe and forces a fresh connect when the probe fails; on a live
+        // socket it returns immediately. This heals the exact zombie-socket
+        // failure mode without tearing down a healthy connection.
+        if let nativeGatewayClient {
+            await nativeGatewayClient.reconnectIfNeeded()
+        }
+        // If the stream is still in flight after the probe, keep the
+        // watchdog armed for the next iOS opportunity.
+        if chatStore.isStreaming {
+            scheduleStreamWatchdog()
+        }
+
+        expiration.cancel()
+        task.setTaskCompleted(success: true)
+    }
+
+    /// Submit the BGProcessingTask stream watchdog request. No-op when no
+    /// stream is in flight (nothing to keep alive). earliestBeginDate is
+    /// 60s out so iOS can coalesce it with its own scheduling heuristics
+    /// rather than firing immediately on every background.
+    func scheduleStreamWatchdog() {
+        guard chatStore.isStreaming else { return }
+        let request = BGProcessingTaskRequest(identifier: "net.fihonline.KallistiBGProcessing")
+        request.requiresNetworkConnectivity = true
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
     func handleSystemLaunch() async {
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }

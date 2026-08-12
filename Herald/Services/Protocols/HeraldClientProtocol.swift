@@ -64,6 +64,17 @@ protocol HeraldClientProtocol {
     /// so the caller can keep the stream alive instead of declaring a stall.
     func resumeActiveSessionIfNeeded() async -> Bool
 
+    /// Build 84 Option C-A (probe-through-phantom): force a real liveness
+    /// probe on the transport even when `connectionStatus == .connected`.
+    /// A zombie socket (iOS suspended the WS in background, receive() never
+    /// surfaced the error) reports connected but delivers nothing, which
+    /// fools the stall watchdog into declaring a stall while the turn is
+    /// still running server-side. The native client probes with the short
+    /// session.list timeout and forces a fresh connect when the probe
+    /// fails; on a live socket it returns immediately. The watchdog calls
+    /// this before declaring a no-progress stall.
+    func reconnectIfNeeded() async
+
     /// Send a message to a specific conversation with a specific client message ID.
     /// Used by notification actions where the target conversation may not be the current one.
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message
@@ -79,4 +90,9 @@ extension HeraldClientProtocol {
     func resumeActiveSessionIfNeeded() async -> Bool {
         false
     }
+
+    /// Default: no-op for clients without a probeable transport (mocks,
+    /// legacy relay path). The native gateway client overrides this with
+    /// its 8s session.list probe + forced fresh connect.
+    func reconnectIfNeeded() async {}
 }
