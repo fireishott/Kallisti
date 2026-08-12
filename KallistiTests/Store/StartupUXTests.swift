@@ -11,8 +11,8 @@ final class StartupUXTests: XCTestCase {
         ))
     }
 
-    func testStoredLoginReconnectShowsLoadingSurface() {
-        XCTAssertTrue(AppRootView.shouldShowLoadingSurface(
+    func testStoredLoginReconnectKeepsChatVisible() {
+        XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: true,
             hasStoredLogin: true, isBootstrapping: false,
             hasTerminalLegacyFailure: false,
@@ -103,6 +103,21 @@ final class StartupUXTests: XCTestCase {
     /// user must go LoadingSurface then AdaptiveRootView." Without the
     /// legacy-mode terminal failure flag, native mode past isLaunchReady
     /// must NEVER re-show the surface.
+    /// Regression: iOS can retain Keychain auth after the app is deleted,
+    /// but the newly installed app has no saved relay in UserDefaults. That
+    /// stale marker must not trap the user behind a reconnect splash; onboarding
+    /// is the only valid first screen for the new app installation.
+    func testResolvedFreshInstallWithStaleKeychainAuthHidesLoadingSurface() {
+        XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
+            isNative: true, isLaunchReady: false, isRecovering: true,
+            hasStoredLogin: true, hasConfiguredRelay: false,
+            isBootstrapping: false,
+            hasTerminalLegacyFailure: false,
+            reconnectDebounced: false,
+            hasResolvedStoredLogin: true
+        ))
+    }
+
     func testResolvedReturningUserLaunchReadyHidesLoadingSurface() {
         XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: false,

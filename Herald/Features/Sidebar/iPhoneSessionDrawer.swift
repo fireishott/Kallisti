@@ -130,7 +130,12 @@ struct iPhoneSessionDrawer: View {
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()
             Button {
-                Task { await sessionStore.createNewSession() }
+                Task {
+                    await sessionStore.createNewSession()
+                    if sessionStore.errorMessage == nil {
+                        withAnimation(Design.Motion.standard) { isOpen = false }
+                    }
+                }
             } label: {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: Design.Size.iconSmall))

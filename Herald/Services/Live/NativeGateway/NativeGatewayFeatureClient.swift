@@ -319,10 +319,16 @@ struct NativeGatewayFeatureClient {
         // send either (the `timeout` param only bounds the server-side
         // command execution). Same phantom-socket hang class as
         // model.options/slash.exec — bound it explicitly.
+        // Give the client a bounded grace period beyond the gateway command
+        // timeout. `hermes update --check` may legitimately spend most of its
+        // server-side budget fetching origin; a fixed 60s socket deadline made
+        // the Settings request fail before its advertised 120s command timeout.
+        let serverTimeout = UInt64(max(1, min(timeout, 600)))
+        let timeoutNanos = min((serverTimeout + 30) * 1_000_000_000, 630_000_000_000)
         let response = try await client.send(
             method: "cli.exec",
             params: CliExecParams(argv: argv, timeout: timeout),
-            timeoutNanos: 60_000_000_000
+            timeoutNanos: timeoutNanos
         )
         if let error = response.error { throw error }
         guard let result = response.result,

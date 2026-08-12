@@ -16,23 +16,19 @@ struct MessageBubbleStreamingPlaceholderTests {
 
     // MARK: - Source-shape guard
 
-    /// The selection condition in `MessageBubble.hermesMessage` no longer
-    /// requires reasoning or tool activities to be empty. Reading the file
-    /// directly is a brittle-but-honest way to lock the structure: if a
-    /// future edit re-introduces the guard, this test fails immediately.
-    @Test("Placeholder selection no longer guards on reasoning or tool activities")
-    func placeholderSelectionNoLongerGuardsOnReasoning() throws {
+    /// The empty-stream placeholder must yield to a live thought tail.
+    /// Reading the source locks the renderer order without pretending a
+    /// non-ViewInspector test has observed SwiftUI pixels.
+    @Test("Live reasoning bypasses the empty-stream placeholder")
+    func liveReasoningBypassesPlaceholder() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
             segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
 
-        // Find the hermesMessage branch and assert it does not include
-        // the old guard clauses. We look for the line that gates
-        // streamingPlaceholder and confirm only the streaming + empty
-        // content pair survives.
-        let pattern = #"else if message\.isStreaming && message\.content\.isEmpty"#
+        // Find the hermesMessage branch that gates streamingPlaceholder.
+        let pattern = #"else if message\.isStreaming && message\.content\.isEmpty && message\.reasoning\.isEmpty"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             Issue.record("Failed to compile regex")
             return
@@ -41,9 +37,8 @@ struct MessageBubbleStreamingPlaceholderTests {
         let matches = regex.matches(in: source, range: range)
         #expect(!matches.isEmpty, "Expected at least one match for the empty-content streaming guard")
 
-        // Find the first match and inspect the line. The line should be
-        // short: the bare `isStreaming && content.isEmpty` pair. We
-        // reject the longer guarded variant.
+        // The exact branch means status-only loading remains available,
+        // but a reasoning delta falls through to ReasoningView.
         guard let first = matches.first,
               let r = Range(first.range, in: source) else {
             Issue.record("No match range")
@@ -51,10 +46,10 @@ struct MessageBubbleStreamingPlaceholderTests {
         }
         let lineRange = source.lineRange(for: r)
         let line = String(source[lineRange])
-        #expect(!line.contains("reasoning.isEmpty"),
-                "Placeholder guard must not depend on reasoning being empty. Line: \(line)")
+        #expect(line.contains("message.reasoning.isEmpty"),
+                "Placeholder must yield when a live reasoning delta exists. Line: \(line)")
         #expect(!line.contains("toolActivities.isEmpty"),
-                "Placeholder guard must not depend on tool activities being empty. Line: \(line)")
+                "Tool activity must not hide the live thought tail. Line: \(line)")
     }
 
     // MARK: - Tiered text view exists
@@ -191,19 +186,17 @@ struct MessageBubbleStreamingPlaceholderTests {
 
     // MARK: - Dead inner fallback is gone
 
-    /// The inner `else if message.isStreaming && message.reasoning.isEmpty`
-    /// fallback was reachable only in theory but still contained the
-    /// `reasoning.isEmpty` guard. Lock the removal so the guard can't
-    /// accidentally be re-introduced in a future refactor.
-    @Test("MessageBubble no longer has the inner empty-content reasoning guard")
-    func innerReasoningGuardRemoved() throws {
+    /// Reasoning must be part of the top-level placeholder condition so
+    /// the same live-thought behavior holds before any prose token arrives.
+    @Test("MessageBubble placeholder requires empty reasoning")
+    func placeholderRequiresEmptyReasoning() throws {
         let url = try locateSourceFile(
             relativeTo: #filePath,
             segments: ["Herald", "Features", "Chat", "MessageBubble.swift"]
         )
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(!source.contains("message.isStreaming && message.reasoning.isEmpty"),
-                "The inner `isStreaming && reasoning.isEmpty` guard must be removed; the empty-content placeholder is now always-on via the outer guard.")
+        #expect(source.contains("message.isStreaming && message.content.isEmpty && message.reasoning.isEmpty"),
+                "Live reasoning must bypass the empty-content placeholder and render in ReasoningView.")
     }
 
     // MARK: - Helpers

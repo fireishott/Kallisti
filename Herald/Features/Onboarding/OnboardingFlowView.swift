@@ -330,6 +330,8 @@ struct OnboardingFlowView: View {
             return
         }
         if let nativeGatewayClient {
+            isSetupCodeFocused = false
+            isRelayURLFocused = false
             isNousLoginInProgress = true
             defer { isNousLoginInProgress = false }
             do {

@@ -89,10 +89,10 @@ struct AppRootView: View {
                 // this the surface would block onboarding forever. The relay
                 // value here is the r2 launch-time SNAPSHOT, so typing a URL
                 // during onboarding cannot resurrect the surface.
-                if !hasStoredLogin && !hasConfiguredRelay {
+                if !hasConfiguredRelay {
                     return false
                 }
-                return true  // launch surface: cold start, connection pending
+                return true  // launch surface: configured cold start, connection pending
             }
             // Build 69 (r1): after the first verified connect (isLaunchReady),
             // NEVER show the loading surface again. Mid-session reconnects
@@ -132,7 +132,6 @@ struct AppRootView: View {
                     // The chat UI owns its own connection banner for the brief
                     // not-yet-connected window.
                     if nativeClient.connectionStatus == .connected
-                        || nativeClient.hasStoredLogin
                         || (relayConfiguredAtLaunch ?? false) {
                         AdaptiveRootView()
                     } else {
