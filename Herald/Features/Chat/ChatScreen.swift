@@ -205,9 +205,7 @@ struct ChatScreen: View {
                         .last(where: { !$0.isStreaming })?.id
                         ?? chatStore.conversation?.messages.last?.id
                     if let lastID = stableTarget {
-                        withAnimation(Design.Motion.standard) {
-                            scrollProxy?.scrollTo(lastID, anchor: .bottom)
-                        }
+                        scrollProxy?.scrollTo(lastID, anchor: .bottom)
                     }
                 }
             }
@@ -928,7 +926,7 @@ struct ChatScreen: View {
                 if showScrollArrow {
                     Button {
                         isUserScrolling = false
-                        scrollToBottom()
+                        scrollToBottom(animate: false)
                     } label: {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 32))
@@ -1426,22 +1424,26 @@ struct ChatScreen: View {
         scrollToBottom()
     }
 
-    private func scrollToBottom() {
+    private func scrollToBottom(animate: Bool = true) {
         // Build 31: always target the stable "bottom" sentinel, never a
         // mutable message UUID.  If a message row is removed (delete, retry
         // truncation, placeholder settle), a message-id scrollTo silently
         // no-ops with no recovery path.  The sentinel is always present.
         //
-        // During streaming, debounce scroll requests — multiple onChange
-        // handlers can fire in the same run loop.  A single debounce Task
-        // coalesces them into one scroll per ~100ms.
+        // Build 78.5: streaming auto-follow only fires when already near
+        // bottom.  Once the user scrolls away, auto-scroll stops until they
+        // tap Jump to Latest (which calls with animate: false for a clean snap).
         if chatStore.isStreaming {
-            guard !isUserScrolling else { return }
+            guard !isUserScrolling, isNearBottom else { return }
             autoScrollTask?.cancel()
             autoScrollTask = Task { @MainActor in
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
-                guard !Task.isCancelled, !isUserScrolling else { return }
-                withAnimation(Design.Motion.standard) {
+                guard !Task.isCancelled, !isUserScrolling, isNearBottom else { return }
+                if animate {
+                    withAnimation(Design.Motion.standard) {
+                        scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                    }
+                } else {
                     scrollProxy?.scrollTo("bottom", anchor: .bottom)
                 }
             }
@@ -1450,7 +1452,11 @@ struct ChatScreen: View {
         // Non-streaming: respect user scroll position.  Don't yank a user
         // who is reading history just because a poll merge changed the count.
         guard !isUserScrolling else { return }
-        withAnimation(Design.Motion.standard) {
+        if animate {
+            withAnimation(Design.Motion.standard) {
+                scrollProxy?.scrollTo("bottom", anchor: .bottom)
+            }
+        } else {
             scrollProxy?.scrollTo("bottom", anchor: .bottom)
         }
     }
