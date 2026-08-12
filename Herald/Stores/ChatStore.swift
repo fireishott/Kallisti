@@ -1941,7 +1941,7 @@ final class ChatStore {
                     self.clearStall()
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     progressContinuation?.yield(())
-                    self.heraldClient.connectionStatus = .connected
+                    self.updateConnectionStatus(.connected)
                     self.activeStreams.removeAll()
                     self.streamingPhase = .idle
                     // Build 78: sweep orphaned streaming placeholders.

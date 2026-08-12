@@ -55,6 +55,8 @@
 	<string>Kallisti uses the microphone for voice conversations in Talk Mode.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Kallisti uses motion data to understand your current activity for contextual awareness.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Kallisti saves photos you ask it to keep to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Kallisti accesses your photo library to help organize and search your photos.</string>
 	<key>NSSiriUsageDescription</key>
