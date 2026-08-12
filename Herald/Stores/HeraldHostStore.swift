@@ -90,7 +90,21 @@ final class KallistiHostStore {
                 onHostChanged?()
                 return
             } catch {
-                currentHost?.isOnline = false
+                if let ch = currentHost {
+                    currentHost = HeraldHostStatus(
+                        id: ch.id,
+                        displayName: ch.displayName,
+                        hostname: ch.hostname,
+                        platform: ch.platform,
+                        connectorVersion: ch.connectorVersion,
+                        heraldCommand: ch.heraldCommand,
+                        heraldVersion: ch.heraldVersion,
+                        heraldModel: ch.heraldModel,
+                        lastSeenAt: ch.lastSeenAt,
+                        lastConnectedAt: ch.lastConnectedAt,
+                        isOnline: false
+                    )
+                }
                 lastErrorMessage = nil
                 onHostChanged?()
                 return
