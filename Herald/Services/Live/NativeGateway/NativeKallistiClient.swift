@@ -760,8 +760,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
             latencyMeasuredAt = Date()
             return ms
         } catch {
-            latencyMs = nil
-            latencyMeasuredAt = nil
+            // Keep the last successful measurement visible while the background
+            // monitor retries. A transient socket miss is not a zero-latency nor
+            // an unknown-host state.
             return nil
         }
     }

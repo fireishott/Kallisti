@@ -25,7 +25,7 @@ struct ConnectionOverlayTests {
         #expect(show == true)
     }
 
-    @Test("Native mid-session reconnect with debounce shows the loading surface")
+    @Test("Native mid-session reconnect keeps the chat visible")
     func nativeReconnectDebounced() {
         let show = AppRootView.shouldShowLoadingSurface(
             isNative: true,
@@ -36,7 +36,7 @@ struct ConnectionOverlayTests {
             hasTerminalLegacyFailure: false,
             reconnectDebounced: true
         )
-        #expect(show == true)
+        #expect(show == false)
     }
 
     @Test("Native mid-session reconnect without debounce hides the loading surface")

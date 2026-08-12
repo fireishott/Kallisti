@@ -1,3 +1,4 @@
+import AVFoundation
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -13,8 +14,10 @@ struct AttachmentPickerSheet: View {
 
     @State private var showCamera = false
     @State private var showPhotoPicker = false
+    @State private var showVideoPicker = false
     @State private var showFilePicker = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var selectedVideoItem: PhotosPickerItem?
     @State private var isPreparing = false
     @State private var preparationError: String?
 
@@ -46,6 +49,17 @@ struct AttachmentPickerSheet: View {
                     title: "Photo Library",
                     description: "Choose from your photos",
                     action: { showPhotoPicker = true }
+                )
+
+                // Screen recordings are represented as a small sequence of
+                // on-device frames, then sent via the gateway's proven native
+                // image attachment path. The gateway has no video-byte RPC.
+                sourceRow(
+                    icon: "video.fill",
+                    color: .orange,
+                    title: "Screen Recording",
+                    description: "Choose a video from your Photo Library",
+                    action: { selectedVideoItem = nil; showVideoPicker = true }
                 )
 
                 // Browse Files
@@ -95,6 +109,15 @@ struct AttachmentPickerSheet: View {
         .onChange(of: selectedPhotoItems) { _, items in
             guard !items.isEmpty else { return }
             preparePhotos(items)
+        }
+        .photosPicker(
+            isPresented: $showVideoPicker,
+            selection: $selectedVideoItem,
+            matching: .videos
+        )
+        .onChange(of: selectedVideoItem) { _, item in
+            guard let item else { return }
+            prepareScreenRecording(item)
         }
         .sheet(isPresented: $showFilePicker) {
             DocumentPickerView(
@@ -224,6 +247,55 @@ struct AttachmentPickerSheet: View {
         }
     }
 
+    /// Pull a recording out of Photos, sample it locally, then send the
+    /// representative frames through the already-supported image attachment
+    /// transport. This is intentional: the native gateway only accepts image
+    /// bytes today, so we never present a video picker that silently drops data.
+    private func prepareScreenRecording(_ item: PhotosPickerItem) {
+        isPreparing = true
+        preparationError = nil
+
+        Task {
+            do {
+                guard let movie = try await item.loadTransferable(type: ScreenRecordingTransfer.self) else {
+                    throw PreparationError.unreadableVideo
+                }
+                let frames = try await Self.representativeFrames(from: movie.url)
+                guard !frames.isEmpty else { throw PreparationError.unreadableVideo }
+                for frame in frames {
+                    onAttachmentPicked?(.image(frame))
+                }
+                selectedVideoItem = nil
+                dismiss()
+            } catch {
+                preparationError = error.localizedDescription
+            }
+        }
+    }
+
+    private static func representativeFrames(from url: URL) async throws -> [UIImage] {
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration)
+        let seconds = max(CMTimeGetSeconds(duration), 0)
+        guard seconds.isFinite, seconds > 0 else { throw PreparationError.unreadableVideo }
+
+        // Six evenly distributed frames give the agent enough temporal context
+        // for an app recording without crushing the native image payload cap.
+        let frameCount = min(6, max(1, Int(ceil(seconds))))
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 960, height: 960)
+        var frames: [UIImage] = []
+        for index in 0..<frameCount {
+            let fraction = Double(index + 1) / Double(frameCount + 1)
+            let time = CMTime(seconds: seconds * fraction, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                frames.append(UIImage(cgImage: cgImage))
+            }
+        }
+        return frames
+    }
+
     private func preparePhotos(_ items: [PhotosPickerItem]) {
         isPreparing = true
         preparationError = nil
@@ -255,12 +327,14 @@ struct AttachmentPickerSheet: View {
         case invalidImage
         case inaccessibleFile
         case emptyFile
+        case unreadableVideo
 
         var errorDescription: String? {
             switch self {
             case .invalidImage: "The selected image could not be decoded."
             case .inaccessibleFile: "The selected file is not accessible."
             case .emptyFile: "The selected file is empty."
+            case .unreadableVideo: "The screen recording could not be prepared."
             }
         }
     }
@@ -346,6 +420,25 @@ struct DocumentPickerView: UIViewControllerRepresentable {
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             onComplete([])
+        }
+    }
+}
+
+
+/// File-based transfer keeps Photos' temporary movie URL valid long enough for
+/// frame extraction. The copy is local and is never uploaded as opaque video
+/// bytes, because the native gateway's supported attachment contract is images.
+private struct ScreenRecordingTransfer: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            let source = received.file
+            let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kallisti-screen-recording-\(UUID().uuidString).\(ext)")
+            try FileManager.default.copyItem(at: source, to: destination)
+            return ScreenRecordingTransfer(url: destination)
         }
     }
 }

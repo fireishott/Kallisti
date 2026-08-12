@@ -870,9 +870,12 @@ final class AppContainer {
                     await container.modelStore.loadModels(force: true)
                     await container.hostStore.refresh()
                     await container.sessionListStore.loadSessions(forceRefresh: true)
-                    // Build 70: preload infra + latency at connection time so
-                    // Settings shows live values the moment it opens.
+                    // Preload infra + latency at connection time so Settings
+                    // shows live values the moment it opens. A fresh onboarding writes
+                    // the relay after AppContainer initialization, so create the aux
+                    // service here as well as at construction time.
                     container.startLatencyMonitoring()
+                    container.ensureAuxService()
                     if let aux = container.auxService, aux.tasks.isEmpty {
                         await aux.load()
                     }
@@ -883,6 +886,20 @@ final class AppContainer {
         }
 
         return container
+    }
+
+    /// Ensures native Settings has an auxiliary-model service after a relay
+    /// is configured during onboarding. This is idempotent and intentionally does
+    /// not replace an existing service, preserving any visible load/error state.
+    func ensureAuxService() {
+        guard auxService == nil,
+              let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+        else { return }
+        auxService = AuxModelService(
+            apiClient: RelayAPIClient { relayBase },
+            accessTokenProvider: { [sessionStore] in await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { [nativeGatewayClient] in nativeGatewayClient?.featureClient }
+        )
     }
 
     /// Build 70: begin polling connector latency on a 3s cadence. The value
@@ -1160,7 +1177,16 @@ final class AppContainer {
         // the error - force a healthy socket on foreground instead of letting
         // a phantom connection fail every request.
         if let nativeGatewayClient {
-            await nativeGatewayClient.reconnectIfNeeded()
+            // iOS preserves Keychain across an uninstall, while a fresh app
+            // install has no relay configuration in UserDefaults. Do not let
+            // a stale auth marker force that fresh install into a reconnect
+            // loop before it can reach onboarding. A configured relay is the
+            // local opt-in for cold-start auto-connect; after a live connection
+            // the client also owns normal foreground recovery.
+            let hasConfiguredRelay = settingsStore.settings.relayConfiguration.activeBaseURLString != nil
+            if hasConfiguredRelay || nativeGatewayClient.hasConnectedOnce {
+                await nativeGatewayClient.reconnectIfNeeded()
+            }
         }
 
         guard pairingStore.isPaired else { return }

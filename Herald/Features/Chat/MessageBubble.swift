@@ -273,15 +273,11 @@ struct MessageBubble: View, Equatable {
                     .padding(.vertical, Design.Spacing.xxs)
 
                 voiceModeLabel
-            } else if message.isStreaming && message.content.isEmpty {
-                // Empty content while streaming - show tiered status pill.
-                // This branch fires for ALL empty-content streaming cases,
-                // including thinking models whose reasoning/CoT is still
-                // arriving. Do not gate on reasoning.isEmpty or
-                // toolActivities.isEmpty: doing so makes thinking models
-                // fall through to a bare blinking cursor in the rendered
-                // markdown, which the user reads as "hung app".
-                // Regression-guarded by MessageBubbleStreamingPlaceholderTests.
+            } else if message.isStreaming && message.content.isEmpty && message.reasoning.isEmpty {
+                // Before the first visible prose token, show the honest status pill
+                // only while no reasoning is available. Once reasoning deltas arrive,
+                // fall through to ReasoningView so the live thought tail is visible
+                // instead of being hidden behind a generic spinner.
                 streamingPlaceholder
             } else {
                 if !message.reasoning.isEmpty && settingsStore.settings.showReasoning {
