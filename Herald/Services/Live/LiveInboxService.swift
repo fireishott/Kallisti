@@ -14,6 +14,7 @@ final class LiveInboxService: InboxServiceProtocol {
         let priority: InboxItemPriority
         let status: InboxItemStatus
         let payload: [String: String]?
+        let attachments: [MessageAttachment]?
         let createdAt: Date
         let primaryActionTitle: String?
         let secondaryActionTitle: String?
@@ -61,6 +62,7 @@ final class LiveInboxService: InboxServiceProtocol {
                 status: item.status,
                 priority: item.priority,
                 payload: item.payload,
+                attachments: item.attachments,
                 primaryAction: item.primaryActionTitle.map { InboxActionDescriptor(id: primaryActionID, title: $0) },
                 secondaryAction: item.secondaryActionTitle.map { InboxActionDescriptor(id: "dismiss", title: $0, isDestructive: true) }
             )
