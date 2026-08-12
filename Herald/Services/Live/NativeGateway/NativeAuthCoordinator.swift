@@ -363,6 +363,14 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
     /// connector-direct call returns 401 even though the local check
     /// considers the token valid. Used by registerPushToken and
     /// registerNativeWatch to recover from that 401 in a single retry.
+    func clearLocalCredentials() async {
+        await secureStore.delete(key: "nativeGatewayAccessToken")
+        await secureStore.delete(key: "nativeGatewayRefreshToken")
+        await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
+        await secureStore.delete(key: "nativeGatewayBasicUsername")
+        await secureStore.delete(key: "nativeGatewayBasicPassword")
+    }
+
     func forceRefreshAccessToken() async throws -> String {
         await secureStore.delete(key: "nativeGatewayAccessTokenExpiresAt")
         return try await performTokenRefresh()
@@ -509,4 +517,5 @@ extension NativeAuthError: LocalizedError {
             return "The gateway username or password was not accepted."
         }
     }
+
 }
