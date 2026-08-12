@@ -13,6 +13,7 @@ struct ChatScreen: View {
     @Environment(TabRouter.self) private var router
     @Environment(HeraldCanvasStore.self) private var canvasStore
     @Environment(SessionListStore.self) private var sessionListStore
+    @Environment(AppContainer.self) private var container
     @Binding var isSessionDrawerOpen: Bool
 
     @State private var pendingAttachments: [PendingAttachment] = []
@@ -1125,7 +1126,10 @@ struct ChatScreen: View {
                UIApplication.shared.canOpenURL(deepLink) {
                 UIApplication.shared.open(deepLink)
             } else {
-                Task { await hostStore.refresh() }
+                Task {
+                    await container.nativeGatewayClient?.resetConnection()
+                    await hostStore.refresh()
+                }
             }
         case .online, .offline, .notConnected:
             router.presentSheet(.settings)

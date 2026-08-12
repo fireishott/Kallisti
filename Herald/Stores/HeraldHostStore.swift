@@ -90,7 +90,10 @@ final class KallistiHostStore {
                 onHostChanged?()
                 return
             } catch {
-                // Fall through to legacy path.
+                currentHost?.isOnline = false
+                lastErrorMessage = nil
+                onHostChanged?()
+                return
             }
         }
 
