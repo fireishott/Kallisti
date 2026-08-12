@@ -1,3 +1,4 @@
+import ActivityKit
 import AVFoundation
 import Foundation
 import Speech
@@ -65,6 +66,10 @@ final class PermissionsStore {
             _ = await motionService?.requestAuthorization()
         case .speechRecognition:
             await requestSpeechAuthorization()
+        case .liveActivities:
+            // Live Activities is a Settings toggle, not a TCC prompt.
+            // Reflect the current state; the UI routes to Settings when off.
+            break
         }
 
         capabilities = currentCapabilities()
@@ -118,7 +123,27 @@ final class PermissionsStore {
                 status: speechRecognitionStatus(),
                 statusDetail: Self.speechRecognitionStatusDetail(for: speechRecognitionStatus())
             ),
+            DeviceCapability(
+                permissionType: .liveActivities,
+                status: Self.liveActivitiesStatus(),
+                statusDetail: Self.liveActivitiesStatusDetail()
+            ),
         ]
+    }
+
+    // MARK: - Live Activities
+
+    /// Live Activities is a Settings toggle, not a TCC prompt. Surface
+    /// enabled/disabled so onboarding and the permissions screen can guide
+    /// users who have them off.
+    private static func liveActivitiesStatus() -> PermissionStatus {
+        ActivityAuthorizationInfo().areActivitiesEnabled ? .authorized : .denied
+    }
+
+    private static func liveActivitiesStatusDetail() -> String? {
+        ActivityAuthorizationInfo().areActivitiesEnabled
+            ? nil
+            : "Enable in Settings > Kallisti > Live Activities"
     }
 
     // MARK: - Microphone

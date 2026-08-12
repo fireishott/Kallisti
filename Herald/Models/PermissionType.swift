@@ -9,6 +9,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     case photos
     case motion
     case speechRecognition
+    case liveActivities
 
     var id: String { rawValue }
 
@@ -22,6 +23,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .photos: "Photos"
         case .motion: "Motion & Activity"
         case .speechRecognition: "Speech Recognition"
+        case .liveActivities: "Live Activities"
         }
     }
 
@@ -35,6 +37,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .photos: "photo.fill"
         case .motion: "figure.walk"
         case .speechRecognition: "waveform"
+        case .liveActivities: "sparkles.rectangle.stack"
         }
     }
 
@@ -48,6 +51,7 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
         case .photos: .green
         case .motion: .teal
         case .speechRecognition: .cyan
+        case .liveActivities: .pink
         }
     }
 
@@ -69,6 +73,8 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
             "Kallisti uses motion data to understand your current activity for contextual awareness."
         case .speechRecognition:
             "On-device speech recognition for dictation in the chat composer."
+        case .liveActivities:
+            "Show live chat progress in the Dynamic Island and Lock Screen while Kallisti works."
         }
     }
 
@@ -76,5 +82,5 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     /// Build 54: speechRecognition was missing - the enum and request path
     /// existed, but onboarding never asked for it, so dictation stayed
     /// silently unauthorized until the user dug into Settings.
-    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .camera, .motion, .photos, .speechRecognition]
+    static let onboardingPermissions: [PermissionType] = [.location, .notifications, .health, .microphone, .camera, .motion, .photos, .speechRecognition, .liveActivities]
 }

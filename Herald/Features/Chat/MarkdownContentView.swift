@@ -198,18 +198,52 @@ struct ImageViewerScreen: View {
     let altText: String
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(AttachmentService.self) private var attachmentService
     @State private var savedToPhotos = false
+    // Build 78.6: pinch-to-zoom with pan and double-tap, mirroring the
+    // attachment full-screen viewer so inline images behave the same.
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            AsyncImage(url: url) { phase in
+            AuthenticatedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        .scaleEffect(scale)
+                        .offset(offset)
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in scale = min(max(lastScale * value, 1), 5) }
+                                .onEnded { _ in
+                                    lastScale = scale
+                                    if scale <= 1 {
+                                        withAnimation(.spring) { offset = .zero; lastOffset = .zero }
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    guard scale > 1 else { return }
+                                    offset = CGSize(width: lastOffset.width + value.translation.width,
+                                                    height: lastOffset.height + value.translation.height)
+                                }
+                                .onEnded { _ in lastOffset = offset }
+                        )
+                        .onTapGesture(count: 2) {
+                            withAnimation(.spring) {
+                                if scale > 1 { scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero }
+                                else { scale = 2.5; lastScale = 2.5 }
+                            }
+                        }
                         .ignoresSafeArea()
 
                 case .failure:
@@ -290,7 +324,20 @@ struct ImageViewerScreen: View {
                     return
                 }
 
-                let (data, _) = try await URLSession.shared.data(from: url)
+                // Build 78.6: the image URL requires the relay bearer token
+                // (same auth rules as AuthenticatedAsyncImage). A bare
+                // URLSession fetch returns 401 and the save fails.
+                var request = URLRequest(url: url)
+                if url.path.hasPrefix("/v1/native/")
+                    || url.host?.contains("192.168") == true
+                    || url.host?.contains("10.") == true
+                    || url.host?.contains("172.16.") == true
+                    || url.host?.hasSuffix(".local") == true {
+                    if let token = await attachmentService.accessToken() {
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    }
+                }
+                let (data, _) = try await URLSession.shared.data(for: request)
                 guard let uiImage = UIImage(data: data) else {
                     withAnimation { saveError = "Invalid image data" }
                     return

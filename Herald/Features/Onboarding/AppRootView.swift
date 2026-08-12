@@ -131,8 +131,14 @@ struct AppRootView: View {
                     // user - cold start must land in the chat UI, never onboarding.
                     // The chat UI owns its own connection banner for the brief
                     // not-yet-connected window.
+                    // Build 78.6: a stored login means a returning user -
+                    // mount chat immediately even before the relay snapshot
+                    // freezes or the socket connects. The connection banner
+                    // owns the not-yet-connected window. This kills the
+                    // cold-launch onboarding flash for configured devices.
                     if nativeClient.connectionStatus == .connected
-                        || (relayConfiguredAtLaunch ?? false) {
+                        || (relayConfiguredAtLaunch ?? false)
+                        || nativeClient.hasStoredLogin {
                         AdaptiveRootView()
                     } else {
                         OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
