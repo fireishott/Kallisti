@@ -1,4 +1,5 @@
 import UserNotifications
+import KallistiSupport
 
 class NotificationService: UNNotificationServiceExtension {
     private static let logger = "NotificationService"
@@ -64,11 +65,18 @@ class NotificationService: UNNotificationServiceExtension {
             break
         }
 
-        // Attach remote image attachment if present in push payload
+        // Attach remote image attachment if present in push payload.
+        // Build 83: the connector media route requires native auth, so a bare
+        // URLSession download gets 401. Read the shared Keychain token via
+        // KallistiSupport and attach an Authorization header.
         if let mediaUrlString = userInfo["mediaUrl"] as? String ?? userInfo["imageUrl"] as? String,
            let mediaUrl = URL(string: mediaUrlString) {
             let semaphore = DispatchSemaphore(value: 0)
-            let task = URLSession.shared.downloadTask(with: mediaUrl) { location, response, error in
+            var request = URLRequest(url: mediaUrl)
+            if let token = try? SharedCredentialProvider.shared.accessToken() {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let task = URLSession.shared.downloadTask(with: request) { location, response, error in
                 defer { semaphore.signal() }
                 guard let location = location, error == nil else { return }
                 let tmpDir = FileManager.default.temporaryDirectory
