@@ -703,6 +703,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 hasStoredLogin = false
             }
             connectionStatus = hasStoredLogin ? .reconnecting : .disconnected
+            if !hasStoredLogin {
+                hasConnectedOnce = false
+            }
             // Build 60: only reset stage on cold launch. After first connect,
             // the stage stays .connected and the connection banner handles state.
             if !hasConnectedOnce {

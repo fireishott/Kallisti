@@ -12,6 +12,7 @@ struct InboxItem: Codable, Identifiable, Hashable, Sendable {
     var status: InboxItemStatus
     var priority: InboxItemPriority
     var payload: [String: String]?
+    var attachments: [MessageAttachment]?
     var primaryAction: InboxActionDescriptor?
     var secondaryAction: InboxActionDescriptor?
 
@@ -27,6 +28,7 @@ struct InboxItem: Codable, Identifiable, Hashable, Sendable {
         status: InboxItemStatus = .pending,
         priority: InboxItemPriority = .normal,
         payload: [String: String]? = nil,
+        attachments: [MessageAttachment]? = nil,
         primaryAction: InboxActionDescriptor? = nil,
         secondaryAction: InboxActionDescriptor? = nil
     ) {
@@ -41,6 +43,7 @@ struct InboxItem: Codable, Identifiable, Hashable, Sendable {
         self.status = status
         self.priority = priority
         self.payload = payload
+        self.attachments = attachments
         self.primaryAction = primaryAction
         self.secondaryAction = secondaryAction
     }

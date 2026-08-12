@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Full-window view of a notification-type inbox item. Opened from the
 /// Inbox row's Open button when the item has no conversation reference
-/// (test push, system alert). Shows the complete body, any links from the
+/// (test push, system alert). Shows the complete body, any attachments, any links from the
 /// payload, the primary/secondary actions, and Dismiss + Snooze controls.
 /// Build 68: replaces the previous dead-end where Open on a generic
 /// notification submitted a no-op "open" action and nothing appeared.
@@ -20,6 +20,9 @@ struct NotificationDetailSheet: View {
                 VStack(alignment: .leading, spacing: Design.Spacing.lg) {
                     header
                     bodyText
+                    if let atts = item.attachments, !atts.isEmpty {
+                        attachmentsSection(atts)
+                    }
                     if let links = extractLinks, !links.isEmpty {
                         linksSection(links)
                     }
@@ -71,6 +74,16 @@ struct NotificationDetailSheet: View {
             .font(Design.Typography.body)
             .foregroundStyle(Design.Colors.secondaryForeground)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Attachments
+
+    private func attachmentsSection(_ atts: [MessageAttachment]) -> some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+            Text("ATTACHMENTS")
+                .brandEyebrow(Design.Colors.tertiaryForeground)
+            MessageAttachmentsView(attachments: atts, alignment: .leading)
+        }
     }
 
     // MARK: - Links

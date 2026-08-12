@@ -64,6 +64,25 @@ class NotificationService: UNNotificationServiceExtension {
             break
         }
 
+        // Attach remote image attachment if present in push payload
+        if let mediaUrlString = userInfo["mediaUrl"] as? String ?? userInfo["imageUrl"] as? String,
+           let mediaUrl = URL(string: mediaUrlString) {
+            let semaphore = DispatchSemaphore(value: 0)
+            let task = URLSession.shared.downloadTask(with: mediaUrl) { location, response, error in
+                defer { semaphore.signal() }
+                guard let location = location, error == nil else { return }
+                let tmpDir = FileManager.default.temporaryDirectory
+                let tmpFile = tmpDir.appendingPathComponent(UUID().uuidString + "." + (mediaUrl.pathExtension.isEmpty ? "jpg" : mediaUrl.pathExtension))
+                do {
+                    try FileManager.default.moveItem(at: location, to: tmpFile)
+                    let attachment = try UNNotificationAttachment(identifier: "media", url: tmpFile, options: nil)
+                    bestAttemptContent.attachments = [attachment]
+                } catch {}
+            }
+            task.resume()
+            _ = semaphore.wait(timeout: .now() + 5.0)
+        }
+
         // Ensure deep-link fields are present for tap handling
         if bestAttemptContent.userInfo["conversationId"] == nil {
             if let convId = bestAttemptContent.targetContentIdentifier {
