@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Design Tokens
 // Herald 2.1 brand kit — "Ancient signal. Modern interface."
@@ -285,6 +286,19 @@ extension Color {
             green: Double((hex >> 8) & 0xFF) / 255.0,
             blue: Double(hex & 0xFF) / 255.0,
             opacity: opacity
+        )
+    }
+
+    /// Best-effort 6-digit RGB hex string (no `#`) for persistence.
+    /// Returns nil for dynamic/system/accent colors that have no concrete
+    /// RGB components, so a picker result always round-trips cleanly.
+    var hexString: String? {
+        let uiColor = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard uiColor.getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        return String(
+            format: "%02X%02X%02X",
+            Int(round(r * 255)), Int(round(g * 255)), Int(round(b * 255))
         )
     }
 }
