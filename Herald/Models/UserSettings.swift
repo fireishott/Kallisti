@@ -532,6 +532,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var themePreset: ThemePreset
     var colorSchemePreference: ColorSchemePreference
     var chatWallpaper: ChatWallpaper
+    var chatTextColorHex: String?
     var showAllDevices: Bool
     var ttsEnabled: Bool
     var ttsVoice: String
@@ -561,6 +562,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         themePreset: ThemePreset = .kallisti,
         colorSchemePreference: ColorSchemePreference = .system,
         chatWallpaper: ChatWallpaper = .default,
+        chatTextColorHex: String? = nil,
         showAllDevices: Bool = true,
         ttsEnabled: Bool = false,
         ttsVoice: String = "Mia",
@@ -589,6 +591,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.themePreset = themePreset
         self.colorSchemePreference = colorSchemePreference
         self.chatWallpaper = chatWallpaper
+        self.chatTextColorHex = chatTextColorHex
         self.showAllDevices = showAllDevices
         self.ttsEnabled = ttsEnabled
         self.ttsVoice = ttsVoice
@@ -619,6 +622,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case themePreset
         case colorSchemePreference
         case chatWallpaper
+        case chatTextColorHex
         case showAllDevices
         case ttsEnabled
         case ttsVoice
@@ -658,6 +662,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         }
         colorSchemePreference = try container.decodeIfPresent(ColorSchemePreference.self, forKey: .colorSchemePreference) ?? .system
         chatWallpaper = try container.decodeIfPresent(ChatWallpaper.self, forKey: .chatWallpaper) ?? .default
+        chatTextColorHex = try container.decodeIfPresent(String.self, forKey: .chatTextColorHex)
         showAllDevices = try container.decodeIfPresent(Bool.self, forKey: .showAllDevices) ?? true
         ttsEnabled = try container.decodeIfPresent(Bool.self, forKey: .ttsEnabled) ?? false
         ttsVoice = try container.decodeIfPresent(String.self, forKey: .ttsVoice) ?? "Mia"
@@ -689,6 +694,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(themePreset, forKey: .themePreset)
         try container.encode(colorSchemePreference, forKey: .colorSchemePreference)
         try container.encode(chatWallpaper, forKey: .chatWallpaper)
+        try container.encodeIfPresent(chatTextColorHex, forKey: .chatTextColorHex)
         try container.encode(showAllDevices, forKey: .showAllDevices)
         try container.encode(ttsEnabled, forKey: .ttsEnabled)
         try container.encode(ttsVoice, forKey: .ttsVoice)

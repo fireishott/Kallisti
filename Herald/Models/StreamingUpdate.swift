@@ -16,6 +16,7 @@ enum StreamingUpdate: Sendable {
     case toolActivity(String)
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
+    case toolOutput(toolCallID: String, chunk: String)
     case started(phase: String)
     case heartbeat(phase: String)
     case reconnecting

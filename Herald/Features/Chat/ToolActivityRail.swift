@@ -27,28 +27,34 @@ struct ToolActivityRail: View {
     // MARK: - Live Streaming Indicator
 
     private var liveIndicator: some View {
-        HStack(spacing: Design.Spacing.xs) {
-            ProgressView()
-                .controlSize(.mini)
-                .tint(Design.Colors.secondaryForeground)
+        VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+            HStack(spacing: Design.Spacing.xs) {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(Design.Colors.secondaryForeground)
 
-            if let latest = latestActivity {
-                Text(latest.label)
-                    .brandEyebrow()
-                    .lineLimit(1)
-                    .id(latest.id)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    ))
-                    .animation(Design.Motion.quickResponse, value: latest.id)
+                if let latest = latestActivity {
+                    Text(latest.label)
+                        .brandEyebrow()
+                        .lineLimit(1)
+                        .id(latest.id)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .move(edge: .top).combined(with: .opacity)
+                        ))
+                        .animation(Design.Motion.quickResponse, value: latest.id)
+                }
+            }
+            .padding(.horizontal, Design.Spacing.sm)
+            .padding(.vertical, Design.Spacing.xxs + 1)
+            .background(Design.Colors.surface)
+            .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
+            .clipShape(Capsule())
+
+            if let latest = latestActivity, !latest.liveOutput.isEmpty {
+                TerminalOutputView(text: latest.liveOutput, isActive: true)
             }
         }
-        .padding(.horizontal, Design.Spacing.sm)
-        .padding(.vertical, Design.Spacing.xxs + 1)
-        .background(Design.Colors.surface)
-        .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
-        .clipShape(Capsule())
     }
 
     // MARK: - Finished Summary (expandable)

@@ -123,6 +123,7 @@
 		49857B7B2DB452B0B5385C8A /* ChatOutboxRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0551C528E5F45CB7D9EDA9D0 /* ChatOutboxRecord.swift */; };
 		4AE5212518AC87A9EC16C414 /* OutboxDurableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369C626933B0631D577E96A5 /* OutboxDurableTests.swift */; };
 		4AFCF13D092060BF7323C14D /* ToolActivityRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */; };
+		B7E87810AEED2B2DC1359685 /* TerminalOutputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D314D55A4F48791D662A908 /* TerminalOutputView.swift */; };
 		4B0C9B3FE7119D8A561EBC5C /* InboxItemPriority.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B7D51CD4AD9A91B4DCA6BA /* InboxItemPriority.swift */; };
 		4B21A46040AA4F267BD7BAED /* LiveVoiceSessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 947D3C677DF7F518441E2917 /* LiveVoiceSessionService.swift */; };
 		4B25D2B42A4E3242D81298C0 /* HeraldSupportConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F8B967040CA7210E3C6EA24 /* HeraldSupportConfiguration.swift */; };
@@ -673,6 +674,7 @@
 		A48B9834AB39B26D1AC88AFE /* MockNotesRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockNotesRepository.swift; sourceTree = "<group>"; };
 		A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolActivityRail.swift; sourceTree = "<group>"; };
+		0D314D55A4F48791D662A908 /* TerminalOutputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputView.swift; sourceTree = "<group>"; };
 		A65EB193F422B75698743CB5 /* LiveSessionBootstrapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSessionBootstrapService.swift; sourceTree = "<group>"; };
 		A6608E31D839BA3FB64BD247 /* MockHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHeraldClient.swift; sourceTree = "<group>"; };
 		A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBootstrapServiceProtocol.swift; sourceTree = "<group>"; };
@@ -1176,6 +1178,7 @@
 				FBE7679F4118D199193E9D63 /* SlashCommandMenu.swift */,
 				A96DFEDEE338BADEBA23892E /* StatusCardView.swift */,
 				A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */,
+				0D314D55A4F48791D662A908 /* TerminalOutputView.swift */,
 				12390528FCB15F35578B47B0 /* TypingDotsView.swift */,
 				4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */,
 				ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */,
@@ -2118,6 +2121,7 @@
 				B711D59B0B1E010D34F66E1A /* TokenUsage.swift in Sources */,
 				060976C01678431CA6214EC6 /* ToolActivity.swift in Sources */,
 				4AFCF13D092060BF7323C14D /* ToolActivityRail.swift in Sources */,
+				B7E87810AEED2B2DC1359685 /* TerminalOutputView.swift in Sources */,
 				7FA808C7C6D08742BBE8DD2F /* ToolCallBubbleView.swift in Sources */,
 				38E1B623FB9394B0E776C600 /* ToolNameSanitizer.swift in Sources */,
 				8FDBBD9A387C3DCBDA92BA1B /* TranscriptIdentity.swift in Sources */,
@@ -2317,10 +2321,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2338,10 +2342,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2360,11 +2364,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2395,12 +2399,12 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2416,10 +2420,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -2435,10 +2439,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2532,10 +2536,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2553,10 +2557,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2574,10 +2578,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2596,11 +2600,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2618,10 +2622,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -2655,12 +2659,12 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85.0;
+				CURRENT_PROJECT_VERSION = 89.0;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 0.2.4;
+				MARKETING_VERSION = 0.2.5;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
