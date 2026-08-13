@@ -288,7 +288,7 @@ private struct VideoAttachmentView: View {
         .task { await loadThumbnail() }
         .fullScreenCover(isPresented: $isPlaying) {
             if let localURL {
-                VideoPlayerView(url: localURL)
+                AttachmentVideoPlayerView(url: localURL)
             }
         }
     }
@@ -391,7 +391,7 @@ private struct PDFAttachmentView: View {
 
 // MARK: - Video playback
 
-private struct VideoPlayerView: View {
+private struct AttachmentVideoPlayerView: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
 

@@ -295,7 +295,7 @@ struct MessageBubble: View, Equatable {
                     let isAttachmentPlaceholder = !message.attachments.isEmpty
                         && message.content.range(of: #"^\[\d+ attachment"#, options: .regularExpression) != nil
                     if !message.content.isEmpty && !isAttachmentPlaceholder {
-                        MarkdownContentView(content: stripImageDirectives(message.content), isStreaming: false)
+                        MarkdownContentView(content: stripImageDirectives(message.content), isStreaming: false, textColor: chatTextColor)
                             .foregroundStyle(chatTextColor)
                             .textSelection(.enabled)
                             .padding(.horizontal, Design.Spacing.md)
@@ -431,7 +431,8 @@ struct MessageBubble: View, Equatable {
             showCursor: message.isStreaming,
             showReasoning: settingsStore.settings.showReasoning,
             hasStreamedReasoning: !message.reasoning.isEmpty,
-            startedAt: message.timestamp
+            startedAt: message.timestamp,
+            textColor: chatTextColor
         )
         .foregroundStyle(chatTextColor)
         .textSelection(.enabled)
