@@ -2740,8 +2740,22 @@ class HeraldConnector:
         # Settings "Restart Hermes Agent" RPC.
         return {"activeModel": self._read_active_model(hermes_home)}
 
-    AUX_TASKS = ["vision", "compression", "web_extract", "session_search",
-                 "browser_vision", "moa_reference", "moa_aggregator"]
+    # Canonical aux task slots. MUST mirror the Hermes gateway
+    # `_AUX_TASK_SLOTS` (web_server.py) so the dashboard, app, and
+    # gateway agree on which tasks exist. Order matches the gateway.
+    AUX_TASKS = [
+        "vision",
+        "web_extract",
+        "compression",
+        "skills_hub",
+        "approval",
+        "mcp",
+        "title_generation",
+        "triage_specifier",
+        "kanban_decomposer",
+        "profile_describer",
+        "curator",
+    ]
 
     def _aux_config_path(self) -> Path:
         home = os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")
