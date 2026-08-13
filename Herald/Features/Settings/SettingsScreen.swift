@@ -1479,6 +1479,34 @@ struct SettingsScreen: View {
                     .frame(minHeight: Design.Size.minTapTarget)
                 }
                 .buttonStyle(.plain)
+
+                // Chat text color. The MessageBubble renderer already reads
+                // `chatTextColorHex` and falls back to the theme foreground;
+                // this is the write side that was missing (Build 100).
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Chat Text Color")
+                        .brandEyebrow()
+                    HStack(spacing: Design.Spacing.sm) {
+                        ColorPicker(
+                            "Text color",
+                            selection: chatTextColorBinding,
+                            supportsOpacity: false
+                        )
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+
+                        Spacer()
+
+                        if settingsStore.settings.chatTextColorHex != nil {
+                            Button("Reset") {
+                                settingsStore.settings.chatTextColorHex = nil
+                            }
+                            .font(Design.Typography.caption2)
+                            .foregroundStyle(Design.Brand.accent)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("settings.appearance.chatTextColor")
             }
         }
     }
@@ -1567,6 +1595,24 @@ struct SettingsScreen: View {
             set: { newValue in
                 themeManager.colorSchemePreference = newValue
                 settingsStore.settings.colorSchemePreference = newValue
+            }
+        )
+    }
+
+    private var chatTextColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                guard let hex = settingsStore.settings.chatTextColorHex,
+                      let value = UInt(
+                        hex.trimmingCharacters(in: CharacterSet(charactersIn: "# ")),
+                        radix: 16
+                      )
+                else { return Design.Colors.foreground }
+                return Color(hex: value)
+            },
+            set: { newColor in
+                guard let hex = newColor.hexString else { return }
+                settingsStore.settings.chatTextColorHex = hex
             }
         )
     }
