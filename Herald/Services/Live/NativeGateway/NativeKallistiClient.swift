@@ -182,7 +182,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// surface as REQUESTTIMEOUT, so we now give uploads a generous 60s budget.
     private static let attachmentUploadTimeoutNanos: UInt64 = 60_000_000_000
     nonisolated(unsafe) private static let nativeMediaPattern = try! NSRegularExpression(
-        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp)))(?=[\s`\"',;:)\]}]|$)"#,
+        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|mp4|mov|m4v|webm|mp3|m4a|wav|aac|zip|txt|md|csv|json|xml|ya?ml|docx?|xlsx?|pptx?|rtf)))(?=[\s`\"',;:)\]}]|$)"#,
         options: [.caseInsensitive]
     )
     /// When the current socket was opened, used to tell a working connection
@@ -1412,13 +1412,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 return nil
             }
             let resolvedContent: String
+            var resolvedAttachments: [MessageAttachment] = []
             if msg.role == "assistant" {
-                resolvedContent = Self.resolveNativeMedia(
+                let resolved = Self.resolveHistoryMedia(
                     in: msg.content,
                     mediaURLProvider: { path in
                         Self.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
                     }
                 )
+                resolvedContent = resolved.text
+                resolvedAttachments = resolved.attachments
             } else {
                 resolvedContent = msg.content
             }
@@ -1426,6 +1429,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 id: UUID(),
                 sender: Self.decodeHistorySender(from: msg.role),
                 content: resolvedContent,
+                attachments: resolvedAttachments,
                 timestamp: Self.historyTimestamp(for: msg, rowTimestamps: rowTimestamps)
             )
         }
@@ -2007,6 +2011,76 @@ final class NativeKallistiClient: HeraldClientProtocol {
             mutable.replaceCharacters(in: match.range, with: "![image](\(url.absoluteString))")
         }
         return mutable as String
+    }
+
+    /// Build 101: resolve MEDIA references in history into typed
+    /// MessageAttachment records (reusing the live render UI) instead of
+    /// inline Markdown. Returns the cleaned text (MEDIA directives stripped)
+    /// and the attachments to attach to the Message. Non-image types (PDF,
+    /// video, files) now survive history reload; previously only image Markdown
+    /// was emitted and everything else was dead text.
+    nonisolated static func resolveHistoryMedia(
+        in text: String,
+        mediaURLProvider: (String) -> URL?
+    ) -> (text: String, attachments: [MessageAttachment]) {
+        let fullRange = NSRange(text.startIndex..., in: text)
+        let matches = nativeMediaPattern.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return (text, []) }
+        let mutable = NSMutableString(string: text)
+        var attachments: [MessageAttachment] = []
+        for match in matches.reversed() {
+            let rawPath = (1...4).compactMap { index -> String? in
+                let range = match.range(at: index)
+                guard range.location != NSNotFound else { return nil }
+                return (text as NSString).substring(with: range)
+            }.first
+            guard let rawPath else { continue }
+            guard let url = mediaURLProvider(rawPath) else { continue }
+            let classification = Self.classifyMediaPath(rawPath)
+            attachments.append(
+                MessageAttachment(
+                    kind: classification.kind,
+                    fileName: (rawPath as NSString).lastPathComponent,
+                    mimeType: classification.mimeType,
+                    mediaURL: url
+                )
+            )
+            mutable.replaceCharacters(in: match.range, with: "")
+        }
+        return (mutable as String, attachments)
+    }
+
+    /// Classify a media path by extension into a kind + MIME type so the
+    /// history renderer can route image/video/PDF to inline previews and
+    /// everything else to the file card.
+    nonisolated static func classifyMediaPath(_ path: String) -> (kind: String, mimeType: String) {
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "png": return ("image", "image/png")
+        case "jpg", "jpeg": return ("image", "image/jpeg")
+        case "gif": return ("image", "image/gif")
+        case "webp": return ("image", "image/webp")
+        case "mp4": return ("video", "video/mp4")
+        case "mov": return ("video", "video/quicktime")
+        case "m4v": return ("video", "video/x-m4v")
+        case "webm": return ("video", "video/webm")
+        case "pdf": return ("pdf", "application/pdf")
+        case "mp3": return ("audio", "audio/mpeg")
+        case "m4a": return ("audio", "audio/mp4")
+        case "wav": return ("audio", "audio/wav")
+        case "aac": return ("audio", "audio/aac")
+        case "zip": return ("file", "application/zip")
+        case "txt", "md": return ("file", "text/plain")
+        case "csv": return ("file", "text/csv")
+        case "json": return ("file", "application/json")
+        case "xml": return ("file", "application/xml")
+        case "yaml", "yml": return ("file", "application/yaml")
+        case "doc", "docx": return ("file", "application/msword")
+        case "xls", "xlsx": return ("file", "application/vnd.ms-excel")
+        case "ppt", "pptx": return ("file", "application/vnd.ms-powerpoint")
+        case "rtf": return ("file", "application/rtf")
+        default: return ("file", "application/octet-stream")
+        }
     }
 
     func cancelJob(jobID: UUID) async throws {
