@@ -32,7 +32,7 @@ The app is usable for daily driving. Chat is working; voice mode and watchOS are
 - Widgets and notification-service extensions
 - Voice mode in active development, with configurable ASR/TTS providers
 - Optional HealthKit, CoreLocation, and CoreMotion synchronization
-- Handwriting notes with Apple Pencil and OCR / AI enrichment
+- Handwriting notes with Apple Pencil and OCR / AI enrichment (iPad)
 - Gateway status, logs, restart, software update checks, and truthful connection stages
 - Connection latency monitoring and searchable auxiliary model switching
 
@@ -64,7 +64,7 @@ The app is usable for daily driving. Chat is working; voice mode and watchOS are
 - Widgets and notification-service extensions
 - Voice mode in active development, with configurable ASR/TTS and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion sync
-- Handwriting notes with Apple Pencil, OCR, and AI enrichment
+- Handwriting notes with Apple Pencil, OCR, and AI enrichment (iPad only)
 
 ### Gateway control
 
