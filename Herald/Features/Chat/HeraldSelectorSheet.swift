@@ -410,7 +410,7 @@ struct HeraldSelectorSheet: View {
                 // spinner never hangs forever on a phantom socket.
                 try await withThrowingTaskGroup(of: String.self) { group in
                     group.addTask {
-                        try await modelStore.switchModel(to: model.name, provider: model.provider)
+                        try await modelStore.switchModel(to: model.name, provider: model.provider, global: setAsGlobalDefault)
                         return "done"
                     }
                     group.addTask {
@@ -421,18 +421,10 @@ struct HeraldSelectorSheet: View {
                     group.cancelAll()
                 }
                 isSwitching = false
-                // If --global was toggled on, send /model as a chat message.
-                // Same formatting rules as switchModel: aggregator names are
-                // already vendor-qualified; custom providers need --provider.
-                if setAsGlobalDefault {
-                    let globalTarget: String
-                    if model.provider.lowercased().hasPrefix("custom:") {
-                        globalTarget = "\(model.name) --provider \(model.provider)"
-                    } else {
-                        globalTarget = model.name
-                    }
-                    await chatStore.sendMessage("/model \(globalTarget) --global")
-                }
+                // --global is now threaded through switchModel's slash.exec
+                // command (see ModelStore.swift / NativeGatewayFeatureClient),
+                // so there is no separate chat-message path to send here. The
+                // gateway persists the switch on the same slash.exec call.
                 dismiss()
             } catch {
                 isSwitching = false

@@ -147,6 +147,21 @@ final class NativeKallistiClient: HeraldClientProtocol {
     private var activeStreamHandlers: [String: StreamEventHandler] = [:]
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// Build 97: delays the yellow-flash to .reconnecting after an unexpected
+    /// transport close so a single transient 1006 (proxy reap, brief cell
+    /// handoff) does not visibly toggle the status dot. Cancelled by a
+    /// successful connect() (or by another handleUnexpectedDisconnect) before
+    /// the timer fires; if the timer DOES fire, the dot transitions to
+    /// .reconnecting and the existing reconnect/backoff path takes over.
+    private var reconnectGraceTask: Task<Void, Never>?
+    /// Build 97: grace window before flipping to .reconnecting. Short enough
+    /// that a real outage is visible within a second or two; long enough that
+    /// a flaky-but-recovering WS never paints the dot yellow at all.
+    private let reconnectGraceSeconds: TimeInterval = 3.0
+    /// Build 97: jitter factor applied to the exponential backoff so multiple
+    /// clients / reconnect storms don't synchronize. ±25% of the computed
+    /// delay keeps the average the same while avoiding thundering-herd.
+    private let reconnectJitterFactor: Double = 0.25
     /// Build 64: true while a connect() is in flight. connect() mints a
     /// fresh ticket and opens a NEW socket each call, so two racing connects
     /// (AppContainer launch trigger + scheduleReconnect backoff + a manual
@@ -744,6 +759,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
             self.transport = transport
             self.client = client
+            // Build 97: a successful connect cancels any pending
+            // .reconnecting grace transition so the dot never flashes yellow.
+            cancelReconnectGrace()
             // Build 52 (sleep recovery): a reconnect swaps in a fresh
             // NativeGatewayClient whose eventHandlers are empty. Re-register
             // every still-live stream handler so terminal events for a
@@ -792,7 +810,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
             if case NativeAuthError.notLoggedIn = error {
                 hasStoredLogin = false
             }
-            connectionStatus = hasStoredLogin ? .reconnecting : .disconnected
+            // Build 97: defer the .reconnecting flip via the same grace task
+            // handleUnexpectedDisconnect uses, so a verification probe that
+            // fails on a flaky-but-recovering socket does not toggle the dot.
+            // The scheduleReconnect() below still fires immediately so the
+            // next attempt is not gated on the grace window.
+            if hasStoredLogin {
+                cancelReconnectGrace()
+                scheduleReconnectGrace()
+            } else {
+                connectionStatus = .disconnected
+            }
             if !hasStoredLogin {
                 hasConnectedOnce = false
             }
@@ -819,7 +847,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
         connectedAt = nil
         Self.logger.warning("Native gateway transport closed unexpectedly - reconnecting")
-        connectionStatus = .reconnecting
+        // Build 97: defer the .reconnecting (yellow dot) flip by a short
+        // grace window. A rapid reconnect within `reconnectGraceSeconds`
+        // cancels this task and the dot stays green -- eliminates the
+        // green<->yellow flapping from WS reconnect churn (e.g. 32 abnormal
+        // 1006 closures in 5 min from proxy idle reaps). If the reconnect
+        // does NOT succeed in time, the task fires and we paint yellow as
+        // before, so a real outage is still visible.
+        cancelReconnectGrace()
+        scheduleReconnectGrace()
         // Build 60: only reset stage on cold launch.
         if !hasConnectedOnce {
             connectionStage = .preparing
@@ -827,6 +863,33 @@ final class NativeKallistiClient: HeraldClientProtocol {
         client = nil
         transport = nil
         scheduleReconnect()
+    }
+
+    /// Build 97: schedule a deferred .reconnecting transition that fires
+    /// only if the reconnect hasn't succeeded within the grace window. The
+    /// task is cancelled by a successful connect() or another unexpected
+    /// disconnect before it runs.
+    private func scheduleReconnectGrace() {
+        reconnectGraceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(self?.reconnectGraceSeconds ?? 3.0))
+            guard let self, !Task.isCancelled else { return }
+            // Only flip to .reconnecting if we're not already back up.
+            // connect()'s success path will have cancelled this task and
+            // set .connected; if we get here while disconnected we still
+            // honor the user's intent (a stale grace firing during a
+            // deliberate disconnect is a no-op because disconnect() sets
+            // .disconnected and ignores later flips).
+            guard self.connectionStatus != .connected else { return }
+            self.connectionStatus = .reconnecting
+        }
+    }
+
+    /// Build 97: cancel any pending deferred .reconnecting transition. Called
+    /// on successful connect() (dot stays green) and on a fresh unexpected
+    /// disconnect (the newest close owns the grace window).
+    private func cancelReconnectGrace() {
+        reconnectGraceTask?.cancel()
+        reconnectGraceTask = nil
     }
 
     /// Build 69: measure round-trip latency to the connector via a cheap
@@ -866,7 +929,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
         let attempt = reconnectAttempt
         reconnectAttempt += 1
         // 1s, 2s, 4s ... capped at 30s.
-        let delaySeconds = min(pow(2.0, Double(attempt)), 30.0)
+        let baseDelay = min(pow(2.0, Double(attempt)), 30.0)
+        // Build 97: apply ±25% jitter so multiple clients / reconnect storms
+        // don't synchronize their backoff curves. Thundering-herd is what
+        // makes the WS server flap visible at the dot level.
+        let jitter = (Double.random(in: -reconnectJitterFactor...reconnectJitterFactor)) * baseDelay
+        let delaySeconds = max(0.25, baseDelay + jitter)
         reconnectTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delaySeconds))
             guard let self, !Task.isCancelled else { return }
@@ -1233,7 +1301,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
             return Message(
                 id: UUID(),
-                sender: msg.role == "assistant" ? .herald : .user,
+                sender: Self.decodeHistorySender(from: msg.role),
                 content: resolvedContent,
                 timestamp: msg.timestamp.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now
             )
@@ -1245,6 +1313,24 @@ final class NativeKallistiClient: HeraldClientProtocol {
         )
         currentConversation = conv
         return conv
+    }
+
+    /// Build 97: decode a raw role string from the native gateway's session.history
+    /// through the canonical MessageSender decoder so "assistant", "herald", and
+    /// "hermes" all map to .herald. Two role vocabularies exist in the wild: the
+    /// connector HTTP history emits "herald" (session_store.py _message_to_dict),
+    /// while the native gateway's session.history emits raw "assistant"
+    /// (tui_gateway/server.py _history_to_messages). The strict == "assistant"
+    /// check this replaced silently downgraded any "herald" row to .user, hiding
+    /// the assistant Retry button in MessageBubble. Round-tripping the string
+    /// through JSONDecoder keeps the role vocabulary in MessageSender.swift as
+    /// the single source of truth.
+    nonisolated static func decodeHistorySender(from role: String) -> MessageSender {
+        guard let data = ("\"" + role + "\"").data(using: .utf8),
+              let sender = try? JSONDecoder().decode(MessageSender.self, from: data) else {
+            return .user
+        }
+        return sender
     }
 
     /// A restored user row is delivered when a later assistant reply appears
