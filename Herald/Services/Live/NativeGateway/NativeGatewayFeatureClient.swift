@@ -316,7 +316,7 @@ struct NativeGatewayFeatureClient {
     ///   - Custom providers (custom:mbp-ollama): need the explicit
     ///     "--provider <slug>" form; "custom:mbp-ollama/qwen3:8b" and
     ///     "mbp-ollama/qwen3:8b" both fail resolution.
-    func switchModel(_ name: String, provider: String) async throws {
+    func switchModel(_ name: String, provider: String, global: Bool = false) async throws {
         guard let client = await clientProvider() else {
             throw NativeGatewayClientError.notConnected
         }
@@ -329,7 +329,7 @@ struct NativeGatewayFeatureClient {
         } else {
             target = provider.isEmpty ? name : "\(provider)/\(name)"
         }
-        var params: [String: String] = ["command": "/model \(target)"]
+        var params: [String: String] = ["command": "/model \(target)\(global ? " --global" : "")"]
         // slash.exec requires a session_id (_sess_nowait 4001s without one).
         // Scope the switch to the active conversation when there is one so the
         // gateway can resolve the session instead of rejecting the command.

@@ -247,13 +247,13 @@ final class ModelStore {
     ///
     /// LEGACY path: `POST /v1/model` via relay, falling back to
     /// `POST /gw/model/switch`.
-    func switchModel(to name: String, provider: String) async throws {
+    func switchModel(to name: String, provider: String, global: Bool = false) async throws {
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 // Build 60: bump generation BEFORE slash.exec so any in-flight
                 // loadModels is invalidated against the optimistic write.
                 switchGeneration &+= 1
-                try await featureClient.switchModel(name, provider: provider)
+                try await featureClient.switchModel(name, provider: provider, global: global)
                 // Optimistic: slash.exec returned success, gateway applied
                 // the switch. Do NOT call loadModels here -- it re-enters
                 // currentSessionIdProvider -> ensureSessionForSwitch which
