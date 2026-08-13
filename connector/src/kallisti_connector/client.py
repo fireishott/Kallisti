@@ -119,11 +119,30 @@ def _extract_media_from_response(text: str) -> tuple[list[dict], str]:
             if len(data) > 10 * 1024 * 1024:
                 continue
             encoded = base64.b64encode(data).decode("ascii")
+            # Build 83: mediaKey lets the push path synthesize a fetchable
+            # /v1/native/media URL for the notification extension. Emit the
+            # path relative to HERMES_HOME (e.g. images/foo.jpg) when the
+            # file lives under an approved root; leave empty otherwise so
+            # the push payload simply carries no attachment URL.
+            media_key = ""
+            try:
+                hermes_home = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes").resolve()
+                resolved = file_path.resolve()
+                for root in [hermes_home / "cache" / "images", hermes_home / "images", hermes_home / "media"]:
+                    try:
+                        rel = resolved.relative_to(root.resolve())
+                        media_key = str(root.name + "/" + str(rel))
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                media_key = ""
             attachments.append({
                 "type": kind,
                 "filename": file_path.name,
                 "mimeType": mime,
                 "data": encoded,
+                "mediaKey": media_key,
             })
         except Exception:
             continue
@@ -739,6 +758,23 @@ class HeraldConnector:
     def refresh_runtime_config(self, *, force: bool = False) -> ConnectorState:
         state = self.state_store.load()
         if state.runtime_config is not None and not force:
+            # Build 86: self-heal a stale runtime_config.hermes_home. The
+            # Aug 2026 profile consolidation moved HERMES_HOME from
+            # ~/.hermes/profiles/ignyte to ~/.hermes, but state.json kept
+            # the legacy value and _rpc_profiles_list used it to resolve
+            # the profile catalog (empty profiles / "0 skills" in the Hub).
+            # When the process env has a different HERMES_HOME than what was
+            # captured at last startup, re-capture so the catalog resolves
+            # against the real home.
+            env_home = os.getenv("HERMES_HOME")
+            stored_home = state.runtime_config.hermes_home
+            if env_home and stored_home and Path(env_home).expanduser() != Path(stored_home).expanduser():
+                logger.info(
+                    "runtime_config HERMES_HOME changed (%s -> %s); re-capturing",
+                    stored_home, env_home,
+                )
+                state.runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
+                return self.state_store.save(state)
             return state
 
         state.runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
@@ -1475,6 +1511,7 @@ class HeraldConnector:
                 cleaned_text,
                 category="HERALD_MESSAGE_READY",
                 conversation_id=job.get("conversationId"),
+                attachments=media_attachments,
             )
         except TimeoutError:
             self._stop_job_heartbeat(job_id)
@@ -1711,6 +1748,7 @@ class HeraldConnector:
                 cleaned_text,
                 category="HERALD_MESSAGE_READY",
                 conversation_id=job.get("conversationId"),
+                attachments=media_attachments,
             )
         except TimeoutError:
             self._stop_job_heartbeat(job_id)
@@ -2026,14 +2064,33 @@ class HeraldConnector:
         Live Activity's own push-to-update token (see ConnectorState.
         live_activity_push_token) — they are different tokens with different
         APNs push types and must never share storage.
+
+        Build 67: each installation_id owns its own tokens in the device
+        registry, so an iPad and iPhone keep separate alert tokens. The
+        legacy single-slot state fields stay in sync with the most recently
+        registered device so older code paths keep working.
         """
         token = str(params.get("token") or "").strip()
         environment = str(params.get("environment") or "production").strip().lower()
         token_kind = str(params.get("tokenKind") or "device").strip().lower()
+        installation_id = str(params.get("installationId") or "").strip()[:255]
         if not token:
             return {"registered": False}
         if environment not in {"production", "development"}:
             return {"registered": False}
+
+        # Per-device storage in the registry (multi-device support).
+        if installation_id:
+            try:
+                from .session_store import record_push_token
+                record_push_token(
+                    installation_id,
+                    token,
+                    environment=environment,
+                    token_kind=token_kind,
+                )
+            except Exception:
+                logger.debug("Per-device push token record failed (non-fatal)", exc_info=True)
 
         state = self.state_store.load()
         if token_kind == "liveactivity":
@@ -2043,7 +2100,8 @@ class HeraldConnector:
         else:
             state.device_token = token
             state.device_token_environment = environment
-            logger.info("APNs device token registered (environment=%s)", environment)
+            logger.info("APNs device token registered (environment=%s, device=%s)",
+                        environment, installation_id[:12] or "unknown")
         self.state_store.save(state)
         self._state = state
         return {"registered": True, "environment": environment}
@@ -2055,15 +2113,19 @@ class HeraldConnector:
         *,
         category: str | None = None,
         conversation_id: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> None:
-        """Send a remote push notification directly via APNs."""
+        """Send a remote push notification directly via APNs.
+
+        Build 67: routes to the device that owns the conversation (via the
+        delivery-store binding), so an iPad turn pushes to the iPad and an
+        iPhone turn pushes to the iPhone. Falls back to broadcasting to every
+        registered device when the owning device can't be resolved or has no
+        alert token. Also persists an inbox item for the owning device so the
+        Inbox tab has the completed response for viewing/retrieval.
+        """
         state = self.state_store.load()
         if not state.user_id:
-            return
-
-        device_token = state.device_token
-        if not device_token:
-            logger.debug("Push skipped: no device_token registered")
             return
 
         body = body_text.strip()
@@ -2081,27 +2143,137 @@ class HeraldConnector:
                 self._apns_client = None
                 return
 
-        user_info = {"conversationId": conversation_id} if conversation_id else None
-        environment = state.device_token_environment or "production"
+        user_info = {"conversationId": conversation_id} if conversation_id else {}
+        # Build 83: surface the first attachment as a media URL in the push
+        # payload so the notification service extension can attach a thumbnail
+        # to the lock-screen banner. The URL must point at a route the
+        # extension can fetch with its shared Keychain token. Attachment
+        # payloads carry base64 data, not a path, so synthesize the media key
+        # from the relay /v1/native/media route using the first attachment.
+        if attachments:
+            first = attachments[0]
+            media_key = (first.get("mediaKey") or "").strip()
+            if media_key:
+                user_info["mediaUrl"] = f"https://hermes-relay.fihonline.net/v1/native/media?path={media_key}"
+                user_info["imageUrl"] = user_info["mediaUrl"]
 
+        # Resolve target device(s): the conversation's owner first, then all
+        # registered devices as a fallback (legacy single-device behavior).
+        from .session_store import (
+            all_push_devices,
+            device_id_for_session,
+        )
+        target_device_ids: list[str] = []
+        owner_id = ""
+        if conversation_id:
+            owner_id = device_id_for_session(conversation_id) or ""
+            if not owner_id:
+                try:
+                    from .delivery_store import get_delivery_store
+                    binding = get_delivery_store().get_binding(conversation_id)
+                    if binding:
+                        owner_id = binding.get("ownerDeviceId") or ""
+                except Exception:
+                    owner_id = ""
+            if owner_id:
+                target_device_ids = [owner_id]
+
+        devices = all_push_devices()
+        if not target_device_ids:
+            target_device_ids = [did for did, entry in devices.items()
+                                 if (entry.get("deviceToken") or "").strip()]
+
+        # Build 68: dedupe by TOKEN, not device id. A reinstall can leave two
+        # installation_ids holding the same APNs token (physical device +
+        # bundle determines the token), and a broadcast to "all devices"
+        # would then push twice to the same phone. Send once per unique
+        # token; prefer the entry that owns the conversation when both
+        # exist. (record_push_token also prunes on next register, but the
+        # send path must not depend on a future registration to be correct.)
+        token_to_device: dict[str, str] = {}
+        for device_id in target_device_ids:
+            entry = devices.get(device_id, {})
+            token = (entry.get("deviceToken") or "").strip()
+            if not token:
+                continue
+            if token not in token_to_device:
+                token_to_device[token] = device_id
+            elif device_id == owner_id:
+                # The conversation owner wins when a token is shared.
+                token_to_device[token] = device_id
+        target_device_ids = list(token_to_device.values())
+
+        # Inbox: persist the completed response for the owning device so the
+        # Inbox tab shows it. The owner may not have a registered token yet
+        # (first turn before APNs token lands) - still write the item so the
+        # response is retrievable once the app registers and opens Inbox.
         try:
-            from .apns_client import PushResult
-            result = await self._apns_client.send_alert_push(
-                device_token,
-                title="Kallisti",
-                body=body[:100],
-                category=category,
-                environment=environment,
-                user_info=user_info,
-            )
-            if result == PushResult.SENT:
-                logger.info("Push sent for job %s", job_id[:8])
-            elif result == PushResult.TOKEN_INVALID:
-                logger.warning("Device token is invalid — iOS app should re-register")
-            else:
-                logger.warning("Push send result: %s", result.value)
+            from .inbox_store import get_inbox_store
+            inbox_store = get_inbox_store()
+            inbox_targets = list(dict.fromkeys(target_device_ids + [owner_id] if owner_id else target_device_ids))
+            for did in inbox_targets:
+                if not did:
+                    continue
+                inbox_store.add_item(
+                    installation_id=did,
+                    title="Response ready",
+                    body=body[:300],
+                    kind="notification",
+                    conversation_id=conversation_id,
+                    payload={"conversationId": conversation_id} if conversation_id else None,
+                    attachments=attachments,
+                    priority="normal",
+                )
         except Exception:
-            logger.debug("Push send error (non-fatal)", exc_info=True)
+            logger.debug("Inbox item persist failed (non-fatal)", exc_info=True)
+
+        sent_any = False
+        for device_id in target_device_ids:
+            entry = devices.get(device_id, {})
+            device_token = (entry.get("deviceToken") or "").strip() or (
+                state.device_token if device_id in (None, "") else ""
+            )
+            if not device_token:
+                continue
+            environment = (entry.get("deviceTokenEnvironment") or "production").strip()
+            try:
+                from .apns_client import PushResult
+                result = await self._apns_client.send_alert_push(
+                    device_token,
+                    title="Kallisti",
+                    body=body[:100],
+                    category=category,
+                    environment=environment,
+                    user_info=user_info,
+                )
+                if result == PushResult.SENT:
+                    sent_any = True
+                    logger.info("Push sent for job %s (device=%s)", job_id[:8], device_id[:12])
+                elif result == PushResult.TOKEN_INVALID:
+                    logger.warning("Device token is invalid (device=%s) — iOS app should re-register", device_id[:12])
+                else:
+                    logger.warning("Push send result: %s (device=%s)", result.value, device_id[:12])
+            except Exception:
+                logger.debug("Push send error (non-fatal)", exc_info=True)
+
+        if not sent_any and not devices and state.device_token:
+            # Legacy path: no per-device registry entries, send to the global slot.
+            try:
+                from .apns_client import PushResult
+                result = await self._apns_client.send_alert_push(
+                    state.device_token,
+                    title="Kallisti",
+                    body=body[:100],
+                    category=category,
+                    environment=state.device_token_environment or "production",
+                    user_info=user_info,
+                )
+                if result == PushResult.SENT:
+                    logger.info("Push sent for job %s (legacy slot)", job_id[:8])
+                else:
+                    logger.warning("Push send result: %s (legacy slot)", result.value)
+            except Exception:
+                logger.debug("Push send error (non-fatal)", exc_info=True)
 
     async def _send_live_activity_end(self, status: str = "Done") -> None:
         """Remote-end the user's Live Activity via its own push-to-update token.
@@ -2839,36 +3011,27 @@ class HeraldConnector:
 
     async def _rpc_profiles_list(self) -> dict:
         hermes_home = self._resolve_hermes_home()
-        # HERMES_HOME points at a specific profile dir (e.g. ~/.hermes/profiles/ignyte).
-        # Sibling profiles live in the parent; detect via multiple subdirs in the parent.
-        parent_dir = hermes_home.parent
-        sibling_profiles = [d for d in parent_dir.iterdir() if d.is_dir()]
-        if len(sibling_profiles) > 1:
-            profiles_dir = parent_dir
+        # Post-consolidation (Aug 2026) HERMES_HOME points at the BASE home
+        # (~/.hermes), which IS the built-in "default" profile. Named
+        # profiles live under ~/.hermes/profiles/. Mirror
+        # hermes_cli/profiles.list_profiles(): default entry from the base
+        # home, named entries from the profiles/ root.
+        #
+        # Pre-consolidation HERMES_HOME pointed at a named profile dir
+        # (~/.hermes/profiles/ignyte); handle that shape too so stale
+        # state.json values don't regress the catalog.
+        is_named_profile = hermes_home.parent.name == "profiles" and hermes_home.name != "default"
+        if is_named_profile:
+            base_home = hermes_home.parent.parent
+            profiles_dir = hermes_home.parent
         else:
+            base_home = hermes_home
             profiles_dir = hermes_home / "profiles"
-        if not profiles_dir.is_dir():
-            return {"activeProfile": None, "profiles": []}
-
-        # Active profile: basename of HERMES_HOME (the currently loaded profile).
-        active_name: str | None = hermes_home.name
-        config_path = hermes_home / "config.yaml"
-        if config_path.is_file():
-            try:
-                import yaml
-                with open(config_path, encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                override = (config.get("profile") or {}).get("default")
-                if override:
-                    active_name = override
-            except Exception:  # noqa: BLE001
-                pass
 
         profiles = []
-        for entry in sorted(profiles_dir.iterdir()):
-            if not entry.is_dir():
-                continue
-            soul_path = entry / "SOUL.md"
+
+        def _entry_for(path: Path, name: str) -> dict:
+            soul_path = path / "SOUL.md"
             description = ""
             if soul_path.is_file():
                 try:
@@ -2886,16 +3049,43 @@ class HeraldConnector:
                             break
                 except Exception:  # noqa: BLE001
                     pass
-
-            # Count skills
-            skills_dir = entry / "skills"
+            skills_dir = path / "skills"
             skill_count = len(list(skills_dir.iterdir())) if skills_dir.is_dir() else 0
-
-            profiles.append({
-                "name": entry.name,
+            return {
+                "name": name,
                 "description": description,
                 "skillCount": skill_count,
-            })
+            }
+
+        # Default profile = the base home itself (backward compatible).
+        if base_home.is_dir():
+            profiles.append(_entry_for(base_home, "default"))
+
+        # Named profiles under the profiles/ root.
+        if profiles_dir.is_dir():
+            for entry in sorted(profiles_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                if name == "default":
+                    continue  # already added as the built-in default above
+                profiles.append(_entry_for(entry, name))
+
+        # Active profile: basename of HERMES_HOME (the currently loaded
+        # profile). For the base home that's "default"; the config may pin
+        # a named override.
+        active_name: str | None = hermes_home.name if is_named_profile else "default"
+        config_path = hermes_home / "config.yaml"
+        if config_path.is_file():
+            try:
+                import yaml
+                with open(config_path, encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                override = (config.get("profile") or {}).get("default")
+                if override:
+                    active_name = override
+            except Exception:  # noqa: BLE001
+                pass
 
         active_profile = None
         if active_name:

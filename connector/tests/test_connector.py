@@ -412,9 +412,12 @@ def test_runtime_adapter_falls_back_to_cli_without_explicit_api_config(monkeypat
     store.save(state)
     connector = HermesMobileConnector(state_store=store, executor=make_executor())
 
+    async def fail_health_check(self):  # noqa: ANN001
+        raise AssertionError("Implicit localhost API health check should not run without explicit config")
+
     monkeypatch.delenv("HERMES_API_SERVER_URL", raising=False)
     monkeypatch.delenv("HERMES_API_SERVER_KEY", raising=False)
-    monkeypatch.delenv("HERALD_TRANSPORT", raising=False)
+    monkeypatch.setattr("kallisti_connector.client.HermesAPIExecutor.health_check", fail_health_check)
 
     adapter = asyncio.run(connector.runtime_adapter_for_state_async(state))
     assert isinstance(adapter, HermesRuntimeAdapter)
