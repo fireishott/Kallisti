@@ -1469,9 +1469,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     method: "file.attach",
                     params: NativeFileAttachParams(
                         sessionId: sid,
-                        contentBase64: attachment.base64Data,
-                        filename: attachment.fileName,
-                        mimeType: attachment.mimeType
+                        dataUrl: "data:\(attachment.mimeType);base64,\(attachment.base64Data)",
+                        name: attachment.fileName
                     ),
                     timeoutNanos: Self.attachmentUploadTimeoutNanos
                 )
@@ -1544,9 +1543,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                                 method: "file.attach",
                                 params: NativeFileAttachParams(
                                     sessionId: freshSid,
-                                    contentBase64: attachment.base64Data,
-                                    filename: attachment.fileName,
-                                    mimeType: attachment.mimeType
+                                    dataUrl: "data:\(attachment.mimeType);base64,\(attachment.base64Data)",
+                                    name: attachment.fileName
                                 ),
                                 timeoutNanos: Self.attachmentUploadTimeoutNanos
                             )
@@ -1902,17 +1900,17 @@ private struct NativeImageAttachParams: Encodable {
 }
 
 // Build 78.7: file attachment RPC for videos and non-image files.
+// file.attach expects a data_url (data:<mime>;base64,<b64>) + name, not
+// content_base64 (that contract belongs to image.attach_bytes).
 private struct NativeFileAttachParams: Encodable {
     let sessionId: String
-    let contentBase64: String
-    let filename: String
-    let mimeType: String
+    let dataUrl: String
+    let name: String
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
-        case contentBase64 = "content_base64"
-        case filename
-        case mimeType = "mime_type"
+        case dataUrl = "data_url"
+        case name
     }
 }
 
