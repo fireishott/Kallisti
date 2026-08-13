@@ -74,6 +74,17 @@ class ConnectorState:
     # time a Live Activity token rotates (which happens on every chat turn).
     live_activity_push_token: str | None = None
     live_activity_push_token_environment: str | None = None
+    # Build 97: every ActivityKit token the app registered for Live
+    # Activities, newest first.  ActivityKit rotates the push token each
+    # time a NEW activity starts, and a single-slot store could only ever
+    # hold the latest — older activities' tokens were silently overwritten,
+    # so their end-push never fired and the lock screen stayed stuck on
+    # "Thinking..." (the "never ending live notification").  The end-push
+    # now fans out to every token in this list; invalid (410) tokens are
+    # pruned as they're encountered.  live_activity_push_token remains the
+    # newest entry for backward compat with any code reading the single
+    # slot.
+    live_activity_push_tokens: list[str] = field(default_factory=list)
     connector_display_name: str | None = None
     enrolled_at: str | None = None
     last_connected_at: str | None = None

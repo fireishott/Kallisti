@@ -21,6 +21,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -718,6 +719,166 @@ def session_messages(
     return _apply_reasoning_budget(messages) if want_reasoning else messages
 
 
+# ── Inline attachment directives (Electron desktop) ─────────────────────────
+#
+# The Hermes Electron desktop app does not upload attachment bytes to the
+# connector.  It writes the attachment as an `@image:` / `@file:` directive
+# inside the message `content` column of state.db, and renders it locally by
+# reading the file back off disk (apps/desktop inline-refs.ts).  Kallisti has
+# no directive parser — it renders `Message.attachments[]` only — so those
+# messages historically showed the raw path string.
+#
+# The connector runs on the same host as HERMES_HOME, so it can resolve those
+# paths itself and surface them through the same attachments[] contract the
+# mobile-upload and MEDIA: paths already use.  This is the unification point.
+
+_DIRECTIVE_PATTERN = re.compile(
+    r'@(?P<kind>image|file):\s*(?P<path>`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\'|\S+)'
+)
+
+# Mirrors client.py's _MIME_TYPES so both attachment paths agree on type.
+_DIRECTIVE_MIME_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".tiff": "image/tiff", ".tif": "image/tiff", ".svg": "image/svg+xml",
+    ".heic": "image/heic", ".heif": "image/heif",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska", ".webm": "video/webm",
+    ".ogg": "audio/ogg", ".opus": "audio/opus", ".mp3": "audio/mpeg",
+    ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown",
+    ".json": "application/json", ".csv": "text/csv",
+}
+
+# Directive files are served from disk on demand, so nothing is base64'd into
+# the poll payload.  This cap only bounds what we are willing to serve.
+_MAX_DIRECTIVE_BYTES = 25 * 1024 * 1024
+
+
+def _hermes_home() -> Path:
+    return Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes"))
+
+
+def _resolve_directive_path(raw_path: str) -> Path | None:
+    """Resolve a directive path to a readable file, or None.
+
+    Desktop emits three shapes, all seen live in state.db:
+      * absolute  — ``/home/fihadmin/.hermes/images/upload_x.jpg``
+      * HERMES_HOME-relative — ``.hermes/attachments/IMG_4129.png``
+      * home-relative — ``~/...``
+
+    Resolution is confined to approved roots so a crafted directive in message
+    content cannot turn the serving endpoint into an arbitrary-file read.
+    """
+    if not raw_path:
+        return None
+    # Strip wrapping quotes/backticks and trailing sentence punctuation.
+    cleaned = raw_path.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "`\"'":
+        cleaned = cleaned[1:-1].strip()
+    cleaned = cleaned.lstrip("`\"'").rstrip("`\"',;:)}]")
+    if not cleaned:
+        return None
+
+    home = Path.home()
+    hermes_home = _hermes_home()
+    candidates: list[Path] = []
+    if cleaned.startswith("~"):
+        candidates.append(Path(cleaned).expanduser())
+    elif cleaned.startswith("/"):
+        candidates.append(Path(cleaned))
+    else:
+        # `.hermes/attachments/x.png` is relative to the *parent* of
+        # HERMES_HOME; `attachments/x.png` is relative to HERMES_HOME itself.
+        candidates.append(hermes_home.parent / cleaned)
+        candidates.append(hermes_home / cleaned)
+        candidates.append(home / cleaned)
+
+    # Only serve files that live under a root the user already exposes.
+    allowed_roots = [hermes_home.resolve()]
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            if not resolved.is_file():
+                continue
+            for root in allowed_roots:
+                try:
+                    resolved.relative_to(root)
+                except ValueError:
+                    continue
+                return resolved
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
+def _extract_directive_attachments(text: str) -> tuple[list[dict], str]:
+    """Parse `@image:`/`@file:` directives out of *text*.
+
+    Returns ``(attachments, cleaned_text)``.  Attachment dicts carry a
+    ``sourcePath`` (resolved, on-disk) instead of inline base64 — the serving
+    endpoint streams the bytes on demand, matching the metadata-only contract
+    _message_to_dict already uses for sidecar attachments.
+
+    Directives that do not resolve to a readable file are left in the text
+    untouched, so a broken reference stays visible rather than vanishing.
+    """
+    if not text or "@" not in text:
+        return [], text
+
+    attachments: list[dict] = []
+    consumed_spans: list[tuple[int, int]] = []
+    seen: set[str] = set()
+
+    for match in _DIRECTIVE_PATTERN.finditer(text):
+        resolved = _resolve_directive_path(match.group("path"))
+        if resolved is None:
+            continue
+        try:
+            size = resolved.stat().st_size
+        except OSError:
+            continue
+        if size <= 0 or size > _MAX_DIRECTIVE_BYTES:
+            continue
+
+        key = str(resolved)
+        if key in seen:
+            # Same file referenced twice — drop the directive text but do not
+            # emit a duplicate chip.
+            consumed_spans.append((match.start(), match.end()))
+            continue
+        seen.add(key)
+
+        ext = resolved.suffix.lower()
+        mime = _DIRECTIVE_MIME_TYPES.get(ext, "application/octet-stream")
+        # Trust the declared directive kind only when the extension agrees;
+        # desktop emits `@file:` for images dropped on the conversation area
+        # (the upstream drop-handler bug), and those should still render as
+        # images in Kallisti.
+        kind = "image" if mime.startswith("image/") else "file"
+
+        attachments.append({
+            "type": kind,
+            "filename": resolved.name,
+            "mimeType": mime,
+            "byteLength": size,
+            "sourcePath": str(resolved),
+        })
+        consumed_spans.append((match.start(), match.end()))
+
+    if not consumed_spans:
+        return [], text
+
+    # Remove consumed directives back-to-front so earlier offsets stay valid.
+    cleaned = text
+    for start, end in sorted(consumed_spans, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    return attachments, cleaned
+
+
 def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
     role = "herald" if row["role"] == "assistant" else row["role"]
 
@@ -762,11 +923,46 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
     clean_text = override.get("cleanText") if override else None
     client_msg_id = override.get("clientMessageId") if override else None
 
+    text = clean_text if clean_text is not None else row["content"]
+
+    # Attachment unification: Electron desktop writes `@image:`/`@file:`
+    # directives into the message text instead of uploading bytes.  Resolve
+    # them here so Kallisti renders real attachment chips from the same
+    # attachments[] contract the sidecar path uses.  Directive attachments
+    # append after sidecar ones so existing remoteIndex values are stable.
+    directive_attachments, cleaned_text = _extract_directive_attachments(text or "")
+    if directive_attachments:
+        text = cleaned_text
+        base_index = len(attachments) if attachments else 0
+        mapped = [
+            {
+                "type": a["type"],
+                "filename": a["filename"],
+                "mimeType": a["mimeType"],
+                "byteLength": a.get("byteLength"),
+                "checksum": None,
+                "thumbnailData": None,
+                "messageID": msg_id,
+                "remoteIndex": base_index + i,
+            }
+            for i, a in enumerate(directive_attachments)
+        ]
+        attachments = (attachments or []) + mapped
+        # Persist the path index so the serving endpoint can resolve
+        # msg_id + remoteIndex back to a file on disk.
+        set_directive_attachments(
+            msg_id,
+            [
+                {**a, "remoteIndex": base_index + i}
+                for i, a in enumerate(directive_attachments)
+            ],
+        )
+
     return {
         "id": msg_id,
         "clientMessageId": client_msg_id,
         "role": role,
-        "text": clean_text if clean_text is not None else row["content"],
+        "text": text,
         "timestamp": _epoch_to_iso(row["timestamp"]),
         # User rows are neutral ("sent") — only a credible terminal
         # completion (visible text, reasoning, or attachments) can
@@ -1028,11 +1224,116 @@ def get_message_attachments(message_id: str) -> list[dict]:
 
 
 def get_attachment(message_id: str, index: int) -> dict | None:
-    """Return the attachment at *index* for *message_id*, or None."""
+    """Return the attachment at *index* for *message_id*, or None.
+
+    Falls back to the directive index (Electron `@image:`/`@file:` refs),
+    whose bytes live on disk rather than base64 in the sidecar.  Those are
+    read and encoded on demand so the serving endpoint has a uniform shape.
+    """
     attachments = get_message_attachments(message_id)
-    if index < 0 or index >= len(attachments):
+    if 0 <= index < len(attachments):
+        return attachments[index]
+
+    directive = get_directive_attachment(message_id, index)
+    if directive is None:
         return None
-    return attachments[index]
+
+    import base64
+
+    source = directive.get("sourcePath")
+    if not source:
+        return None
+    path = Path(source)
+    # Re-validate on read: the message content is not a capability, and the
+    # file may have been moved or replaced since the index was written.
+    if _resolve_directive_path(source) is None:
+        return None
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    if len(payload) > _MAX_DIRECTIVE_BYTES:
+        return None
+
+    return {
+        "type": directive.get("type", "file"),
+        "filename": directive.get("filename", path.name),
+        "mimeType": directive.get("mimeType", "application/octet-stream"),
+        "byteLength": len(payload),
+        "data": base64.b64encode(payload).decode("ascii"),
+        "thumbnailData": None,
+    }
+
+
+# ── Directive attachment index ─────────────────────────────────────────────
+#
+# Electron directive attachments are described by an on-disk path, not by
+# uploaded bytes, so they are not stored in attachments.json (which holds
+# validated base64).  _message_to_dict writes a small path index here as it
+# serialises history; the serving endpoint reads it back to stream the file.
+# The message UUID is a one-way uuid5 of the row id, so this index is what
+# makes msg_id → path resolvable at fetch time.
+
+
+def _directive_index_path() -> Path:
+    connector_home = os.getenv(
+        "HERMES_MOBILE_CONNECTOR_HOME"
+    ) or str(Path.home() / ".hermes-mobile")
+    return Path(connector_home) / "directive_attachments.json"
+
+
+def _load_directive_index() -> dict:
+    try:
+        with open(_directive_index_path()) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+        return {}
+
+
+def set_directive_attachments(message_id: str, attachments: list[dict]) -> None:
+    """Record the path index for *message_id*'s directive attachments.
+
+    Write-through from the history path.  Skips the write when the stored
+    entry already matches, so the common re-poll case does no disk I/O.
+    """
+    entry = [
+        {
+            "type": a.get("type", "file"),
+            "filename": a.get("filename", "attachment"),
+            "mimeType": a.get("mimeType", "application/octet-stream"),
+            "byteLength": a.get("byteLength"),
+            "sourcePath": a.get("sourcePath"),
+            "remoteIndex": a.get("remoteIndex"),
+        }
+        for a in attachments
+    ]
+    store = _load_directive_index()
+    if store.get(str(message_id)) == entry:
+        return
+    store[str(message_id)] = entry
+    # Bound growth: keep the most recent 5000 messages' worth of paths.
+    if len(store) > 5000:
+        for stale in list(store)[: len(store) - 5000]:
+            store.pop(stale, None)
+    try:
+        _directive_index_path().parent.mkdir(parents=True, exist_ok=True)
+        tmp = _directive_index_path().with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(store, f, indent=2)
+        tmp.rename(_directive_index_path())
+    except OSError:
+        logger.warning("Could not persist directive attachment index", exc_info=True)
+
+
+def get_directive_attachment(message_id: str, index: int) -> dict | None:
+    """Return the directive attachment addressed by *index*, or None."""
+    entry = _load_directive_index().get(str(message_id))
+    if not isinstance(entry, list):
+        return None
+    for a in entry:
+        if isinstance(a, dict) and a.get("remoteIndex") == index:
+            return a
+    return None
 
 
 # ── Session list ───────────────────────────────────────────────────────────

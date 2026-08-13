@@ -173,6 +173,19 @@ class NativeWatchTokens:
 # separate peer. Polling session.status (read-only, works for any live session)
 # is the reliable terminal detection for native turns.
 POLL_INTERVAL_SECS = float(os.environ.get("KALLISTI_NATIVE_WATCH_POLL_SECS", "4"))
+# Build 97: how long a freshly-registered watch must survive before a
+# first-idle observation is allowed to fire "Turn complete".  iOS registers
+# the watch the moment it submits a prompt, and the gateway takes a beat to
+# flip `running=True` — a poll landing in that window reads idle and, with
+# no running-history for the session, the old code fired a phantom
+# completion push ~1s after registration (observed: watch 07:08:59, push
+# 07:09:00).  Holding first-idle for this window lets the session show
+# running=True on a later poll; the real True→False transition then fires
+# exactly once.  Sessions genuinely terminal before the watch registered
+# (missed-window case) fire once after grace expires instead.
+WATCH_FIRST_IDLE_GRACE_S = float(
+    os.environ.get("KALLISTI_NATIVE_WATCH_FIRST_IDLE_GRACE_S", "12.0")
+)
 _POLL_AGENT_RUNNING_RE = re.compile(r"Agent Running:\s*(Yes|No)", re.IGNORECASE)
 
 
@@ -329,7 +342,13 @@ async def run_watcher(
                 # 'Turn complete' notification. Cleared on WS reconnect so a
                 # fresh watcher doesn't inherit stale state from before the
                 # drop.
-                last_observed_running: dict[str, bool] = {}
+                last_observed_running: dict[str, bool | None] = {}
+                # Build 97: monotonic timestamp of the first poll sent for a
+                # session.  Used to hold first-idle observations for
+                # WATCH_FIRST_IDLE_GRACE_S so a watch registered at prompt
+                # submission can't fire a phantom "Turn complete" push before
+                # the gateway flips running=True.  Cleared with the session.
+                first_poll_at: dict[str, float] = {}
 
                 async def poll_loop() -> None:
                     nonlocal poll_counter
@@ -377,6 +396,8 @@ async def run_watcher(
                                 rid = f"watch-poll-{poll_counter}"
                                 pending_polls[rid] = sid
                                 pending_poll_time[rid] = time.monotonic()
+                                if sid not in first_poll_at:
+                                    first_poll_at[sid] = time.monotonic()
                                 await ws.send(
                                     json.dumps(
                                         {
@@ -430,6 +451,30 @@ async def run_watcher(
                                 continue
                             if running is False or error is not None:
                                 prev = last_observed_running.get(sid)
+                                # Build 97: hold first-idle observations for a
+                                # fresh watch.  iOS registers the watch at
+                                # prompt submission; the gateway may not have
+                                # flipped running=True yet, so an idle read
+                                # here is NOT a terminal turn — firing would
+                                # spam "Turn complete" seconds after the user
+                                # hit send (observed 07:08:59 register ->
+                                # 07:09:00 push).  Wait out the grace window;
+                                # the real True->False transition (or a
+                                # genuinely-terminal-before-watch session past
+                                # grace) still fires exactly once.
+                                if prev is None:
+                                    first_seen = first_poll_at.get(sid, time.monotonic())
+                                    if time.monotonic() - first_seen < WATCH_FIRST_IDLE_GRACE_S:
+                                        logger.info(
+                                            "Native watch poll: session=%s idle "
+                                            "within %.0fs grace (%.1fs old) — "
+                                            "holding for running=True",
+                                            sid,
+                                            WATCH_FIRST_IDLE_GRACE_S,
+                                            time.monotonic() - first_seen,
+                                        )
+                                        last_observed_running[sid] = None
+                                        continue
                                 # Fire only on True→False, or on the first
                                 # observation of idle (session already ended
                                 # before the watcher started polling — iOS
@@ -456,6 +501,7 @@ async def run_watcher(
                                     )
                                     await fire_terminal(sid)
                                     registry.clear_session(session_id=sid)
+                                    first_poll_at.pop(sid, None)
                                 last_observed_running[sid] = False
                             continue
 
