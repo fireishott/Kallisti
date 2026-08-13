@@ -659,7 +659,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // short probe timeout as every other liveness check in this file.
             connectionStage = .openingChannel
             connectionStage = .verifying
-            _ = try await client.send(method: "session.list", params: SessionListParams(limit: 1, offset: 0, allDevices: nil), timeoutNanos: Self.probeTimeoutNanos)
+            _ = try await client.send(method: "session.most_recent", params: [String: String](), timeoutNanos: Self.probeTimeoutNanos)
 
             await client.onDisconnect { [weak self] in
                 Task { @MainActor in await self?.handleUnexpectedDisconnect() }
@@ -772,8 +772,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         do {
             let start = clock.now
             _ = try await client.send(
-                method: "session.list",
-                params: SessionListParams(limit: 1, offset: 0, allDevices: nil),
+                method: "session.most_recent",
+                params: [String: String](),
                 timeoutNanos: Self.probeTimeoutNanos
             )
             let elapsed = clock.now - start
@@ -877,8 +877,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // for a 4s LLM call).
             do {
                 _ = try await client.send(
-                    method: "session.list",
-                    params: SessionListParams(limit: 1, offset: 0, allDevices: nil),
+                    method: "session.most_recent",
+                    params: [String: String](),
                     timeoutNanos: Self.probeTimeoutNanos
                 )
                 return
