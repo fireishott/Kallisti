@@ -18,6 +18,10 @@ struct MarkdownContentView: View {
     /// a thinking model produces its first prose token). Defaults to "now"
     /// so existing call sites keep working.
     var startedAt: Date = Date()
+    /// Text color for prose. Defaults to the theme foreground; MessageBubble
+    /// passes the user-chosen chat text color so the picker actually applies
+    /// (a hard-coded foreground here was overriding the bubble's style).
+    var textColor: Color = Design.Colors.foreground
 
     @State private var fullscreenImage: MarkdownSegment?
     @State private var cachedSegments: [MarkdownSegment] = []
@@ -103,11 +107,11 @@ struct MarkdownContentView: View {
         ) {
             return Text(attributed)
                 .font(Design.Typography.body)
-                .foregroundColor(Design.Colors.foreground)
+                .foregroundColor(textColor)
         } else {
             return Text(text)
                 .font(Design.Typography.body)
-                .foregroundColor(Design.Colors.foreground)
+                .foregroundColor(textColor)
         }
     }
 
