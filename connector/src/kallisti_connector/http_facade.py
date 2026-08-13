@@ -2175,6 +2175,85 @@ _NATIVE_MEDIA_MIME = {
 }
 
 
+async def message_attachment_bytes(request: Request) -> Response:
+    """GET /v1/messages/{messageID}/attachments/{remoteIndex}
+
+    Conversation loads carry attachment metadata only; full bytes are
+    fetched on demand by AttachmentService.swift.  The envelope middleware
+    passes non-JSON Content-Types through untouched, so this raw-bytes
+    response is not wrapped.
+
+    Serves both sidecar attachments (uploaded bytes) and Electron directive
+    attachments (`@image:`/`@file:` refs resolved from disk) — get_attachment
+    unifies the two.
+    """
+    await require_auth(request)
+    import base64
+
+    from .session_store import get_attachment
+
+    raw_msg_id = request.path_params.get("messageID", "")
+    if not raw_msg_id or not isinstance(raw_msg_id, str):
+        raise HTTPException(status_code=404, detail="Message not found.")
+    # Reject path-injection attempts before UUID coercion.
+    if "/" in raw_msg_id or "\\" in raw_msg_id or ".." in raw_msg_id:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    msg_id = _coerce_uuid(raw_msg_id)
+    if not msg_id:
+        raise HTTPException(status_code=404, detail="Message not found.")
+
+    raw_index = request.path_params.get("remoteIndex", "")
+    try:
+        index = int(raw_index)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    if index < 0 or index > 255:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    att = get_attachment(msg_id, index)
+    if att is None:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    if att.get("expired"):
+        raise HTTPException(status_code=410, detail="Attachment has expired.")
+
+    data_b64 = att.get("data") or ""
+    if not data_b64:
+        raise HTTPException(status_code=410, detail="Attachment data was removed.")
+
+    try:
+        payload = base64.b64decode(data_b64)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Attachment data is corrupt.")
+
+    # Enforce size cap (25 MB) before serving.
+    max_bytes = 25 * 1024 * 1024
+    if len(payload) > max_bytes:
+        raise HTTPException(status_code=422, detail="Attachment exceeds size limit.")
+
+    filename = att.get("filename", "attachment")
+    mime_type = att.get("mimeType", "application/octet-stream")
+    # Sanitize filename: strip path separators and quotes to prevent
+    # header-injection / content-disposition abuse.
+    safe_filename = str(filename).replace("/", "_").replace("\\", "_").replace('"', "'")[:255]
+    etag = hashlib.sha256(payload).hexdigest()[:32]
+
+    # If-None-Match support: conditional GET for bandwidth savings.
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status_code=304)
+
+    return Response(
+        content=payload,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Content-Length": str(len(payload)),
+            "Cache-Control": "private, max-age=86400",
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 async def native_media_route(request: Request) -> Response:
     """Serve an agent-generated image to an authenticated native client.
 
@@ -3997,6 +4076,11 @@ routes = [
     # Native-completion to push bridge (Task 12)
     Route("/v1/native/watch", native_watch_route, methods=["POST"]),
     Route("/v1/native/media", native_media_route, methods=["GET"]),
+    Route(
+        "/v1/messages/{messageID}/attachments/{remoteIndex}",
+        message_attachment_bytes,
+        methods=["GET"],
+    ),
 ]
 
 app = Starlette(

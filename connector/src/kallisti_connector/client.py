@@ -896,6 +896,9 @@ class HeraldConnector:
             facade_ctx.connector_version = self._detect_connector_version()
             facade_ctx.agent_version = self._hermes_agent_version
             facade_ctx.health_check = self._check_api_health
+            # Sensor persistence: the HTTP device_sensor handler writes to the
+            # same sensors.db the MCP server reads, via this store.
+            facade_ctx.sensor_store = self.sensor_store
             # Auth tokens: register the connector credential so the iOS app
             # can authenticate with the same token used for the FastAPI host WS.
             facade_ctx.paired_device_id = state.device_token
@@ -906,6 +909,9 @@ class HeraldConnector:
             facade_ctx.send_completion_push = self._send_push_for_job
             facade_ctx.end_live_activity = self._send_live_activity_end
             facade_ctx.push_register = self._rpc_push_register
+            # Build 94: full catalog (includes activeModel.contextWindow) for
+            # /v1/commands so cookie-auth clients get real context windows.
+            facade_ctx.commands_catalog = self._rpc_commands_catalog
             from .http_facade import set_token_validator, AccessTokenValidator
             # B116: the validator is an in-memory set. It used to be seeded with
             # ONLY the shared connector credential, so every per-device `hd_`
@@ -2096,7 +2102,25 @@ class HeraldConnector:
         if token_kind == "liveactivity":
             state.live_activity_push_token = token
             state.live_activity_push_token_environment = environment
-            logger.info("Live Activity push token registered (environment=%s)", environment)
+            # Build 97: keep the full token history so the end-push can
+            # reach EVERY live activity the device started, not just the
+            # newest.  ActivityKit rotates the token per activity; a
+            # single-slot store lost the older ones and left their lock
+            # screen activities stuck on "Thinking...".  Newest first;
+            # dedupe so a re-registration of the same token doesn't grow
+            # the list.  Cap at 8 to bound memory (a session can chain
+            # many turns, but an activity that old is long dead — the
+            # end-push for it will 410 and get pruned).
+            tokens = state.live_activity_push_tokens or []
+            if token in tokens:
+                tokens.remove(token)
+            tokens.insert(0, token)
+            state.live_activity_push_tokens = tokens[:8]
+            logger.info(
+                "Live Activity push token registered (environment=%s, total=%d)",
+                environment,
+                len(state.live_activity_push_tokens),
+            )
         else:
             state.device_token = token
             state.device_token_environment = environment
@@ -2288,8 +2312,11 @@ class HeraldConnector:
         currently active, are both routine — not every turn starts one.
         """
         state = self.state_store.load()
+        tokens = list(state.live_activity_push_tokens or [])
         token = state.live_activity_push_token
-        if not token:
+        if token and token not in tokens:
+            tokens.insert(0, token)
+        if not tokens:
             return
 
         if not hasattr(self, '_apns_client') or self._apns_client is None:
@@ -2304,22 +2331,59 @@ class HeraldConnector:
         environment = state.live_activity_push_token_environment or "production"
         try:
             from .apns_client import PushResult
-            result = await self._apns_client.send_live_activity_update(
-                token,
-                content_state={
-                    "status": status,
-                    "elapsedSeconds": 0,
-                    "sessionType": "chat",
-                },
-                event="end",
-                environment=environment,
-            )
-            if result == PushResult.SENT:
-                logger.info("Live Activity end-push sent")
-            elif result == PushResult.TOKEN_INVALID:
-                logger.info("Live Activity push token invalid — activity likely already ended")
-            else:
-                logger.warning("Live Activity end-push result: %s", result.value)
+            # Build 97: fan out to every registered ActivityKit token, not
+            # just the latest.  ActivityKit mints a new token per activity;
+            # older tokens still point at live lock-screen activities that
+            # would otherwise never receive their end event.  Invalid (410)
+            # tokens are pruned below.
+            invalid_tokens: list[str] = []
+            for t in tokens:
+                result = await self._apns_client.send_live_activity_update(
+                    t,
+                    content_state={
+                        "status": status,
+                        "elapsedSeconds": 0,
+                        "sessionType": "chat",
+                    },
+                    event="end",
+                    environment=environment,
+                )
+                if result == PushResult.SENT:
+                    logger.info("Live Activity end-push sent (token=%s...)", t[:8])
+                elif result == PushResult.TOKEN_INVALID:
+                    # Build 96: the stored ActivityKit token died (the
+                    # activity it belonged to ended, or a newer activity
+                    # rotated it).  Drop it so a dead token is never reused
+                    # for a future turn's end-push — the app re-registers a
+                    # fresh token per activity via the cookie-aware path,
+                    # and the next end will target the live ones. Without
+                    # this, the lock screen stays stuck on "Thinking..."
+                    # after any token rotation.
+                    logger.info(
+                        "Live Activity push token invalid — clearing stale token (token=%s...)",
+                        t[:8],
+                    )
+                    invalid_tokens.append(t)
+                else:
+                    logger.warning("Live Activity end-push result: %s", result.value)
+            if invalid_tokens:
+                try:
+                    state = self.state_store.load()
+                    state.live_activity_push_tokens = [
+                        x
+                        for x in (state.live_activity_push_tokens or [])
+                        if x not in invalid_tokens
+                    ]
+                    if state.live_activity_push_token in invalid_tokens:
+                        state.live_activity_push_token = ""
+                        state.live_activity_push_token_environment = ""
+                    self.state_store.save(state)
+                    self._state = state
+                except Exception:
+                    logger.debug(
+                        "Live Activity token clear failed (non-fatal)",
+                        exc_info=True,
+                    )
         except Exception:
             logger.debug("Live Activity end-push error (non-fatal)", exc_info=True)
 
