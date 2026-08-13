@@ -602,7 +602,7 @@ def session_messages(
               -- job completion and override recording).
               AND content NOT LIKE '[System context:%'
               AND content NOT LIKE '[System context —%'
-            ORDER BY timestamp ASC
+            ORDER BY id ASC
             LIMIT ?
             """,
             (hermes_id, limit),
@@ -1149,7 +1149,7 @@ def _derived_title(hermes_id: str, conn: sqlite3.Connection | None = None) -> st
               AND content NOT LIKE '[System context%'
               AND content NOT LIKE '[Timezone:%'
               AND content NOT LIKE '[Local user time:%'
-            ORDER BY timestamp ASC
+            ORDER BY id ASC
             LIMIT 1
             """,
             (hermes_id,),
@@ -1193,7 +1193,7 @@ def _find_session_by_recent_message(
                 """
                 SELECT session_id FROM messages
                 WHERE role = 'user' AND content = ? AND active = 1
-                ORDER BY timestamp DESC
+                ORDER BY id DESC
                 LIMIT 1
                 """,
                 (text,),
@@ -1204,7 +1204,7 @@ def _find_session_by_recent_message(
                 SELECT session_id FROM messages
                 WHERE role = 'user' AND content = ? AND active = 1
                   AND timestamp >= ?
-                ORDER BY timestamp DESC
+                ORDER BY id DESC
                 LIMIT 1
                 """,
                 (text, since),
@@ -1259,7 +1259,7 @@ def _find_session_by_assistant_reply(
 
         row = conn.execute(
             f"SELECT session_id FROM messages WHERE {where} AND content = ? "
-            "ORDER BY timestamp DESC LIMIT 1",
+            "ORDER BY id DESC LIMIT 1",
             (*params, stripped),
         ).fetchone()
         if row:
@@ -1274,7 +1274,7 @@ def _find_session_by_assistant_reply(
         row = conn.execute(
             f"SELECT session_id FROM messages WHERE {where} "
             "AND content LIKE ? ESCAPE '\\' "
-            "ORDER BY timestamp DESC LIMIT 1",
+            "ORDER BY id DESC LIMIT 1",
             (*params, escaped + "%"),
         ).fetchone()
         return row["session_id"] if row else None
