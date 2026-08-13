@@ -909,6 +909,9 @@ class HeraldConnector:
             facade_ctx.send_completion_push = self._send_push_for_job
             facade_ctx.end_live_activity = self._send_live_activity_end
             facade_ctx.push_register = self._rpc_push_register
+            # Build 94: full catalog (includes activeModel.contextWindow) for
+            # /v1/commands so cookie-auth clients get real context windows.
+            facade_ctx.commands_catalog = self._rpc_commands_catalog
             from .http_facade import set_token_validator, AccessTokenValidator
             # B116: the validator is an in-memory set. It used to be seeded with
             # ONLY the shared connector credential, so every per-device `hd_`

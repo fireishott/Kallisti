@@ -208,6 +208,10 @@ class FacadeContext:
         self.auxiliary_list: Callable[[], dict | Coroutine[Any, Any, dict]] | None = None
         self.auxiliary_set: Callable[[dict], dict | Coroutine[Any, Any, dict]] | None = None
         self.push_register: PushRegisterProvider | None = None
+        # Build 94: full command catalog (commands/skills/personalities/
+        # quickCommands + activeModel with contextWindow). Wired from the
+        # connector client's _rpc_commands_catalog.
+        self.commands_catalog: Callable[[], dict] | Callable[[], Coroutine[Any, Any, dict]] | None = None
         self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
         # Build 33 Workstream A: durable restart operations
         self.restart_store: RestartOperationStore | None = None
@@ -501,7 +505,24 @@ async def auth_revoke(request: Request) -> JSONResponse:
 
 
 async def list_commands(request: Request) -> JSONResponse:
-    await require_auth(request)
+    # Build 94: cookie-auth sessions have no bearer token, so this must accept
+    # the gateway session cookie (require_native_or_paired_auth) like the
+    # other native routes. Returns the full catalog - commands, skills,
+    # personalities, quick commands, and the active model's contextWindow -
+    # instead of the old hardcoded 5-command stub.
+    await require_native_or_paired_auth(request)
+    ctx = get_context()
+    if ctx.commands_catalog is not None:
+        try:
+            result = ctx.commands_catalog()
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, dict):
+                return JSONResponse(result)
+        except Exception as e:  # pragma: no cover - defensive
+            logging.getLogger("herald.http_facade").warning(
+                "commands_catalog provider failed: %s", e
+            )
     return JSONResponse({
         "commands": [
             {"name": "new", "description": "Start a new session"},
