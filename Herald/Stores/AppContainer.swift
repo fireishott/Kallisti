@@ -885,6 +885,12 @@ final class AppContainer {
             }
         }
 
+        // Build 94: when the active model changes, refresh the command
+        // catalog so the context window reflects the newly selected model.
+        // (SwiftUI-side .onChange pushed ChatScreen past the type-checker
+        // limit, so this lives on the store side instead.)
+        container.observeActiveModelChanges()
+
         return container
     }
 
@@ -900,6 +906,21 @@ final class AppContainer {
             accessTokenProvider: { [sessionStore] in await sessionStore.currentAccessToken() },
             nativeFeatureClientProvider: { [nativeGatewayClient] in nativeGatewayClient?.featureClient }
         )
+    }
+
+    /// Build 94: track active-model changes and refresh the catalog so the
+    /// context window reflects the newly selected model. Re-arms after each
+    /// change (withObservationTracking fires once per change).
+    private func observeActiveModelChanges() {
+        withObservationTracking {
+            _ = modelStore.activeModel?.name
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refreshCommandCatalog(force: true)
+                self.observeActiveModelChanges()
+            }
+        }
     }
 
     /// Build 70: begin polling connector latency on a 3s cadence. The value
@@ -1383,6 +1404,16 @@ final class AppContainer {
         await talkStore.refreshReadiness()
     }
 
+    /// Build 94: push registration dedup guards. Repeated call sites
+    /// (connection transitions, foregrounds, wakes, launch) re-POST the same
+    /// device token; a flapping socket logged thousands of identical
+    /// registrations per minute. Once accepted, skip until the token or
+    /// environment changes.
+    private var lastAcceptedDeviceToken: String?
+    private var lastAcceptedDeviceEnvironment: String?
+    private var pushRegistrationInFlight = false
+    private var lastAcceptedLiveActivityToken: String?
+
     /// Registers the APNs device token with the relay so it can send silent push notifications.
     func registerPushTokenIfNeeded(_ token: String) async {
         // Native gateway path: uses native-gateway bearer auth and the
@@ -1395,10 +1426,26 @@ final class AppContainer {
             let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalizedToken.isEmpty else { return }
             let pushEnvironment = Self.apnsEnvironment
+            // Build 94: dedup + single-flight. Multiple call sites fired the
+            // same device registration concurrently; a flapping socket
+            // produced thousands of identical POST /v1/push/register calls.
+            // Once a token+environment is accepted, skip until it changes.
+            if lastAcceptedDeviceToken == normalizedToken,
+               lastAcceptedDeviceEnvironment == pushEnvironment {
+                sessionStore.state.pushTokenRegistered = true
+                return
+            }
+            guard !pushRegistrationInFlight else { return }
+            pushRegistrationInFlight = true
+            defer { pushRegistrationInFlight = false }
             let accepted = await nativeGatewayClient.registerPushToken(
                 normalizedToken,
                 pushEnvironment: pushEnvironment
             )
+            if accepted {
+                lastAcceptedDeviceToken = normalizedToken
+                lastAcceptedDeviceEnvironment = pushEnvironment
+            }
             sessionStore.state.pushTokenRegistered = accepted
             await notificationService?.markPushTokenRegistered(accepted)
             return
@@ -1523,6 +1570,9 @@ final class AppContainer {
         let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedToken.isEmpty else { return }
 
+        // Build 94: dedup - skip re-POSTing a token we already accepted.
+        if lastAcceptedLiveActivityToken == normalizedToken { return }
+
         // Native path: use native bearer + connector facade URL.
         if let nativeGatewayClient {
             // Build 55: refresh first — same expired-bearer bug as
@@ -1562,6 +1612,8 @@ final class AppContainer {
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    json["registered"] as? Bool == true {
                     Logger.app.info("registerLiveActivityPushToken: accepted (native, environment=\(pushEnvironment))")
+                    // Build 94: remember so we don't re-POST this token.
+                    lastAcceptedLiveActivityToken = normalizedToken
                     return
                 }
                 Logger.app.warning("registerLiveActivityPushToken: native HTTP \(status)")
@@ -1676,8 +1728,13 @@ final class AppContainer {
             return
         }
 
-        guard let token = await sessionStore.currentAccessToken(),
-              let client = apiClient else { return }
+        // Build 94: cookie-auth sessions have no bearer token. RelayAPIClient
+        // rides the gateway session cookie when accessToken is nil, and the
+        // catalog route accepts cookies (connector-side). Without this the
+        // catalog never loaded -> the context window always showed
+        // "unavailable".
+        guard let client = apiClient else { return }
+        let token = await sessionStore.currentAccessToken()
 
         struct CatalogResponse: Decodable {
             let commands: [RemoteCommand]?
