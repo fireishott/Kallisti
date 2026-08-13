@@ -596,27 +596,20 @@ struct ChatScreen: View {
             } label: {
                 HStack(spacing: 4) {
                     if let model = displayedModelName {
-                        // Marquee: scroll the FULL model name when it
-                        // overflows the pill; under Reduce Motion (or
-                        // when the name fits) render the prior truncated
-                        // label so accessibility/motion preferences are
-                        // respected.
-                        MarqueeText(text: model) {
-                            Text(compactModelName(model))
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Design.Colors.foreground)
-                                .lineLimit(1)
-                                // Build 56: layoutPriority(1) so the model name
-                                // never collapses to zero width in tight toolbar
-                                // slots. The context ring has a fixed 16pt frame
-                                // and is incompressible, so SwiftUI was shrinking
-                                // the Text to nothing first - the iPad pill
-                                // rendered as a bare green dot even though the
-                                // model name was loaded (the iPhone principal
-                                // slot had enough width, the iPad leading slot
-                                // didn't).
-                                .layoutPriority(1)
-                        }
+                        Text(compactModelName(ModelNamePretty.prettyName(model)))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Design.Colors.foreground)
+                            .lineLimit(1)
+                            // Build 56: layoutPriority(1) so the model name
+                            // never collapses to zero width in tight toolbar
+                            // slots. The context ring has a fixed 16pt frame
+                            // and is incompressible, so SwiftUI was shrinking
+                            // the Text to nothing first - the iPad pill
+                            // rendered as a bare green dot even though the
+                            // model name was loaded (the iPhone principal
+                            // slot had enough width, the iPad leading slot
+                            // didn't).
+                            .layoutPriority(1)
                     } else if modelStore.isLoading {
                         Text("Model…")
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -774,14 +767,14 @@ struct ChatScreen: View {
                     if let model = displayedModelName {
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 4) {
-                                chipModelText(model)
+                                chipModelText(ModelNamePretty.prettyName(model))
                                 if modelStore.isLoading {
                                     ProgressView()
                                         .controlSize(.mini)
                                 }
                             }
                             HStack(spacing: 4) {
-                                chipModelText(compactModelName(model))
+                                chipModelText(compactModelName(ModelNamePretty.prettyName(model)))
                                 if modelStore.isLoading {
                                     ProgressView()
                                         .controlSize(.mini)
@@ -872,10 +865,12 @@ struct ChatScreen: View {
                         .font(Design.Typography.callout)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                 } else if let model = displayedModelName {
-                    Text(model)
-                        .font(.system(.subheadline, design: .monospaced, weight: .semibold))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .lineLimit(1)
+                    MarqueeText(text: ModelNamePretty.prettyName(model)) {
+                        Text(ModelNamePretty.prettyName(model))
+                            .font(.system(.subheadline, design: .monospaced, weight: .semibold))
+                            .foregroundStyle(Design.Colors.foreground)
+                            .lineLimit(1)
+                    }
                 } else if modelStore.isError {
                     VStack(alignment: .leading, spacing: Design.Spacing.xs) {
                         Text(modelStore.errorMessage ?? "Failed to load models")
