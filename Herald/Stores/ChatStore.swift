@@ -485,6 +485,13 @@ final class ChatStore {
 
     func updateConnectionStatus(_ status: ConnectionStatus) {
         _cachedConnectionStatus = status
+        // Build 94: only write back when the value actually differs. Writing
+        // back unconditionally re-entered the client's didSet ->
+        // onConnectionStatusChanged -> handler -> updateConnectionStatus cycle
+        // whenever a stale handler wrote a value the client had already moved
+        // past (e.g. a late .connected write while the client is reconnecting),
+        // amplifying a flapping socket into a registration storm.
+        guard heraldClient.connectionStatus != status else { return }
         heraldClient.connectionStatus = status
     }
 
