@@ -9,6 +9,10 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
     /// Base64-encoded thumbnail (for images) — small enough to cache/persist.
     let thumbnailBase64: String?
     let localStoragePath: String?
+    /// Native-gateway media URL (e.g. `/v1/native/media?path=images/foo.png`)
+    /// for history-loaded attachments. Fetched with the native bearer token;
+    /// mutually exclusive with the relay `messageID`/`remoteIndex` path.
+    let mediaURL: URL?
     /// Server message this attachment belongs to, and its position in that
     /// message's attachment list. Together they address the relay endpoint
     /// `messages/{messageID}/attachments/{remoteIndex}` for full-resolution
@@ -18,6 +22,12 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
 
     var isImage: Bool { kind == "image" || mimeType.hasPrefix("image/") }
 
+    /// True for types that render as an inline thumbnail (image, video, PDF)
+    /// rather than a tap-to-open file card.
+    var isInlinePreview: Bool {
+        kind == "image" || kind == "video" || kind == "pdf" || mimeType.hasPrefix("image/")
+    }
+
     init(
         id: UUID = UUID(),
         kind: String,
@@ -25,6 +35,7 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
         mimeType: String,
         thumbnailBase64: String? = nil,
         localStoragePath: String? = nil,
+        mediaURL: URL? = nil,
         messageID: UUID? = nil,
         remoteIndex: Int? = nil
     ) {
@@ -34,6 +45,7 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
         self.mimeType = mimeType
         self.thumbnailBase64 = thumbnailBase64
         self.localStoragePath = localStoragePath
+        self.mediaURL = mediaURL
         self.messageID = messageID
         self.remoteIndex = remoteIndex
     }
@@ -45,6 +57,7 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
         self.mimeType = pending.mimeType
         self.thumbnailBase64 = pending.thumbnailBase64
         self.localStoragePath = pending.localStoragePath
+        self.mediaURL = nil
         self.messageID = nil
         self.remoteIndex = nil
     }

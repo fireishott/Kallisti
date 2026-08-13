@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+import AVFoundation
+import AVKit
+import PDFKit
 import QuickLook
 import UniformTypeIdentifiers
 
@@ -17,12 +20,22 @@ struct MessageAttachmentsView: View {
     @State private var fullScreenImage: FullScreenImagePayload?
 
     private var images: [MessageAttachment] { attachments.filter(\.isImage) }
-    private var files: [MessageAttachment] { attachments.filter { !$0.isImage } }
+    private var videos: [MessageAttachment] { attachments.filter { $0.kind == "video" } }
+    private var pdfs: [MessageAttachment] { attachments.filter { $0.kind == "pdf" } }
+    private var files: [MessageAttachment] { attachments.filter { !$0.isInlinePreview } }
 
     var body: some View {
         VStack(alignment: alignment, spacing: Design.Spacing.xs) {
             if !images.isEmpty {
                 imageLayout
+            }
+            ForEach(videos) { video in
+                VideoAttachmentView(attachment: video, maxWidth: 260, maxHeight: 200)
+            }
+            ForEach(pdfs) { pdf in
+                PDFAttachmentView(attachment: pdf, maxWidth: 220, maxHeight: 280) {
+                    Task { await openFile(pdf) }
+                }
             }
             ForEach(files) { file in
                 AttachmentFileCard(attachment: file) {
@@ -215,6 +228,187 @@ private struct AttachmentImageView: View {
         if let image = fullImage {
             onTap(image, fullImageData, attachment.mimeType)
         }
+    }
+}
+
+// MARK: - Inline video
+
+/// Inline video preview: first-frame thumbnail with a play overlay. Tapping
+/// plays the video full-screen. Bytes are fetched via AttachmentService, which
+/// now supports native-gateway media URLs as well as the relay.
+private struct VideoAttachmentView: View {
+    let attachment: MessageAttachment
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
+
+    @Environment(AttachmentService.self) private var attachmentService
+
+    @State private var thumbnail: UIImage?
+    @State private var loadFailed = false
+    @State private var isPlaying = false
+    @State private var localURL: URL?
+
+    var body: some View {
+        Group {
+            if let thumbnail {
+                Button {
+                    isPlaying = true
+                } label: {
+                    ZStack {
+                        Image(uiImage: thumbnail)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.white)
+                            .shadow(radius: 4)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Video")
+                .accessibilityHint("Double-tap to play")
+            } else if loadFailed {
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .fill(Design.Colors.surface)
+                    .frame(width: min(maxWidth, 180), height: min(maxHeight, 140))
+                    .overlay(
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .fill(Design.Colors.surface)
+                    .frame(width: min(maxWidth, 180), height: min(maxHeight, 140))
+                    .overlay(ProgressView())
+            }
+        }
+        .task { await loadThumbnail() }
+        .fullScreenCover(isPresented: $isPlaying) {
+            if let localURL {
+                VideoPlayerView(url: localURL)
+            }
+        }
+    }
+
+    private func loadThumbnail() async {
+        guard let data = await attachmentService.data(for: attachment) else {
+            loadFailed = true
+            return
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KallistiVideo", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(attachment.fileName)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            loadFailed = true
+            return
+        }
+        localURL = url
+        let asset = AVAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        do {
+            let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+            thumbnail = UIImage(cgImage: cgImage)
+        } catch {
+            loadFailed = true
+        }
+    }
+}
+
+// MARK: - Inline PDF
+
+/// Inline PDF preview: first-page thumbnail. Tapping opens the full document
+/// via QuickLook (reusing the parent's `openFile` path).
+private struct PDFAttachmentView: View {
+    let attachment: MessageAttachment
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
+    let onTap: () -> Void
+
+    @Environment(AttachmentService.self) private var attachmentService
+
+    @State private var thumbnail: UIImage?
+    @State private var loadFailed = false
+
+    var body: some View {
+        Group {
+            if let thumbnail {
+                Button(action: onTap) {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                                .stroke(Design.Colors.divider, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("PDF document")
+                .accessibilityHint("Double-tap to open")
+            } else if loadFailed {
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .fill(Design.Colors.surface)
+                    .frame(width: min(maxWidth, 180), height: min(maxHeight, 140))
+                    .overlay(
+                        Image(systemName: "doc.badge.exclamationmark")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                    .fill(Design.Colors.surface)
+                    .frame(width: min(maxWidth, 180), height: min(maxHeight, 140))
+                    .overlay(ProgressView())
+            }
+        }
+        .task { await loadThumbnail() }
+    }
+
+    private func loadThumbnail() async {
+        guard let data = await attachmentService.data(for: attachment),
+              let document = PDFDocument(data: data),
+              let page = document.page(at: 0) else {
+            loadFailed = true
+            return
+        }
+        let bounds = page.bounds(for: .mediaBox)
+        let renderer = UIGraphicsImageRenderer(size: bounds.size)
+        thumbnail = renderer.image { context in
+            UIColor.white.set()
+            context.fill(bounds)
+            page.draw(with: .mediaBox, to: context.cgContext)
+        }
+    }
+}
+
+// MARK: - Video playback
+
+private struct VideoPlayerView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VideoPlayer(player: AVPlayer(url: url))
+                .ignoresSafeArea()
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.white)
+                    .padding()
+            }
+        }
+        .background(Color.black)
     }
 }
 

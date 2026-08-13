@@ -38,6 +38,13 @@ final class AttachmentService {
             return localData
         }
 
+        // Native-gateway history media (Build 101): the connector serves the
+        // bytes at /v1/native/media. Fetch with the native bearer token,
+        // mirroring AuthenticatedAsyncImage's auth gate exactly.
+        if let mediaURL = attachment.mediaURL {
+            return await fetchNativeMedia(url: mediaURL)
+        }
+
         guard let key = cacheKey(for: attachment) else { return nil }
 
         if let cached = cache.object(forKey: key as NSString) {
@@ -81,6 +88,41 @@ final class AttachmentService {
     func image(for attachment: MessageAttachment) async -> UIImage? {
         guard let data = await data(for: attachment) else { return nil }
         return UIImage(data: data)
+    }
+
+    /// Fetch native-gateway media bytes with the native bearer token, cached
+    /// by URL. Used for history-loaded attachments (images, PDFs, videos) that
+    /// the connector serves from /v1/native/media.
+    private func fetchNativeMedia(url: URL) async -> Data? {
+        let key = url.absoluteString
+        if let cached = cache.object(forKey: key as NSString) {
+            return cached as Data
+        }
+        if let existing = inflight[key] {
+            return await existing.value
+        }
+        let task = Task<Data?, Never> { [weak self] in
+            guard let self else { return nil }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            if let token = await self.accessTokenProvider() {
+                request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+            }
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                return data
+            } catch {
+                return nil
+            }
+        }
+        inflight[key] = task
+        let result = await task.value
+        inflight[key] = nil
+        if let result {
+            cache.setObject(result as NSData, forKey: key as NSString, cost: result.count)
+        }
+        return result
     }
 
     func accessToken() async -> String? { await accessTokenProvider() }
