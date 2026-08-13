@@ -13,7 +13,7 @@
 
 Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects to a Hermes gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
 
-There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Conversations, credentials, and media stay on infrastructure you control.
+There is no hosted vendor backend. You bring your own Hermes gateway, connector, and TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The app is available from the App Store, and the source is open for anyone who wants to build it themselves.
 
 ## Highlights
 
@@ -26,6 +26,7 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 - Widgets, watch, and notification-service extensions
 - Voice mode with configurable ASR/TTS providers and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion synchronization
+- Handwriting notes with Apple Pencil and OCR / AI enrichment
 - Gateway status, logs, restart, software update checks, and truthful connection stages
 - Connection latency monitoring and searchable auxiliary model switching
 
@@ -57,7 +58,7 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 - Widgets, watch, and notification-service extensions
 - Voice mode with configurable ASR/TTS and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion sync
-- Handwriting note recognition (when configured)
+- Handwriting notes with Apple Pencil, OCR, and AI enrichment
 
 ### Gateway control
 
@@ -82,24 +83,17 @@ Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MO
 ## Requirements
 
 - iOS 18 or newer
-- Xcode 16 or newer
 - A running [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway
 - Python 3.11 or newer for the optional connector
-- An Apple Developer account for device builds and push capabilities
+- Xcode 16 or newer and an Apple Developer account only if you build from source
 
 ## Quick start
 
-### Build the app
+### Install from the App Store
 
-```bash
-git clone https://github.com/fireishott/Kallisti.git
-cd Kallisti
-open Herald.xcodeproj
-```
+Download Kallisti from the App Store and pair it with your Hermes gateway. No Apple Developer account or Xcode setup is needed for the App Store path.
 
-Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-### Run the connector
+If you want push notifications, HealthKit synchronization, Live Activities, or authenticated media delivery, run the optional connector on your Hermes host:
 
 ```bash
 cd connector
@@ -110,6 +104,18 @@ kallisti run
 ```
 
 Configure secrets and environment-specific URLs outside the repository. Do not commit credentials, private keys, device identifiers, internal hostnames, or production logs. The connector serves the HTTP facade for push registration, Live Activities, and authenticated media on the port you configure.
+
+### Build from source
+
+Kallisti is open source under MIT and free to build. For tinkerers who want their own signed builds:
+
+```bash
+git clone https://github.com/fireishott/Kallisti.git
+cd Kallisti
+open Herald.xcodeproj
+```
+
+Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### Sign in on device
 
@@ -161,7 +167,7 @@ See [SECURITY.md](SECURITY.md) for supported versions and responsible disclosure
 
 ## Release history
 
-See [CHANGELOG.md](CHANGELOG.md). GitHub releases contain source notes only; signed IPAs are distributed through authorized Apple channels or built by operators with their own signing identity.
+The app is distributed through the App Store. GitHub releases carry source notes for those building from source, and the full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
