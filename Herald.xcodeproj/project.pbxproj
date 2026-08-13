@@ -22,6 +22,7 @@
 		06DD0F75D20E5AB002BE9BB8 /* StreamingUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3C9394417BD10811CCD77DA /* StreamingUpdate.swift */; };
 		0707EA84DBA771950C0BC3D9 /* HandwritingRecognizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C66C0194CDF7E574F06D621 /* HandwritingRecognizing.swift */; };
 		07EA4C6485EC73BCC2D420DC /* Design.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC392ED86295411DCB768B5 /* Design.swift */; };
+		8A3D0EA8DB06D2ADD604F6F3 /* ModelNamePretty.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4584B020BC999E3832E8327 /* ModelNamePretty.swift */; };
 		086BEE014A41EB1A787D2F27 /* PushRegistrationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11D93820460AEDF602ACFB9F /* PushRegistrationCoordinator.swift */; };
 		0A5C84AFCD746FB70CA81BDC /* StreamedContentPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4F0C938054F308B4F14959 /* StreamedContentPreservationTests.swift */; };
 		0A9DC021D73FB2F49F1076F2 /* SharedWidgetDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B51E8E152A2624BF8DAF3BB0 /* SharedWidgetDataStore.swift */; };
@@ -640,6 +641,7 @@
 		8E2C4ED19AFEA273035AE7BD /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
 		8EE1C61B32A2AA2551216277 /* stream_v2_approval.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = stream_v2_approval.json; sourceTree = "<group>"; };
 		8FC392ED86295411DCB768B5 /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
+		D4584B020BC999E3832E8327 /* ModelNamePretty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelNamePretty.swift; sourceTree = "<group>"; };
 		9167E97BDC536DFCD5EFE8A5 /* SessionListStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListStore.swift; sourceTree = "<group>"; };
 		91C3EC13DA4272428D489B6E /* MessageStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageStatus.swift; sourceTree = "<group>"; };
 		9232A7F07731F20027182CDC /* KallistiTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KallistiTheme.swift; sourceTree = "<group>"; };
@@ -1410,6 +1412,7 @@
 			children = (
 				E2C9DC46A2F5A5578C7CC5E4 /* Extensions */,
 				8FC392ED86295411DCB768B5 /* Design.swift */,
+				D4584B020BC999E3832E8327 /* ModelNamePretty.swift */,
 				163D84922269635F1FE46631 /* DeviceClass.swift */,
 				15B2214FE4DA26E9F49BFBFE /* HapticEngine.swift */,
 				978B6BF1CEC5DD820FF13A28 /* KallistiBrandSurfaces.swift */,
@@ -1937,6 +1940,7 @@
 				C2558636F3E74C905E5DEAB2 /* DashboardLogService.swift in Sources */,
 				6C3A0A0D6042C95B92B7E265 /* DemoData.swift in Sources */,
 				07EA4C6485EC73BCC2D420DC /* Design.swift in Sources */,
+				8A3D0EA8DB06D2ADD604F6F3 /* ModelNamePretty.swift in Sources */,
 				A3D6D65994DA6DCB9337424F /* DeviceCapability.swift in Sources */,
 				2AC2E5624D6A9F5B24D0EB24 /* DeviceClass.swift in Sources */,
 				B44058F6A656C86D5488E286 /* DeviceRegistrationRequest.swift in Sources */,

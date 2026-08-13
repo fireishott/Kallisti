@@ -78,78 +78,6 @@ struct MessageBubble: View, Equatable {
 
     var body: some View {
         contentView
-            .contextMenu {
-                // Copy text — always
-                Button {
-                    UIPasteboard.general.string = message.content
-                } label: {
-                    Label("Copy Text", systemImage: "doc.on.doc")
-                }
-
-                // Copy first code block — only if message contains one
-                let segments = parseMarkdownSegments(message.content)
-                if let codeBlock = segments.first(where: {
-                    if case .codeBlock = $0 { return true }
-                    return false
-                }), case .codeBlock(_, _, let code) = codeBlock {
-                    Button {
-                        UIPasteboard.general.string = code
-                    } label: {
-                        Label("Copy Code", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                }
-
-                // Open in Canvas — only if extractable content exists
-                let hasCanvas = segments.contains(where: {
-                    if case .codeBlock = $0 { return true }
-                    return false
-                })
-                if hasCanvas {
-                    Button {
-                        onOpenCanvas?(message)
-                    } label: {
-                        Label("Open in Canvas", systemImage: "rectangle.on.rectangle")
-                    }
-                }
-
-                // React
-                Button {
-                    showReactionPicker = true
-                } label: {
-                    Label("React", systemImage: "face.smiling")
-                }
-
-                Divider()
-
-                // Retry — assistant messages only
-                if isHermes {
-                    Button {
-                        onRetry?(message)
-                    } label: {
-                        Label("Retry", systemImage: "arrow.counterclockwise")
-                    }
-                }
-
-                // Share
-                Button {
-                    let av = UIActivityViewController(activityItems: [message.content], applicationActivities: nil)
-                    if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let root = scene.windows.first?.rootViewController {
-                        root.present(av, animated: true)
-                    }
-                } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-
-                Divider()
-
-                // Delete — destructive
-                Button(role: .destructive) {
-                    onDelete?(message)
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-            }
             .sheet(isPresented: $showReactionPicker) {
                 MessageReactionPicker { reaction in
                     addReaction(reaction, to: message)
@@ -157,6 +85,95 @@ struct MessageBubble: View, Equatable {
                 .presentationDetents([.height(120)])
                 .presentationDragIndicator(.hidden)
             }
+    }
+
+    // MARK: - Actions Menu
+
+    /// "..." menu that replaces the old long-press `.contextMenu`. The context
+    /// menu was stealing the long-press gesture, so text selection never fired
+    /// and the only copy path was "Copy Text" (whole message). Moving the
+    /// actions to an explicit button frees the long-press for
+    /// `.textSelection(.enabled)`, which gives partial-text selection plus the
+    /// system "Copy" for the selected range.
+    private var bubbleMenu: some View {
+        Menu {
+            Button {
+                UIPasteboard.general.string = message.content
+            } label: {
+                Label("Copy Text", systemImage: "doc.on.doc")
+            }
+
+            // Copy first code block - only if message contains one
+            let segments = parseMarkdownSegments(message.content)
+            if let codeBlock = segments.first(where: {
+                if case .codeBlock = $0 { return true }
+                return false
+            }), case .codeBlock(_, _, let code) = codeBlock {
+                Button {
+                    UIPasteboard.general.string = code
+                } label: {
+                    Label("Copy Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+            }
+
+            // Open in Canvas - only if extractable content exists
+            let hasCanvas = segments.contains(where: {
+                if case .codeBlock = $0 { return true }
+                return false
+            })
+            if hasCanvas {
+                Button {
+                    onOpenCanvas?(message)
+                } label: {
+                    Label("Open in Canvas", systemImage: "rectangle.on.rectangle")
+                }
+            }
+
+            // React
+            Button {
+                showReactionPicker = true
+            } label: {
+                Label("React", systemImage: "face.smiling")
+            }
+
+            Divider()
+
+            // Retry - assistant messages only
+            if isHermes {
+                Button {
+                    onRetry?(message)
+                } label: {
+                    Label("Retry", systemImage: "arrow.counterclockwise")
+                }
+            }
+
+            // Share
+            Button {
+                let av = UIActivityViewController(activityItems: [message.content], applicationActivities: nil)
+                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let root = scene.windows.first?.rootViewController {
+                    root.present(av, animated: true)
+                }
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+
+            Divider()
+
+            // Delete - destructive
+            Button(role: .destructive) {
+                onDelete?(message)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: Design.Size.iconTiny, weight: .medium))
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -280,6 +297,7 @@ struct MessageBubble: View, Equatable {
                     if !message.content.isEmpty && !isAttachmentPlaceholder {
                         MarkdownContentView(content: stripImageDirectives(message.content), isStreaming: false)
                             .foregroundStyle(chatTextColor)
+                            .textSelection(.enabled)
                             .padding(.horizontal, Design.Spacing.md)
                             .padding(.vertical, Design.Spacing.sm)
                             .background(Design.Colors.surface2)
@@ -295,6 +313,8 @@ struct MessageBubble: View, Equatable {
                         .font(.system(size: Design.Size.iconTiny))
                         .foregroundStyle(message.status.displayColor)
                         .accessibilityLabel(message.status.rawValue)
+
+                    bubbleMenu
                 }
             }
 
@@ -360,8 +380,11 @@ struct MessageBubble: View, Equatable {
                 }
 
                 if !message.isStreaming {
-                    Text(message.timestamp, style: .time)
-                        .brandEyebrow()
+                    HStack(spacing: Design.Spacing.xs) {
+                        Text(message.timestamp, style: .time)
+                            .brandEyebrow()
+                        bubbleMenu
+                    }
                 }
 
                 if message.status == .failed {
