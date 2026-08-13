@@ -165,6 +165,31 @@ struct NativeToolCompletePayload: Decodable {
     }
 }
 
+/// `tool.output` — a live stdout chunk streamed during a tool invocation.
+/// Gateway ships `{"tool_id","name","chunk"}` (see `_on_tool_output` in
+/// tui_gateway/server.py). `tool_id` correlates with the `tool.start` /
+/// `tool.complete` toolCallID so the app can append chunks in place.
+struct NativeToolOutputPayload: Decodable {
+    let toolCallID: String?
+    let name: String?
+    let chunk: String?
+
+    enum CodingKeys: String, CodingKey {
+        case toolCallID = "tool_call_id"
+        case toolID = "tool_id"
+        case name
+        case chunk
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        toolCallID = try c.decodeIfPresent(String.self, forKey: .toolCallID)
+            ?? c.decodeIfPresent(String.self, forKey: .toolID)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        chunk = try c.decodeIfPresent(String.self, forKey: .chunk)
+    }
+}
+
 
 /// `message.start` — signals a turn has begun.
 struct NativeMessageStartPayload: Decodable {
@@ -360,4 +385,5 @@ enum NativeGatewayStreamingEventType: String {
     case gatewayReady = "gateway.ready"
     case toolStart = "tool.start"
     case toolComplete = "tool.complete"
+    case toolOutput = "tool.output"
 }

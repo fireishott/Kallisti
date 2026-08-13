@@ -29,6 +29,53 @@ struct MessageBubble: View, Equatable {
     private var isCompactionMessage: Bool { message.content.hasPrefix("[CONTEXT COMPACTION]") }
     private var isBudgetWarning: Bool { message.content.contains("[BUDGET WARNING:") }
 
+    /// Build 86: user-chosen chat text color from Appearance settings.
+    /// Falls back to the theme foreground when unset or unparseable.
+    private var chatTextColor: Color {
+        guard let hex = settingsStore.settings.chatTextColorHex,
+              !hex.isEmpty
+        else { return Design.Colors.foreground }
+        let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+        guard let value = UInt(cleaned, radix: 16), cleaned.count <= 6 else {
+            return Design.Colors.foreground
+        }
+        return Color(hex: value)
+    }
+
+    /// Strips all Hermes inline-reference directives the desktop gateway
+    /// persists alongside user-attached files/images/links/etc. The
+    /// attachments themselves render from `attachments[]`; the directive
+    /// text must never leak into the bubble.
+    ///
+    /// Mirrors the wire grammar shared by the desktop renderer
+    /// (`reference-kinds.ts`) and the Python gateway
+    /// (`agent/context_references.py`):
+    ///   - valued kinds: `file | folder | git | url | image | tool | line | terminal | session`
+    ///     followed by a value (backtick/double/single-quoted or bare `\S+`),
+    ///     with an optional trailing `:N` or `:N-M` line-range and an
+    ///     optional `{name=...}` suffix.
+    ///   - valueless refs: bare `@diff` and `@staged`.
+    ///   - canonical bracket form: `@image:[alt]({name=...})` (also stripped).
+    ///   - does NOT strip ordinary `@mentions` (e.g. `@user`).
+    private func stripImageDirectives(_ content: String) -> String {
+        // One regex covering every recognised Hermes inline-directive shape,
+        // matched anywhere in the string. The lookbehind prevents stripping
+        // ordinary mentions like @user / @team-lead. Raw string (#"...") so
+        // regex backslashes and quotes need no escaping.
+        let pattern = #"(?<![\w/])@(?:(?:diff|staged)\b|image:\[[^\]\n]*\](?:\(\{name=[^}\n]*\}\))?|(?:file|folder|git|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)(?::\d+(?:-\d+)?(?=$|[\s,;\]\}"'\)`]))?(?:\{name=[^}\n]*\})?)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        let stripped = regex.stringByReplacingMatches(
+            in: content,
+            options: [],
+            range: range,
+            withTemplate: ""
+        )
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         contentView
             .contextMenu {
@@ -231,8 +278,8 @@ struct MessageBubble: View, Equatable {
                     let isAttachmentPlaceholder = !message.attachments.isEmpty
                         && message.content.range(of: #"^\[\d+ attachment"#, options: .regularExpression) != nil
                     if !message.content.isEmpty && !isAttachmentPlaceholder {
-                        MarkdownContentView(content: message.content, isStreaming: false)
-                            .foregroundStyle(Design.Colors.foreground)
+                        MarkdownContentView(content: stripImageDirectives(message.content), isStreaming: false)
+                            .foregroundStyle(chatTextColor)
                             .padding(.horizontal, Design.Spacing.md)
                             .padding(.vertical, Design.Spacing.sm)
                             .background(Design.Colors.surface2)
@@ -349,9 +396,11 @@ struct MessageBubble: View, Equatable {
 
     @ViewBuilder
     private var streamingText: some View {
-        let displayContent = isBudgetWarning
-            ? Self.strippingBudgetWarnings(from: message.content)
-            : message.content
+        let displayContent = stripImageDirectives(
+            isBudgetWarning
+                ? Self.strippingBudgetWarnings(from: message.content)
+                : message.content
+        )
 
         MarkdownContentView(
             content: displayContent,
@@ -361,7 +410,7 @@ struct MessageBubble: View, Equatable {
             hasStreamedReasoning: !message.reasoning.isEmpty,
             startedAt: message.timestamp
         )
-        .foregroundStyle(Design.Colors.foreground)
+        .foregroundStyle(chatTextColor)
         .textSelection(.enabled)
         .padding(.vertical, Design.Spacing.xxs)
     }

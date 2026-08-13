@@ -14,12 +14,13 @@ struct ToolActivity: Codable, Identifiable, Hashable, Sendable {
     var emoji: String?
     var argsPreview: String?
     var resultPreview: String?
+    var liveOutput: String
     var finishedAt: Date?
     var isError: Bool
     var durationMs: Int?
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, startedAt, isActive, toolCallID, name, emoji, argsPreview, resultPreview, finishedAt, isError, durationMs
+        case id, label, startedAt, isActive, toolCallID, name, emoji, argsPreview, resultPreview, liveOutput, finishedAt, isError, durationMs
     }
 
     init(
@@ -32,6 +33,7 @@ struct ToolActivity: Codable, Identifiable, Hashable, Sendable {
         emoji: String? = nil,
         argsPreview: String? = nil,
         resultPreview: String? = nil,
+        liveOutput: String = "",
         finishedAt: Date? = nil,
         isError: Bool = false,
         durationMs: Int? = nil
@@ -45,6 +47,7 @@ struct ToolActivity: Codable, Identifiable, Hashable, Sendable {
         self.emoji = emoji
         self.argsPreview = argsPreview
         self.resultPreview = resultPreview
+        self.liveOutput = liveOutput
         self.finishedAt = finishedAt
         self.isError = isError
         self.durationMs = durationMs
@@ -61,6 +64,7 @@ struct ToolActivity: Codable, Identifiable, Hashable, Sendable {
         emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
         argsPreview = try c.decodeIfPresent(String.self, forKey: .argsPreview)
         resultPreview = try c.decodeIfPresent(String.self, forKey: .resultPreview)
+        liveOutput = try c.decodeIfPresent(String.self, forKey: .liveOutput) ?? ""
         finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
         isError = try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
         durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)

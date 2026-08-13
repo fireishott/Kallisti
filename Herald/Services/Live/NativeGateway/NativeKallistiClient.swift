@@ -1858,6 +1858,11 @@ private final class StreamEventHandler: @unchecked Sendable {
                     durationMs: tool.durationMs
                 ))
             }
+        case "tool.output":
+            if let tool = event.params.decodePayload(NativeToolOutputPayload.self),
+               let chunk = tool.chunk, !chunk.isEmpty {
+                continuation.yield(.toolOutput(toolCallID: tool.toolCallID ?? "", chunk: chunk))
+            }
         case "tool.generating":
             // Transient — analogous to thinking.delta spinner frames. Drop.
             break

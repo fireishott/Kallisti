@@ -2011,6 +2011,16 @@ final class ChatStore {
                         self.conversation = conv
                     }
 
+                case .toolOutput(let toolCallID, let chunk):
+                    self.noteStreamingProgress()
+                    self.clearStall()
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }),
+                       let activityIdx = conv.messages[idx].toolActivities.firstIndex(where: { $0.toolCallID == toolCallID }),
+                       conv.messages[idx].toolActivities[activityIdx].liveOutput.count < (256 * 1024) {
+                        conv.messages[idx].toolActivities[activityIdx].liveOutput += chunk
+                        self.conversation = conv
+                    }
+
                 case .keepalive:
                     // Transport keepalives prove the connection is alive but do
                     // NOT prove the model is making progress. Do not reset the
@@ -4190,54 +4200,84 @@ final class ChatStore {
             // Algorithm: for each local-only message, find the last local
             // message that precedes it AND exists in the refreshed array.
             // Insert after that anchor.  Messages with no anchor append.
-            let localMessages = localConversation.messages
-            // This is deliberately mutable.  Local-only messages are inserted
-            // in transcript order, and each insertion must become an anchor for
-            // the next one.  Keeping this set frozen meant a streamed assistant
-            // placeholder could only anchor to the older server row, so it was
-            // inserted *above* its just-inserted optimistic user prompt.
-            // Anchorable = every id the refreshed array can be addressed by: its own ids
-            // PLUS the local ids the matching loop proved are the same message under a
-            // server-assigned id.  Without the second half the walk-back at :1743 falls off
-            // the front of the array, anchorID stays nil, and the message is appended to the
-            // end of the transcript — replies rendering above the prompt that produced them.
-            var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
-            refreshedIDsForAnchor.formUnion(localToRefreshedIndex.keys)
+            //
+            // Build 119 — sub-session truncation guard. When the server
+            // history is truncated (server returned fewer messages than
+            // local holds) the D2b walk-back's "last local predecessor
+            // that exists in the refreshed array" is forced to be an OLD
+            // row (no newer local row survives in the truncated payload).
+            // The splice then inserts the new local-only message right
+            // after that old anchor — visibly at the TOP of the thread,
+            // above the older server rows it was supposed to follow. That
+            // is the "follow-up lands above the conversation it belongs
+            // to" bug seen when a sub-session (new native session_id) is
+            // created and the server returns a partial history.
+            //
+            // Invariant: a stale/truncated server refresh must NEVER
+            // move a local-only message above an older server row that
+            // already exists locally. When the server is behind, append
+            // all local-only messages to the END of the transcript so
+            // they stay chronologically below the existing server rows.
+            // A subsequent refresh that returns the full history will
+            // re-anchor them properly via the D2b splice below.
+            let serverIsTruncated = refreshedConversation.messages.count < localConversation.messages.count
+            if serverIsTruncated {
+                Self.logger.warning(
+                    "Build 119: server history truncated (server=\(refreshedConversation.messages.count) < local=\(localConversation.messages.count)) \u{2014} appending \(settledLocalOnly.count) local-only message(s) to end instead of splicing, to prevent the follow-up-above-older-rows bug"
+                )
+                for localMsg in settledLocalOnly {
+                    refreshedConversation.messages.append(localMsg)
+                }
+            } else {
+                let localMessages = localConversation.messages
+                // This is deliberately mutable.  Local-only messages are inserted
+                // in transcript order, and each insertion must become an anchor for
+                // the next one.  Keeping this set frozen meant a streamed assistant
+                // placeholder could only anchor to the older server row, so it was
+                // inserted *above* its just-inserted optimistic user prompt.
+                // Anchorable = every id the refreshed array can be addressed by: its own ids
+                // PLUS the local ids the matching loop proved are the same message under a
+                // server-assigned id.  Without the second half the walk-back at :1743 falls off
+                // the front of the array, anchorID stays nil, and the message is appended to the
+                // end of the transcript — replies rendering above the prompt that produced them.
+                var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+                refreshedIDsForAnchor.formUnion(localToRefreshedIndex.keys)
 
-            for localMsg in settledLocalOnly {
-                // Find the anchor: the last message before localMsg in the
-                // local array that also exists in the refreshed array.
-                var anchorID: UUID? = nil
-                if let localIdx = localMessages.firstIndex(where: { $0.id == localMsg.id }) {
-                    for predecessor in localMessages[..<localIdx].reversed() {
-                        if refreshedIDsForAnchor.contains(predecessor.id) {
-                            anchorID = predecessor.id
-                            break
+                for localMsg in settledLocalOnly {
+                    // Find the anchor: the last message before localMsg in the
+                    // local array that also exists in the refreshed array.
+                    var anchorID: UUID? = nil
+                    if let localIdx = localMessages.firstIndex(where: { $0.id == localMsg.id }) {
+                        for predecessor in localMessages[..<localIdx].reversed() {
+                            if refreshedIDsForAnchor.contains(predecessor.id) {
+                                anchorID = predecessor.id
+                                break
+                            }
                         }
                     }
-                }
 
-                if let anchorID {
-                    // The anchor may be addressed either by its own id in the refreshed
-                    // array or by the local id of its server twin.  Resolve both.
-                    let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID })
-                        ?? localToRefreshedIndex[anchorID]
-                    if let anchorIdx {
-                        refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
-                        // Every index at or past the insertion point shifted by one.
-                        for (localID, idx) in localToRefreshedIndex where idx > anchorIdx {
-                            localToRefreshedIndex[localID] = idx + 1
+                    if let anchorID {
+                        // The anchor may be addressed either by its own id in the refreshed
+                        // array or by the local id of its server twin.  Resolve both.
+                        let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID })
+                            ?? localToRefreshedIndex[anchorID]
+                        if let anchorIdx {
+                            refreshedConversation.messages.insert(localMsg, at: anchorIdx + 1)
+                            // Every index at or past the insertion point shifted by one.
+                            for (localID, idx) in localToRefreshedIndex where idx > anchorIdx {
+                                localToRefreshedIndex[localID] = idx + 1
+                            }
+                            localToRefreshedIndex[localMsg.id] = anchorIdx + 1
+                        } else {
+                            refreshedConversation.messages.append(localMsg)
+                            localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
                         }
-                        localToRefreshedIndex[localMsg.id] = anchorIdx + 1
                     } else {
                         refreshedConversation.messages.append(localMsg)
                         localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
                     }
-                } else {
-                    refreshedConversation.messages.append(localMsg)
-                    localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
+                    refreshedIDsForAnchor.insert(localMsg.id)
                 }
-                refreshedIDsForAnchor.insert(localMsg.id)
             }
         }
 
