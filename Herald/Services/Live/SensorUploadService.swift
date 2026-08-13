@@ -261,11 +261,6 @@ final class SensorUploadService {
             return
         }
 
-        guard let accessToken = await accessTokenProvider(), !accessToken.isEmpty else {
-            return
-        }
-        _ = accessToken
-
         isDraining = true
         defer { isDraining = false }
 
@@ -410,9 +405,6 @@ final class SensorUploadService {
     }
 
     private func executeUpload<Body: Encodable>(path: String, body: Body, accessToken: String?) async throws -> Bool {
-        guard let accessToken, !accessToken.isEmpty else {
-            return false
-        }
         let result: DeliveryResult = try await apiClient.post(
             path: path,
             body: body,
