@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -306,18 +307,76 @@ async def run_watcher(
                 # (whose terminal events never reach this peer) still get
                 # remote-ended. Responses come back as JSON-RPC frames with the
                 # matching id in the main read loop below.
+                #
+                # Build 73 fix (leak guard): pending_polls grew unbounded when
+                # the gateway WS wedged (responses never arrived) and registry
+                # entries never cleared, so every cycle polled MORE dead
+                # sessions -> 12k-msg flood + 700MB RSS. Caps + expiry below.
                 poll_counter = 0
                 pending_polls: dict[str, str] = {}  # rpc id -> session_id
+                pending_poll_time: dict[str, float] = {}  # rpc id -> monotonic sent
+                MAX_PENDING_POLLS = 100
+                POLL_ANSWER_TIMEOUT_S = 30.0
+                MAX_UNANSWERED_CYCLES = 3
+                # Per-session consecutive-unanswered counter; sessions that stop
+                # answering get remote-ended and dropped so they don't pile up.
+                unanswered: dict[str, int] = {}
+                # Per-session last observed `Agent Running` value (True/False).
+                # Used to dedupe terminal fires: a push is sent only on the
+                # first True→False transition (or the first False observation
+                # when we never saw True) so iOS re-registering the watch for
+                # a follow-up turn in the same session doesn't spam a duplicate
+                # 'Turn complete' notification. Cleared on WS reconnect so a
+                # fresh watcher doesn't inherit stale state from before the
+                # drop.
+                last_observed_running: dict[str, bool] = {}
 
                 async def poll_loop() -> None:
                     nonlocal poll_counter
                     while True:
                         try:
                             await asyncio.sleep(POLL_INTERVAL_SECS)
+                            now = time.monotonic()
+                            # Expire stale unanswered polls (gateway wedged or
+                            # session gone) and count them against the session.
+                            for rid in list(pending_poll_time):
+                                if now - pending_poll_time[rid] > POLL_ANSWER_TIMEOUT_S:
+                                    sid = pending_polls.pop(rid, None)
+                                    pending_poll_time.pop(rid, None)
+                                    if sid is None:
+                                        continue
+                                    unanswered[sid] = unanswered.get(sid, 0) + 1
+                                    if unanswered[sid] >= MAX_UNANSWERED_CYCLES:
+                                        # Skip if we already pushed for this
+                                        # terminal (e.g. a prior successful
+                                        # poll observed the True→False
+                                        # transition before the gateway went
+                                        # silent).
+                                        if last_observed_running.get(sid) is False:
+                                            unanswered.pop(sid, None)
+                                            continue
+                                        logger.warning(
+                                            "Native watch poll: session=%s unresponsive "
+                                            "(%d unanswered) - remote-ending",
+                                            sid,
+                                            unanswered[sid],
+                                        )
+                                        await fire_terminal(sid)
+                                        registry.clear_session(session_id=sid)
+                                        unanswered.pop(sid, None)
+                                        last_observed_running[sid] = False
                             for sid in list(registry._watchers.keys()):
+                                # Already being dropped by the expiry above.
+                                if unanswered.get(sid, 0) >= MAX_UNANSWERED_CYCLES:
+                                    continue
+                                # Response pipe is stuck: stop growing the dict
+                                # instead of leaking another entry per cycle.
+                                if len(pending_polls) >= MAX_PENDING_POLLS:
+                                    break
                                 poll_counter += 1
                                 rid = f"watch-poll-{poll_counter}"
                                 pending_polls[rid] = sid
+                                pending_poll_time[rid] = time.monotonic()
                                 await ws.send(
                                     json.dumps(
                                         {
@@ -348,24 +407,56 @@ async def run_watcher(
                         rpc_id = frame.get("id")
                         if rpc_id in pending_polls:
                             sid = pending_polls.pop(rpc_id)
+                            pending_poll_time.pop(rpc_id, None)
+                            unanswered.pop(sid, None)  # answered — reset counter
                             error = frame.get("error")
                             result = frame.get("result") or {}
                             output = (
                                 result.get("output") if isinstance(result, dict) else ""
                             )
                             running = None if error else _session_status_is_running(output)
+                            # Bug fix: previously fired a push on every
+                            # `running=False` observation, which spammed the
+                            # lock screen whenever iOS re-registered the watch
+                            # for a follow-up turn in the same session (the
+                            # gap between iOS submitting a prompt and the
+                            # gateway flipping `running=True` reads as idle
+                            # and was triggering a duplicate 'Turn complete'
+                            # push). Require an actual True→False transition
+                            # (or a session we never observed running) so we
+                            # fire once per real turn end.
+                            if running is True:
+                                last_observed_running[sid] = True
+                                continue
                             if running is False or error is not None:
-                                # Idle or session gone (4001) — terminal. Fire
-                                # once, then drop the watch so we don't spam.
-                                logger.info(
-                                    "Native watch poll: session=%s terminal "
-                                    "(running=%s err=%s)",
-                                    sid,
-                                    running,
-                                    bool(error),
-                                )
-                                await fire_terminal(sid)
-                                registry.clear_session(session_id=sid)
+                                prev = last_observed_running.get(sid)
+                                # Fire only on True→False, or on the first
+                                # observation of idle (session already ended
+                                # before the watcher started polling — iOS
+                                # likely has the result via its own WS, but
+                                # firing once here covers the missed-window
+                                # case). Skip repeated False observations
+                                # (last_observed already False) so a
+                                # re-registration for a follow-up turn
+                                # doesn't fire prematurely.
+                                if prev is False:
+                                    logger.info(
+                                        "Native watch poll: session=%s still idle "
+                                        "(running=False err=%s) — skip duplicate",
+                                        sid,
+                                        bool(error),
+                                    )
+                                else:
+                                    logger.info(
+                                        "Native watch poll: session=%s terminal "
+                                        "(running=%s err=%s)",
+                                        sid,
+                                        running,
+                                        bool(error),
+                                    )
+                                    await fire_terminal(sid)
+                                    registry.clear_session(session_id=sid)
+                                last_observed_running[sid] = False
                             continue
 
                         params = frame.get("params")
@@ -377,6 +468,23 @@ async def run_watcher(
                         session_id = params.get("session_id")
                         if not session_id:
                             continue
+                        # Same dedupe as the poll path: the WS-routed
+                        # turn.end/turn.error event carries no
+                        # running-flag history of its own, so key on the
+                        # session's last observed running state and skip
+                        # if we've already pushed for this terminal. The
+                        # gateway normally routes these events to the
+                        # iOS-owning transport rather than this peer
+                        # (see Build 72 comment near run_watcher), but
+                        # keep the guard so a future routing change
+                        # can't reintroduce duplicates.
+                        if last_observed_running.get(session_id) is False:
+                            logger.info(
+                                "Native watch WS terminal for session=%s already fired — skip duplicate",
+                                session_id,
+                            )
+                            continue
+                        last_observed_running[session_id] = False
                         await fire_terminal(session_id)
                 finally:
                     poll_task.cancel()

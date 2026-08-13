@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 from kallisti_connector.client import HermesMobileConnector
-from kallisti_connector.herald_runner import (
+from kallisti_connector.hermes_api_executor import (
     StreamEvent,
 )
 from kallisti_connector.herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor
@@ -448,7 +448,7 @@ def test_api_runtime_adapter_streaming_yields_all_events():
     ]
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             for event in emitted_events:
                 yield event
 
@@ -484,7 +484,7 @@ def test_api_runtime_adapter_streaming_preserves_session_with_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             captured["session_id"] = session_id
             captured["history"] = history
             yield StreamEvent(type="text_delta", data="ok")
@@ -511,7 +511,7 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
     captured = {}
 
     class FakeExecutor:
-        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None, job_id=None):
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None, reasoning_effort=None):
             captured["session_id"] = session_id
             yield StreamEvent(type="text_delta", data="ok")
             yield StreamEvent(type="finish")
@@ -534,6 +534,53 @@ def test_api_runtime_adapter_streaming_keeps_session_when_no_history():
 # --------------------------------------------------------------------------
 # HermesAPIExecutor._messages_payload builds correct OpenAI format
 # --------------------------------------------------------------------------
+
+
+def test_messages_payload_builds_openai_format():
+    """The executor should build messages with 'assistant' role for 'hermes' entries."""
+    from kallisti_connector.hermes_api_executor import HermesAPIExecutor
+    from kallisti_connector.herald_runner import HeraldConversationMessage
+
+    executor = HermesAPIExecutor()
+    history = [
+        HeraldConversationMessage(role="user", text="Hello"),
+        HeraldConversationMessage(role="hermes", text="Hi there"),
+        HeraldConversationMessage(role="user", text="How are you?"),
+    ]
+
+    messages = executor._messages_payload(  # noqa: SLF001
+        latest_user_message="What's up?",
+        history=history,
+    )
+
+    assert len(messages) == 4
+    assert messages[0] == {"role": "user", "content": "Hello"}
+    assert messages[1] == {"role": "assistant", "content": "Hi there"}
+    assert messages[2] == {"role": "user", "content": "How are you?"}
+    assert messages[3] == {"role": "user", "content": "What's up?"}
+
+
+def test_messages_payload_skips_empty_history_entries():
+    """Empty/whitespace-only history entries should be filtered out."""
+    from kallisti_connector.hermes_api_executor import HermesAPIExecutor
+    from kallisti_connector.herald_runner import HeraldConversationMessage
+
+    executor = HermesAPIExecutor()
+    history = [
+        HeraldConversationMessage(role="user", text="Real message"),
+        HeraldConversationMessage(role="hermes", text="   "),
+        HeraldConversationMessage(role="user", text=""),
+    ]
+
+    messages = executor._messages_payload(  # noqa: SLF001
+        latest_user_message="Final",
+        history=history,
+    )
+
+    assert len(messages) == 2
+    assert messages[0] == {"role": "user", "content": "Real message"}
+    assert messages[1] == {"role": "user", "content": "Final"}
+
 
 # --------------------------------------------------------------------------
 # Git diff integration in _handle_job_streaming
@@ -626,6 +673,111 @@ def test_handle_job_no_diff_when_no_changes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# InlineThinkParser tests
+# ---------------------------------------------------------------------------
+
+
+def test_inline_think_parser_no_think_tags():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Hello world")
+    assert text == "Hello world"
+    assert reasoning is None
+
+
+def test_inline_think_parser_simple_think_block():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Before <think>reasoning here</think> After")
+    assert text == "Before  After"
+    assert reasoning == "reasoning here"
+
+
+def test_inline_think_parser_think_at_start():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("<think>internal thoughts</think>Answer here")
+    assert text == "Answer here"
+    assert reasoning == "internal thoughts"
+
+
+def test_inline_think_parser_split_open_marker():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t1, r1 = parser.feed("Hello <th")
+    assert t1 == "Hello "
+    assert r1 is None
+
+    # Open tag completes — content enters think mode, accumulated until close
+    t2, r2 = parser.feed("ink>thinking...")
+    assert t2 is None
+    assert r2 is None  # no close tag yet
+
+    # Close tag arrives — full reasoning flushed
+    t3, r3 = parser.feed("</think>Answer")
+    assert t3 == "Answer"
+    assert r3 == "thinking..."
+
+
+def test_inline_think_parser_split_close_marker():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t0, r0 = parser.feed("<think>deep")
+    # No close tag yet — reasoning accumulated, not returned
+    assert t0 is None
+    assert r0 is None
+
+    # Close tag completes — full reasoning flushed
+    t1, r1 = parser.feed(" thought</think>")
+    assert r1 == "deep thought"
+    assert t1 is None
+
+    t2, r2 = parser.feed(" Answer")
+    assert t2 == " Answer"
+    assert r2 is None
+
+
+def test_inline_think_parser_missing_close_marker():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    t1, r1 = parser.feed("Hello <think>unclosed reasoning")
+    assert t1 == "Hello "
+    # No close tag yet — reasoning accumulated
+    assert r1 is None
+
+    t2, r2 = parser.feed(" more")
+    assert t2 is None
+    assert r2 is None
+
+    # Flush returns all accumulated reasoning
+    remaining = parser.flush()
+    assert remaining == "unclosed reasoning more"
+
+
+def test_inline_think_parser_ordinary_angle_brackets():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Use <b>bold</b> and <i>italic</i>")
+    assert text == "Use <b>bold</b> and <i>italic</i>"
+    assert reasoning is None
+
+
+def test_inline_think_parser_empty_think_block():
+    from kallisti_connector.herald_api_executor import InlineThinkParser
+
+    parser = InlineThinkParser()
+    text, reasoning = parser.feed("Before <think></think>After")
+    assert text == "Before After"
+    assert reasoning is None
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat continuation during long tool execution
 # ---------------------------------------------------------------------------
@@ -735,3 +887,183 @@ def test_heartbeat_does_not_fabricate_semantic_events(tmp_path):
 # SSE comment handling in API executor
 # ---------------------------------------------------------------------------
 
+
+def test_sse_comments_skipped_without_creating_events():
+    """SSE comment lines (starting with ':') from the /v1/runs events endpoint
+    should be skipped without producing StreamEvents.
+
+    Build 16: /v1/runs is now the canonical streaming path. This test
+    exercises the real HeraldAPIExecutor.stream_message() → runs SSE parser
+    with a mocked httpx transport so SSE comment lines flow through
+    _parse_runs_sse.
+    """
+    from unittest.mock import patch
+
+    from kallisti_connector.herald_api_executor import HeraldAPIExecutor
+
+    # Runs SSE events with interspersed comments/id lines
+    sse_lines = [
+        ": keepalive",
+        'event: assistant.delta',
+        'data: {"text": "Hello"}',
+        "",
+        ": heartbeat",
+        'event: run.completed',
+        'data: {"session_id": "s1"}',
+        "",
+    ]
+
+    class MockEventResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    class MockEventStreamContext:
+        async def __aenter__(self):
+            return MockEventResponse()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class MockRunsResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"run_id": "run-1"}
+
+    class MockClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            # _runs_available probe
+            r = type("Resp", (), {"status_code": 200, "json": lambda s: {"features": {"run_events_sse": True}}})()
+            return r
+
+        async def post(self, *args, **kwargs):
+            return MockRunsResponse()
+
+        def stream(self, *args, **kwargs):
+            return MockEventStreamContext()
+
+    mock_client_instance = MockClient()
+
+    async def exercise():
+        with patch("httpx.AsyncClient", return_value=mock_client_instance):
+            executor = HeraldAPIExecutor()
+            events = []
+            async for event in executor.stream_message(
+                latest_user_message="test",
+            ):
+                events.append(event)
+
+        # Only the assistant.delta and run.completed produce StreamEvents;
+        # comments and blank lines are skipped.
+        assert len(events) == 2
+        assert events[0].type == "text_delta"
+        assert events[0].data == "Hello"
+        assert events[1].type == "finish"
+
+    asyncio.run(exercise())
+
+
+def test_sse_comment_lines_do_not_yield_keepalive():
+    """SSE comments interspersed between /v1/runs events data chunks should
+    not generate keepalive StreamEvents — only actual data lines produce events.
+
+    Build 16: exercises the runs SSE parser via stream_message() with a mocked
+    httpx transport so SSE comment lines flow through _parse_runs_sse.
+    """
+    from unittest.mock import patch
+
+    from kallisti_connector.herald_api_executor import HeraldAPIExecutor
+
+    sse_lines = [
+        ": keepalive",
+        'event: assistant.delta',
+        'data: {"text": "Hello"}',
+        "",
+        ": heartbeat",
+        ": ping",
+        'event: run.completed',
+        'data: {"session_id": "s1"}',
+        "",
+    ]
+
+    class MockEventResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    class MockEventStreamContext:
+        async def __aenter__(self):
+            return MockEventResponse()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class MockRunsResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"run_id": "run-1"}
+
+    class MockClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            r = type("Resp", (), {"status_code": 200, "json": lambda s: {"features": {"run_events_sse": True}}})()
+            return r
+
+        async def post(self, *args, **kwargs):
+            return MockRunsResponse()
+
+        def stream(self, *args, **kwargs):
+            return MockEventStreamContext()
+
+    mock_client_instance = MockClient()
+
+    async def exercise():
+        with patch("httpx.AsyncClient", return_value=mock_client_instance):
+            executor = HeraldAPIExecutor()
+            events = []
+            async for event in executor.stream_message(
+                latest_user_message="test",
+            ):
+                events.append(event)
+
+        assert len(events) == 2
+        assert events[0].type == "text_delta"
+        assert events[0].data == "Hello"
+        assert events[1].type == "finish"
+        # No keepalive events should appear — comments are silently skipped
+        assert all(e.type != "keepalive" for e in events)
+
+    asyncio.run(exercise())

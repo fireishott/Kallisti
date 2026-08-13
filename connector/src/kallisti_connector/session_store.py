@@ -92,6 +92,97 @@ def record_session_device(session_id: str, device_id: str) -> None:
     _save_device_registry(registry)
 
 
+# ── Per-device push tokens (Build 67) ─────────────────────────────────────
+#
+# Push tokens used to live in a single global slot (ConnectorState.
+# device_token), so an iPad and iPhone clobbered each other on register.
+# Now each installation_id owns its own device alert token and Live
+# Activity token, and sends resolve the owning device from the session
+# binding (delivery_store) or fall back to broadcasting to every device.
+
+
+def record_push_token(
+    installation_id: str,
+    token: str,
+    *,
+    environment: str = "production",
+    token_kind: str = "device",
+) -> None:
+    """Store (or rotate) a push token for a specific installation.
+
+    Build 67/68: prune STALE duplicate entries that share the same token.
+    A reinstall generates a fresh installation_id but the APNs device token
+    is tied to the physical device + bundle, so the same token can end up
+    under two installation_ids (the old install + the reinstall). Leaving
+    both entries makes every broadcast send the push twice to the same
+    physical device. When a token is (re)registered under one installation,
+    remove any OTHER installation entry that holds the exact same token.
+    """
+    if not installation_id or not token:
+        return
+    registry = _load_device_registry()
+    devices = registry.setdefault("pushTokens", {})
+    entry = devices.setdefault(installation_id, {
+        "deviceToken": None,
+        "deviceTokenEnvironment": None,
+        "liveActivityToken": None,
+        "liveActivityTokenEnvironment": None,
+        "lastRegisteredAt": None,
+    })
+    if token_kind == "liveactivity":
+        entry["liveActivityToken"] = token
+        entry["liveActivityTokenEnvironment"] = environment
+    else:
+        entry["deviceToken"] = token
+        entry["deviceTokenEnvironment"] = environment
+    entry["lastRegisteredAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Prune stale duplicates: any OTHER installation holding this same token
+    # for the same token_kind is a leftover from a reinstall. Keep the newest
+    # registration (this one); drop the old entry so broadcasts don't
+    # double-send to one physical device.
+    if token_kind == "liveactivity":
+        for other_id, other_entry in list(devices.items()):
+            if other_id == installation_id:
+                continue
+            if isinstance(other_entry, dict) and other_entry.get("liveActivityToken") == token:
+                other_entry["liveActivityToken"] = None
+                other_entry["liveActivityTokenEnvironment"] = None
+    else:
+        for other_id, other_entry in list(devices.items()):
+            if other_id == installation_id:
+                continue
+            if isinstance(other_entry, dict) and other_entry.get("deviceToken") == token:
+                other_entry["deviceToken"] = None
+                other_entry["deviceTokenEnvironment"] = None
+    _save_device_registry(registry)
+
+
+def push_tokens_for_device(installation_id: str) -> dict:
+    """Return {deviceToken, deviceTokenEnvironment, liveActivityToken, ...} for one install."""
+    if not installation_id:
+        return {}
+    registry = _load_device_registry()
+    entry = registry.get("pushTokens", {}).get(installation_id)
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def all_push_devices() -> dict[str, dict]:
+    """Return installation_id → push-token entry for every registered device."""
+    registry = _load_device_registry()
+    entries = registry.get("pushTokens", {})
+    return {k: dict(v) for k, v in entries.items() if isinstance(v, dict)} if isinstance(entries, dict) else {}
+
+
+def device_id_for_session(session_id: str) -> str | None:
+    """Return the installation_id that owns *session_id*, if recorded."""
+    registry = _load_device_registry()
+    entry = registry.get("sessions", {}).get(str(session_id))
+    if isinstance(entry, dict):
+        return entry.get("deviceId")
+    return None
+
+
 def _load_device_registry() -> dict:
     try:
         with open(_device_registry_path()) as f:
