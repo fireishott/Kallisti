@@ -216,6 +216,9 @@ class FacadeContext:
         self.session_canary: Callable[[], Coroutine[Any, Any, tuple[bool, str]]] | None = None
         # Native-completion to push bridge (Task 12)
         self.native_watch_registry: Any = None
+        # Sensor store (sensors.db) - wired by the connector so the HTTP
+        # device_sensor handler persists location/health like the WS path.
+        self.sensor_store: Any = None
 
 
 _context = FacadeContext()
@@ -2888,9 +2891,56 @@ async def device_app_state(request: Request) -> JSONResponse:
 
 async def device_sensor(request: Request) -> JSONResponse:
     """SensorUploadService.swift:107-113 decodes DeliveryResult.deliveryState and
-    treats anything other than "delivered" as a failure that triggers backoff."""
+    treats anything other than "delivered" as a failure that triggers backoff.
+
+    Persists location/health samples to sensors.db, mirroring the WebSocket
+    sensor path (client.py _handle_sensor_message). Returns "retry" on a
+    persist failure so the app's outbox re-queues instead of dropping data.
+    """
     await require_native_or_paired_auth(request)
-    await request.json()
+    body = await request.json()
+    ctx = get_context()
+    store = ctx.sensor_store
+    if store is None:
+        # Sensor store not wired yet (should not happen in production) - ACK
+        # so the app does not infinite-retry, but log the miss loudly.
+        logger.warning("device_sensor: sensor_store not wired, dropping payload")
+        return JSONResponse({"deliveryState": "delivered"})
+
+    path = request.url.path
+    try:
+        if path.endswith("/location"):
+            from .sensor_store import LocationReading
+
+            store.store_location(LocationReading(
+                latitude=float(body.get("latitude", 0.0)),
+                longitude=float(body.get("longitude", 0.0)),
+                altitude=body.get("altitude"),
+                accuracy=body.get("accuracy"),
+                address=body.get("address"),
+                recorded_at=body.get("recordedAt"),
+            ))
+        elif path.endswith("/health"):
+            from .sensor_store import HealthSample
+
+            samples = [
+                HealthSample(
+                    metric=s["metric"],
+                    value=float(s["value"]),
+                    unit=s["unit"],
+                    start_at=s["startAt"],
+                    end_at=s.get("endAt"),
+                )
+                for s in body.get("samples", [])
+            ]
+            if samples:
+                store.store_health_samples(samples)
+        else:
+            logger.warning("device_sensor: unknown path %s", path)
+    except Exception:
+        logger.exception("device_sensor: failed to persist %s", path)
+        return JSONResponse({"deliveryState": "retry", "error": "persist failed"})
+
     return JSONResponse({"deliveryState": "delivered"})
 
 

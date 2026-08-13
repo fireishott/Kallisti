@@ -896,6 +896,9 @@ class HeraldConnector:
             facade_ctx.connector_version = self._detect_connector_version()
             facade_ctx.agent_version = self._hermes_agent_version
             facade_ctx.health_check = self._check_api_health
+            # Sensor persistence: the HTTP device_sensor handler writes to the
+            # same sensors.db the MCP server reads, via this store.
+            facade_ctx.sensor_store = self.sensor_store
             # Auth tokens: register the connector credential so the iOS app
             # can authenticate with the same token used for the FastAPI host WS.
             facade_ctx.paired_device_id = state.device_token
