@@ -103,3 +103,6 @@ builds/*.ipa
 
 # Build scratch dirs
 build-*/
+
+# Build dirs (b85+)
+build*/
