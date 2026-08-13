@@ -1573,52 +1573,20 @@ final class AppContainer {
         // Build 94: dedup - skip re-POSTing a token we already accepted.
         if lastAcceptedLiveActivityToken == normalizedToken { return }
 
-        // Native path: use native bearer + connector facade URL.
+        // Native path: cookie-aware client method (Build 96). The old raw
+        // Bearer URLRequest died in cookie-auth mode (basic/pairing login
+        // deletes keychain tokens), so the connector kept a stale Live
+        // Activity token and end-pushes 410'd - lock screen stuck on
+        // "Thinking...". postFacadeJSON rides the gateway cookie, same as
+        // registerPushToken (Build 66).
         if let nativeGatewayClient {
-            // Build 55: refresh first — same expired-bearer bug as
-            // registerPushToken. A stale token 401s the connector even
-            // though the socket is fine, leaving the Live Activity without
-            // push-update capability silently.
-            guard let accessToken = try? await nativeGatewayClient.refreshAccessToken(),
-                  !accessToken.isEmpty else {
-                Logger.app.warning("registerLiveActivityPushToken: no native access token")
-                return
-            }
-            guard let facadeBase = await nativeGatewayClient.facadeBaseURLString(),
-                  let url = URL(string: "\(facadeBase)/v1/push/register") else {
-                Logger.app.warning("registerLiveActivityPushToken: invalid facade URL")
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.timeoutInterval = 8
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-            let body: [String: Any] = [
-                "apnsToken": normalizedToken,
-                "pushEnvironment": pushEnvironment,
-                "bundleId": bundleId,
-                "tokenKind": "liveActivity",
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                // Connector returns flat {registered: true, environment: "..."}
-                // NOT the wrapped {data: {registered: ...}} envelope.
-                if status == 200,
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   json["registered"] as? Bool == true {
-                    Logger.app.info("registerLiveActivityPushToken: accepted (native, environment=\(pushEnvironment))")
-                    // Build 94: remember so we don't re-POST this token.
-                    lastAcceptedLiveActivityToken = normalizedToken
-                    return
-                }
-                Logger.app.warning("registerLiveActivityPushToken: native HTTP \(status)")
-            } catch {
-                Logger.app.warning("registerLiveActivityPushToken failed (native): \(error.localizedDescription)")
+            let accepted = await nativeGatewayClient.registerLiveActivityToken(
+                normalizedToken,
+                pushEnvironment: pushEnvironment
+            )
+            if accepted {
+                // Build 94: remember so we don't re-POST this token.
+                lastAcceptedLiveActivityToken = normalizedToken
             }
             return
         }

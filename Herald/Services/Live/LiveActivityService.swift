@@ -393,6 +393,10 @@ final class LiveActivityService {
         if let activity = Activity<KallistiActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
             currentActivity = activity
             startedAt = activity.content.state.startDate
+            // Build 96: re-observe the adopted activity push token so the
+            // connector can remote-end it. Without this, a stuck activity
+            // adopted on foreground never re-registers and stays stuck.
+            observePushTokens()
         }
     }
 }

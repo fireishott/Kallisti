@@ -627,6 +627,43 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return false
     }
 
+    /// Register the ActivityKit push-to-update token for the CURRENT Live
+    /// Activity (tokenKind=liveActivity). Separate from the device's alert
+    /// token: ActivityKit mints a fresh token per activity instance, and the
+    /// connector stores it in live_activity_push_token so it can remotely
+    /// end the lock-screen activity when the turn completes.
+    ///
+    /// Build 96: MUST use the cookie-aware postFacadeJSON path. The previous
+    /// implementation built a raw Bearer URLRequest from AppContainer; in
+    /// cookie-auth mode (basic / kallisti-pairing) there is no bearer token,
+    /// so registration silently no-op'd, the connector kept a stale token
+    /// from an ended activity, and every end-push 410'd - lock screen stuck
+    /// on "Thinking...". Same bug family as b93 sensor uploads.
+    func registerLiveActivityToken(_ token: String, pushEnvironment: String) async -> Bool {
+        guard let facadeBase = await facadeBaseURLString() else {
+            Self.logger.warning("registerLiveActivityToken: invalid facade URL")
+            return false
+        }
+        let body: [String: Any] = [
+            "apnsToken": token,
+            "pushEnvironment": pushEnvironment,
+            "bundleId": Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
+            "tokenKind": "liveActivity",
+            "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
+        ]
+        let status = await postFacadeJSON(
+            path: "/v1/push/register",
+            body: body,
+            logTag: "registerLiveActivityToken"
+        )
+        if status == 200 {
+            Self.logger.info("registerLiveActivityToken: accepted (environment=\(pushEnvironment))")
+            return true
+        }
+        Self.logger.warning("registerLiveActivityToken: HTTP \(status)")
+        return false
+    }
+
     func connect() async {
         // Build 64: collapse concurrent connect() calls. Each connect() mints
         // a fresh ticket + socket, so racing callers (launch trigger,
