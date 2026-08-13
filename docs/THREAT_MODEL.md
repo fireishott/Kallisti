@@ -69,8 +69,8 @@ Worst-case assumption: attacker has DB access and can execute code in the relay'
 
 **Cannot do:**
 - Send pushes to users who never paired with this relay. `sendGrant`s are scoped to `(installationId, relayIdentity)` tuples at the broker.
-- Read APNs `.p8` or raw APNs tokens — those live on the broker.
-- Decrypt OpenAI Realtime audio/vision — that traffic is iOS ↔ OpenAI directly.
+- Read APNs `.p8` or raw APNs tokens - those live on the broker.
+- Decrypt OpenAI Realtime audio/vision - that traffic is iOS ↔ OpenAI directly.
 - Execute code on the user's Mac beyond what the Hermes runtime's tool permissions already allow. The connector decides what jobs it runs; a malicious relay can only send job *descriptions*.
 - Impersonate a different relay to the broker. The broker binds each grant to the attesting relay's `relayIdentity`.
 
@@ -89,13 +89,13 @@ Worst-case assumption: attacker has the APNs `.p8` and the full broker database.
 - Revoke or issue fresh `sendGrant`s.
 
 **Cannot do:**
-- Read conversation content, user messages, or connector output — the broker is deliberately off-path for all of those. Its only role is "given an opaque handle + a valid grant + a valid signature, fan out to APNs."
+- Read conversation content, user messages, or connector output - the broker is deliberately off-path for all of those. Its only role is "given an opaque handle + a valid grant + a valid signature, fan out to APNs."
 - Execute code on a user's Mac.
 - Impersonate the iOS app against the broker's *own* App Attest checks without also having Apple's signing keys (App Attest binds attestation to Apple's root).
 
 **Mitigations:**
 - Only the Hermes operator runs the broker. Keeping it small and stateless (apart from registrations) shrinks the attack surface.
-- Push payloads are intentionally low-information — enough to wake the app, not enough to leak message bodies. The app fetches real content from the relay over its session-key-authenticated channel.
+- Push payloads are intentionally low-information - enough to wake the app, not enough to leak message bodies. The app fetches real content from the relay over its session-key-authenticated channel.
 - `.p8` rotation requires re-attesting all installs, which is expensive but recoverable.
 
 ### 3. Malicious third-party app trying to register with the broker
@@ -126,7 +126,7 @@ Worst-case assumption: attacker has an unlocked device with the official app ins
 **Cannot do:**
 - Send pushes to other users. `sendGrant`s are install-scoped.
 - Extract the relay identity private key (lives on the relay, not the device).
-- Cross-correlate install IDs across devices — each App Attest key is per-install.
+- Cross-correlate install IDs across devices - each App Attest key is per-install.
 
 **Mitigations:**
 - iOS Keychain + device passcode are the baseline defense.
@@ -134,13 +134,13 @@ Worst-case assumption: attacker has an unlocked device with the official app ins
 
 ### 5. Compromised connector (user's Mac)
 
-This is the user's own machine. If it's compromised, the user's local data is already compromised — the system architecture cannot help here and doesn't try to.
+This is the user's own machine. If it's compromised, the user's local data is already compromised - the system architecture cannot help here and doesn't try to.
 
 **Relevant:** the compromise cannot propagate *out* of that Mac into Hermes infrastructure, because the connector only initiates outbound WebSockets to the relay. A malicious connector can send garbage to the relay, but the relay doesn't execute connector-supplied code.
 
 ### 6. Network attacker between iOS and relay
 
-**Can do:** Everything TLS doesn't stop — count packets, measure timing, observe SNI. Cannot read bodies or forge session-keyed requests without the session key.
+**Can do:** Everything TLS doesn't stop - count packets, measure timing, observe SNI. Cannot read bodies or forge session-keyed requests without the session key.
 
 **Cannot do:** MITM session-keyed traffic without a cert trusted by the device.
 
@@ -148,7 +148,7 @@ This is the user's own machine. If it's compromised, the user's local data is al
 
 ### 7. Network attacker between relay and push broker
 
-Same as above — TLS terminates at the broker. Additionally, signed push-send requests include a monotonically increasing timestamp and a signature, so replay past expiry is rejected.
+Same as above - TLS terminates at the broker. Additionally, signed push-send requests include a monotonically increasing timestamp and a signature, so replay past expiry is rejected.
 
 ## Connection-mode-specific considerations
 
@@ -175,10 +175,10 @@ Same as above — TLS terminates at the broker. Additionally, signed push-send r
 - Phase 4: grant revocation and rotation endpoints on the broker (currently grants live until their stored `expiresAt`).
 - Phase 4: self-hosted relay onboarding against the broker with its own attestation story (probably: owner of the relay signs a TOS via the official app + relay identity key; broker issues grants bounded to that relay's devices).
 - Runbook for `.p8` rotation (documented separately once the broker admin surface lands in Phase 6).
-- Revisit rate limits on `POST /v1/push-broker/challenge` once we see real traffic — the current limits are conservative guesses.
+- Revisit rate limits on `POST /v1/push-broker/challenge` once we see real traffic - the current limits are conservative guesses.
 
 ## Related documents
 
-- [PRODUCTION_ARCHITECTURE.md](PRODUCTION_ARCHITECTURE.md) — the topology this threat model is scoped to.
-- [PUSH_RELAY.md](PUSH_RELAY.md) — the registration and send protocols the broker uses.
-- [CONNECTION_MODES.md](CONNECTION_MODES.md) — how each mode maps onto this model.
+- [PRODUCTION_ARCHITECTURE.md](PRODUCTION_ARCHITECTURE.md) - the topology this threat model is scoped to.
+- [PUSH_RELAY.md](PUSH_RELAY.md) - the registration and send protocols the broker uses.
+- [CONNECTION_MODES.md](CONNECTION_MODES.md) - how each mode maps onto this model.

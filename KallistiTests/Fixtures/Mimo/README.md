@@ -2,7 +2,7 @@
 
 ## Auth Header
 - MiMo API uses `api-key` header (NOT `Authorization: Bearer`)
-- Herald currently sends `Authorization: Bearer` — this is a bug (T5)
+- Herald currently sends `Authorization: Bearer` - this is a bug (T5)
 - Fix: change to `api-key: <key>` header
 
 ## ASR (mimo-v2.5-asr)

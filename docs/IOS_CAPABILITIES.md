@@ -11,7 +11,7 @@ For end-user setup and configuration, start with:
 
 ---
 
-## 1. CoreMotion — Activity Detection
+## 1. CoreMotion - Activity Detection
 
 **What it does:** Classifies the user's physical activity in real-time (stationary, walking, running, driving, cycling) using the device's motion coprocessor.
 
@@ -46,7 +46,7 @@ For end-user setup and configuration, start with:
 - [ ] Test on physical device (verify permission prompt + activity updates)
 
 ### Use Case Ideas
-- **Context-aware responses**: "You've been sitting for 2 hours — time for a walk?" (proactive health nudge)
+- **Context-aware responses**: "You've been sitting for 2 hours - time for a walk?" (proactive health nudge)
 - **Smart notifications**: Don't send non-urgent messages while user is driving
 - **Activity logging**: "How active was I this week?" → agent queries activity history from sensor pipeline
 - **Hermes Skill**: iOS-aware skill that checks `get_user_activity` before deciding how to deliver information (voice summary while walking vs detailed text while stationary)
@@ -69,7 +69,7 @@ For end-user setup and configuration, start with:
 | `HermesActivityAttributes.swift` | Wired | ActivityAttributes + ContentState with Sendable, startDate for native timer |
 | `HermesLiveActivity.swift` | Wired | Lock Screen + Dynamic Island layouts with `Text(timerInterval:)` live clock |
 | `HermesWidgetBundle.swift` | Wired | Widget bundle entry point |
-| `LiveActivityService.swift` | Wired | Manages lifecycle — start/update/end; no polling timer (native clock via startDate) |
+| `LiveActivityService.swift` | Wired | Manages lifecycle - start/update/end; no polling timer (native clock via startDate) |
 | `TalkStore` | Wired | Starts on voice connect, updates on state change, ends on session close |
 | `ChatStore` | Wired | Starts on tool call, ends on finish/fail/cancel/clear |
 | Info.plist | Configured | `NSSupportsLiveActivities: true`, `NSSupportsLiveActivitiesFrequentUpdates: true` |
@@ -86,10 +86,10 @@ For end-user setup and configuration, start with:
 - [ ] Test on physical device (Dynamic Island requires iPhone 14 Pro+)
 
 ### Use Case Ideas
-- **Voice session indicator**: Lock Screen shows "Hermes is listening" with elapsed time — user knows the session is active without opening the app
+- **Voice session indicator**: Lock Screen shows "Hermes is listening" with elapsed time - user knows the session is active without opening the app
 - **Tool call progress**: "Hermes is reading config.yaml..." visible on Lock Screen while phone is locked
 - **Future: Home Screen widgets**: Same Widget Extension target hosts static widgets showing health summary, last location, recent conversations
-- **Hermes Skill**: Agent could trigger Live Activities for long-running tasks — "I'll research that and update you" → Live Activity shows progress
+- **Hermes Skill**: Agent could trigger Live Activities for long-running tasks - "I'll research that and update you" → Live Activity shows progress
 
 ---
 
@@ -97,7 +97,7 @@ For end-user setup and configuration, start with:
 
 **What it does:** Continues receiving location updates when the app is in the background, enabling continuous spatial awareness. Supports both While In Use (with blue indicator bar) and Always authorization.
 
-**iOS 26 approach:** `CLBackgroundActivitySession` works with While In Use authorization — no need to require Always. The blue status bar keeps users informed. Always authorization hides the bar for a cleaner experience. Users choose their preference via the settings toggle.
+**iOS 26 approach:** `CLBackgroundActivitySession` works with While In Use authorization - no need to require Always. The blue status bar keeps users informed. Always authorization hides the bar for a cleaner experience. Users choose their preference via the settings toggle.
 
 ### Current Status
 
@@ -119,10 +119,10 @@ For end-user setup and configuration, start with:
 - [ ] Test Always authorization upgrade flow (blue bar disappears)
 
 ### Use Case Ideas
-- **Automatic context**: Hermes always knows where you are — "Am I near a grocery store?" works even after the app was backgrounded hours ago
+- **Automatic context**: Hermes always knows where you are - "Am I near a grocery store?" works even after the app was backgrounded hours ago
 - **Geofencing**: "Remind me when I get home" → region monitoring triggers notification
 - **Travel detection**: Agent notices you arrived at a new city → offers local recommendations
-- **Hermes Skill**: Location-aware skill that detects home/work/travel patterns and adjusts behavior ("You're at the office — here's your morning briefing")
+- **Hermes Skill**: Location-aware skill that detects home/work/travel patterns and adjusts behavior ("You're at the office - here's your morning briefing")
 
 ---
 
@@ -169,7 +169,7 @@ For end-user setup and configuration, start with:
 |-----------|-------|--------|
 | `UIBackgroundModes: audio` | Configured | In project.yml |
 | WebRTC audio session | Wired | `.playAndRecord` category, `.default` mode, `forceSpeakerIfNeeded()` |
-| Voice session continuity | Wired | App no longer kills session on background — WebRTC stays alive |
+| Voice session continuity | Wired | App no longer kills session on background - WebRTC stays alive |
 | Audio interruption handling | Wired | Reconfigures audio session on interruption end |
 | Speaker re-assertion | Wired | `forceSpeakerIfNeeded()` after WebRTC connect + 500ms delay + route changes |
 | Live Activity in background | Wired | Dynamic Island shows compact status while app is backgrounded |
@@ -253,7 +253,7 @@ For end-user setup and configuration, start with:
 
 ## Agent Integration: The iOS Context Skill
 
-All these capabilities feed into a single vision: **Hermes should always know what you're doing, where you are, and how you're doing** — so it can be proactive, context-aware, and genuinely helpful.
+All these capabilities feed into a single vision: **Hermes should always know what you're doing, where you are, and how you're doing** - so it can be proactive, context-aware, and genuinely helpful.
 
 ### How It Flows
 
