@@ -118,6 +118,28 @@ final class ProfileStore {
                     if isActive { activeName = name }
                 }
                 if !parsed.isEmpty {
+                    // Build 97: the CLI table has no skill counts, so the Hub
+                    // showed "0 skills" for every profile.  The connector's
+                    // /v1/profiles facade endpoint returns real per-profile
+                    // skill counts - merge them in, keeping CLI names as the
+                    // source of truth for which profiles exist (facade can be
+                    // down while the gateway WS is up).
+                    if let catalog = await featureClient.profileCatalog() {
+                        let counts = Dictionary(
+                            catalog.profiles.map { ($0.name, $0.skillCount) },
+                            uniquingKeysWith: { first, _ in first }
+                        )
+                        parsed = parsed.map { profile in
+                            HeraldProfile(
+                                name: profile.name,
+                                description: profile.description,
+                                skillCount: counts[profile.name] ?? profile.skillCount
+                            )
+                        }
+                        if catalog.active != nil {
+                            activeName = catalog.active
+                        }
+                    }
                     profiles = parsed
                     if let activeName {
                         activeProfileName = activeName

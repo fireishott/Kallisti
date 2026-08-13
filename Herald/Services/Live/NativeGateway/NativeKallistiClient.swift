@@ -263,6 +263,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
             return nil
         } gatewayBaseURLProvider: { [weak self] in
             self?.gatewayBaseURL ?? "http://localhost:9119"
+        } accessTokenProvider: { [weak self] in
+            // Build 97: /v1/profiles (skill counts for the Hub) requires
+            // native-or-paired auth on the connector facade.  Reuse the
+            // same token refresh the chat client uses so cookie-auth and
+            // bearer-auth modes both work.
+            guard let self else { return nil }
+            return try? await self.authCoordinator.refreshAccessTokenIfNeeded()
         }
     }
 
@@ -1492,6 +1499,24 @@ final class NativeKallistiClient: HeraldClientProtocol {
             }
         }
         activeStreamHandlers[sid] = handler
+        // Build 97: unwatch on ANY stream termination, not just
+        // message.complete.  The old code only fired unwatch from
+        // handler.onComplete, which requires message.complete to arrive
+        // over the app's own WebSocket.  When that WS dropped mid-turn
+        // (code-1006 closures observed every few minutes on this host),
+        // the connector watch stayed registered forever and kept polling +
+        // pushing "Turn complete" for a turn the app had already seen or
+        // abandoned.  onTermination runs on every finish()/cancel() path
+        // (message.complete, failed send, consumer cancellation), so the
+        // watch can never outlive the stream that created it.  A parked
+        // stream (WS suspended, turn still in flight) does NOT terminate,
+        // which is exactly right: the connector watch is the fallback push
+        // for that case.
+        continuation.onTermination = { @Sendable [weak self] _ in
+            Task.detached { [weak self] in
+                await self?.unregisterNativeWatch(sessionId: sid)
+            }
+        }
         await client.onEvent { event in
             handler.handle(event)
         }

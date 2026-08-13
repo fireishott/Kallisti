@@ -36,15 +36,21 @@ struct NativeGatewayFeatureClient {
     /// Base URL of the native gateway (http://host:9119). Used to derive the
     /// connector HTTP facade URL (same host, port 8010) for version rows.
     private let gatewayBaseURLProvider: @MainActor () -> String
+    /// Access token for the authenticated facade endpoints (/v1/profiles
+    /// requires native-or-paired auth). Optional: version rows are
+    /// unauthenticated and pass nil.
+    private let accessTokenProvider: @MainActor () async -> String?
 
     init(
         clientProvider: @escaping @MainActor () -> NativeGatewayClient?,
         currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil },
-        gatewayBaseURLProvider: @escaping @MainActor () -> String = { "http://localhost:9119" }
+        gatewayBaseURLProvider: @escaping @MainActor () -> String = { "http://localhost:9119" },
+        accessTokenProvider: @escaping @MainActor () async -> String? = { nil }
     ) {
         self.clientProvider = clientProvider
         self.currentSessionIdProvider = currentSessionIdProvider
         self.gatewayBaseURLProvider = gatewayBaseURLProvider
+        self.accessTokenProvider = accessTokenProvider
     }
 
     // MARK: - Version info (native mode)
@@ -73,6 +79,48 @@ struct NativeGatewayFeatureClient {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             return try? JSONDecoder().decode(VersionEnvelope.self, from: data).data?.version
+        } catch { return nil }
+    }
+
+    /// Profile catalog from the HTTP facade /v1/profiles.
+    ///
+    /// The connector's /v1/profiles returns real per-profile skill counts
+    /// (it derives them from the agent's profile catalog), which the
+    /// cli.exec `hermes profile list` table does NOT expose — the native
+    /// ProfileStore path used to hardcode skillCount: 0 for every profile
+    /// ("Kallisti Hub shows 0 skills").  Same facade-base mechanics as
+    /// connectorVersion(): works for LAN hosts (host:8010) and public
+    /// relay hosts.  Returns nil on any failure so callers can fall back
+    /// to the CLI-parsed names with a zeroed count.
+    struct NativeProfileEntry: Decodable {
+        let name: String
+        let description: String?
+        let skillCount: Int?
+    }
+    struct NativeProfileEnvelope: Decodable {
+        let activeProfile: NativeProfileEntry?
+        let profiles: [NativeProfileEntry]?
+    }
+
+    func profileCatalog() async -> (active: String?, profiles: [(name: String, description: String, skillCount: Int)])? {
+        let gatewayBase = await gatewayBaseURLProvider()
+        guard let facadeBase = NativeKallistiClient.facadeBaseURL(for: gatewayBase) else { return nil }
+        guard let url = URL(string: facadeBase.hasSuffix("/") ? facadeBase + "v1/profiles" : facadeBase + "/v1/profiles") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = await accessTokenProvider(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            let decoded = try JSONDecoder().decode(NativeProfileEnvelope.self, from: data)
+            let entries = decoded.profiles ?? []
+            let mapped = entries.map {
+                (name: $0.name, description: $0.description ?? "", skillCount: $0.skillCount ?? 0)
+            }
+            return (decoded.activeProfile?.name, mapped)
         } catch { return nil }
     }
 

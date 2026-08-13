@@ -390,13 +390,44 @@ final class LiveActivityService {
 
     private func adoptExistingActivityIfNeeded() {
         guard currentActivity == nil else { return }
-        if let activity = Activity<KallistiActivityAttributes>.activities.first(where: { $0.activityState == .active }) {
-            currentActivity = activity
-            startedAt = activity.content.state.startDate
-            // Build 96: re-observe the adopted activity push token so the
-            // connector can remote-end it. Without this, a stuck activity
-            // adopted on foreground never re-registers and stays stuck.
-            observePushTokens()
+        let activeActivities = Activity<KallistiActivityAttributes>.activities
+            .filter { $0.activityState == .active }
+        guard let activity = activeActivities.first else { return }
+        currentActivity = activity
+        startedAt = activity.content.state.startDate
+        // Build 96: re-observe the adopted activity push token so the
+        // connector can remote-end it. Without this, a stuck activity
+        // adopted on foreground never re-registers and stays stuck.
+        observePushTokens()
+        // Build 97: kill every OTHER active activity.  Each startThinking()
+        // created a new Activity when currentActivity was nil, so a session
+        // that chained turns (or crashed between end and start) left
+        // multiple lock-screen activities alive; the connector could only
+        // remote-end the newest token and the older ones sat on the lock
+        // screen as "never ending" notifications.  End all but the adopted
+        // one immediately so at most one activity ever survives a turn.
+        if activeActivities.count > 1 {
+            let keepID = activity.id
+            let finalContent = ActivityContent(
+                state: KallistiActivityAttributes.ContentState(
+                    status: LiveActivityPhase.done.rawValue,
+                    toolName: nil,
+                    elapsedSeconds: 0,
+                    startDate: nil,
+                    sessionType: "chat",
+                    emoji: "\u{2705}"
+                ),
+                staleDate: nil
+            )
+            // Re-query activities inside the detached task instead of
+            // capturing the local (non-Sendable) array - avoids a Swift 6
+            // data-race diagnostic on the captured collection.
+            Task.detached {
+                for orphan in Activity<KallistiActivityAttributes>.activities
+                where orphan.id != keepID && orphan.activityState == .active {
+                    await orphan.end(finalContent, dismissalPolicy: .immediate)
+                }
+            }
         }
     }
 }
