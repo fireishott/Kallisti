@@ -3441,4 +3441,29 @@ struct B40ConversationMergeTests {
 
         #expect(merged?.messages.first?.timestamp == sentAt)
     }
+
+    @Test @MainActor
+    func refreshedAssistantKeepsItsOriginalDisplayedTime() {
+        let store = makeStore()
+        let conversationID = UUID()
+        let messageID = UUID()
+        let originalTime = Date()
+        let refreshFallbackTime = originalTime.addingTimeInterval(240)
+
+        let localAssistant = Message(
+            id: messageID, sender: .herald, content: "Input secured.",
+            timestamp: originalTime, status: .delivered
+        )
+        let refreshedAssistant = Message(
+            id: messageID, sender: .herald, content: "Input secured.",
+            timestamp: refreshFallbackTime, status: .delivered
+        )
+
+        let local = Conversation(id: conversationID, title: "New Chat", messages: [localAssistant])
+        let refreshed = Conversation(id: conversationID, title: "New Chat", messages: [refreshedAssistant])
+
+        let merged = store.mergeConversationMetadata(from: local, into: refreshed)
+
+        #expect(merged?.messages.first?.timestamp == originalTime)
+    }
 }

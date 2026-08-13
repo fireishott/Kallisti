@@ -170,6 +170,46 @@ struct NativeKallistiClientTests {
         await sut.disconnect()
     }
 
+    @Test("history row identity is stable across refreshes")
+    func historyRowIdentityIsStableAcrossRefreshes() {
+        let first = NativeKallistiClient.historyMessageID(
+            nativeSessionID: "20260813_152949_b47179",
+            rowID: 483509,
+            ordinal: 4,
+            role: "assistant",
+            content: "Photo reference task"
+        )
+        let second = NativeKallistiClient.historyMessageID(
+            nativeSessionID: "20260813_152949_b47179",
+            rowID: 483509,
+            ordinal: 4,
+            role: "assistant",
+            content: "Photo reference task"
+        )
+
+        #expect(first == second)
+    }
+
+    @Test("different history rows never share identity even when text repeats")
+    func repeatedHistoryTextKeepsDistinctRowIdentity() {
+        let first = NativeKallistiClient.historyMessageID(
+            nativeSessionID: "session-a",
+            rowID: 100,
+            ordinal: 0,
+            role: "user",
+            content: "same prompt"
+        )
+        let second = NativeKallistiClient.historyMessageID(
+            nativeSessionID: "session-a",
+            rowID: 101,
+            ordinal: 1,
+            role: "user",
+            content: "same prompt"
+        )
+
+        #expect(first != second)
+    }
+
     @Test("native image send stages bytes before prompt.submit")
     @MainActor
     func nativeImageSendStagesBytesBeforePromptSubmit() async throws {
