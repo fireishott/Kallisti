@@ -329,11 +329,11 @@ struct NativeHistoryMessage: Decodable {
         // Hermes emits row_id as the raw state.db integer row id; it survives
         // the NativeJSONValue round-trip as a JSON number. Decode leniently
         // (Int, then Double, then String) so either serialization works.
-        if let n = try? container.decodeIfPresent(Int.self, forKey: .rowId), let n {
+        if let n = try? container.decodeIfPresent(Int.self, forKey: .rowId) {
             rowId = n
-        } else if let d = try? container.decodeIfPresent(Double.self, forKey: .rowId), let d {
+        } else if let d = try? container.decodeIfPresent(Double.self, forKey: .rowId) {
             rowId = Int(d)
-        } else if let s = try? container.decodeIfPresent(String.self, forKey: .rowId), let s {
+        } else if let s = try? container.decodeIfPresent(String.self, forKey: .rowId) {
             rowId = Int(s)
         } else {
             rowId = nil
