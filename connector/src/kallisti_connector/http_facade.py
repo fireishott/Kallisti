@@ -413,7 +413,11 @@ async def aux_set(request: Request) -> JSONResponse:
 
 
 async def list_profiles(request: Request) -> JSONResponse:
-    await require_auth(request)
+    # Build 86: accept native clients (gateway bearer/cookie) as well as the
+    # connector's paired credential. The iOS ProfileStore native path calls
+    # this through the relay to enrich skillCount; require_auth alone 401'd
+    # every cookie-auth client, so the Hub always showed "0 skills".
+    await require_native_or_paired_auth(request)
     ctx = get_context()
     if ctx.profile_catalog is None:
         return JSONResponse({"profiles": [], "activeProfile": None})
@@ -1282,7 +1286,7 @@ async def _probe_dashboard_health() -> tuple[bool, str]:
     """Hermes readiness probe: dashboard health endpoint (port 9119 by default)."""
     url = os.getenv("HERALD_DASHBOARD_HEALTH_URL", "http://127.0.0.1:9119/api/health")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3, read=5)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3, read=5)) as client:
             resp = await client.get(url)
             if resp.status_code == 200:
                 return True, "detail health ok"
@@ -1948,6 +1952,7 @@ async def get_inbox(request: Request) -> JSONResponse:
                 "priority": item["priority"],
                 "status": item["status"],
                 "payload": _payload_for(item),
+                "attachments": item.get("attachments") or [],
                 "createdAt": item["createdAt"],
                 "primaryActionTitle": "Open",
                 "secondaryActionTitle": "Dismiss",
@@ -2036,6 +2041,7 @@ async def push_test(request: Request) -> JSONResponse:
         raise HTTPException(status_code=503, detail="Push delivery is unavailable")
 
     # Seed the target device's inbox so the Inbox tab shows the test too.
+    attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else None
     if device_id:
         try:
             from .inbox_store import get_inbox_store
@@ -2044,7 +2050,8 @@ async def push_test(request: Request) -> JSONResponse:
                 title="Response ready",
                 body=text,
                 kind="notification",
-                payload={"conversationId": None} ,
+                payload={"conversationId": None},
+                attachments=attachments,
                 priority="normal",
             )
         except Exception:
@@ -2323,7 +2330,13 @@ async def native_watch_route(request: Request) -> JSONResponse:
     if bearer and await _verify_native_gateway_bearer(bearer):
         pass  # authenticated as a native-gateway client
     else:
-        await require_auth(request)
+        # Build 86: accept gateway cookies too. Basic/pairing native logins
+        # are cookie sessions; URLSession carries the cookie here, but the
+        # previous require_auth only accepted the connector's paired
+        # credential, so watch registration 401'd and the Live Activity
+        # end-push never fired. require_native_or_paired_auth handles
+        # bearer + cookie + paired credential, same as /v1/push/register.
+        await require_native_or_paired_auth(request)
     try:
         body = await request.json()
     except Exception:

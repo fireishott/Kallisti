@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     title TEXT NOT NULL,
     body TEXT NOT NULL,
     payload TEXT,
+    attachments TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     priority TEXT NOT NULL DEFAULT 'normal',
     created_at TEXT NOT NULL,
@@ -75,6 +76,11 @@ class InboxStore:
             conn = self._connect()
             try:
                 conn.executescript(_SCHEMA)
+                # Migration check for attachments column
+                cursor = conn.execute("PRAGMA table_info(inbox_items)")
+                cols = [row["name"] for row in cursor.fetchall()]
+                if "attachments" not in cols:
+                    conn.execute("ALTER TABLE inbox_items ADD COLUMN attachments TEXT")
                 conn.commit()
             finally:
                 conn.close()
@@ -88,6 +94,7 @@ class InboxStore:
         kind: str = "notification",
         conversation_id: str | None = None,
         payload: dict[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         priority: str = "normal",
         item_id: str | None = None,
     ) -> str:
@@ -95,14 +102,15 @@ class InboxStore:
         now = _utcnow_rfc3339()
         item_id = item_id or str(uuid.uuid4())
         payload_json = json.dumps(payload or {})
+        attachments_json = json.dumps(attachments or []) if attachments else None
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute(
                     "INSERT INTO inbox_items "
                     "(id, installation_id, conversation_id, kind, title, body, "
-                    " payload, status, priority, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                    " payload, attachments, status, priority, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                     (
                         item_id,
                         installation_id,
@@ -111,6 +119,7 @@ class InboxStore:
                         title,
                         body,
                         payload_json,
+                        attachments_json,
                         priority,
                         now,
                         now,
@@ -175,6 +184,12 @@ class InboxStore:
             payload = json.loads(row["payload"]) if row["payload"] else {}
         except (ValueError, TypeError):
             payload = {}
+        attachments: list[dict[str, Any]] = []
+        try:
+            if "attachments" in row.keys() and row["attachments"]:
+                attachments = json.loads(row["attachments"])
+        except (ValueError, TypeError):
+            attachments = []
         return {
             "id": row["id"],
             "installationId": row["installation_id"],
@@ -183,6 +198,7 @@ class InboxStore:
             "title": row["title"],
             "body": row["body"],
             "payload": payload,
+            "attachments": attachments,
             "status": row["status"],
             "priority": row["priority"],
             "createdAt": row["created_at"],

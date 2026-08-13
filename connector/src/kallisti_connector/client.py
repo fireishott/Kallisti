@@ -119,11 +119,30 @@ def _extract_media_from_response(text: str) -> tuple[list[dict], str]:
             if len(data) > 10 * 1024 * 1024:
                 continue
             encoded = base64.b64encode(data).decode("ascii")
+            # Build 83: mediaKey lets the push path synthesize a fetchable
+            # /v1/native/media URL for the notification extension. Emit the
+            # path relative to HERMES_HOME (e.g. images/foo.jpg) when the
+            # file lives under an approved root; leave empty otherwise so
+            # the push payload simply carries no attachment URL.
+            media_key = ""
+            try:
+                hermes_home = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes").resolve()
+                resolved = file_path.resolve()
+                for root in [hermes_home / "cache" / "images", hermes_home / "images", hermes_home / "media"]:
+                    try:
+                        rel = resolved.relative_to(root.resolve())
+                        media_key = str(root.name + "/" + str(rel))
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                media_key = ""
             attachments.append({
                 "type": kind,
                 "filename": file_path.name,
                 "mimeType": mime,
                 "data": encoded,
+                "mediaKey": media_key,
             })
         except Exception:
             continue
@@ -739,6 +758,23 @@ class HeraldConnector:
     def refresh_runtime_config(self, *, force: bool = False) -> ConnectorState:
         state = self.state_store.load()
         if state.runtime_config is not None and not force:
+            # Build 86: self-heal a stale runtime_config.hermes_home. The
+            # Aug 2026 profile consolidation moved HERMES_HOME from
+            # ~/.hermes/profiles/ignyte to ~/.hermes, but state.json kept
+            # the legacy value and _rpc_profiles_list used it to resolve
+            # the profile catalog (empty profiles / "0 skills" in the Hub).
+            # When the process env has a different HERMES_HOME than what was
+            # captured at last startup, re-capture so the catalog resolves
+            # against the real home.
+            env_home = os.getenv("HERMES_HOME")
+            stored_home = state.runtime_config.hermes_home
+            if env_home and stored_home and Path(env_home).expanduser() != Path(stored_home).expanduser():
+                logger.info(
+                    "runtime_config HERMES_HOME changed (%s -> %s); re-capturing",
+                    stored_home, env_home,
+                )
+                state.runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
+                return self.state_store.save(state)
             return state
 
         state.runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
@@ -1475,6 +1511,7 @@ class HeraldConnector:
                 cleaned_text,
                 category="HERALD_MESSAGE_READY",
                 conversation_id=job.get("conversationId"),
+                attachments=media_attachments,
             )
         except TimeoutError:
             self._stop_job_heartbeat(job_id)
@@ -1711,6 +1748,7 @@ class HeraldConnector:
                 cleaned_text,
                 category="HERALD_MESSAGE_READY",
                 conversation_id=job.get("conversationId"),
+                attachments=media_attachments,
             )
         except TimeoutError:
             self._stop_job_heartbeat(job_id)
@@ -2075,6 +2113,7 @@ class HeraldConnector:
         *,
         category: str | None = None,
         conversation_id: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> None:
         """Send a remote push notification directly via APNs.
 
@@ -2104,7 +2143,19 @@ class HeraldConnector:
                 self._apns_client = None
                 return
 
-        user_info = {"conversationId": conversation_id} if conversation_id else None
+        user_info = {"conversationId": conversation_id} if conversation_id else {}
+        # Build 83: surface the first attachment as a media URL in the push
+        # payload so the notification service extension can attach a thumbnail
+        # to the lock-screen banner. The URL must point at a route the
+        # extension can fetch with its shared Keychain token. Attachment
+        # payloads carry base64 data, not a path, so synthesize the media key
+        # from the relay /v1/native/media route using the first attachment.
+        if attachments:
+            first = attachments[0]
+            media_key = (first.get("mediaKey") or "").strip()
+            if media_key:
+                user_info["mediaUrl"] = f"https://hermes-relay.fihonline.net/v1/native/media?path={media_key}"
+                user_info["imageUrl"] = user_info["mediaUrl"]
 
         # Resolve target device(s): the conversation's owner first, then all
         # registered devices as a fallback (legacy single-device behavior).
@@ -2170,6 +2221,7 @@ class HeraldConnector:
                     kind="notification",
                     conversation_id=conversation_id,
                     payload={"conversationId": conversation_id} if conversation_id else None,
+                    attachments=attachments,
                     priority="normal",
                 )
         except Exception:
@@ -2959,36 +3011,27 @@ class HeraldConnector:
 
     async def _rpc_profiles_list(self) -> dict:
         hermes_home = self._resolve_hermes_home()
-        # HERMES_HOME points at a specific profile dir (e.g. ~/.hermes/profiles/ignyte).
-        # Sibling profiles live in the parent; detect via multiple subdirs in the parent.
-        parent_dir = hermes_home.parent
-        sibling_profiles = [d for d in parent_dir.iterdir() if d.is_dir()]
-        if len(sibling_profiles) > 1:
-            profiles_dir = parent_dir
+        # Post-consolidation (Aug 2026) HERMES_HOME points at the BASE home
+        # (~/.hermes), which IS the built-in "default" profile. Named
+        # profiles live under ~/.hermes/profiles/. Mirror
+        # hermes_cli/profiles.list_profiles(): default entry from the base
+        # home, named entries from the profiles/ root.
+        #
+        # Pre-consolidation HERMES_HOME pointed at a named profile dir
+        # (~/.hermes/profiles/ignyte); handle that shape too so stale
+        # state.json values don't regress the catalog.
+        is_named_profile = hermes_home.parent.name == "profiles" and hermes_home.name != "default"
+        if is_named_profile:
+            base_home = hermes_home.parent.parent
+            profiles_dir = hermes_home.parent
         else:
+            base_home = hermes_home
             profiles_dir = hermes_home / "profiles"
-        if not profiles_dir.is_dir():
-            return {"activeProfile": None, "profiles": []}
-
-        # Active profile: basename of HERMES_HOME (the currently loaded profile).
-        active_name: str | None = hermes_home.name
-        config_path = hermes_home / "config.yaml"
-        if config_path.is_file():
-            try:
-                import yaml
-                with open(config_path, encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                override = (config.get("profile") or {}).get("default")
-                if override:
-                    active_name = override
-            except Exception:  # noqa: BLE001
-                pass
 
         profiles = []
-        for entry in sorted(profiles_dir.iterdir()):
-            if not entry.is_dir():
-                continue
-            soul_path = entry / "SOUL.md"
+
+        def _entry_for(path: Path, name: str) -> dict:
+            soul_path = path / "SOUL.md"
             description = ""
             if soul_path.is_file():
                 try:
@@ -3006,16 +3049,43 @@ class HeraldConnector:
                             break
                 except Exception:  # noqa: BLE001
                     pass
-
-            # Count skills
-            skills_dir = entry / "skills"
+            skills_dir = path / "skills"
             skill_count = len(list(skills_dir.iterdir())) if skills_dir.is_dir() else 0
-
-            profiles.append({
-                "name": entry.name,
+            return {
+                "name": name,
                 "description": description,
                 "skillCount": skill_count,
-            })
+            }
+
+        # Default profile = the base home itself (backward compatible).
+        if base_home.is_dir():
+            profiles.append(_entry_for(base_home, "default"))
+
+        # Named profiles under the profiles/ root.
+        if profiles_dir.is_dir():
+            for entry in sorted(profiles_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                if name == "default":
+                    continue  # already added as the built-in default above
+                profiles.append(_entry_for(entry, name))
+
+        # Active profile: basename of HERMES_HOME (the currently loaded
+        # profile). For the base home that's "default"; the config may pin
+        # a named override.
+        active_name: str | None = hermes_home.name if is_named_profile else "default"
+        config_path = hermes_home / "config.yaml"
+        if config_path.is_file():
+            try:
+                import yaml
+                with open(config_path, encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                override = (config.get("profile") or {}).get("default")
+                if override:
+                    active_name = override
+            except Exception:  # noqa: BLE001
+                pass
 
         active_profile = None
         if active_name:

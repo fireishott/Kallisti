@@ -98,6 +98,10 @@ class APNsClient:
             "apns-priority": "10",
         }
         aps: dict = {"alert": {"title": title, "body": body}, "sound": "default"}
+        # Build 83: mutable-content runs the UNNotificationServiceExtension so
+        # it can attach a downloaded media thumbnail. Without it the extension
+        # never executes and mediaUrl in user_info is dead weight.
+        aps["mutable-content"] = 1
         if category:
             aps["category"] = category
         payload = {"aps": aps}
