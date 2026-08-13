@@ -1,4 +1,4 @@
-# Notes Contract V1 — Herald 1.8.0
+# Notes Contract V1 - Herald 1.8.0
 
 **Date:** 2026-07-21
 **SDK:** iOS 26.5 (Xcode 26.5)
@@ -36,7 +36,7 @@
 |--------|--------|
 | `SmartScript` | Not found |
 | `RefineHandwriting` | Not found |
-| `AutoRefine` | Found as private symbol in `PencilKit.tbd` (`RecognitionController.AutoRefineMode`) — **NOT public API** |
+| `AutoRefine` | Found as private symbol in `PencilKit.tbd` (`RecognitionController.AutoRefineMode`) - **NOT public API** |
 | `NotesInterop` | Not found |
 | `HandwritingCleanup` | Not found |
 
@@ -46,7 +46,7 @@
 
 ## 3. Physical-Device Spike Results
 
-**Status:** NOT YET TESTED — requires physical iPad + Apple Pencil.
+**Status:** NOT YET TESTED - requires physical iPad + Apple Pencil.
 
 **What needs manual verification:**
 
@@ -107,20 +107,20 @@
 
 - Explicit "Enrich" user action (not automatic)
 - Allowlisted commands only:
-  - "Enrich" — run recognition on current drawing
-  - "Export to Notes" — share recognized text to Apple Notes
+  - "Enrich" - run recognition on current drawing
+  - "Export to Notes" - share recognized text to Apple Notes
 - No implicit or background recognition
 
 #### Directive Command Allowlist (v1)
 
 The following inline directives are recognized in recognized/corrected text:
 
-- `#research` — web research on a topic
-- `#search` — web search for information
-- `#talkingpoints` — generate talking points
-- `#summary` — summarize the note content
-- `#actions` — extract action items
-- `#questions` — generate questions from the content
+- `#research` - web research on a topic
+- `#search` - web search for information
+- `#talkingpoints` - generate talking points
+- `#summary` - summarize the note content
+- `#actions` - extract action items
+- `#questions` - generate questions from the content
 
 **Rules:**
 - `#` mid-sentence, in URLs, in code blocks, or in struck-through regions is text, not a directive

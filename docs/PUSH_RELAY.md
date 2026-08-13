@@ -84,11 +84,11 @@ Relay                                       Push Broker                APNs
  │◀──── {delivered | reason} ───────────────────│                       │
 ```
 
-A leaked `sendGrant` on its own is **not enough** to send — the broker requires a valid Ed25519 signature from `relayId`, and that private key lives only on the relay. A leaked relay private key is limited to pushing to devices that already granted that specific relay a send grant.
+A leaked `sendGrant` on its own is **not enough** to send - the broker requires a valid Ed25519 signature from `relayId`, and that private key lives only on the relay. A leaked relay private key is limited to pushing to devices that already granted that specific relay a send grant.
 
 ## Relay identity
 
-Every relay deployment generates a persistent Ed25519 keypair on first start (`relay/app/relay_identity.py`). The public key is served at `GET /v1/relay/identity`. The iOS app reads that identity, includes it in the App Attest–signed payload, and hands it to the broker during registration. This binds each `sendGrant` to a specific relay deployment — a send grant for Relay A cannot be replayed by Relay B.
+Every relay deployment generates a persistent Ed25519 keypair on first start (`relay/app/relay_identity.py`). The public key is served at `GET /v1/relay/identity`. The iOS app reads that identity, includes it in the App Attest-signed payload, and hands it to the broker during registration. This binds each `sendGrant` to a specific relay deployment - a send grant for Relay A cannot be replayed by Relay B.
 
 ## Keychain storage (iOS)
 

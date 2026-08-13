@@ -34,7 +34,7 @@ xcodebuild test -project Herald.xcodeproj -scheme Herald \
 
 ## Pull Request Guidelines
 
-- Keep PRs focused — one feature or fix per PR
+- Keep PRs focused - one feature or fix per PR
 - Include tests for new functionality
 - Run the full test suite before submitting
 - Update docs if you change env vars, APIs, or MCP tools

@@ -41,16 +41,16 @@ The split matters because:
 
 1. **Relay compromise does not leak APNs credentials.** The relay only ever holds `relayHandle` + `sendGrant` pairs (Phase 4 push broker design).
 2. **Relay compromise does not expose OpenAI keys.** Realtime audio/vision streams go directly from iOS to OpenAI; the relay is not in that path.
-3. **Connector owns execution.** The relay cannot arbitrarily run code on the user's Mac — it can only enqueue jobs for the connector WebSocket.
+3. **Connector owns execution.** The relay cannot arbitrarily run code on the user's Mac - it can only enqueue jobs for the connector WebSocket.
 4. **User content stays behind the relay.** Sensor SQLite, project files, and local state are all connector-local.
 
 ## Why not OpenClaw-style direct-gateway?
 
 OpenClaw's iOS app talks directly to a gateway WebSocket. Hermes does not copy that:
 
-- A relay/connector split keeps the iOS app stateless and the connector durable — better for mobile networks that churn connections constantly.
+- A relay/connector split keeps the iOS app stateless and the connector durable - better for mobile networks that churn connections constantly.
 - The relay can queue jobs and host pushes; a direct gateway on the user's Mac cannot reliably do that.
-- The product boundary (managed / Tailscale / self-hosted) becomes uniform — every mode is "iOS → relay → connector," only the relay's location changes.
+- The product boundary (managed / Tailscale / self-hosted) becomes uniform - every mode is "iOS → relay → connector," only the relay's location changes.
 
 What we do borrow from OpenClaw:
 
@@ -79,7 +79,7 @@ What we do borrow from OpenClaw:
 
 ## Realtime audio / vision
 
-Voice Mode uses OpenAI Realtime. The ephemeral token is minted on the connector (which holds the OpenAI key), then sent through the relay to the iOS app. iOS establishes the WebRTC connection directly to OpenAI — **the relay is not on the audio/video path**. This keeps latency low and keeps the relay out of the content path for live sessions.
+Voice Mode uses OpenAI Realtime. The ephemeral token is minted on the connector (which holds the OpenAI key), then sent through the relay to the iOS app. iOS establishes the WebRTC connection directly to OpenAI - **the relay is not on the audio/video path**. This keeps latency low and keeps the relay out of the content path for live sessions.
 
 ## Modes in this topology
 
