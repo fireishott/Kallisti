@@ -1519,7 +1519,7 @@ async def gateway_status(request: Request) -> JSONResponse:
     returning ``{"data": payload}`` would double-wrap the response and make
     the iOS decoder fail even though the endpoint returned HTTP 200.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     ctx = get_context()
 
     sampled_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2880,7 +2880,7 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
 
 async def device_app_state(request: Request) -> JSONResponse:
     """AppContainer.swift:1139 decodes an empty struct — any JSON object works."""
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     body = await request.json()
     logger.debug("Device app state: %s", body.get("state"))
     return JSONResponse({"acknowledged": True})
@@ -2889,7 +2889,7 @@ async def device_app_state(request: Request) -> JSONResponse:
 async def device_sensor(request: Request) -> JSONResponse:
     """SensorUploadService.swift:107-113 decodes DeliveryResult.deliveryState and
     treats anything other than "delivered" as a failure that triggers backoff."""
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     await request.json()
     return JSONResponse({"deliveryState": "delivered"})
 
