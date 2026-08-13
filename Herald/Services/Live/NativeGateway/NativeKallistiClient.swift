@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import os
 import UIKit
 
@@ -680,6 +681,37 @@ final class NativeKallistiClient: HeraldClientProtocol {
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: s) { return date }
         return ISO8601DateFormatter().date(from: s)
+    }
+
+    /// Stable identity for a Hermes history row. The native gateway does not
+    /// expose a UUID, but it does expose the immutable state.db row id. Using a
+    /// deterministic UUID prevents each refresh from turning every historical
+    /// message into a brand-new row in ChatStore's reconciliation pass.
+    nonisolated static func historyMessageID(
+        nativeSessionID: String,
+        rowID: Int?,
+        ordinal: Int,
+        role: String,
+        content: String
+    ) -> UUID {
+        let identity: String
+        if let rowID {
+            identity = "kallisti-history|\(nativeSessionID)|row|\(rowID)"
+        } else {
+            // Legacy gateways may omit row_id. Ordinal is stable because
+            // session.history is authoritative transcript order; role/content
+            // keep different projections from colliding across malformed rows.
+            identity = "kallisti-history|\(nativeSessionID)|ordinal|\(ordinal)|\(role)|\(content)"
+        }
+        var bytes = Array(SHA256.hash(data: Data(identity.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 
     /// Build 69 (r7): pull the structured update check from the connector.
@@ -1403,7 +1435,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // timestamps + apparent reordering). The facade serves state.db
         // timestamps keyed by raw row id.
         let rowTimestamps = await loadHistoryTimestamps(nativeId: nativeId)
-        let messages = decoded.messages.compactMap { msg -> Message? in
+        let messages = decoded.messages.enumerated().compactMap { ordinal, msg -> Message? in
             // Build 69: tool rows come through as {"role":"tool","name",
             // "context"} with no display text; system markers are
             // scaffolding. Skip them instead of rendering blank bubbles.
@@ -1426,7 +1458,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 resolvedContent = msg.content
             }
             return Message(
-                id: UUID(),
+                id: Self.historyMessageID(
+                    nativeSessionID: nativeId,
+                    rowID: msg.rowId,
+                    ordinal: ordinal,
+                    role: msg.role,
+                    content: msg.content
+                ),
                 sender: Self.decodeHistorySender(from: msg.role),
                 content: resolvedContent,
                 timestamp: Self.historyTimestamp(for: msg, rowTimestamps: rowTimestamps),
