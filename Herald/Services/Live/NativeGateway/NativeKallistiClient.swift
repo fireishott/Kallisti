@@ -639,15 +639,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
             let rowId: Int?
             let timestamp: String?
         }
+        // The connector wraps every JSON body as {"data":...,"meta":...} via
+        // envelope_middleware, so the messages array lives one level deep.
         struct Envelope: Decodable {
-            let messages: [Stamp]?
+            struct DataBox: Decodable {
+                let messages: [Stamp]?
+            }
+            let data: DataBox?
         }
         guard let data = await getFacadeJSON(
             path: "/v1/sessions/\(nativeId)/messages",
             logTag: "loadHistoryTimestamps"
         ) else { return [:] }
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
-              let stamps = envelope.messages else { return [:] }
+              let stamps = envelope.data?.messages else { return [:] }
         var map: [Int: Date] = [:]
         for stamp in stamps {
             guard let rid = stamp.rowId,
