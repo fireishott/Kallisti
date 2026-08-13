@@ -208,6 +208,10 @@ class FacadeContext:
         self.auxiliary_list: Callable[[], dict | Coroutine[Any, Any, dict]] | None = None
         self.auxiliary_set: Callable[[dict], dict | Coroutine[Any, Any, dict]] | None = None
         self.push_register: PushRegisterProvider | None = None
+        # Build 94: full command catalog (commands/skills/personalities/
+        # quickCommands + activeModel with contextWindow). Wired from the
+        # connector client's _rpc_commands_catalog.
+        self.commands_catalog: Callable[[], dict] | Callable[[], Coroutine[Any, Any, dict]] | None = None
         self.agent_version: Callable[[], str | None] | Callable[[], Coroutine[Any, Any, str | None]] | None = None
         # Build 33 Workstream A: durable restart operations
         self.restart_store: RestartOperationStore | None = None
@@ -216,6 +220,9 @@ class FacadeContext:
         self.session_canary: Callable[[], Coroutine[Any, Any, tuple[bool, str]]] | None = None
         # Native-completion to push bridge (Task 12)
         self.native_watch_registry: Any = None
+        # Sensor store (sensors.db) - wired by the connector so the HTTP
+        # device_sensor handler persists location/health like the WS path.
+        self.sensor_store: Any = None
 
 
 _context = FacadeContext()
@@ -498,7 +505,24 @@ async def auth_revoke(request: Request) -> JSONResponse:
 
 
 async def list_commands(request: Request) -> JSONResponse:
-    await require_auth(request)
+    # Build 94: cookie-auth sessions have no bearer token, so this must accept
+    # the gateway session cookie (require_native_or_paired_auth) like the
+    # other native routes. Returns the full catalog - commands, skills,
+    # personalities, quick commands, and the active model's contextWindow -
+    # instead of the old hardcoded 5-command stub.
+    await require_native_or_paired_auth(request)
+    ctx = get_context()
+    if ctx.commands_catalog is not None:
+        try:
+            result = ctx.commands_catalog()
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, dict):
+                return JSONResponse(result)
+        except Exception as e:  # pragma: no cover - defensive
+            logging.getLogger("herald.http_facade").warning(
+                "commands_catalog provider failed: %s", e
+            )
     return JSONResponse({
         "commands": [
             {"name": "new", "description": "Start a new session"},
@@ -1519,7 +1543,7 @@ async def gateway_status(request: Request) -> JSONResponse:
     returning ``{"data": payload}`` would double-wrap the response and make
     the iOS decoder fail even though the endpoint returned HTTP 200.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     ctx = get_context()
 
     sampled_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2356,6 +2380,20 @@ async def native_watch_route(request: Request) -> JSONResponse:
             status_code=503,
             detail="Native watch is not available",
         )
+    # Build 95: allow the iOS client to unregister a watch once its own WS
+    # delivered the terminal event (message.complete). The watch exists so the
+    # connector can fire an APNs fallback push when the app was backgrounded
+    # and missed the turn - it must NOT push when the app already has the
+    # reply. Previously the app registered on every prompt.submit but never
+    # unregistered, so every foregrounded turn ended with a spurious
+    # "Turn complete" banner.
+    if body.get("action") == "unwatch":
+        ctx.native_watch_registry.unwatch(
+            session_id=session_id,
+            device_token=device_token,
+            token_kind=body.get("token_kind", "alert"),
+        )
+        return JSONResponse({"ok": True})
     ctx.native_watch_registry.watch(
         session_id=session_id,
         device_token=device_token,
@@ -2880,7 +2918,7 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
 
 async def device_app_state(request: Request) -> JSONResponse:
     """AppContainer.swift:1139 decodes an empty struct — any JSON object works."""
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     body = await request.json()
     logger.debug("Device app state: %s", body.get("state"))
     return JSONResponse({"acknowledged": True})
@@ -2888,9 +2926,56 @@ async def device_app_state(request: Request) -> JSONResponse:
 
 async def device_sensor(request: Request) -> JSONResponse:
     """SensorUploadService.swift:107-113 decodes DeliveryResult.deliveryState and
-    treats anything other than "delivered" as a failure that triggers backoff."""
-    await require_auth(request)
-    await request.json()
+    treats anything other than "delivered" as a failure that triggers backoff.
+
+    Persists location/health samples to sensors.db, mirroring the WebSocket
+    sensor path (client.py _handle_sensor_message). Returns "retry" on a
+    persist failure so the app's outbox re-queues instead of dropping data.
+    """
+    await require_native_or_paired_auth(request)
+    body = await request.json()
+    ctx = get_context()
+    store = ctx.sensor_store
+    if store is None:
+        # Sensor store not wired yet (should not happen in production) - ACK
+        # so the app does not infinite-retry, but log the miss loudly.
+        logger.warning("device_sensor: sensor_store not wired, dropping payload")
+        return JSONResponse({"deliveryState": "delivered"})
+
+    path = request.url.path
+    try:
+        if path.endswith("/location"):
+            from .sensor_store import LocationReading
+
+            store.store_location(LocationReading(
+                latitude=float(body.get("latitude", 0.0)),
+                longitude=float(body.get("longitude", 0.0)),
+                altitude=body.get("altitude"),
+                accuracy=body.get("accuracy"),
+                address=body.get("address"),
+                recorded_at=body.get("recordedAt"),
+            ))
+        elif path.endswith("/health"):
+            from .sensor_store import HealthSample
+
+            samples = [
+                HealthSample(
+                    metric=s["metric"],
+                    value=float(s["value"]),
+                    unit=s["unit"],
+                    start_at=s["startAt"],
+                    end_at=s.get("endAt"),
+                )
+                for s in body.get("samples", [])
+            ]
+            if samples:
+                store.store_health_samples(samples)
+        else:
+            logger.warning("device_sensor: unknown path %s", path)
+    except Exception:
+        logger.exception("device_sensor: failed to persist %s", path)
+        return JSONResponse({"deliveryState": "retry", "error": "persist failed"})
+
     return JSONResponse({"deliveryState": "delivered"})
 
 

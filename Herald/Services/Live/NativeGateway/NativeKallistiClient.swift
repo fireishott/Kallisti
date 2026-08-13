@@ -355,6 +355,33 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    /// Unregister a session watch once this client's own WS delivered the
+    /// terminal event (message.complete). The connector watch exists only as
+    /// a fallback push for turns the app missed while backgrounded/killed -
+    /// if the app has the reply, pushing a "Turn complete" banner is noise.
+    /// Mirror of registerNativeWatch with action=unwatch; fire-and-forget.
+    private func unregisterNativeWatch(sessionId: String) async {
+        guard let secureStore else { return }
+        guard let deviceToken = await secureStore.retrieve(key: AppContainer.apnsTokenKeychainKey),
+              !deviceToken.isEmpty
+        else { return }
+
+        let body: [String: Any] = [
+            "session_id": sessionId,
+            "device_token": deviceToken,
+            "token_kind": "alert",
+            "action": "unwatch",
+        ]
+        let status = await postFacadeJSON(
+            path: "/v1/native/watch",
+            body: body,
+            logTag: "native watch unregistration"
+        )
+        if status != 200 {
+            Self.logger.warning("native watch unregistration returned HTTP \(status)")
+        }
+    }
+
     /// POST a JSON body to the connector's HTTP facade with the live native
     /// bearer. On 401 we force a bearer rotation (the cached `expiresAt` may
     /// be stale even though the local check considers the token valid) and
@@ -1420,6 +1447,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
         )
         handler.onComplete = { [weak self] in
             self?.activeStreamHandlers.removeValue(forKey: sid)
+            // Build 95: the app has the reply (message.complete arrived over
+            // the app's own WS), so the connector must not fire its fallback
+            // "Turn complete" push for this turn. Fire-and-forget unwatch.
+            Task.detached { [weak self] in
+                await self?.unregisterNativeWatch(sessionId: sid)
+            }
         }
         activeStreamHandlers[sid] = handler
         await client.onEvent { event in
