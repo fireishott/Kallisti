@@ -282,6 +282,15 @@ final class ChatStore {
     /// The continuous watchdog checks this to detect mid-stream stalls.
     private var streamingProgressAt: Date = .now
 
+    /// Turn-complete notification dedup. Records the terminal `Message.id`
+    /// for which a local notification has already been posted so a re-entry
+    /// of the `.finished` handler for the same message (retry that re-emits
+    /// `.finished`, late SSE replay, foreground→background round-trip that
+    /// re-fires the terminal commit) does not enqueue a duplicate banner.
+    /// Combined with the foreground-suppression guard, this guarantees
+    /// exactly one 'Turn complete' notification per turn, in send order.
+    private var lastNotifiedTerminalMessageID: UUID?
+
     /// Build 84 Option C-A (probe-through-phantom): last time the stall
     /// watchdog forced a real transport probe before declaring a stall.
     /// Throttled so a genuinely dead gateway is probed at most once per
@@ -2253,8 +2262,17 @@ final class ChatStore {
                     // compress` subcommand.  The agent's own ContextCompressor
                     // handles compaction at 25%.
 
-                    // Post local notification if app is in background
-                    if UIApplication.shared.applicationState == .background {
+                    // Post local notification if app is in background.
+                    // Dedup against `lastNotifiedTerminalMessageID` so a
+                    // re-entry of the `.finished` handler for the same
+                    // terminal message (retry that re-emits `.finished`,
+                    // late SSE replay, or a foreground→background
+                    // round-trip that re-fires the terminal commit) cannot
+                    // enqueue a second 'Turn complete' banner. Combined
+                    // with the foreground guard this yields exactly one
+                    // notification per turn, in send order.
+                    if UIApplication.shared.applicationState == .background,
+                       lastNotifiedTerminalMessageID != finalMessage.id {
                         let content = UNMutableNotificationContent()
                         content.title = "Kallisti"
                         content.body = String(finalMessage.content.prefix(100))
@@ -2273,6 +2291,11 @@ final class ChatStore {
                             trigger: nil
                         )
                         try? await UNUserNotificationCenter.current().add(request)
+                        // Mark BEFORE the await-driven continuation so a
+                        // re-entrant `.finished` for the same id cannot
+                        // slip through the guard between the add() call
+                        // and the assignment.
+                        lastNotifiedTerminalMessageID = finalMessage.id
                     }
 
                     // Build 33 WSB: the FIFO chain lives in submitNextEligible —

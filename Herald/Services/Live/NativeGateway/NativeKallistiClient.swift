@@ -160,6 +160,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// turn. Model output arrives via stream events, so bound the ack rather
     /// than inheriting NativeGatewayClient's 60-second request default.
     private static let submitAckTimeoutNanos: UInt64 = 8_000_000_000
+    /// Build 117: attachment upload RPC timeout. These RPCs carry base64-encoded
+    /// image/file payloads over the WebSocket JSON-RPC channel, which can take
+    /// well beyond 10s to encode, frame, transmit, and persist on the host for
+    /// any non-trivial file. The previous 10s cap caused every sizable upload to
+    /// surface as REQUESTTIMEOUT, so we now give uploads a generous 60s budget.
+    private static let attachmentUploadTimeoutNanos: UInt64 = 60_000_000_000
     nonisolated(unsafe) private static let nativeMediaPattern = try! NSRegularExpression(
         pattern: #"MEDIA:\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp)))(?=[\s`\"',;:)\]}]|$)"#,
         options: [.caseInsensitive]
@@ -1449,7 +1455,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                         contentBase64: attachment.base64Data,
                         filename: attachment.fileName
                     ),
-                    timeoutNanos: 10_000_000_000
+                    timeoutNanos: Self.attachmentUploadTimeoutNanos
                 )
                 if let error = upload.error {
                     throw error
@@ -1467,7 +1473,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                         filename: attachment.fileName,
                         mimeType: attachment.mimeType
                     ),
-                    timeoutNanos: 10_000_000_000
+                    timeoutNanos: Self.attachmentUploadTimeoutNanos
                 )
                 if let error = upload.error {
                     throw error
@@ -1527,7 +1533,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                                     contentBase64: attachment.base64Data,
                                     filename: attachment.fileName
                                 ),
-                                timeoutNanos: 10_000_000_000
+                                timeoutNanos: Self.attachmentUploadTimeoutNanos
                             )
                             if let uploadError = upload.error {
                                 throw uploadError
@@ -1542,7 +1548,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                                     filename: attachment.fileName,
                                     mimeType: attachment.mimeType
                                 ),
-                                timeoutNanos: 10_000_000_000
+                                timeoutNanos: Self.attachmentUploadTimeoutNanos
                             )
                             if let uploadError = upload.error {
                                 throw uploadError

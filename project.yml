@@ -134,7 +134,7 @@ targets:
         APP_HOSTED_RELAY_URL: "https://your-relay.example.com/v1"
         APP_HOSTED_RELAY_ENABLED: true
         APP_PRIVACY_URL: "https://kallisti.fihonline.net/privacy.html"
-        APP_TERMS_URL: "https://herald.fihonline.net/terms.html"
+        APP_TERMS_URL: "https://kallisti.fihonline.net/terms.html"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         ITSAppUsesNonExemptEncryption: false

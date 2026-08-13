@@ -230,22 +230,30 @@ struct HeraldSelectorSheet: View {
         } label: {
             HStack(spacing: Design.Spacing.sm) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.name)
-                        .font(.system(.callout, design: .monospaced, weight: .medium))
+                    // Top row: humanized model name (e.g. "DeepSeek V4 Pro").
+                    Text(ModelNamePretty.prettyName(model.name))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(Design.Colors.foreground)
                         .lineLimit(1)
 
-                    HStack(spacing: 6) {
-                        if let contextWindow = model.contextWindow {
-                            Text("\(formatTokenCount(contextWindow)) context")
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
-                        }
-                        if model.isProviderDefault == true {
-                            Text("provider default")
-                                .font(Design.Typography.caption)
-                                .foregroundStyle(Design.Colors.secondaryForeground)
-                        }
+                    // Bottom row: "<provider>/<family>" provenance line
+                    // (e.g. "9Router/DeepSeek"). Falls back to the slug
+                    // prefix in model.name when no provider info is set.
+                    Text(proxyLine(for: model))
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .lineLimit(1)
+
+                    if let contextWindow = model.contextWindow {
+                        Text("\(formatTokenCount(contextWindow)) context")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
+                    } else if model.isProviderDefault == true {
+                        Text("provider default")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(1)
                     }
                 }
 
@@ -449,6 +457,26 @@ struct HeraldSelectorSheet: View {
     }
 
     // MARK: - Helpers
+
+    /// Builds the secondary provenance line under a model row, in the form
+    /// "<provider>/<family>" (e.g. "9Router/DeepSeek"). Provider uses the
+    /// model's display name when available, falling back to the slug prefix
+    /// in `model.name` when no provider info is set. Family comes from
+    /// `ModelNamePretty.familyName` so the brand token matches the top row.
+    private func proxyLine(for model: ModelStore.HeraldModel) -> String {
+        let provider: String
+        if let display = model.providerName, !display.isEmpty {
+            provider = display
+        } else if !model.provider.isEmpty {
+            provider = model.provider
+        } else if let prefix = model.name.split(separator: "/").first {
+            provider = String(prefix)
+        } else {
+            provider = "Unknown"
+        }
+        let family = ModelNamePretty.familyName(model.name)
+        return "\(provider)/\(family)"
+    }
 
     private func errorBanner(message: String) -> some View {
         HStack(spacing: Design.Spacing.sm) {

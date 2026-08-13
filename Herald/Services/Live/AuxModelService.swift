@@ -7,7 +7,7 @@ struct AuxTask: Decodable, Identifiable, Sendable {
     let provider: String
     let model: String
     let isAuto: Bool
-    /// Stable row identifier - canonical config key (e.g. "browser_vision"),
+    /// Stable row identifier - canonical config key (e.g. "skills_hub"),
     /// not the human label. Two rows can share the same label across
     /// reconnects, but the key is unique per task.
     var id: String { key }
@@ -85,19 +85,24 @@ final class AuxModelService {
 
     func set(task: String, provider: String, model: String) async {
         // Normalize every dashboard task label to its canonical config key
-        // (auxiliary.<key>.<field>). The dashboard menu exposes these seven
-        // tasks via the connector AUX_TASKS list; any new task the server
+        // (auxiliary.<key>.<field>). The dashboard menu exposes the eleven
+        // canonical aux slots via the connector AUX_TASKS list (mirroring
+        // the Hermes gateway _AUX_TASK_SLOTS); any new task the server
         // adds will fail normalization here and we surface a real error
         // instead of silently writing to a typo'd key.
         let normalizedTask: String
         switch task {
-        case "Vision":          normalizedTask = "vision"
-        case "Web extract":     normalizedTask = "web_extract"
-        case "Compression":     normalizedTask = "compression"
-        case "Session search":  normalizedTask = "session_search"
-        case "Browser Vision":  normalizedTask = "browser_vision"
-        case "MOA Reference":   normalizedTask = "moa_reference"
-        case "MOA Aggregator":  normalizedTask = "moa_aggregator"
+        case "Vision":              normalizedTask = "vision"
+        case "Web extract":         normalizedTask = "web_extract"
+        case "Compression":         normalizedTask = "compression"
+        case "Skills hub":          normalizedTask = "skills_hub"
+        case "Approval":            normalizedTask = "approval"
+        case "MCP":                 normalizedTask = "mcp"
+        case "Title generation":    normalizedTask = "title_generation"
+        case "Triage specifier":    normalizedTask = "triage_specifier"
+        case "Kanban decomposer":   normalizedTask = "kanban_decomposer"
+        case "Profile describer":   normalizedTask = "profile_describer"
+        case "Curator":             normalizedTask = "curator"
         default:
             // Allow callers that already pass the canonical key (snake_case).
             // Reject anything else with a real error instead of writing

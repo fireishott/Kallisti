@@ -1,6 +1,186 @@
 import SwiftUI
 import UIKit
 
+/// Inline marquee for the compact model pill. Auto-scrolls the full model
+/// name horizontally when it overflows its container, and falls back to a
+/// static (truncated) label when Reduce Motion is enabled or the text fits.
+///
+/// Inlined into ChatScreen.swift because only the model pill uses it; creating
+/// a new file would require registering it in the .pbxproj and that churn is
+/// not warranted for a single call site.
+private struct MarqueeText<StaticFallback: View>: View {
+    let text: String
+    /// Truncated/static representation used under Reduce Motion. Lets the
+    /// caller preserve its existing accessibility/layout conventions when
+    /// animation is suppressed.
+    let fallback: () -> StaticFallback
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if reduceMotion {
+            fallback()
+        } else {
+            MarqueeText.Animated(text: text)
+        }
+    }
+}
+
+private extension MarqueeText {
+    /// The animated marquee itself. Separated from the wrapper so the
+    /// Reduce-Motion branch never instantiates any timing state.
+    struct Animated: View {
+        let text: String
+
+        // Measured layout of one copy of the text. We render two copies
+        // (text + separator gap + text) and translate the whole row by
+        // -singleWidth to loop seamlessly without a visible reset.
+        @State private var singleWidth: CGFloat = 0
+        @State private var containerWidth: CGFloat = 0
+        @State private var phase: CGFloat = 0
+        @State private var animationTask: Task<Void, Never>?
+
+        /// Gap between the two copies. Larger than typical kerning so the
+        /// loop wrap point isn't a visual seam.
+        private let gap: CGFloat = 32
+        /// Scroll speed in points-per-second. Tuned to be readable but not
+        /// glacial — roughly 30pt/s.
+        private let pointsPerSecond: CGFloat = 30
+
+        var body: some View {
+            // onGeometryChange (iOS 18+) replaces the older
+            // Color.clear + PreferenceKey dance — no risk of layout
+            // feedback loops and no extra transparent views in the tree.
+            GeometryReader { _ in
+                content
+            }
+            .frame(height: measuredHeight)
+            .onGeometryChange(for: CGFloat.self) { geo in
+                geo.size.width
+            } action: { _, newWidth in
+                containerWidth = newWidth
+            }
+            // onAppear alone isn't enough: when the first frame
+            // renders singleLabel (both widths are still 0), the view
+            // re-renders into scrollingRow without firing onAppear
+            // again. Drive animation off shouldAnimate so we start as
+            // soon as overflow is detected.
+            .onChange(of: shouldAnimate, initial: true) { _, isOverflowing in
+                if isOverflowing {
+                    startAnimation()
+                } else {
+                    animationTask?.cancel()
+                    phase = 0
+                }
+            }
+            .onDisappear { animationTask?.cancel() }
+            .onChange(of: text) { _, _ in
+                // Restart the loop when the model changes so phase
+                // begins from the natural left-aligned position.
+                animationTask?.cancel()
+                phase = 0
+                if shouldAnimate { startAnimation() }
+            }
+        }
+
+        @ViewBuilder
+        private var content: some View {
+            if shouldAnimate {
+                scrollingRow
+            } else {
+                // Text fits: render a single static label so
+                // accessibility (VoiceOver) reads the full string and
+                // the visual is identical to a plain Text.
+                singleLabel
+            }
+        }
+
+        // MARK: - Subviews
+
+        /// Two copies side-by-side, offset so the second copy fills the
+        /// visible region while the first scrolls off the leading edge.
+        /// When phase reaches -singleWidth, resetting to 0 is invisible
+        /// because the second copy is now in the first copy's starting
+        /// position — the loop appears seamless.
+        private var scrollingRow: some View {
+            HStack(spacing: gap) {
+                singleLabel
+                singleLabel
+            }
+            .offset(x: phase)
+            // Clip horizontally so the off-screen copy doesn't bleed into
+            // adjacent toolbar items.
+            .clipped()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(text))
+        }
+
+        /// A single copy of the text with the same font/colour treatment the
+        /// pill used before. Uses onGeometryChange (iOS 18+) to capture
+        /// its intrinsic width without a nested GeometryReader.
+        private var singleLabel: some View {
+            Text(text)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(Design.Colors.foreground)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .onGeometryChange(for: CGFloat.self) { geo in
+                    geo.size.width
+                } action: { _, newWidth in
+                    singleWidth = newWidth
+                }
+        }
+
+        // MARK: - Animation logic
+
+        private var shouldAnimate: Bool {
+            // Only animate once both measurements have a non-zero value
+            // (avoids a one-frame snap on first appearance) AND the text
+            // genuinely overflows the available container.
+            singleWidth > 0 && containerWidth > 0 && singleWidth > containerWidth
+        }
+
+        private var measuredHeight: CGFloat {
+            // The label is .system(size:12), roughly 16pt line height.
+            // Using a small fixed height keeps the pill from collapsing
+            // before the first layout pass completes.
+            16
+        }
+
+        private func startAnimation() {
+            // Guard: width may still be 0 on the very first onAppear.
+            guard singleWidth > 0, containerWidth > 0,
+                  singleWidth > containerWidth else { return }
+            // Duration scales with how far we need to scroll. A longer
+            // model name takes proportionally longer to traverse the
+            // viewport, preserving a constant reading speed.
+            let distance = singleWidth + gap
+            let duration = max(2.0, Double(distance / pointsPerSecond))
+
+            // Reset to a known phase before kicking off the loop so a
+            // restart (model change, view re-entry) doesn't inherit a
+            // mid-animation offset.
+            phase = 0
+            animationTask?.cancel()
+            animationTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    // Use a linear curve for a smooth, predictable marquee —
+                    // no easing into/out of each loop, which would feel stuttery.
+                    withAnimation(.linear(duration: duration)) {
+                        phase = -singleWidth
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    // Snap back to 0 instantly (no animation) so the loop
+                    // wrap is invisible: the trailing copy has just taken
+                    // the leading copy's position.
+                    phase = 0
+                }
+            }
+        }
+    }
+}
+
 struct ChatScreen: View {
     @Environment(ChatStore.self) private var chatStore
     @Environment(ModelStore.self) private var modelStore
@@ -416,20 +596,27 @@ struct ChatScreen: View {
             } label: {
                 HStack(spacing: 4) {
                     if let model = displayedModelName {
-                        Text(compactModelName(model))
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Design.Colors.foreground)
-                            .lineLimit(1)
-                            // Build 56: layoutPriority(1) so the model name
-                            // never collapses to zero width in tight toolbar
-                            // slots. The context ring has a fixed 16pt frame
-                            // and is incompressible, so SwiftUI was shrinking
-                            // the Text to nothing first - the iPad pill
-                            // rendered as a bare green dot even though the
-                            // model name was loaded (the iPhone principal
-                            // slot had enough width, the iPad leading slot
-                            // didn't).
-                            .layoutPriority(1)
+                        // Marquee: scroll the FULL model name when it
+                        // overflows the pill; under Reduce Motion (or
+                        // when the name fits) render the prior truncated
+                        // label so accessibility/motion preferences are
+                        // respected.
+                        MarqueeText(text: model) {
+                            Text(compactModelName(model))
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Design.Colors.foreground)
+                                .lineLimit(1)
+                                // Build 56: layoutPriority(1) so the model name
+                                // never collapses to zero width in tight toolbar
+                                // slots. The context ring has a fixed 16pt frame
+                                // and is incompressible, so SwiftUI was shrinking
+                                // the Text to nothing first - the iPad pill
+                                // rendered as a bare green dot even though the
+                                // model name was loaded (the iPhone principal
+                                // slot had enough width, the iPad leading slot
+                                // didn't).
+                                .layoutPriority(1)
+                        }
                     } else if modelStore.isLoading {
                         Text("Model…")
                             .font(.system(size: 12, weight: .medium, design: .monospaced))

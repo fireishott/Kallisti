@@ -402,14 +402,14 @@ struct NativeGatewayFeatureClient {
     // MARK: - Aux models
 
     /// Auxiliary task overrides from config. Mirrors the dashboard menu so
-    /// every aux task the gateway can route is editable from the app
-    /// (vision, compression, web_extract, session_search, browser_vision,
-    /// moa_reference, moa_aggregator). The wire format is decoded as a
-    /// [String: TaskConfig] dictionary, so adding a new auxiliary.* key on
-    /// the server only requires a corresponding entry in
-    /// `auxiliaryCatalog` below.
+    /// every aux task the gateway can route is editable from the app.
+    /// The list MUST stay in sync with the connector's `AUX_TASKS`
+    /// and the Hermes gateway's `_AUX_TASK_SLOTS` source of truth.
+    /// The wire format is decoded as a [String: TaskConfig] dictionary,
+    /// so adding a new auxiliary.* key on the server only requires a
+    /// corresponding entry in `auxiliaryCatalog` below.
     struct AuxTaskInfo {
-        /// Canonical config key (snake_case), e.g. "browser_vision".
+        /// Canonical config key (snake_case), e.g. "skills_hub".
         /// Stable across reconnects and safe to use as a row identifier.
         var key: String
         /// Human label shown in the Settings menu.
@@ -422,15 +422,20 @@ struct NativeGatewayFeatureClient {
 
     /// Static catalog of auxiliary tasks. Order here is the order shown in
     /// the Settings menu and matches the connector AUX_TASKS so the app
-    /// and the dashboard agree on which tasks exist.
+    /// and the dashboard agree on which tasks exist. The canonical list
+    /// is the Hermes gateway `_AUX_TASK_SLOTS` (web_server.py).
     static let auxiliaryCatalog: [(key: String, label: String)] = [
-        ("vision",         "Vision"),
-        ("compression",    "Compression"),
-        ("web_extract",    "Web extract"),
-        ("session_search", "Session search"),
-        ("browser_vision", "Browser Vision"),
-        ("moa_reference",  "MOA Reference"),
-        ("moa_aggregator", "MOA Aggregator"),
+        ("vision",               "Vision"),
+        ("web_extract",          "Web extract"),
+        ("compression",          "Compression"),
+        ("skills_hub",           "Skills hub"),
+        ("approval",             "Approval"),
+        ("mcp",                  "MCP"),
+        ("title_generation",     "Title generation"),
+        ("triage_specifier",     "Triage specifier"),
+        ("kanban_decomposer",    "Kanban decomposer"),
+        ("profile_describer",    "Profile describer"),
+        ("curator",              "Curator"),
     ]
 
     func auxiliaryModels() async throws -> [AuxTaskInfo] {
@@ -514,11 +519,11 @@ struct NativeGatewayFeatureClient {
                 let model: String?
             }
             // Generic dictionary keyed by the canonical auxiliary.* key
-            // (e.g. "vision", "browser_vision", "moa_aggregator"). The
+            // (e.g. "vision", "web_extract", "skills_hub"). The
             // previous version hard-coded three TaskConfig fields, which
-            // silently dropped session_search / browser_vision /
-            // moa_reference / moa_aggregator from the Settings menu even
-            // though the dashboard could configure them.
+            // silently dropped every task not in that whitelist from the
+            // Settings menu even though the dashboard could configure
+            // them.
             let tasks: [String: TaskConfig]
 
             init(from decoder: Decoder) throws {
