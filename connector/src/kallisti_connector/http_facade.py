@@ -3102,6 +3102,35 @@ async def session_generate_title(request: Request) -> JSONResponse:
     return JSONResponse({"title": title})
 
 
+async def session_messages_handler(request: Request) -> JSONResponse:
+    """Return a session's message timestamps (GET /v1/sessions/{id}/messages).
+
+    The native gateway's session.history projection (tui_gateway/server.py
+    _history_to_messages) emits role/text/row_id but NEVER a timestamp, so
+    Kallisti's history reload re-stamped every row with the phone clock
+    (drifting timestamps + apparent reordering). This route serves the real
+    state.db timestamps, keyed by raw row id, so the client can stamp each
+    native history row with its actual send time.
+
+    Returns a minimal shape on purpose: the client already has content from
+    session.history and only needs the rowId -> timestamp binding.
+    """
+    await require_native_or_paired_auth(request)
+    session_id = request.path_params.get("id", "")
+    from .session_store import session_messages
+    try:
+        rows = session_messages(session_id, limit=200, include_reasoning=False)
+    except Exception:
+        logger.exception("session_messages_handler: failed for %s", session_id)
+        rows = []
+    stamps = [
+        {"rowId": m.get("rowId"), "timestamp": m.get("timestamp")}
+        for m in rows
+        if m.get("rowId") is not None
+    ]
+    return JSONResponse({"messages": stamps})
+
+
 # B38 P1-1: placeholder titles that must never be persisted.
 # Once written to the sidecar, they permanently shadow any generated title
 # because meta.get("title") is checked FIRST in session_list.
@@ -4020,6 +4049,7 @@ routes = [
     Route("/v1/sessions/{id}/pin", session_pin, methods=["POST"]),
     Route("/v1/sessions/{id}/archive", session_archive, methods=["POST"]),
     Route("/v1/sessions/{id}/generate-title", session_generate_title, methods=["POST"]),
+    Route("/v1/sessions/{id}/messages", session_messages_handler, methods=["GET"]),
     Route("/v1/sessions/{id}", session_delete, methods=["DELETE"]),
     Route("/v1/sessions/{id}", session_patch, methods=["PATCH"]),
     Route("/v1/inbox", get_inbox, methods=["GET"]),

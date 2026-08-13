@@ -960,6 +960,7 @@ def _message_to_dict(row: sqlite3.Row, include_reasoning: bool = True) -> dict:
 
     return {
         "id": msg_id,
+        "rowId": row["id"],
         "clientMessageId": client_msg_id,
         "role": role,
         "text": text,

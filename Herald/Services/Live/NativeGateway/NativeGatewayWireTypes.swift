@@ -309,19 +309,14 @@ struct NativeHistoryMessage: Decodable {
     let role: String
     let content: String
     let timestamp: String?
+    let rowId: Int?
 
-    /// Build 69: the gateway's display projection emits `{"role", "text"}`
-    /// (not `content`) - see tui_gateway/server.py `_history_to_messages`.
-    /// Decoding a non-optional `content` threw keyNotFound on every
-    /// historical message ("The data couldn't be read because it is
-    /// missing.") and opening a previous chat failed. Accept `text` as the
-    /// primary key, fall back to `content`, and tolerate neither being
-    /// present (tool rows, markers) by defaulting to "".
     enum CodingKeys: String, CodingKey {
         case role
         case text
         case content
         case timestamp
+        case rowId = "row_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -331,6 +326,18 @@ struct NativeHistoryMessage: Decodable {
             ?? container.decodeIfPresent(String.self, forKey: .content)
             ?? ""
         timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        // Hermes emits row_id as the raw state.db integer row id; it survives
+        // the NativeJSONValue round-trip as a JSON number. Decode leniently
+        // (Int, then Double, then String) so either serialization works.
+        if let n = try? container.decodeIfPresent(Int.self, forKey: .rowId), let n {
+            rowId = n
+        } else if let d = try? container.decodeIfPresent(Double.self, forKey: .rowId), let d {
+            rowId = Int(d)
+        } else if let s = try? container.decodeIfPresent(String.self, forKey: .rowId), let s {
+            rowId = Int(s)
+        } else {
+            rowId = nil
+        }
     }
 }
 

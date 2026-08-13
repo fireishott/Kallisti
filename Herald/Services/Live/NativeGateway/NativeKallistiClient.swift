@@ -565,6 +565,123 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return nil
     }
 
+    /// GET from the connector facade and return the decoded response body.
+    /// Mirrors postFacadeJSONData's auth flow (cookie-auth rides the gateway
+    /// cookie; bearer sessions rotate once on 401) but for read-only GET.
+    private func getFacadeJSON(path: String, logTag: String) async -> Data? {
+        guard let facadeBase = Self.facadeBaseURL(for: gatewayBaseURL),
+              let url = URL(string: "\(facadeBase)\(path)")
+        else {
+            Self.logger.warning("\(logTag): invalid facade URL")
+            return nil
+        }
+        let cookieAuth = await authCoordinator.usesCookieAuth()
+        if cookieAuth {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 15
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                guard status == 200 else {
+                    Self.logger.warning("\(logTag): cookie-auth HTTP \(status)")
+                    return nil
+                }
+                return data
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return nil
+            }
+        }
+        var attempt = 0
+        while attempt < 2 {
+            attempt += 1
+            let tokenResult: String?
+            if attempt == 1 {
+                tokenResult = try? await authCoordinator.refreshAccessTokenIfNeeded()
+            } else {
+                tokenResult = try? await authCoordinator.forceRefreshAccessToken()
+            }
+            guard let accessToken = tokenResult, !accessToken.isEmpty else {
+                Self.logger.warning("\(logTag): no native access token")
+                return nil
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 15
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 && attempt == 1 {
+                    Self.logger.info("\(logTag): 401 on first attempt, forcing bearer rotation")
+                    continue
+                }
+                guard status == 200 else {
+                    Self.logger.warning("\(logTag): HTTP \(status)")
+                    return nil
+                }
+                return data
+            } catch {
+                Self.logger.warning("\(logTag) failed: \(error.localizedDescription)")
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// Fetch real per-row timestamps from the connector facade and return a
+    /// rowId -> Date map. Empty map on any failure; the caller falls back to
+    /// `.now` for rows it cannot stamp.
+    private func loadHistoryTimestamps(nativeId: String) async -> [Int: Date] {
+        struct Stamp: Decodable {
+            let rowId: Int?
+            let timestamp: String?
+        }
+        struct Envelope: Decodable {
+            let messages: [Stamp]?
+        }
+        guard let data = await getFacadeJSON(
+            path: "/v1/sessions/\(nativeId)/messages",
+            logTag: "loadHistoryTimestamps"
+        ) else { return [:] }
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
+              let stamps = envelope.messages else { return [:] }
+        var map: [Int: Date] = [:]
+        for stamp in stamps {
+            guard let rid = stamp.rowId,
+                  let ts = stamp.timestamp,
+                  let date = Self.parseServerTimestamp(ts) else { continue }
+            map[rid] = date
+        }
+        return map
+    }
+
+    /// Resolve a history message's timestamp: server value first, then the
+    /// connector's real state.db timestamp keyed by row id, then `.now`.
+    nonisolated static func historyTimestamp(
+        for msg: NativeHistoryMessage,
+        rowTimestamps: [Int: Date]
+    ) -> Date {
+        if let ts = msg.timestamp.flatMap({ parseServerTimestamp($0) }) {
+            return ts
+        }
+        if let rid = msg.rowId, let ts = rowTimestamps[rid] {
+            return ts
+        }
+        return .now
+    }
+
+    /// Parse an ISO 8601 timestamp, tolerating both fractional and whole
+    /// seconds (the connector emits `datetime.isoformat()`, which includes
+    /// microseconds whenever the stored epoch has a fractional part).
+    nonisolated static func parseServerTimestamp(_ s: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: s) { return date }
+        return ISO8601DateFormatter().date(from: s)
+    }
+
     /// Build 69 (r7): pull the structured update check from the connector.
     /// Returns nil on auth/network failure or when the endpoint has no data.
     /// The payload shape (envelope-wrapped) matches the connector's
@@ -1280,6 +1397,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // The raw MEDIA: directives are converted to authenticated inline
         // image Markdown using the same normalized path logic as streaming.
         let mediaBaseURL = gatewayBaseURL
+        // Fetch real per-row timestamps from the connector facade. Hermes'
+        // session.history omits `timestamp`, so without this every history row
+        // is re-stamped with the phone clock on each reload (drifting
+        // timestamps + apparent reordering). The facade serves state.db
+        // timestamps keyed by raw row id.
+        let rowTimestamps = await loadHistoryTimestamps(nativeId: nativeId)
         let messages = decoded.messages.compactMap { msg -> Message? in
             // Build 69: tool rows come through as {"role":"tool","name",
             // "context"} with no display text; system markers are
@@ -1303,7 +1426,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 id: UUID(),
                 sender: Self.decodeHistorySender(from: msg.role),
                 content: resolvedContent,
-                timestamp: msg.timestamp.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now
+                timestamp: Self.historyTimestamp(for: msg, rowTimestamps: rowTimestamps)
             )
         }
         let conv = Conversation(
