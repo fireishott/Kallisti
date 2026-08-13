@@ -3,6 +3,10 @@ import UIKit
 
 struct MessageBubble: View, Equatable {
     let message: Message
+    /// User-chosen chat text color hex, threaded from the parent so the
+    /// `.equatable()` optimization can detect a color change (the message
+    /// itself is unchanged when the picker writes a new color).
+    let textColorHex: String?
     var onRetry: ((Message) -> Void)? = nil
     var onStartNewSession: (() -> Void)? = nil
     @Environment(TalkStore.self) private var talkStore
@@ -21,6 +25,9 @@ struct MessageBubble: View, Equatable {
         // must not skip the active streaming tail, whose content mutates
         // at 30fps via delta coalescing.
         guard !lhs.message.isStreaming && !rhs.message.isStreaming else { return false }
+        // The chat text color lives in Settings, not the message, so a color
+        // change must re-render even when the message itself is unchanged.
+        guard lhs.textColorHex == rhs.textColorHex else { return false }
         return lhs.message == rhs.message
     }
 
@@ -32,7 +39,7 @@ struct MessageBubble: View, Equatable {
     /// Build 86: user-chosen chat text color from Appearance settings.
     /// Falls back to the theme foreground when unset or unparseable.
     private var chatTextColor: Color {
-        guard let hex = settingsStore.settings.chatTextColorHex,
+        guard let hex = textColorHex,
               !hex.isEmpty
         else { return Design.Colors.foreground }
         let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "# "))

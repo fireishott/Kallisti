@@ -1033,6 +1033,7 @@ struct ChatScreen: View {
                         ForEach(messages) { message in
                             MessageBubble(
                                 message: message,
+                                textColorHex: settingsStore.settings.chatTextColorHex,
                                 onRetry: { failedMessage in
                                     Task { await chatStore.retryMessage(failedMessage) }
                                 },
