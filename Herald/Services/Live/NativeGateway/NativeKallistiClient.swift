@@ -1429,8 +1429,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 id: UUID(),
                 sender: Self.decodeHistorySender(from: msg.role),
                 content: resolvedContent,
-                attachments: resolvedAttachments,
-                timestamp: Self.historyTimestamp(for: msg, rowTimestamps: rowTimestamps)
+                timestamp: Self.historyTimestamp(for: msg, rowTimestamps: rowTimestamps),
+                attachments: resolvedAttachments
             )
         }
         let conv = Conversation(
