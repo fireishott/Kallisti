@@ -307,7 +307,10 @@ struct ChatScreen: View {
                         }
                     },
                     onAttach: { showAttachmentPicker = true },
-                    onSlashCommand: handleSlashCommand
+                    onSlashCommand: handleSlashCommand,
+                    onPasteImage: { image in
+                        handleAttachmentResult(.image(image))
+                    }
                 )
             }
         }

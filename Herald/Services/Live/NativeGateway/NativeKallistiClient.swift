@@ -2221,6 +2221,10 @@ private final class StreamEventHandler: @unchecked Sendable {
     let continuation: AsyncStream<StreamingUpdate>.Continuation
     private var completed = false
     private let mediaURLProvider: @Sendable (String) -> URL?
+    /// ANSI-colored inline diffs accumulated from `tool.complete` events this
+    /// turn. Parsed into a CodeDiff at `message.complete` so a multi-file edit
+    /// turn renders one collapsible diff card on the final message.
+    private var pendingDiffTexts: [String] = []
 
     init(
         sessionId: String,
@@ -2271,7 +2275,8 @@ private final class StreamEventHandler: @unchecked Sendable {
                     ),
                     timestamp: .now
                 )
-                continuation.yield(.finished(msg, usage, nil, nil))
+                let codeDiff = CodeDiffParser.parse(accumulatedTexts: pendingDiffTexts)
+                continuation.yield(.finished(msg, usage, codeDiff, nil))
                 completed = true
                 continuation.finish()
                 // Release the registry entry: the stream is done and the
@@ -2297,6 +2302,9 @@ private final class StreamEventHandler: @unchecked Sendable {
             }
         case "tool.complete":
             if let tool = event.params.decodePayload(NativeToolCompletePayload.self) {
+                if let inlineDiff = tool.inlineDiff, !inlineDiff.isEmpty {
+                    pendingDiffTexts.append(inlineDiff)
+                }
                 continuation.yield(.toolCompleted(
                     toolCallID: tool.toolCallID ?? "",
                     resultPreview: tool.output,
