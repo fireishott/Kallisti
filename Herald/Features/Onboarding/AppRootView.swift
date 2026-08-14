@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AppRootView: View {
     @Environment(AppContainer.self) private var container
+    @Environment(ModelStore.self) private var modelStore
     /// Build 69 (r2): relay-configured state SNAPSHOTTED at first appearance.
     /// The old gate read `activeBaseURLString` live, so typing a full relay
     /// URL on the onboarding relay step flipped hasConfiguredRelay true and
@@ -14,6 +15,17 @@ struct AppRootView: View {
     /// hasConnectedOnce flips true it must never come back; reconnect churn
     /// is owned by the chat connection banner. This never gets reset.
     @State private var hasShownConnectedApp = false
+
+    /// Cold-launch bookkeeping for the launch surface. The base gate
+    /// (shouldShowLoadingSurface) returns false the instant the socket
+    /// connects, but on a fast LAN that can be <1s after launch - the coin
+    /// and status flash before the user registers them. These states hold
+    /// the surface until the app is genuinely ready (connected + models
+    /// loaded) with a minimum display time, capped so a hung model fetch
+    /// can never trap the user behind the splash.
+    @State private var launchSurfaceFirstAppearedAt: Date?
+    private static let launchSurfaceMinDisplay: TimeInterval = 1.5
+    private static let launchSurfaceMaxHold: TimeInterval = 12
 
     /// Whether the single opaque loading surface should be shown.
     /// Covers: initial launch, reconnect, auth, verification, restoration,
@@ -39,7 +51,7 @@ struct AppRootView: View {
         if relayConfiguredAtLaunch == nil {
             relayConfiguredAtLaunch = container.settingsStore.settings.relayConfiguration.activeBaseURLString != nil
         }
-        return Self.shouldShowLoadingSurface(
+        let base = Self.shouldShowLoadingSurface(
             isNative: nativeClient != nil,
             isLaunchReady: container.isLaunchReady,
             isRecovering: status == .connecting || status == .reconnecting,
@@ -54,6 +66,47 @@ struct AppRootView: View {
             // see OnboardingFlowView for one frame while the Task races.
             hasResolvedStoredLogin: nativeClient?.hasResolvedStoredLogin ?? false
         )
+        if base {
+            // Connecting window (or unresolved init): record when the
+            // launch surface first appeared and keep it mounted.
+            if launchSurfaceFirstAppearedAt == nil {
+                launchSurfaceFirstAppearedAt = .now
+            }
+            return true
+        }
+        // Base gate says hide. On a cold launch that usually means "socket
+        // just connected" - hold the surface until the app is actually
+        // ready (green dot on the model picker = connected + models loaded)
+        // and the minimum display time has elapsed, so the launch screen
+        // registers instead of flashing for a frame.
+        guard !hasShownConnectedApp else { return false }
+        // Never hold a fresh install with nothing to connect to behind the
+        // splash - those devices must land in onboarding immediately.
+        // (Stale keychain auth with no relay is exactly this case: it must
+        // NOT trap the user behind a reconnect splash, per StartupUXTests.)
+        let hasSomethingToConnect = (relayConfiguredAtLaunch ?? false)
+            || (nativeClient?.hasStoredLogin ?? false)
+        guard hasSomethingToConnect else { return false }
+        let appearedAt = launchSurfaceFirstAppearedAt ?? .now
+        let elapsed = Date().timeIntervalSince(appearedAt)
+        let minDisplayElapsed = elapsed >= Self.launchSurfaceMinDisplay
+        let ready = isAppReady
+        if (ready && minDisplayElapsed) || elapsed > Self.launchSurfaceMaxHold {
+            // Retire the launch surface for this process. Mid-session
+            // reconnects are owned by the chat connection banner.
+            hasShownConnectedApp = true
+            return false
+        }
+        return true
+    }
+
+    /// Green-dot readiness: socket connected AND model catalog loaded.
+    /// The model picker's green dot only shows once both are true, so the
+    /// launch surface holds until that exact state.
+    private var isAppReady: Bool {
+        let connected = container.nativeGatewayClient?.connectionStatus == .connected
+        let modelsReady = !modelStore.isLoading && modelStore.activeModel != nil
+        return connected && modelsReady
     }
 
     nonisolated static func shouldShowLoadingSurface(
@@ -248,6 +301,10 @@ struct LoadingSurface: View {
 
     @State private var showResetButton = false
     @State private var contentOpacity: Double = 0
+    /// Breathing coin phase. `.symbolEffect(.pulse)` is an SF Symbol effect
+    /// and does nothing on a PNG asset, so the coin was static - this drives
+    /// a real scale/opacity breathe loop instead.
+    @State private var breathe = false
 
     var body: some View {
         ZStack {
@@ -258,12 +315,22 @@ struct LoadingSurface: View {
             VStack(spacing: Design.Spacing.lg) {
                 Spacer()
 
-                // Pulsing Kallisti Coin.
+                // Breathing Kallisti Coin.
                 Image("KallistiSeal")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 72, height: 72)
-                    .symbolEffect(.pulse, options: .repeating)
+                    .frame(width: 84, height: 84)
+                    .scaleEffect(breathe ? 1.07 : 0.96)
+                    .opacity(breathe ? 1.0 : 0.82)
+                    .shadow(
+                        color: Design.Brand.accent.opacity(breathe ? 0.45 : 0.15),
+                        radius: breathe ? 22 : 10
+                    )
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                            breathe = true
+                        }
+                    }
 
                 VStack(spacing: Design.Spacing.xs) {
                     Text("Kallisti")
