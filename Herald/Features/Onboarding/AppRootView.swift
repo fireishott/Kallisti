@@ -27,6 +27,17 @@ struct AppRootView: View {
     private static let launchSurfaceMinDisplay: TimeInterval = 1.5
     private static let launchSurfaceMaxHold: TimeInterval = 12
 
+    /// Build 108 (hang fix): heartbeat that forces the loading surface to
+    /// re-evaluate while it is mounted. `showLoadingSurface` is a computed
+    /// property - it only re-runs when an observed @State/@Observable value
+    /// changes. After the socket connects, the surface could sit on
+    /// "Connected" forever because nothing changes again (models loaded
+    /// before the 1.5s min-display, or models never load) - the 12s
+    /// max-hold was dead code with no timer behind it. This tick re-renders
+    /// the view every 0.5s while the surface shows, so the elapsed cap
+    /// actually fires.
+    @State private var surfaceHeartbeat = Date()
+
     /// Whether the single opaque loading surface should be shown.
     /// Covers: initial launch, reconnect, auth, verification, restoration,
     /// and any transient error states (suppresses "Cannot connect" and
@@ -50,6 +61,16 @@ struct AppRootView: View {
         // onboarding can never flip the loading surface on.
         if relayConfiguredAtLaunch == nil {
             relayConfiguredAtLaunch = container.settingsStore.settings.relayConfiguration.activeBaseURLString != nil
+        }
+        // Build 108 (hang fix): record the first appearance UNCONDITIONALLY,
+        // not only when base==true. If the socket connects before the first
+        // body evaluation (fast LAN), base is false from the very first
+        // render - the old code left launchSurfaceFirstAppearedAt nil, so
+        // `appearedAt ?? .now` re-rolled .now on every evaluation and the
+        // 12s max-hold could never fire. The surface then sat on
+        // "Connected" forever waiting for a state change that never came.
+        if launchSurfaceFirstAppearedAt == nil {
+            launchSurfaceFirstAppearedAt = .now
         }
         let base = Self.shouldShowLoadingSurface(
             isNative: nativeClient != nil,
@@ -88,7 +109,11 @@ struct AppRootView: View {
             || (nativeClient?.hasStoredLogin ?? false)
         guard hasSomethingToConnect else { return false }
         let appearedAt = launchSurfaceFirstAppearedAt ?? .now
-        let elapsed = Date().timeIntervalSince(appearedAt)
+        // Build 108: use the heartbeat tick as "now" so this elapsed check
+        // is re-evaluated even when no other state changes. Without it, a
+        // surface that reached .connected with models already loaded (or
+        // never loading) froze at the last state change.
+        let elapsed = surfaceHeartbeat.timeIntervalSince(appearedAt)
         let minDisplayElapsed = elapsed >= Self.launchSurfaceMinDisplay
         let ready = isAppReady
         if (ready && minDisplayElapsed) || elapsed > Self.launchSurfaceMaxHold {
@@ -221,7 +246,10 @@ struct AppRootView: View {
                 reconnectAttempt: container.nativeGatewayClient?.currentReconnectAttempt ?? 0,
                 onResetConnection: showResetButton ? {
                     Task { await container.nativeGatewayClient?.resetConnection() }
-                } : nil
+                } : nil,
+                modelLoading: modelStore.isLoading,
+                activeModelName: modelStore.activeModel?.name,
+                latencyMs: container.connectorLatencyMs
             )
             .opacity(showLoadingSurface ? 1 : 0)
             .allowsHitTesting(showLoadingSurface)
@@ -237,6 +265,20 @@ struct AppRootView: View {
         // rather than snapping off. Only the resolution itself drives this;
         // mid-session reconnect churn never sets the gate.
         .animation(Design.Motion.gentle, value: container.nativeGatewayClient?.hasResolvedStoredLogin ?? false)
+        // Build 108 (hang fix): while the loading surface is mounted, tick
+        // the heartbeat every 0.5s so showLoadingSurface's elapsed cap
+        // re-evaluates. Without this the surface froze on "Connected"
+        // forever once no further state changes occurred. The task id is
+        // showLoadingSurface itself: when it flips false the old task is
+        // cancelled and this one exits immediately.
+        .task(id: showLoadingSurface) {
+            guard showLoadingSurface else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(0.5))
+                guard !Task.isCancelled else { break }
+                surfaceHeartbeat = Date()
+            }
+        }
     }
 
     private var authFailureView: some View {
@@ -298,6 +340,12 @@ struct LoadingSurface: View {
     let stage: ConnectionStage
     let reconnectAttempt: Int
     let onResetConnection: (() -> Void)?
+    /// Build 108 (realtime status): live detail rendered under the stage
+    /// label. modelLoading + activeModelName come straight from ModelStore;
+    /// latencyMs comes from AppContainer's 3s latency monitor.
+    let modelLoading: Bool
+    let activeModelName: String?
+    let latencyMs: Int?
 
     @State private var showResetButton = false
     @State private var contentOpacity: Double = 0
@@ -305,6 +353,30 @@ struct LoadingSurface: View {
     /// and does nothing on a PNG asset, so the coin was static - this drives
     /// a real scale/opacity breathe loop instead.
     @State private var breathe = false
+
+    /// Build 108: realtime status line. Stage label covers the connect
+    /// phases; this adds what happens AFTER the socket is up - model
+    /// catalog load and live latency - so "Connected" never reads as
+    /// "stuck" when the app is actually working.
+    private var liveStatus: String? {
+        switch stage {
+        case .connected:
+            if modelLoading {
+                return "Loading models..."
+            }
+            if let activeModelName {
+                if let latencyMs {
+                    return "\(activeModelName) · \(latencyMs)ms"
+                }
+                return activeModelName
+            }
+            return latencyMs.map { "\($0)ms" }
+        case .restoring:
+            return "Restoring conversations"
+        default:
+            return nil
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -319,7 +391,7 @@ struct LoadingSurface: View {
                 Image("KallistiSeal")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 84, height: 84)
+                    .frame(width: 140, height: 140)
                     .scaleEffect(breathe ? 1.07 : 0.96)
                     .opacity(breathe ? 1.0 : 0.82)
                     .shadow(
@@ -343,6 +415,18 @@ struct LoadingSurface: View {
                         .id(stage.displayLabel)
                         .transition(.opacity)
                         .animation(.easeInOut(duration: 0.3), value: stage.displayLabel)
+
+                    // Build 108 (realtime status): live detail under the
+                    // stage label - model catalog load, active model, and
+                    // latency, all fed by real state.
+                    if let liveStatus {
+                        Text(liveStatus)
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                            .id(liveStatus)
+                            .transition(.opacity)
+                            .animation(.easeInOut(duration: 0.3), value: liveStatus)
+                    }
                 }
 
                 ProgressView()
