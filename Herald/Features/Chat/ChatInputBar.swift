@@ -474,7 +474,11 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         textView.backgroundColor = .clear
         textView.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
         textView.textContainer.lineFragmentPadding = 0
-        textView.isScrollEnabled = true
+        // Build 109: start NON-scrollable. A scroll-enabled UITextView is a
+        // UIScrollView, so SwiftUI lets it expand to fill all proposed height
+        // and the composer rendered as a huge empty slab (b107 regression).
+        // needsScroll flips this to true only when content exceeds 5 lines.
+        textView.isScrollEnabled = false
         textView.showsVerticalScrollIndicator = false
         textView.accessibilityIdentifier = "chat.composer"
         textView.onPasteImage = { image in
@@ -487,9 +491,13 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteInterceptingTextView, context: Context) {
         if uiView.text != text {
             uiView.text = text
-            uiView.invalidateIntrinsicContentSize()
-            uiView.isScrollEnabled = Self.needsScroll(uiView)
         }
+        // Build 109: recompute scroll state EVERY update, not only when text
+        // changes. The old guard meant an empty composer ("" == "") never
+        // re-ran needsScroll, leaving isScrollEnabled = true from makeUIView
+        // and the composer stretched to fill the whole chat area.
+        uiView.isScrollEnabled = Self.needsScroll(uiView)
+        uiView.invalidateIntrinsicContentSize()
         context.coordinator.updatePlaceholder(uiView)
         // Sync focus from the SwiftUI FocusState binding.
         if isFocused.wrappedValue && !uiView.isFirstResponder {

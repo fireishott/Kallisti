@@ -222,7 +222,13 @@ final class ChatStore {
         let activityAge = max(0, Int(now.timeIntervalSince(snap.lastActivityAt)))
         return StallBannerLine(
             elapsedSeconds: elapsed,
-            connection: snap.connection,
+            // Build 109: use the LIVE connection status, not the frozen
+            // snapshot. The snapshot is captured when the stall begins; if the
+            // transport recovers while the model is still silent, the banner
+            // kept showing "Connecting..." while the model pill already read
+            // green (connected). Live status keeps the banner and the pill in
+            // agreement, which is what the banner is for.
+            connection: connectionStatus,
             attemptNumber: snap.attemptNumber,
             lastActivity: snap.lastActivity,
             lastActivitySecondsAgo: activityAge,

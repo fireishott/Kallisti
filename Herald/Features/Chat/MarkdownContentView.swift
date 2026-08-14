@@ -407,7 +407,7 @@ struct BlinkingCursor: View {
 /// `message.content` was empty.
 ///
 /// Tier thresholds:
-/// - < 5s   "Connecting to Hermes..."
+/// - < 5s   "Waiting for Hermes..."
 /// - < 30s  "Thinking... Xs"
 /// - < 60s  "Model is working on your request..."
 /// - >=60s  "This is taking longer than usual..."
@@ -441,10 +441,15 @@ struct StreamingPlaceholderText: View {
 
     /// The four tiered status strings. Exposed at type scope so callers and
     /// tests can assert on the exact strings. The order is significant:
-    /// "Connecting" -> "Thinking" -> "Model is working" -> "longer than usual".
+    /// "Waiting" -> "Thinking" -> "Model is working" -> "longer than usual".
+    ///
+    /// Build 109: tier 1 was "Connecting to Hermes...", which read as a
+    /// connection failure while the model pill showed green (the socket is
+    /// up - we are waiting for the first token, not connecting). Renamed to
+    /// "Waiting for Hermes..." so the pill and the model pill agree.
     static func tierText(for elapsed: TimeInterval) -> String {
         if elapsed < 5 {
-            return "Connecting to Hermes..."
+            return "Waiting for Hermes..."
         } else if elapsed < 30 {
             let seconds = max(1, Int(elapsed))
             return "Thinking... \(seconds)s"

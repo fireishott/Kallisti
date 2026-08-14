@@ -84,7 +84,7 @@ struct MessageBubbleStreamingPlaceholderTests {
         )
         let source = try String(contentsOf: url, encoding: .utf8)
         let tiers = [
-            "Connecting to Hermes",
+            "Waiting for Hermes",
             "Thinking",
             "Model is working on your request",
             "taking longer than usual"
@@ -122,8 +122,8 @@ struct MessageBubbleStreamingPlaceholderTests {
     @Test("StreamingPlaceholderText.tierText produces the locked tier strings")
     func tierTextMappingIsLocked() {
         // < 5s
-        #expect(StreamingPlaceholderText.tierText(for: 0) == "Connecting to Hermes...")
-        #expect(StreamingPlaceholderText.tierText(for: 4.99) == "Connecting to Hermes...")
+        #expect(StreamingPlaceholderText.tierText(for: 0) == "Waiting for Hermes...")
+        #expect(StreamingPlaceholderText.tierText(for: 4.99) == "Waiting for Hermes...")
         // 5s ... < 30s
         #expect(StreamingPlaceholderText.tierText(for: 5).hasPrefix("Thinking... "),
                 "5s boundary must roll into the 'Thinking' tier")
