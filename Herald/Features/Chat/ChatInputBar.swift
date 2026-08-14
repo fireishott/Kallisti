@@ -148,6 +148,14 @@ struct ChatInputBar: View {
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
                     .padding(.bottom, Design.Spacing.xs)
+                    // Build 110: hard-cap the proposed height at the SwiftUI
+                    // layer so a scroll-enabled UITextView can NEVER expand to
+                    // fill the chat area. The representable's intrinsicContentSize
+                    // clamps to 5 lines, but once isScrollEnabled flips true a
+                    // UIScrollView ignores intrinsic size - the frame cap is the
+                    // only thing that stops the slab. 5 lines of body (15pt) +
+                    // the 4pt top/bottom insets.
+                    .frame(maxHeight: (UIFont.systemFont(ofSize: 15).lineHeight * 5) + 8)
                     .overlay(alignment: .topLeading) {
                         // Placeholder overlay (UITextView has no native one)
                         if text.isEmpty {
@@ -508,7 +516,15 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
     }
 
     private static func needsScroll(_ textView: UITextView) -> Bool {
-        textView.contentSize.height >= maxHeight(textView) - 1
+        // Build 110: measure the TEXT, not contentSize. contentSize tracks the
+        // frame SwiftUI already proposed - when the VStack proposes the full
+        // chat height, contentSize balloons with it, needsScroll returns true,
+        // isScrollEnabled flips back on, and the composer expands to fill the
+        // screen again (the b107/b109 slab). sizeThatFits with infinite height
+        // returns the height the text actually needs, independent of frame.
+        let width = max(textView.bounds.width, 200)
+        let measured = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        return measured >= maxHeight(textView) - 1
     }
 
     private static func maxHeight(_ textView: UITextView) -> CGFloat {
