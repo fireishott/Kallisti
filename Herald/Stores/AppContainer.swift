@@ -4,6 +4,9 @@ import os
 import BackgroundTasks
 import Speech
 import UserNotifications
+#if canImport(UIKit)
+import UIKit
+#endif
 
 extension Logger {
     static let app = Logger(subsystem: "net.fihonline.kallisti", category: "app")
@@ -849,6 +852,14 @@ final class AppContainer {
                 }
                 container.router.selectedTab = .chat
             }
+        }
+        container.inboxStore.onOpenURL = { [weak container] url in
+            // Build 106.1 (URL tap): payload url/link/deepLink items open
+            // out to Safari instead of dead-ending in the notification
+            // window. Store stays UI-agnostic; the open lives here.
+            #if canImport(UIKit)
+            UIApplication.shared.open(url)
+            #endif
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
             container?.updateWidgetData()
