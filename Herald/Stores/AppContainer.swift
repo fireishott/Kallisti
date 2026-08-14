@@ -531,13 +531,36 @@ final class AppContainer {
         let liveMotionService = LiveMotionService()
         let sensorUploadService: SensorUploadService? = usesMockPairingService ? nil : SensorUploadService(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() },
-            accessTokenRefresher: {
+            accessTokenProvider: { [nativeGatewayClient] in
+                // Native mode never sets the legacy relay session token, so the
+                // sensor upload path 401'd with a nil bearer. Present the native
+                // gateway bearer when it exists; fall back to the relay session
+                // token for basic/pairing auth modes (same pattern as
+                // AttachmentService / HostStatusStreamService / GatewayControlService).
+                if let nativeGatewayClient,
+                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+                   !nativeToken.isEmpty {
+                    return nativeToken
+                }
+                return await sessionStore.currentAccessToken()
+            },
+            accessTokenRefresher: { [nativeGatewayClient] in
+                if let nativeGatewayClient {
+                    await nativeGatewayClient.refreshAccessToken()
+                }
                 await sessionStore.refreshAccessTokenIfNeeded()
+                if let nativeGatewayClient,
+                   let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+                   !nativeToken.isEmpty {
+                    return nativeToken
+                }
                 return await sessionStore.currentAccessToken()
             },
             persistence: persistence,
-            isPairedProvider: { activePairingStore?.isPaired == true },
+            isPairedProvider: {
+                nativeGatewayClient?.hasResolvedStoredLogin == true
+                    || activePairingStore?.isPaired == true
+            },
             locationService: liveLocationService,
             healthService: liveHealthService,
             motionService: liveMotionService
