@@ -27,6 +27,12 @@ final class InboxStore {
     /// action window (full body, action buttons, dismiss, snooze).
     var onOpenNotification: (@MainActor (InboxItem) -> Void)?
 
+    /// Called when the user taps "Open" on an inbox item whose payload
+    /// carries a `url`/`link`/`deepLink` key. The handler receives the
+    /// URL and should open it (the store stays UI-agnostic; the open
+    /// lives at the call site).
+    var onOpenURL: (@MainActor (URL) -> Void)?
+
     init(
         inboxService: any InboxServiceProtocol,
         persistence: any AppPersistenceStoreProtocol,
@@ -93,6 +99,30 @@ final class InboxStore {
     }
 
     func performPrimaryAction(for item: InboxItem) async {
+        // Build 106.1 (URL tap): if the payload carries a deep-link URL,
+        // open it out instead of routing to a conversation or the
+        // notification window. The payload may use any of the keys the
+        // server has sent over time (url/link/deepLink); first valid
+        // http(s) URL wins.
+        if item.type != .approval {
+            let urlKeys = ["url", "link", "deepLink"]
+            for key in urlKeys {
+                guard let raw = item.payload?[key], !raw.isEmpty,
+                      let url = URL(string: raw),
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https"
+                else { continue }
+                if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                    items[idx].isRead = true
+                    items[idx].status = .opened
+                    items[idx].isActionable = false
+                    localState.readItemIDs.insert(item.stableIdentifier)
+                }
+                onOpenURL?(url)
+                return
+            }
+        }
+
         // For notification/alert/reminder/suggestion items that reference a
         // conversation, navigate to the chat instead of submitting an action.
         if item.type != .approval, let convIdString = item.payload?["conversationId"],
