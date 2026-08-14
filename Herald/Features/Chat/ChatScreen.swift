@@ -469,7 +469,18 @@ struct ChatScreen: View {
                 }
             }
             .onChange(of: chatStore.streamingMessageID) { old, new in
-                if old != nil && new == nil {
+                if old == nil && new != nil {
+                    // Streaming just STARTED (thinking bubble appears below
+                    // the user's message). Bring it into view immediately -
+                    // the placeholder is inserted before any content grows,
+                    // so streamingContentLength alone may not fire a scroll
+                    // until the first delta lands.
+                    isUserScrolling = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(80))
+                        scrollToBottom(animate: true, force: true)
+                    }
+                } else if old != nil && new == nil {
                     // Streaming just ended. Scroll to the last stable (non-streaming)
                     // message to avoid the mutable streamingCompositeID race that
                     // caused thinking dots to render above the next sent reply.
@@ -1645,19 +1656,21 @@ struct ChatScreen: View {
         // truncation, placeholder settle), a message-id scrollTo silently
         // no-ops with no recovery path.  The sentinel is always present.
         //
-        // Build 78.5: streaming auto-follow only fires when already near
-        // bottom.  Once the user scrolls away, auto-scroll stops until they
-        // tap Jump to Latest (which calls with animate: false for a clean snap).
-        if chatStore.isStreaming {
-            guard force || (!isUserScrolling && isNearBottom) else { return }
-        } else {
-            guard force || !isUserScrolling else { return }
-        }
+        // Build 78.5: streaming auto-follow only fires when the user has
+        // not taken scroll ownership (isUserScrolling). The old
+        // `&& isNearBottom` gate was a deadlock: when the thinking bubble
+        // grows below the viewport, onScrollGeometryChange flips
+        // isNearBottom=false BEFORE the scroll lands, and the guard then
+        // blocks the very scroll that would restore it - the user had to
+        // tap Jump to Latest every turn. isUserScrolling is the correct
+        // ownership signal (set by the drag gesture); geometry state is
+        // not.
+        guard force || !isUserScrolling else { return }
         autoScrollTask?.cancel()
         autoScrollTask = Task { @MainActor in
             if chatStore.isStreaming {
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
-                guard !Task.isCancelled, (force || (!isUserScrolling && isNearBottom)) else { return }
+                guard !Task.isCancelled, (force || !isUserScrolling) else { return }
             }
             // Build 103: LazyVStack realizes off-screen rows asynchronously, so a
             // single scrollTo("bottom") lands short of the true bottom while rows
