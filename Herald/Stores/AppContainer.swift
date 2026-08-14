@@ -478,7 +478,8 @@ final class AppContainer {
             let auth = NativeAuthCoordinator(
                 baseURLProvider: { @MainActor in
                     Self.resolveNativeGatewayHost(
-                        from: settingsStore.settings.relayConfiguration.activeBaseURLString
+                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
+                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
                     ).baseURL
                 },
                 secureStore: secureStore
@@ -486,7 +487,8 @@ final class AppContainer {
             let nativeClient = NativeKallistiClient(
                 gatewayBaseURLProvider: { @MainActor in
                     Self.resolveNativeGatewayHost(
-                        from: settingsStore.settings.relayConfiguration.activeBaseURLString
+                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
+                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
                     ).baseURL
                 },
                 authCoordinator: auth,
@@ -572,6 +574,13 @@ final class AppContainer {
         )
         let chatStore = ChatStore(heraldClient: heraldClient, persistence: persistence)
         chatStore.hapticFeedbackEnabled = { [settingsStore] in settingsStore.settings.hapticFeedbackEnabled }
+        // Build 104: route out-of-band self-improvement / memory review
+        // summaries to a faint in-transcript system line.
+        if let nativeClient = nativeGatewayClient {
+            nativeClient.onSystemNotice = { [weak chatStore] text in
+                chatStore?.appendSystemNotice(text)
+            }
+        }
 
         let permissionsStore = PermissionsStore(
             locationService: liveLocationService,

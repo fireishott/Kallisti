@@ -1247,6 +1247,22 @@ final class ChatStore {
         onConversationChanged?()
     }
 
+    /// Build 104: append a faint in-transcript system notice (self-improvement
+    /// review summaries, memory updates) without disturbing the streaming
+    /// placeholder or the outbox.
+    func appendSystemNotice(_ text: String) {
+        guard !text.isEmpty else { return }
+        if conversation == nil {
+            conversation = Conversation(id: UUID(), title: "New Chat")
+        }
+        conversation?.messages.append(Message(
+            sender: .system,
+            content: text
+        ))
+        cacheModifiedConversation()
+        onConversationChanged?()
+    }
+
     /// Outbox state → .terminal with canonical identity, persisted.
     private func terminalizeOutboxItem(
         _ item: ChatOutboxRecord,
@@ -2036,6 +2052,11 @@ final class ChatStore {
                         conv.messages[idx].toolActivities[activityIdx].liveOutput += chunk
                         self.conversation = conv
                     }
+
+                case .systemNotice(let text):
+                    // Build 104: faint in-transcript system line for
+                    // self-improvement / memory reviews.
+                    self.appendSystemNotice(text)
 
                 case .keepalive:
                     // Transport keepalives prove the connection is alive but do

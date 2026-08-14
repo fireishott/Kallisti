@@ -227,6 +227,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// reload models) instead of the legacy relay SSE which never fires for
     /// native-gateway users.
     var onConnectionStatusChanged: (@MainActor (ConnectionStatus) -> Void)?
+    /// Build 104: fired on out-of-band `review.summary` events (self-improvement
+    /// review summaries, memory updates) so ChatStore can append a faint
+    /// in-transcript system line even when no stream is active. Stream
+    /// handlers finish on message.complete, so post-turn reviews need this
+    /// persistent connect-time listener to survive.
+    var onSystemNotice: (@MainActor (String) -> Void)?
     var currentConversation: Conversation?
     private(set) var hasStoredLogin = false
     /// Build 76: gate that flips true only AFTER the init-resolution Task has
@@ -330,11 +336,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
             let hasConfiguredRelay = !configuredBase.isEmpty
                 && !configuredBase.contains("localhost")
             self.hasStoredLogin = (hasCookieAuth || hasBearerToken) && hasConfiguredRelay
-            if (hasCookieAuth || hasBearerToken) && !hasConfiguredRelay {
-                // Stale credential marker with no configured host: purge it so
-                // the next fresh launch is clean and onboarding is unblocked.
-                await authCoordinator.clearLocalCredentials()
-            }
+            // Build 104: do NOT purge credentials at init when the relay reads
+            // unresolved. The Build 83 purge wiped a legit paired user's
+            // keychain whenever hasConfiguredRelay was false (missing relay at
+            // init, or the localhost fallback sentinel), dumping them back into
+            // onboarding. hasStoredLogin already gates on hasConfiguredRelay,
+            // so stale creds with no relay can never bypass onboarding; the
+            // keychain is harmlessly overwritten when the user re-pairs.
         }
     }
 
@@ -930,6 +938,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // continuation already got .finished; keeping them would re-run a
             // stale message.complete if the gateway replayed it).
             activeStreamHandlers = activeStreamHandlers.filter { !$0.value.isCompleted }
+            // Build 104: persistent out-of-band listener for review.summary
+            // (self-improvement review / memory updates). Stream handlers die
+            // on message.complete, so a review fired post-turn would otherwise
+            // be dropped. Registered on the CURRENT client so a reconnect
+            // re-arms it; hops to MainActor before firing the callback.
+            await client.onEvent { [weak self] event in
+                guard event.params.type == "review.summary" else { return }
+                let text = event.params.decodePayload(NativeReviewSummaryPayload.self)?.text ?? ""
+                guard !text.isEmpty else { return }
+                Task { @MainActor in
+                    self?.onSystemNotice?(text)
+                }
+            }
             // NOT resetting reconnectAttempt here: a socket can pass the
             // verification above and still be new/flaky. The counter is
             // reset only once a connection has proven itself durable (see
@@ -2291,6 +2312,13 @@ private final class StreamEventHandler: @unchecked Sendable {
         case "tool.generating":
             // Transient — analogous to thinking.delta spinner frames. Drop.
             break
+        case "review.summary":
+            // Build 104: self-improvement / memory review summary arriving
+            // mid-stream. Yield as a faint system line.
+            if let notice = event.params.decodePayload(NativeReviewSummaryPayload.self),
+               !notice.text.isEmpty {
+                continuation.yield(.systemNotice(notice.text))
+            }
         default:
             break
         }

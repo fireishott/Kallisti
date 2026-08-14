@@ -191,6 +191,14 @@ struct NativeToolOutputPayload: Decodable {
 }
 
 
+/// `review.summary` — self-improvement / memory review summary fired by the
+/// gateway's background_review callback ("💾 Self-improvement review: …").
+/// The desktop renders this as a faint persistent system line in the
+/// transcript; Kallisti surfaces it the same way (Build 104).
+struct NativeReviewSummaryPayload: Decodable {
+    let text: String
+}
+
 /// `message.start` — signals a turn has begun.
 struct NativeMessageStartPayload: Decodable {
     // Empty payload confirmed from capture
