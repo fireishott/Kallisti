@@ -1,5 +1,6 @@
 import Speech
 import SwiftUI
+import UIKit
 
 /// Protocol for speech dictation service, allowing use without iOS 26 availability constraint.
 @MainActor
@@ -36,6 +37,11 @@ struct ChatInputBar: View {
     let onQueueNext: () -> Void   // Build 31: queue a message after the active turn
     let onAttach: () -> Void
     let onSlashCommand: (SlashCommand, String?) -> Void
+    /// Build 107: image pasted into the composer. Routes through the same
+    /// attachment pipeline as the picker (PendingAttachment.image) so a paste
+    /// produces a staged attachment instead of a file:// URL string in the
+    /// text field.
+    var onPasteImage: ((UIImage) -> Void)? = nil
 
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
@@ -120,45 +126,39 @@ struct ChatInputBar: View {
                     attachmentPreviewStrip
                 }
 
-                // Text input area
-                TextField(
-                    speechService?.isListening == true ? "Listening..." : placeholderText,
+                // Text input area — Build 107: paste-intercepting UITextView
+                // (image paste routes to the attachment pipeline instead of
+                // inserting a file:// URL string). Return-key handling moved
+                // into the coordinator; the old onKeyPress/onChange newline
+                // hacks are gone.
+                PasteAwareComposerTextView(
                     text: $text,
-                    axis: .vertical
+                    placeholder: speechService?.isListening == true ? "Listening..." : placeholderText,
+                    isFocused: isFocused,
+                    enterToSend: settingsStore.settings.enterToSend,
+                    canSend: { canSend },
+                    onSend: handlePrimaryAction,
+                    onPasteImage: { image in
+                        onPasteImage?(image)
+                    }
                 )
-                    .accessibilityIdentifier("chat.composer")
                     .accessibilityLabel(placeholderText)
                     .font(Design.Typography.body)
                     .foregroundStyle(Design.Colors.foreground)
-                    .lineLimit(1...5)
-                    .focused(isFocused)
-                    .onKeyPress { press in
-                        guard settingsStore.settings.enterToSend,
-                              press.key == .return,
-                              !press.modifiers.contains(.shift) else {
-                            return .ignored
-                        }
-                        if canSend {
-                            handlePrimaryAction()
-                            return .handled
-                        }
-                        return .ignored
-                    }
-                    .onChange(of: text) { oldValue, newValue in
-                        // Virtual keyboard Return key inserts a newline into
-                        // multiline TextField. onKeyPress only fires for hardware
-                        // keyboards, so we detect the newline here instead.
-                        guard settingsStore.settings.enterToSend else { return }
-                        guard newValue.contains("\n") else { return }
-                        // Strip the newline and send
-                        text = newValue.replacingOccurrences(of: "\n", with: "")
-                        if canSend {
-                            handlePrimaryAction()
-                        }
-                    }
                     .padding(.horizontal, Design.Spacing.md)
                     .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
                     .padding(.bottom, Design.Spacing.xs)
+                    .overlay(alignment: .topLeading) {
+                        // Placeholder overlay (UITextView has no native one)
+                        if text.isEmpty {
+                            Text(speechService?.isListening == true ? "Listening..." : placeholderText)
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.tertiaryForeground)
+                                .padding(.horizontal, Design.Spacing.md)
+                                .padding(.top, (pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs) + 4)
+                                .allowsHitTesting(false)
+                        }
+                    }
 
                 // Bottom action bar
                 HStack(spacing: Design.Spacing.xs) {
@@ -388,5 +388,169 @@ struct ChatInputBar: View {
         if base.isEmpty { return trimmedTranscript }
         if trimmedTranscript.isEmpty { return base }
         return "\(base) \(trimmedTranscript)"
+    }
+}
+
+// MARK: - Paste-Intercepting Composer Text View
+
+/// UITextView subclass that intercepts paste.
+///
+/// Build 107: mirrors the Electron app's `onPasteClipboardImage` handler —
+/// when the pasteboard holds an image (or a file URL that decodes to an
+/// image), the paste is routed to `onPasteImage` instead of inserting the
+/// `file:///...` path as plain text (the default SwiftUI TextField behavior
+/// that made image paste look broken).
+final class PasteInterceptingTextView: UITextView {
+    var onPasteImage: ((UIImage) -> Void)?
+
+    override func paste(_ sender: Any?) {
+        let pasteboard = UIPasteboard.general
+
+        // 1) Native image items (public.image, copied from Photos etc.)
+        if pasteboard.hasImages, let image = pasteboard.image {
+            onPasteImage?(image)
+            return
+        }
+
+        // 2) File URL items that resolve to an image (e.g. Messages
+        //    attachments copied as file:// URLs). Resolve synchronously —
+        //    same cost profile as the picker's thumbnail generation.
+        if let url = pasteboard.url ?? pasteboard.string.flatMap({ URL(string: $0) }),
+           url.isFileURL,
+           let data = try? Data(contentsOf: url),
+           let image = UIImage(data: data) {
+            onPasteImage?(image)
+            return
+        }
+
+        super.paste(sender)
+    }
+
+    /// Auto-grow between 1 and 5 lines (matches the old
+    /// `TextField(axis: .vertical).lineLimit(1...5)`).
+    override var intrinsicContentSize: CGSize {
+        let lineHeight = font?.lineHeight ?? 18
+        let insets = textContainerInset.top + textContainerInset.bottom
+        let minHeight = lineHeight + insets
+        let maxHeight = lineHeight * 5 + insets
+        let measured = sizeThatFits(CGSize(width: max(bounds.width, 200), height: .greatestFiniteMagnitude)).height
+        return CGSize(width: UIView.noIntrinsicMetric, height: min(max(measured, minHeight), maxHeight))
+    }
+
+    /// Hardware keyboard shift+Return inserts a newline instead of sending
+    /// (the old TextField onKeyPress `.ignored` path for shifted returns).
+    override var keyCommands: [UIKeyCommand]? {
+        let shiftReturn = UIKeyCommand(input: "\r", modifierFlags: .shift, action: #selector(insertNewlineFromKeyCommand))
+        shiftReturn.wantsPriorityOverSystemBehavior = true
+        return [shiftReturn]
+    }
+
+    @objc private func insertNewlineFromKeyCommand() {
+        insertText("\n")
+    }
+}
+
+/// Auto-growing, paste-aware composer field. Replaces the SwiftUI TextField in
+/// ChatInputBar so image paste stages a PendingAttachment instead of dumping a
+/// file URL string into the message text.
+struct PasteAwareComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let isFocused: FocusState<Bool>.Binding
+    let enterToSend: Bool
+    let canSend: () -> Bool
+    let onSend: () -> Void
+    let onPasteImage: ((UIImage) -> Void)?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> PasteInterceptingTextView {
+        let textView = PasteInterceptingTextView()
+        textView.delegate = context.coordinator
+        textView.font = UIFont.systemFont(ofSize: 15)   // Design.Typography.body
+        textView.textColor = UIColor(Design.Colors.foreground)
+        textView.backgroundColor = .clear
+        textView.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        textView.textContainer.lineFragmentPadding = 0
+        textView.isScrollEnabled = true
+        textView.showsVerticalScrollIndicator = false
+        textView.accessibilityIdentifier = "chat.composer"
+        textView.onPasteImage = { image in
+            context.coordinator.parent.onPasteImage?(image)
+        }
+        context.coordinator.updatePlaceholder(textView)
+        return textView
+    }
+
+    func updateUIView(_ uiView: PasteInterceptingTextView, context: Context) {
+        if uiView.text != text {
+            uiView.text = text
+            uiView.invalidateIntrinsicContentSize()
+            uiView.isScrollEnabled = Self.needsScroll(uiView)
+        }
+        context.coordinator.updatePlaceholder(uiView)
+        // Sync focus from the SwiftUI FocusState binding.
+        if isFocused.wrappedValue && !uiView.isFirstResponder {
+            uiView.becomeFirstResponder()
+        } else if !isFocused.wrappedValue && uiView.isFirstResponder {
+            uiView.resignFirstResponder()
+        }
+    }
+
+    private static func needsScroll(_ textView: UITextView) -> Bool {
+        textView.contentSize.height >= maxHeight(textView) - 1
+    }
+
+    private static func maxHeight(_ textView: UITextView) -> CGFloat {
+        let lineHeight = textView.font?.lineHeight ?? 18
+        let insets = textView.textContainerInset.top + textView.textContainerInset.bottom
+        return lineHeight * 5 + insets   // lineLimit(1...5)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: PasteAwareComposerTextView
+
+        init(_ parent: PasteAwareComposerTextView) {
+            self.parent = parent
+        }
+
+        func updatePlaceholder(_ textView: UITextView) {
+            // UITextView has no native placeholder; ChatInputBar overlays a
+            // SwiftUI Text when empty, so nothing to render here.
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            if parent.text != textView.text {
+                parent.text = textView.text
+            }
+            textView.invalidateIntrinsicContentSize()
+            textView.isScrollEnabled = PasteAwareComposerTextView.needsScroll(textView)
+        }
+
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            // Return key (hardware or virtual): send when enterToSend is on,
+            // otherwise let the newline through. Handles both keyboards in one
+            // place — replaces the old onKeyPress + onChange newline hack.
+            if text == "\n" {
+                if parent.enterToSend {
+                    if parent.canSend() {
+                        parent.onSend()
+                    }
+                    return false
+                }
+                return true
+            }
+            return true
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            parent.isFocused.wrappedValue = true
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            parent.isFocused.wrappedValue = false
+        }
     }
 }

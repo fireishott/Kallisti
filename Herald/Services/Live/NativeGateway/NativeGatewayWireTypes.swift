@@ -128,6 +128,11 @@ struct NativeToolCompletePayload: Decodable {
     let output: String?
     let isError: Bool?
     let durationMs: Int?
+    /// ANSI-colored inline unified diff rendered by the gateway for file-edit
+    /// tools (patch/write_file/skill_manage). Populated from server.py
+    /// `payload["inline_diff"]` (display.py `render_edit_diff_with_delta`).
+    /// Parsed by `CodeDiffParser` into the app's CodeDiff model.
+    let inlineDiff: String?
 
     enum CodingKeys: String, CodingKey {
         case toolCallID = "tool_call_id"
@@ -138,6 +143,7 @@ struct NativeToolCompletePayload: Decodable {
         case error
         case durationMs = "duration_ms"
         case durationS = "duration_s"
+        case inlineDiff = "inline_diff"
     }
 
     init(from decoder: Decoder) throws {
@@ -162,6 +168,7 @@ struct NativeToolCompletePayload: Decodable {
             ?? (c.contains(.error) ? true : nil)
         durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
             ?? c.decodeIfPresent(Int.self, forKey: .durationS).map { Int($0 * 1000) }
+        inlineDiff = try c.decodeIfPresent(String.self, forKey: .inlineDiff)
     }
 }
 
