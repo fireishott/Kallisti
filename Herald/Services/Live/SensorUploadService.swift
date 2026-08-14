@@ -129,6 +129,7 @@ final class SensorUploadService {
     // health updates) hammers the relay during an outage.
     private var consecutiveUploadFailures = 0
     private var nextAllowedDrainAt: Date?
+    private var retryTask: Task<Void, Never>?
     private static let backoffBaseSeconds: Double = 2
     private static let backoffMaxSeconds: Double = 60
 
@@ -205,6 +206,8 @@ final class SensorUploadService {
     func stop() {
         isActive = false
         isDraining = false
+        retryTask?.cancel()
+        retryTask = nil
         locationService.onLocationUpdate = nil
         healthService.onHealthUpdate = nil
         motionService?.onActivityUpdate = nil
@@ -303,6 +306,21 @@ final class SensorUploadService {
             Self.backoffBaseSeconds * pow(2, Double(consecutiveUploadFailures - 1))
         )
         nextAllowedDrainAt = Date().addingTimeInterval(delay)
+        scheduleRetry(after: delay)
+    }
+
+    /// Build 105: the drain is event-driven (location/health/motion updates and
+    /// foreground). A single failed upload sets backoff, but when no new sample
+    /// arrives to re-trigger the drain (backgrounded, quiet HealthKit), the
+    /// outbox strands forever. Schedule a timer-backed re-drain so a transient
+    /// auth/network failure recovers without user interaction.
+    private func scheduleRetry(after delay: TimeInterval) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            await self.drainOutboxIfPossible()
+        }
     }
 
     private func persistOutboxState() {
