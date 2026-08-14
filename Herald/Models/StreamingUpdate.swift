@@ -17,6 +17,9 @@ enum StreamingUpdate: Sendable {
     case toolStarted(ToolActivity)
     case toolCompleted(toolCallID: String, resultPreview: String?, isError: Bool, durationMs: Int?)
     case toolOutput(toolCallID: String, chunk: String)
+    /// Build 104: out-of-band Hermes system notice (self-improvement review
+    /// summaries, memory updates). Rendered as a faint in-transcript line.
+    case systemNotice(String)
     case started(phase: String)
     case heartbeat(phase: String)
     case reconnecting

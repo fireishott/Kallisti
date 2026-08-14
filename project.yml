@@ -104,7 +104,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
         ENABLE_TESTABILITY: true
@@ -188,7 +188,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         CODE_SIGN_STYLE: Automatic
@@ -227,7 +227,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -268,7 +268,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -296,7 +296,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53
@@ -352,7 +352,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
         MARKETING_VERSION: "0.2.5"
-        CURRENT_PROJECT_VERSION: "102.0"
+        CURRENT_PROJECT_VERSION: "104.0"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 58U7UPFS53

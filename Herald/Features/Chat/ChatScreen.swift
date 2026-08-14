@@ -236,7 +236,8 @@ struct ChatScreen: View {
     }
 
     var body: some View {
-        ZStack {
+        scrollAnchored {
+            ZStack {
             ChatWallpaperBackground(
                 wallpaper: settingsStore.settings.chatWallpaper,
                 tint: themeManager.preset.accent
@@ -313,84 +314,8 @@ struct ChatScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .toolbarBackground(.hidden, for: .navigationBar)
-        .task {
-            chatStore.setPollingEnabled(true)
-            async let hostRefresh: Void = hostStore.refresh()
-            async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
-            // The active profile belongs to the connector, not the local chat
-            // session cache. Refresh it whenever Chat becomes active so a
-            // stale pre-pairing value such as ".hermes" is never retained in
-            // the composer after the host reconnects or changes profile.
-            async let profileLoad: Void = profileStore.loadProfiles(force: true)
-            async let modelLoad: Void = modelStore.loadModels()
-            // Build 33 WSB: reconcile the durable outbox - settle accepted
-            // jobs against the relay, resubmit items whose backoff elapsed,
-            // and submit queued items for this conversation.
-            async let outboxRecovery: Void = chatStore.recoverOutbox()
-            await conversationLoad
-            // Scroll to most recent messages after loading
-            try? await Task.sleep(for: .milliseconds(150))
-            scrollToBottom()
-            _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery)
         }
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled else { break }
-                await hostStore.refresh()
-            }
-        }
-        .onDisappear {
-            chatStore.setPollingEnabled(false)
-        }
-        .onChange(of: chatStore.conversation?.messages.count ?? 0) {
-            guard chatStore.streamingMessageID == nil else { return }
-            scrollToBottom()
-        }
-        .onChange(of: streamingContentLength) {
-            // Keep the view anchored to the bottom as streaming content grows.
-            // Without this, the ScrollView drifts — the message count is stable
-            // during streaming so the count observer above skips.
-            // Uses the same throttled scrollToBottom path (not a raw scrollTo)
-            // so the 500ms throttle and user-scroll deferral apply.
-            guard chatStore.streamingMessageID != nil else { return }
-            lastKnownContentLength = streamingContentLength
-            scrollToBottom()
-        }
-        // Build 31: the 300ms polling timer was removed.  The content-length
-        // onChange observer above is sufficient for text-streaming scroll; late
-        // tool cards, image layout, and thought disclosure invalidate geometry
-        // naturally through SwiftUI's layout cycle, and the debounced
-        // scrollToBottom coalesces them into one post-layout scroll.
-        .onChange(of: chatStore.pendingMessageSentAt) {
-            // User sent a message — resume auto-scroll.
-            // Removed the guard !isComposerFocused: this suppressed the
-            // scroll when the keyboard was up during send, causing the new
-            // user bubble to render below the thinking placeholder.
-            isUserScrolling = false
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(100))
-                scrollToBottom()
-            }
-        }
-        .onChange(of: chatStore.streamingMessageID) { old, new in
-            if old != nil && new == nil {
-                // Streaming just ended. Scroll to the last stable (non-streaming)
-                // message to avoid the mutable streamingCompositeID race that
-                // caused thinking dots to render above the next sent reply.
-                isUserScrolling = false
-                userScrollTimer?.invalidate()
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(150))
-                    let stableTarget = chatStore.conversation?.messages
-                        .last(where: { !$0.isStreaming })?.id
-                        ?? chatStore.conversation?.messages.last?.id
-                    if let lastID = stableTarget {
-                        scrollProxy?.scrollTo(lastID, anchor: .bottom)
-                    }
-                }
-            }
-        }
+
 
         .confirmationDialog(
             "Clear Conversation",
@@ -463,6 +388,104 @@ struct ChatScreen: View {
             // mutations don't propagate as array-element changes.
             canvasStore.liveToolActivities = msg.toolActivities
         }
+    }
+
+    /// Scroll anchoring: load/poll lifecycle plus scroll-ownership onChange handlers,
+    /// extracted from `body` so the SwiftUI type-checker stays under its
+    /// complexity ceiling. Build 103 added a conversation-identity onChange that
+    /// pushed the monolithic body expression past "unable to type-check in
+    /// reasonable time" — moving the whole anchor group here splits the expression.
+    private func scrollAnchored<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .task {
+                chatStore.setPollingEnabled(true)
+                async let hostRefresh: Void = hostStore.refresh()
+                async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
+                // The active profile belongs to the connector, not the local chat
+                // session cache. Refresh it whenever Chat becomes active so a
+                // stale pre-pairing value such as ".hermes" is never retained in
+                // the composer after the host reconnects or changes profile.
+                async let profileLoad: Void = profileStore.loadProfiles(force: true)
+                async let modelLoad: Void = modelStore.loadModels()
+                // Build 33 WSB: reconcile the durable outbox - settle accepted
+                // jobs against the relay, resubmit items whose backoff elapsed,
+                // and submit queued items for this conversation.
+                async let outboxRecovery: Void = chatStore.recoverOutbox()
+                await conversationLoad
+                // Scroll to most recent messages after loading.
+                // Build 103: force so a stale isUserScrolling flag from a prior
+                // conversation cannot suppress landing on the latest message.
+                try? await Task.sleep(for: .milliseconds(150))
+                isUserScrolling = false
+                scrollToBottom(animate: false, force: true)
+                _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery)
+            }
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(10))
+                    guard !Task.isCancelled else { break }
+                    await hostStore.refresh()
+                }
+            }
+            .onDisappear {
+                chatStore.setPollingEnabled(false)
+            }
+            .onChange(of: chatStore.conversation?.id.uuidString ?? "") { _, _ in
+                // Build 103: entering a different thread must clear scroll ownership
+                // and land on the latest message, not inherit a stale "user scrolled
+                // up" flag from the previous conversation.
+                isUserScrolling = false
+                isNearBottom = true
+                scrollToBottom(animate: false, force: true)
+            }
+            .onChange(of: chatStore.conversation?.messages.count ?? 0) {
+                guard chatStore.streamingMessageID == nil else { return }
+                scrollToBottom()
+            }
+            .onChange(of: streamingContentLength) {
+                // Keep the view anchored to the bottom as streaming content grows.
+                // Without this, the ScrollView drifts — the message count is stable
+                // during streaming so the count observer above skips.
+                // Uses the same throttled scrollToBottom path (not a raw scrollTo)
+                // so the 500ms throttle and user-scroll deferral apply.
+                guard chatStore.streamingMessageID != nil else { return }
+                lastKnownContentLength = streamingContentLength
+                scrollToBottom()
+            }
+            // Build 31: the 300ms polling timer was removed.  The content-length
+            // onChange observer above is sufficient for text-streaming scroll; late
+            // tool cards, image layout, and thought disclosure invalidate geometry
+            // naturally through SwiftUI's layout cycle, and the debounced
+            // scrollToBottom coalesces them into one post-layout scroll.
+            .onChange(of: chatStore.pendingMessageSentAt) {
+                // User sent a message — resume auto-scroll.
+                // Removed the guard !isComposerFocused: this suppressed the
+                // scroll when the keyboard was up during send, causing the new
+                // user bubble to render below the thinking placeholder.
+                isUserScrolling = false
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    scrollToBottom(animate: true, force: true)
+                }
+            }
+            .onChange(of: chatStore.streamingMessageID) { old, new in
+                if old != nil && new == nil {
+                    // Streaming just ended. Scroll to the last stable (non-streaming)
+                    // message to avoid the mutable streamingCompositeID race that
+                    // caused thinking dots to render above the next sent reply.
+                    isUserScrolling = false
+                    userScrollTimer?.invalidate()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(150))
+                        let stableTarget = chatStore.conversation?.messages
+                            .last(where: { !$0.isStreaming })?.id
+                            ?? chatStore.conversation?.messages.last?.id
+                        if let lastID = stableTarget {
+                            scrollProxy?.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
+                }
+            }
     }
 
     // MARK: - Wallpaper
@@ -1627,29 +1650,30 @@ struct ChatScreen: View {
         // tap Jump to Latest (which calls with animate: false for a clean snap).
         if chatStore.isStreaming {
             guard force || (!isUserScrolling && isNearBottom) else { return }
-            autoScrollTask?.cancel()
-            autoScrollTask = Task { @MainActor in
+        } else {
+            guard force || !isUserScrolling else { return }
+        }
+        autoScrollTask?.cancel()
+        autoScrollTask = Task { @MainActor in
+            if chatStore.isStreaming {
                 try? await Task.sleep(for: Self.scrollDebounceInterval)
                 guard !Task.isCancelled, (force || (!isUserScrolling && isNearBottom)) else { return }
+            }
+            // Build 103: LazyVStack realizes off-screen rows asynchronously, so a
+            // single scrollTo("bottom") lands short of the true bottom while rows
+            // materialize -- the "down arrow needs multiple presses" regression.
+            // Re-issue the scroll a few times after short settles to converge.
+            for _ in 0..<4 {
+                guard !Task.isCancelled else { return }
                 if animate {
                     withAnimation(Design.Motion.standard) {
-                        scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                        self.scrollProxy?.scrollTo("bottom", anchor: .bottom)
                     }
                 } else {
-                    scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                    self.scrollProxy?.scrollTo("bottom", anchor: .bottom)
                 }
+                try? await Task.sleep(for: .milliseconds(70))
             }
-            return
-        }
-        // Non-streaming: respect user scroll position.  Don't yank a user
-        // who is reading history just because a poll merge changed the count.
-        guard force || !isUserScrolling else { return }
-        if animate {
-            withAnimation(Design.Motion.standard) {
-                scrollProxy?.scrollTo("bottom", anchor: .bottom)
-            }
-        } else {
-            scrollProxy?.scrollTo("bottom", anchor: .bottom)
         }
     }
 
