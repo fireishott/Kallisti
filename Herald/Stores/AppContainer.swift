@@ -909,10 +909,19 @@ final class AppContainer {
                 // opens the picker, which forces a reload. Same for the host
                 // row and session list: refresh them on every reconnect so
                 // the UI reflects the live gateway without user action.
+                // Build 109: the conversation gets the same treatment. On cold
+                // launch ChatScreen's .task calls loadConversationIfNeeded()
+                // BEFORE the native socket connects; loadConversation(id:)
+                // throws .notConnected and the conversation stays nil. The
+                // loading surface then retires on the real connect, leaving
+                // the chat EMPTY even though the server has the full history.
+                // Reload it here so the transcript renders once the socket is
+                // live (and on every reconnect, like the model pill).
                 if status == .connected {
                     await container.modelStore.loadModels(force: true)
                     await container.hostStore.refresh()
                     await container.sessionListStore.loadSessions(forceRefresh: true)
+                    await container.chatStore.loadConversationIfNeeded()
                     // Preload infra + latency at connection time so Settings
                     // shows live values the moment it opens. A fresh onboarding writes
                     // the relay after AppContainer initialization, so create the aux
