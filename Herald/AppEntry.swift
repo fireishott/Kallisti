@@ -29,9 +29,10 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: "net.fihonline.kallisti.refresh",
             using: nil
-        ) { task in
+        ) { @Sendable task in
+            let boxedTask = UncheckedSendableBox(value: task)
             Task { @MainActor in
-                await AppContainer.sharedDefault().handleBackgroundRefresh(task as! BGAppRefreshTask)
+                await AppContainer.sharedDefault().handleBackgroundRefresh(boxedTask.value as! BGAppRefreshTask)
             }
         }
         scheduleBackgroundRefresh()
@@ -50,9 +51,10 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: "net.fihonline.KallistiBGProcessing",
             using: nil
-        ) { task in
+        ) { @Sendable task in
+            let boxedTask = UncheckedSendableBox(value: task)
             Task { @MainActor in
-                await AppContainer.sharedDefault().handleStreamWatchdog(task as! BGProcessingTask)
+                await AppContainer.sharedDefault().handleStreamWatchdog(boxedTask.value as! BGProcessingTask)
             }
         }
 
