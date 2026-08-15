@@ -166,7 +166,12 @@ struct AttachmentPickerSheet: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.5))
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 10)
+            // Build 128.3: the whole row is the tap target - label content
+            // stretches full width and the content shape covers the row, so
+            // taps anywhere on the row select that source.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title): \(description)")

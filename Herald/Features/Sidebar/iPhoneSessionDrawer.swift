@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// A slide-out session browser drawer for iPhone.
 /// Uses a drag gesture to reveal/hide from the leading edge.
@@ -62,6 +63,11 @@ struct iPhoneSessionDrawer: View {
                     .contentShape(Rectangle())
                     .frame(maxHeight: .infinity)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onChange(of: isOpen) { _, open in
+            if open {
+                dismissKeyboard()
             }
         }
         .gesture(
@@ -444,5 +450,17 @@ struct iPhoneSessionDrawer: View {
             isOpen = open
             dragOffset = 0
         }
+        if open {
+            dismissKeyboard()
+        }
+    }
+
+    /// Drops the keyboard when the drawer opens so the drawer reads as a
+    /// full-screen surface instead of sitting next to a focused composer.
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
     }
 }
