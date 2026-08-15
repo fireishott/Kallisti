@@ -21,19 +21,6 @@
 	<string>Kallisti</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundleAlternateIcons</key>
-		<dict>
-			<key>GlassKallisti</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>GlassKallisti</string>
-				</array>
-			</dict>
-		</dict>
-	</dict>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -45,7 +32,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.2.5</string>
 	<key>CFBundleVersion</key>
-	<string>117.0</string>
+	<string>118.0</string>
 	<key>INIntentsSupported</key>
 	<array>
 		<string>INSendMessageIntent</string>
