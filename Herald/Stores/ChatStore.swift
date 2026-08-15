@@ -82,6 +82,13 @@ final class ChatStore {
     var streamingPhase: StreamingPhase = .idle
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
+    /// Build 117: separate task watching a turn that is running SERVER-side
+    /// (started from desktop, another device, or a prior foreground) when this
+    /// app has no local `.sending` row and no active stream. `restartPendingPollingIfNeeded`
+    /// bails on `hasPendingMessages == false`, so the thread used to sit frozen on
+    /// stale content while the Live Activity (push-driven) stayed accurate. This
+    /// probe + refresh loop keeps the thread live until the server reports idle.
+    private var serverTurnPollTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
     /// Build 31 (fix): monotonically-incrementing generation token.  Every new
     /// streaming attempt captures this value; every callback in the consumer task
@@ -589,6 +596,10 @@ final class ChatStore {
             needsServerRefresh = false
             await loadConversation(id: selectedID)
             clearNotificationsForCurrentConversation()
+            // Build 117: opening a thread mid-turn (tap the Live Activity /
+            // notification) must watch the server-side turn even when this
+            // device didn't start it.
+            await startServerTurnWatchIfNeeded()
             return
         }
 
@@ -596,6 +607,7 @@ final class ChatStore {
         needsServerRefresh = false
         await loadConversation()
         clearNotificationsForCurrentConversation()
+        await startServerTurnWatchIfNeeded()
     }
 
     func loadConversation() async {
@@ -3483,6 +3495,8 @@ final class ChatStore {
         } else {
             pollingTask?.cancel()
             pollingTask = nil
+            serverTurnPollTask?.cancel()
+            serverTurnPollTask = nil
         }
     }
 
@@ -3769,6 +3783,74 @@ final class ChatStore {
 
             if self.pollingTask?.isCancelled == false {
                 self.pollingTask = nil
+            }
+        }
+    }
+
+    // MARK: - Server-side turn watch (Build 117)
+
+    /// Watch a turn that is running on the SERVER but was not started by this
+    /// device (desktop client, another phone, or a send that completed before
+    /// this foreground). The normal `restartPendingPollingIfNeeded` path only
+    /// fires when a LOCAL user row is still `.sending`; with no local pending
+    /// message and no active stream, the thread froze on stale content while
+    /// the Live Activity (driven by gateway pushes) kept reporting accurate
+    /// activity. This probes the gateway for a running session and, when one
+    /// exists, refreshes the active conversation on a backoff until the server
+    /// reports idle. Idempotent: no-ops when local polling or a stream already
+    /// owns the thread, and never overlaps an existing server-turn task.
+    func startServerTurnWatchIfNeeded() async {
+        guard isPollingEnabled else { return }
+        guard conversation != nil else { return }
+        // If a local send or stream is in flight, the normal machinery owns
+        // the thread — this watch is only for server-side-only turns.
+        guard !hasPendingMessages, !isStreaming else { return }
+        guard serverTurnPollTask == nil else { return }
+
+        // Probe the gateway: is the ACTIVE session actually running a job
+        // right now? resumeActiveSessionIfNeeded reattaches a parked session
+        // and returns true when a live in-flight job is running server-side.
+        let running = await heraldClient.resumeActiveSessionIfNeeded()
+        guard running else { return }
+
+        Self.logger.info("Server turn watch: session running server-side, starting refresh loop")
+        serverTurnPollTask = Task { [weak self] in
+            guard let self else { return }
+
+            for delay in Self.pollingBackoffSeconds {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { break }
+
+                let capturedGeneration = self.conversationGeneration
+                let fresh = await self.refreshActiveConversation()
+                guard capturedGeneration == self.conversationGeneration else {
+                    Self.logger.info("Server turn watch: generation moved, stopping")
+                    break
+                }
+                self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
+                self.pendingServerReconciliation = false
+                if let latestUsage = self.conversation?.latestUsage {
+                    self.lastTokenUsage = latestUsage
+                }
+                if let conversation = self.conversation {
+                    self.persistence.saveConversationCache(conversation)
+                    self.onConversationChanged?()
+                }
+                // A local send/stream can take ownership mid-watch; hand off.
+                if self.hasPendingMessages || self.isStreaming {
+                    Self.logger.info("Server turn watch: local machinery took over, stopping")
+                    break
+                }
+                // Stop once the server reports the session idle (turn done).
+                let stillRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
+                if !stillRunning {
+                    Self.logger.info("Server turn watch: server idle, stopping")
+                    break
+                }
+            }
+
+            if self.serverTurnPollTask?.isCancelled == false {
+                self.serverTurnPollTask = nil
             }
         }
     }

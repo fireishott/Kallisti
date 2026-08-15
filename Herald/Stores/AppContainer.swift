@@ -1293,6 +1293,12 @@ final class AppContainer {
         if chatStore.isStreaming {
             await chatStore.recoverStalledStream()
         }
+        // Build 117: a turn can be running SERVER-side with no local `.sending`
+        // row and no active stream (started from desktop / another device). The
+        // normal poll path bails on hasPendingMessages == false, so the thread
+        // froze on stale content while the Live Activity stayed accurate. Probe
+        // the gateway and refresh until the server reports idle.
+        await chatStore.startServerTurnWatchIfNeeded()
 
         // Build 33 WSB: reconcile the durable outbox on every foreground —
         // accepted jobs are settled against the relay, expired retry backoffs
