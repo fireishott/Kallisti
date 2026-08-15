@@ -225,6 +225,8 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
+    /// Build 118: breathing animation state for the chat-switch overlay coin.
+    @State private var switchCoinBreathes = false
 
     // Scroll-to-bottom arrow: only show when the user has actually scrolled
     // away from the bottom, not on every drag gesture. Uses onScrollGeometryChange
@@ -315,6 +317,13 @@ struct ChatScreen: View {
                         handleAttachmentResult(.image(image))
                     }
                 )
+
+                // Build 118: frosted chat-switch overlay. Shown while the
+                // target conversation loads from the host so switching chats
+                // never looks like a frozen old thread.
+                if chatStore.isSwitchingConversation {
+                    chatSwitchOverlay
+                }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -1760,5 +1769,69 @@ struct ChatScreen: View {
         withTransaction(transaction) {
             scrollProxy?.scrollTo(id, anchor: .top)
         }
+    }
+
+    // MARK: - Chat-Switch Overlay (Build 118)
+
+    /// Frosted loading overlay shown while a session switch fetches the
+    /// target conversation. Reuses the breathing coin + realtime status
+    /// language from the launch surface so switching feels like progress,
+    /// not a frozen old thread.
+    private var chatSwitchOverlay: some View {
+        ZStack {
+            // Frosted backdrop.
+            Design.Colors.background
+                .opacity(0.72)
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial)
+
+            VStack(spacing: Design.Spacing.lg) {
+                Image("KallistiSeal")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 96, height: 96)
+                    .scaleEffect(switchCoinBreathes ? 1.07 : 0.96)
+                    .opacity(switchCoinBreathes ? 1.0 : 0.82)
+                    .shadow(
+                        color: Design.Brand.accent.opacity(switchCoinBreathes ? 0.45 : 0.15),
+                        radius: switchCoinBreathes ? 22 : 10
+                    )
+
+                VStack(spacing: Design.Spacing.xs) {
+                    Text("Loading Chat")
+                        .font(Design.Typography.sectionTitle)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Text(chatSwitchStatusText)
+                        .font(Design.Typography.body)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+            }
+            .padding(Design.Spacing.xl)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                switchCoinBreathes = true
+            }
+        }
+        .onDisappear {
+            switchCoinBreathes = false
+        }
+        .transition(.opacity)
+        .animation(Design.Motion.quickResponse, value: chatStore.isSwitchingConversation)
+    }
+
+    /// Realtime-ish status line for the switch overlay. Reads the same store
+    /// states the banners use, so it reflects actual work in flight.
+    private var chatSwitchStatusText: String {
+        if chatStore.isLoading {
+            return "Downloading conversation"
+        }
+        if modelStore.isLoading {
+            return "Loading models"
+        }
+        if hostStore.connectionState != .online {
+            return "Reconnecting to host"
+        }
+        return "Loading messages"
     }
 }

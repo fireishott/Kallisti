@@ -135,7 +135,7 @@ struct ChatInputBar: View {
                         Image(systemName: "plus")
                             .font(.system(size: Design.Size.iconMedium, weight: .medium))
                             .foregroundStyle(Design.Colors.secondaryForeground)
-                            .frame(width: 36, height: 36)
+                            .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                             .background(Design.Colors.surface)
                             .clipShape(Circle())
                     }
@@ -172,7 +172,7 @@ struct ChatInputBar: View {
                             Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
-                                .frame(width: 36, height: 36)
+                                .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                                 .background(speechService?.isListening == true ? Design.Colors.surface : .clear)
                                 .clipShape(Circle())
                         }
@@ -184,7 +184,7 @@ struct ChatInputBar: View {
                             Image(systemName: "waveform")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(Design.Colors.background)
-                                .frame(width: 36, height: 36)
+                                .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                                 .background(Design.Brand.accent)
                                 .clipShape(Circle())
                         }
@@ -194,8 +194,10 @@ struct ChatInputBar: View {
 
                     actionButton
                 }
-                .padding(.horizontal, Design.Spacing.sm)
-                .padding(.vertical, Design.Spacing.xs)
+                // Build 118: kill the fat composer margins. Inner horizontal
+                // sm(12) -> xs(8), vertical xs(8) -> xxs(4).
+                .padding(.horizontal, Design.Spacing.xs)
+                .padding(.vertical, Design.Spacing.xxs)
             }
             .background(Design.Colors.surface)
             .overlay(
@@ -205,8 +207,9 @@ struct ChatInputBar: View {
             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
             .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
             .onTapGesture { isFocused.wrappedValue = true }
-            .padding(.horizontal, Design.Spacing.xs)
-            .padding(.bottom, Design.Spacing.md)
+            // Outer horizontal xs(8) -> xxs(4), bottom md(16) -> xs(8).
+            .padding(.horizontal, Design.Spacing.xxs)
+            .padding(.bottom, Design.Spacing.xs)
         }
         .animation(Design.Motion.quickResponse, value: isSlashMode)
         .animation(Design.Motion.quickResponse, value: isStreaming)
@@ -307,7 +310,7 @@ struct ChatInputBar: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(Design.Colors.foreground)
-                        .frame(width: 36, height: 36)
+                        .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                         .background(Design.Colors.surface)
                         .clipShape(Circle())
                 }
@@ -319,7 +322,7 @@ struct ChatInputBar: View {
                         Image(systemName: "steeringwheel")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(Design.Colors.background)
-                            .frame(width: 36, height: 36)
+                            .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                             .background(Design.Brand.accent)
                             .clipShape(Circle())
                     }
@@ -334,7 +337,7 @@ struct ChatInputBar: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(Design.Colors.background)
-                    .frame(width: 36, height: 36)
+                    .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
                     .background(Design.Brand.accent)
                     .clipShape(Circle())
             }

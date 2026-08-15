@@ -31,6 +31,10 @@ final class ChatStore {
         }
     }
     var isLoading = false
+    /// Build 118: true while a session switch is fetching the target
+    /// conversation from the host. Drives the frosted chat-switch overlay so
+    /// the user sees progress instead of a frozen old thread.
+    var isSwitchingConversation = false
     var pendingMessageSentAt: Date?
     /// Build 33 WSB: durable outbox — in-memory mirror of the on-disk manifest
     /// (Application Support/Herald/Outbox/outbox.json). Items survive
