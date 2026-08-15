@@ -208,7 +208,10 @@ struct ChatScreen: View {
     @State private var showClearConfirmation = false
     @State private var showStatusCard = false
     @State private var scrollProxy: ScrollViewProxy?
-    @FocusState private var isComposerFocused: Bool
+    // Build 111: plain @State, not @FocusState. The composer is a UIKit-backed
+    // UITextView (no .focused() anchor), so FocusState gets zeroed by the focus
+    // engine on every re-render and the keyboard dropped after each keystroke.
+    @State private var isComposerFocused = false
 
     // Scroll debounce during streaming — coalesces multiple scrollToBottom()
     // triggers from different onChange handlers into one per ~100ms, preventing
