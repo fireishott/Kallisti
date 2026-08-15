@@ -341,15 +341,13 @@ struct ChatInputBar: View {
                 }
             }
         } else if canSend {
-            // Build 120: big white circle with a bold vector arrow so the
-            // send affordance pops against the dark composer.
+            // Build 121: send matches the mic style - plain vector icon,
+            // no white circle. Same tap target, same secondary foreground.
             Button(action: sendAction) {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 18, weight: .heavy))
-                    .foregroundStyle(Color.black)
+                    .font(.system(size: Design.Size.iconMedium, weight: .semibold))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
                     .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                    .background(Color.white)
-                    .clipShape(Circle())
             }
             .accessibilityLabel("Send message")
             .simultaneousGesture(longPressToQueueGesture)
@@ -474,7 +472,7 @@ final class PasteInterceptingTextView: UITextView {
     override var intrinsicContentSize: CGSize {
         let lineHeight = font?.lineHeight ?? 18
         let insets = textContainerInset.top + textContainerInset.bottom
-        let minHeight = lineHeight * 2 + insets   // Build 120: 2-row default
+        let minHeight = lineHeight + insets   // Build 121: 1-row default, period
         let maxHeight = lineHeight * 5 + insets
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -518,9 +516,10 @@ final class PasteInterceptingTextView: UITextView {
 /// ChatInputBar so image paste stages a PendingAttachment instead of dumping a
 /// file URL string into the message text.
 struct PasteAwareComposerTextView: UIViewRepresentable {
-    // Build 120: default to TWO rows. A one-row default trips the
-    // measurement fallback and renders as a 5-row slab on some layouts.
-    static let minimumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight * 2 + 8
+    // Build 121: default to ONE row. The b110+ measurement fix (real bounds,
+    // not the 200pt fallback) means a 1-row empty composer no longer trips the
+    // 5-row slab. Grows 1→5 as text is typed, then scrolls internally.
+    static let minimumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight + 8
     static let maximumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight * 5 + 8
 
     @Binding var text: String
