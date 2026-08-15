@@ -135,6 +135,7 @@ struct iPhoneSessionDrawer: View {
             VStack(spacing: 2) {
                 Button {
                     Task {
+                        HapticEngine.newChat()
                         await sessionStore.createNewSession()
                         if sessionStore.errorMessage == nil {
                             withAnimation(Design.Motion.standard) { isOpen = false }

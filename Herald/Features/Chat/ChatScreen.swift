@@ -1286,6 +1286,13 @@ struct ChatScreen: View {
             .animation(Design.Motion.standard, value: chatStore.pendingNewMessageCount)
             .animation(Design.Motion.standard, value: showScrollArrow)
             .scrollBounceBehavior(.basedOnSize)
+            .refreshable {
+                // Build 127.1: pull-to-catch-up. Drag down from the top of the
+                // transcript to force a cross-device refresh (same path as the
+                // foreground catch-up). Surfaces new rows and the "N new messages"
+                // pill when another device advanced the thread.
+                await chatStore.performForegroundCatchUp()
+            }
         }
     }
 

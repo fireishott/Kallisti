@@ -36,6 +36,12 @@ enum HapticEngine {
         mediumGenerator.prepare()  // Re-prepare for next use
     }
 
+    /// Light impact when a new chat is created.
+    static func newChat() {
+        lightGenerator.impactOccurred()
+        lightGenerator.prepare()  // Re-prepare for next use
+    }
+
     /// Error notification for failed operations.
     static func error() {
         notificationGenerator.notificationOccurred(.error)

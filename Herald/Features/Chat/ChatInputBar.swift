@@ -167,18 +167,13 @@ struct ChatInputBar: View {
                         .accessibilityLabel(placeholderText)
                         .font(Design.Typography.body)
                         .foregroundStyle(Design.Colors.foreground)
-                        .frame(
-                            minHeight: PasteAwareComposerTextView.minimumHeight,
-                            idealHeight: PasteAwareComposerTextView.minimumHeight,
-                            // Build 127: cap the EMPTY composer at one row.
-                            // maximumHeight lets the capsule expand to fill any
-                            // height the parent proposes (it rendered ~2x the
-                            // 40pt buttons), so the empty field became a tall
-                            // slab with dead space under the placeholder.
-                            maxHeight: text.isEmpty
-                                ? PasteAwareComposerTextView.minimumHeight
-                                : PasteAwareComposerTextView.maximumHeight
-                        )
+                        // Build 127.1: hug the text content line-by-line (1-5
+                        // rows). The old minHeight/idealHeight/maxHeight frame
+                        // was flexible and expanded to fill the parent's proposed
+                        // height, so a one-line draft jumped straight to the 5-row
+                        // slab. fixedSize(vertical:) + the sizeThatFits override
+                        // make the capsule track the actual text height.
+                        .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .topLeading) {
                             if text.isEmpty {
                                 Text(speechService?.isListening == true ? "Listening..." : placeholderText)
@@ -632,6 +627,18 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         } else if !isFocused.wrappedValue && uiView.isFirstResponder {
             uiView.resignFirstResponder()
         }
+    }
+
+    /// Build 127.1: report the content-hugging height (1-5 rows) back to
+    /// SwiftUI. The default UIViewRepresentable sizeThatFits returns nil, which
+    /// lets the parent's proposed height drive the capsule - a one-line draft
+    /// rendered as the full 5-row max. Returning the clamped intrinsic height
+    /// here (paired with fixedSize(vertical:) at the call site) makes the
+    /// composer grow line-by-line and cap at 5.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PasteInterceptingTextView, context: Context) -> CGSize? {
+        let height = uiView.intrinsicContentSize.height
+        let width = proposal.width ?? UIView.noIntrinsicMetric
+        return CGSize(width: width, height: height)
     }
 
     // fileprivate: called from PasteInterceptingTextView.layoutSubviews (same file).
