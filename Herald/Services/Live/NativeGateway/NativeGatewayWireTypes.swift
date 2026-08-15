@@ -97,6 +97,7 @@ struct NativeToolStartPayload: Decodable {
     let toolCallID: String?
     let name: String?
     let preview: String?
+    let argsText: String?
     let emoji: String?
 
     enum CodingKeys: String, CodingKey {
@@ -105,6 +106,8 @@ struct NativeToolStartPayload: Decodable {
         case name
         case preview
         case context
+        case args
+        case argsText = "args_text"
         case emoji
     }
 
@@ -115,7 +118,24 @@ struct NativeToolStartPayload: Decodable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         preview = try c.decodeIfPresent(String.self, forKey: .preview)
             ?? c.decodeIfPresent(String.self, forKey: .context)
+        argsText = Self.decodeDisplayText(from: c, preferredKey: .argsText, fallbackKey: .args)
         emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
+    }
+
+    private static func decodeDisplayText(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        preferredKey: CodingKeys,
+        fallbackKey: CodingKeys
+    ) -> String? {
+        if let text = try? container.decode(String.self, forKey: preferredKey) { return text }
+        if let text = try? container.decode(String.self, forKey: fallbackKey) { return text }
+        if let object = try? container.decode([String: NativeJSONValue].self, forKey: fallbackKey) {
+            return object.compactJSONString
+        }
+        if let array = try? container.decode([NativeJSONValue].self, forKey: fallbackKey) {
+            return array.compactJSONString
+        }
+        return nil
     }
 }
 
@@ -166,8 +186,16 @@ struct NativeToolCompletePayload: Decodable {
         }
         isError = try c.decodeIfPresent(Bool.self, forKey: .isError)
             ?? (c.contains(.error) ? true : nil)
-        durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
-            ?? c.decodeIfPresent(Int.self, forKey: .durationS).map { Int($0 * 1000) }
+        if let milliseconds = try? c.decode(Int.self, forKey: .durationMs) {
+            durationMs = milliseconds
+        } else if let seconds = try? c.decode(Double.self, forKey: .durationS) {
+            // Gateway durations are measured with time.time() and therefore
+            // arrive as floating-point JSON. Int decoding discarded the whole
+            // tool.complete payload, including result details and inline_diff.
+            durationMs = Int((seconds * 1_000).rounded())
+        } else {
+            durationMs = nil
+        }
         inlineDiff = try c.decodeIfPresent(String.self, forKey: .inlineDiff)
     }
 }
@@ -392,6 +420,20 @@ enum NativeJSONValue: Codable {
         case .bool(let v): try container.encode(v)
         case .null: try container.encodeNil()
         }
+    }
+}
+
+private extension Dictionary where Key == String, Value == NativeJSONValue {
+    var compactJSONString: String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+private extension Array where Element == NativeJSONValue {
+    var compactJSONString: String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
 

@@ -82,4 +82,28 @@ struct Build114RegressionTests {
         #expect(!ChatScreen.shouldRedactTranscript(isLoading: true, messageCount: 1))
         #expect(!ChatScreen.shouldRedactTranscript(isLoading: false, messageCount: 0))
     }
+
+    @Test("Active stream is always the final transcript row")
+    func activeStreamOwnsTranscriptTail() {
+        var streaming = message(UUID(), .herald, "current reply")
+        streaming.isStreaming = true
+        let staleBoundary = message(UUID(), .herald, "persisted tool boundary")
+        let prompt = message(UUID(), .user, "current prompt")
+
+        let rows = ChatScreen.transcriptRows([prompt, streaming, staleBoundary])
+        #expect(rows.map(\.id) == [prompt.id, staleBoundary.id, streaming.id])
+    }
+
+    @Test("Native tool frames accept gateway float duration and full args")
+    func nativeToolFramesDecodeCurrentGatewayShape() throws {
+        let startData = Data(#"{"tool_id":"tc-ssh","name":"terminal","context":"ssh host","args":{"command":"ssh host uptime"}}"#.utf8)
+        let start = try JSONDecoder().decode(NativeToolStartPayload.self, from: startData)
+        #expect(start.toolCallID == "tc-ssh")
+        #expect(start.argsText?.contains("ssh host uptime") == true)
+
+        let completeData = Data(#"{"tool_id":"tc-edit","name":"patch","result":{"success":true},"duration_s":1.234,"inline_diff":"  ┊ review diff\na/F.swift → b/F.swift\n@@ -1 +1 @@\n-old\n+new"}"#.utf8)
+        let complete = try JSONDecoder().decode(NativeToolCompletePayload.self, from: completeData)
+        #expect(complete.durationMs == 1_234)
+        #expect(complete.inlineDiff?.contains("a/F.swift → b/F.swift") == true)
+    }
 }
