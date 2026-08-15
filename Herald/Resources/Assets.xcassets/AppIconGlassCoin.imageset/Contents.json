@@ -1,15 +1,16 @@
 {
   "images" : [
     {
-      "filename" : "GlassKallisti-120.png",
+      "filename" : "AppIconGlassCoin.png",
       "idiom" : "universal",
-      "platform" : "ios",
+      "scale" : "1x"
+    },
+    {
+      "idiom" : "universal",
       "scale" : "2x"
     },
     {
-      "filename" : "GlassKallisti-180.png",
       "idiom" : "universal",
-      "platform" : "ios",
       "scale" : "3x"
     }
   ],
