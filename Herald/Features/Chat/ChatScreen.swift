@@ -416,6 +416,14 @@ struct ChatScreen: View {
                 chatStore.setPollingEnabled(true)
                 async let hostRefresh: Void = hostStore.refresh()
                 async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
+                // Build 124: when the thread is already cached (typical on
+                // appear), loadConversationIfNeeded no-ops and the user sees
+                // whatever the last fetch returned — stale if another device
+                // advanced the thread while this view was not on screen.
+                // One quiet refresh catches the thread up and surfaces the
+                // "N new messages" pill when rows landed that this device
+                // never rendered.
+                async let catchUp: Void = chatStore.performForegroundCatchUp()
                 // The active profile belongs to the connector, not the local chat
                 // session cache. Refresh it whenever Chat becomes active so a
                 // stale pre-pairing value such as ".hermes" is never retained in
@@ -433,7 +441,7 @@ struct ChatScreen: View {
                 try? await Task.sleep(for: .milliseconds(150))
                 isUserScrolling = false
                 scrollToBottom(animate: false, force: true)
-                _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery)
+                _ = await (hostRefresh, profileLoad, modelLoad, outboxRecovery, catchUp)
             }
             .task {
                 while !Task.isCancelled {
@@ -1209,15 +1217,53 @@ struct ChatScreen: View {
                 return bottomY >= contentBottom - 44
             } action: { _, nearBottom in
                 isNearBottom = nearBottom
+                // Build 124: reaching the bottom by any means means the user
+                // has seen the latest content — clear the catch-up count so
+                // the pill does not linger.
+                if nearBottom {
+                    chatStore.pendingNewMessageCount = 0
+                }
                 // Once user manually scrolls to the bottom, resume auto-scroll
                 if nearBottom && isUserScrolling {
                     isUserScrolling = false
                 }
             }
             .overlay(alignment: .bottom) {
-                // Jump-to-bottom arrow — visible only when actually scrolled up,
-                // not on incidental drags. Centered above the input bar.
-                if showScrollArrow {
+                // Build 124: cross-device catch-up pill. When a foreground
+                // refresh or server-turn watch finds rows this device never
+                // rendered (thread advanced on the desktop/iPad while this
+                // phone was backgrounded or scrolled away), show "N new
+                // messages" above the input bar instead of the plain arrow.
+                // Tap jumps to latest and clears the count.
+                if chatStore.pendingNewMessageCount > 0 && !isNearBottom {
+                    Button {
+                        isUserScrolling = false
+                        chatStore.pendingNewMessageCount = 0
+                        scrollToBottom(animate: false, force: true)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(chatStore.pendingNewMessageCount == 1
+                                 ? "1 new message"
+                                 : "\\(chatStore.pendingNewMessageCount) new messages")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(Design.Colors.foreground)
+                        .padding(.horizontal, Design.Spacing.md)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(Design.Colors.surface)
+                                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, Design.Spacing.sm)
+                    .transition(.scale.combined(with: .opacity))
+                } else if showScrollArrow {
+                    // Jump-to-bottom arrow — visible only when actually scrolled up,
+                    // not on incidental drags. Centered above the input bar.
                     Button {
                         isUserScrolling = false
                         scrollToBottom(animate: false, force: true)
@@ -1232,6 +1278,7 @@ struct ChatScreen: View {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
+            .animation(Design.Motion.standard, value: chatStore.pendingNewMessageCount)
             .animation(Design.Motion.standard, value: showScrollArrow)
             .scrollBounceBehavior(.basedOnSize)
         }
