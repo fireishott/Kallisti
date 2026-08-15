@@ -4402,7 +4402,18 @@ final class ChatStore {
     }
 
     private static func normalizedMessageContent(_ content: String) -> String {
-        content.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Build 112: attachment directives are transport noise, not content.
+        // The server stores user attachments as `@image:`/`@file:` lines
+        // appended to content; the local optimistic row holds them as real
+        // attachments. Strip the directives before fingerprinting so the
+        // server twin collapses onto the local row instead of duplicating.
+        let withoutDirectives = content
+            .replacingOccurrences(
+                of: #"@(?:image|file):\s*(?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        return withoutDirectives.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 

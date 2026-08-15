@@ -183,7 +183,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// surface as REQUESTTIMEOUT, so we now give uploads a generous 60s budget.
     private static let attachmentUploadTimeoutNanos: UInt64 = 60_000_000_000
     nonisolated(unsafe) private static let nativeMediaPattern = try! NSRegularExpression(
-        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|mp4|mov|m4v|webm|mp3|m4a|wav|aac|zip|txt|md|csv|json|xml|ya?ml|docx?|xlsx?|pptx?|rtf)))(?=[\s`\"',;:)\]}]|$)"#,
+        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|mp4|mov|m4v|webm|mp3|m4a|wav|aac|zip|txt|md|csv|json|xml|ya?ml|docx?|xlsx?|pptx?|rtf)))(?=[\s`"',;:)\]}])|$)"#,
+        options: [.caseInsensitive]
+    )
+    // Build 112: user messages with attachments come back from session.history
+    // with `@image:`/`@file:` directive lines appended to the content (the
+    // connector's directive convention, mirrored by _extract_directive_attachments
+    // in session_store.py). Mirror the connector's regex so the app resolves the
+    // same attachments the HTTP facade would have.
+    nonisolated(unsafe) private static let nativeDirectivePattern = try! NSRegularExpression(
+        pattern: #"@(?:image|file):\s*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|(\S+))"#,
         options: [.caseInsensitive]
     )
     /// When the current socket was opened, used to tell a working connection
@@ -1481,7 +1490,21 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 resolvedContent = resolved.text
                 resolvedAttachments = resolved.attachments
             } else {
-                resolvedContent = msg.content
+                // Build 112: user messages with attachments come back from
+                // session.history with `@image:`/`@file:` directive lines appended
+                // to the content. Resolve them into real attachments and strip the
+                // directives, so (a) the bubble renders the screenshots instead of
+                // dead directive text and (b) the cleaned content matches the local
+                // optimistic row, letting the ChatStore merge fingerprint-collapse
+                // the server twin instead of rendering a duplicate.
+                let resolved = Self.resolveHistoryDirectives(
+                    in: msg.content,
+                    mediaURLProvider: { path in
+                        Self.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
+                    }
+                )
+                resolvedContent = resolved.text
+                resolvedAttachments = resolved.attachments
             }
             return Message(
                 id: Self.historyMessageID(
@@ -2089,6 +2112,44 @@ final class NativeKallistiClient: HeraldClientProtocol {
     ) -> (text: String, attachments: [MessageAttachment]) {
         let fullRange = NSRange(text.startIndex..., in: text)
         let matches = nativeMediaPattern.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return (text, []) }
+        let mutable = NSMutableString(string: text)
+        var attachments: [MessageAttachment] = []
+        for match in matches.reversed() {
+            let rawPath = (1...4).compactMap { index -> String? in
+                let range = match.range(at: index)
+                guard range.location != NSNotFound else { return nil }
+                return (text as NSString).substring(with: range)
+            }.first
+            guard let rawPath else { continue }
+            guard let url = mediaURLProvider(rawPath) else { continue }
+            let classification = Self.classifyMediaPath(rawPath)
+            attachments.append(
+                MessageAttachment(
+                    kind: classification.kind,
+                    fileName: (rawPath as NSString).lastPathComponent,
+                    mimeType: classification.mimeType,
+                    mediaURL: url
+                )
+            )
+            mutable.replaceCharacters(in: match.range, with: "")
+        }
+        return (mutable as String, attachments)
+    }
+
+    /// Build 112: resolve `@image:`/`@file:` directives (the connector's user-
+    /// attachment convention) out of a history message, mirroring the connector's
+    /// _extract_directive_attachments: return cleaned text plus attachment objects
+    /// keyed by media URL. Without this, user rows with attachments reload as raw
+    /// directive text with zero attachments, and the merge cannot fingerprint-
+    /// collapse the server twin against the local optimistic row, so the message
+    /// renders twice.
+    nonisolated static func resolveHistoryDirectives(
+        in text: String,
+        mediaURLProvider: (String) -> URL?
+    ) -> (text: String, attachments: [MessageAttachment]) {
+        let fullRange = NSRange(text.startIndex..., in: text)
+        let matches = nativeDirectivePattern.matches(in: text, range: fullRange)
         guard !matches.isEmpty else { return (text, []) }
         let mutable = NSMutableString(string: text)
         var attachments: [MessageAttachment] = []
