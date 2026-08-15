@@ -14,6 +14,14 @@ struct ToolActivityRail: View {
         activities.last(where: { $0.isActive }) ?? activities.last
     }
 
+    private var hasExpandableDetail: Bool {
+        activities.contains { activity in
+            !(activity.argsPreview ?? "").isEmpty
+                || !(activity.resultPreview ?? "").isEmpty
+                || !activity.liveOutput.isEmpty
+        }
+    }
+
     var body: some View {
         if !activities.isEmpty {
             if isStreaming {
@@ -51,8 +59,12 @@ struct ToolActivityRail: View {
             .overlay(Capsule().stroke(Design.Colors.border, lineWidth: 1))
             .clipShape(Capsule())
 
-            if let latest = latestActivity, !latest.liveOutput.isEmpty {
-                TerminalOutputView(text: latest.liveOutput, isActive: true)
+            if let latest = latestActivity {
+                ToolCallBubbleView(
+                    name: latest.name ?? latest.label,
+                    args: latest.argsPreview,
+                    result: latest.liveOutput.isEmpty ? latest.resultPreview : latest.liveOutput
+                )
             }
         }
     }
@@ -62,7 +74,7 @@ struct ToolActivityRail: View {
     private var finishedSummary: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
             Button {
-                guard activities.count > 1 else { return }
+                guard activities.count > 1 || hasExpandableDetail else { return }
                 withAnimation(Design.Motion.quickResponse) {
                     isExpanded.toggle()
                 }
@@ -75,7 +87,7 @@ struct ToolActivityRail: View {
                     Text("\(activities.count) tool\(activities.count == 1 ? "" : "s") used")
                         .brandEyebrow()
 
-                    if activities.count > 1 {
+                    if activities.count > 1 || hasExpandableDetail {
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(Design.Colors.secondaryForeground)
@@ -104,23 +116,11 @@ struct ToolActivityRail: View {
     private var expandedTimeline: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
             ForEach(activities) { activity in
-                HStack(spacing: Design.Spacing.xs) {
-                    Circle()
-                        .fill(Design.Colors.foreground)
-                        .frame(width: 5, height: 5)
-
-                    Text(activity.label)
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.foreground)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Text(activity.startedAt, style: .time)
-                        .brandEyebrow(Design.Colors.tertiaryForeground)
-                }
-                .padding(.horizontal, Design.Spacing.xs)
-                .padding(.vertical, Design.Spacing.xxxs)
+                ToolCallBubbleView(
+                    name: activity.name ?? activity.label,
+                    args: activity.argsPreview,
+                    result: activity.liveOutput.isEmpty ? activity.resultPreview : activity.liveOutput
+                )
             }
         }
         .padding(.vertical, Design.Spacing.xxs)

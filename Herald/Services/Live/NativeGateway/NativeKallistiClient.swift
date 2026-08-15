@@ -2362,7 +2362,7 @@ private final class StreamEventHandler: @unchecked Sendable {
                     toolCallID: tool.toolCallID,
                     name: tool.name,
                     emoji: tool.emoji,
-                    argsPreview: tool.preview
+                    argsPreview: tool.argsText ?? tool.preview
                 )
                 continuation.yield(.toolStarted(activity))
             }

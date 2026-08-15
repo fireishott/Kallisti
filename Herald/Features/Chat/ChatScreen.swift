@@ -1082,6 +1082,14 @@ struct ChatScreen: View {
         isLoading && messageCount == 0
     }
 
+    /// Keep the active turn as one immutable visual tail. Server refreshes can
+    /// insert persisted tool-boundary rows while the turn is still running;
+    /// raw array order then makes its thought card jump through the thread.
+    nonisolated static func transcriptRows(_ messages: [Message]) -> [Message] {
+        guard let active = messages.last(where: { $0.isStreaming }) else { return messages }
+        return messages.filter { $0.id != active.id } + [active]
+    }
+
     // MARK: - Message List
 
     private var messageList: some View {
@@ -1094,7 +1102,7 @@ struct ChatScreen: View {
                         .id("top")
 
                     if let messages = chatStore.conversation?.messages {
-                        ForEach(messages) { message in
+                        ForEach(Self.transcriptRows(messages)) { message in
                             MessageBubble(
                                 message: message,
                                 textColorHex: settingsStore.settings.chatTextColorHex,
