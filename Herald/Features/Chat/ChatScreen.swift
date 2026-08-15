@@ -212,6 +212,8 @@ struct ChatScreen: View {
     // UITextView (no .focused() anchor), so FocusState gets zeroed by the focus
     // engine on every re-render and the keyboard dropped after each keystroke.
     @State private var isComposerFocused = false
+    // Build 128.1: visible catch-up button spinner state.
+    @State private var isCatchingUp = false
 
     // Scroll debounce during streaming — coalesces multiple scrollToBottom()
     // triggers from different onChange handlers into one per ~100ms, preventing
@@ -575,10 +577,23 @@ struct ChatScreen: View {
             .accessibilityLabel("Open session drawer")
         }
         ToolbarItem(placement: .principal) {
+            // Build 128.1: double-tap the top bar to jump to the top of the
+            // thread (oldest messages). Single tap still opens the context
+            // popover inside compactStatusControl.
             compactStatusControl
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    scrollToTop()
+                }
+                .accessibilityAction(named: "Scroll to top") {
+                    scrollToTop()
+                }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            canvasButton
+            HStack(spacing: Design.Spacing.sm) {
+                catchUpButton
+                canvasButton
+            }
         }
     }
 
@@ -594,6 +609,8 @@ struct ChatScreen: View {
         // layoutPriority(1). .principal (same slot iPhone uses) gives the
         // pill its own width budget - proven working on iPhone.
         ToolbarItem(placement: .principal) {
+            // Build 128.1: double-tap the top bar to jump to the top of the
+            // thread (oldest messages) - same affordance as iPhone.
             ViewThatFits(in: .horizontal) {
                 // Wide: profile + model + timer
                 HStack(spacing: Design.Spacing.sm) {
@@ -609,11 +626,19 @@ struct ChatScreen: View {
                 // Compact: same bounded chip as iPhone
                 compactStatusControl
             }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                scrollToTop()
+            }
+            .accessibilityAction(named: "Scroll to top") {
+                scrollToTop()
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             ViewThatFits(in: .horizontal) {
                 // Wide: Canvas + Settings
                 HStack(spacing: Design.Spacing.sm) {
+                    catchUpButton
                     canvasButton
                     GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
                         router.switchToTab(.settings)
@@ -638,6 +663,38 @@ struct ChatScreen: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open canvas")
+    }
+
+    /// Build 128.1: visible catch-up affordance. Pull-to-refresh exists
+    /// (.refreshable) but is undiscoverable until you scroll to the very
+    /// top; this button gives the same performForegroundCatchUp path a
+    /// one-tap surface in the toolbar. Spins while a refresh is in flight.
+    private var catchUpButton: some View {
+        Button {
+            Task {
+                guard !isCatchingUp else { return }
+                isCatchingUp = true
+                await chatStore.performForegroundCatchUp()
+                isCatchingUp = false
+            }
+        } label: {
+            if isCatchingUp {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: Design.Size.iconSmall, height: Design.Size.iconSmall)
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: Design.Size.iconSmall, weight: .medium))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(
+            width: Design.Size.glassCircleButton,
+            height: Design.Size.glassCircleButton
+        )
+        .contentShape(Circle())
+        .accessibilityLabel("Catch up to latest messages")
     }
 
     /// Compact status control for iPhone principal toolbar slot.
@@ -1817,6 +1874,18 @@ struct ChatScreen: View {
                 }
                 try? await Task.sleep(for: .milliseconds(70))
             }
+        }
+    }
+
+    /// Build 128.1: jump to the top of the transcript (oldest messages).
+    /// Wired to double-tap on the top bar. Takes scroll ownership so a
+    /// streamed message doesn't yank the view back down while the user is
+    /// reading history; the Jump-to-Latest arrow becomes visible to return.
+    private func scrollToTop() {
+        isUserScrolling = true
+        autoScrollTask?.cancel()
+        withAnimation(Design.Motion.standard) {
+            scrollProxy?.scrollTo("top", anchor: .top)
         }
     }
 
