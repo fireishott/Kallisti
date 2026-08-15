@@ -136,22 +136,28 @@ struct iPadSidebarView: View {
                 .font(Design.Typography.screenTitle)
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()
-            Button {
-                Task {
-                    await sessionStore.createNewSession()
-                    selectedSection = .chat
+            VStack(spacing: 2) {
+                Button {
+                    Task {
+                        await sessionStore.createNewSession()
+                        selectedSection = .chat
+                    }
+                } label: {
+                    // Build 118: bigger + chat bubble vector for discoverability.
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: Design.Size.iconMedium, weight: .semibold))
+                        .foregroundStyle(Design.Brand.accent)
+                        .frame(width: 40, height: 40)
+                        .background(Design.Brand.accent.opacity(0.12))
+                        .clipShape(Circle())
                 }
-            } label: {
-                // Build 118: bigger + chat bubble vector for discoverability.
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: Design.Size.iconMedium, weight: .semibold))
-                    .foregroundStyle(Design.Brand.accent)
-                    .frame(width: 40, height: 40)
-                    .background(Design.Brand.accent.opacity(0.12))
-                    .clipShape(Circle())
+                .buttonStyle(.plain)
+                .help("New chat session")
+                // Build 120: small caption under the icon.
+                Text("New Chat")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
-            .buttonStyle(.plain)
-            .help("New chat session")
 
             Button {
                 withAnimation(Design.Motion.standard) {
