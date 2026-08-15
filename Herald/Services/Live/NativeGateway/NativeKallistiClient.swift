@@ -125,6 +125,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
         await authCoordinator.currentAccessToken()
     }
 
+    /// Build 127: whether this session authenticates via the gateway session
+    /// cookie (basic / kallisti-pairing login) instead of a stored bearer.
+    /// Gateway-control requests (restart / health) must ride the cookie in
+    /// this mode — login deletes the keychain access token, so forcing a
+    /// Bearer either fails outright or presents a stale token the connector
+    /// rejects with 401.
+    func usesCookieAuth() async -> Bool {
+        await authCoordinator.usesCookieAuth()
+    }
+
     /// Refreshed native-gateway access token, for connector facade calls
     /// (push registration, /gw/logs) that must present a LIVE bearer. The WS
     /// path refreshes via mintTicket, but facade HTTP calls were reading the

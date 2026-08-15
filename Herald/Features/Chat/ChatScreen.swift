@@ -315,7 +315,12 @@ struct ChatScreen: View {
                     onSlashCommand: handleSlashCommand,
                     onPasteImage: { image in
                         handleAttachmentResult(.image(image))
-                    }
+                    },
+                    // Build 127: composer is read-only while the host is not
+                    // online (connecting / reconnecting / unreachable). Kills
+                    // the "keyboard still up and typing on the connecting
+                    // screen" bug.
+                    isEnabled: hostStore.connectionState == .online
                 )
 
                 // Build 118: frosted chat-switch overlay. Shown while the

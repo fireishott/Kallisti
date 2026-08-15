@@ -145,13 +145,17 @@ struct MessageBubble: View, Equatable {
 
             Divider()
 
-            // Retry - assistant messages only
-            if isHermes {
-                Button {
-                    onRetry?(message)
-                } label: {
-                    Label("Retry", systemImage: "arrow.counterclockwise")
-                }
+            // Retry - show for EVERY message so the action is always
+            // discoverable. Build 127: was gated on `isHermes`, which hid it
+            // on messages whose sender was not flagged herald/voiceHerald
+            // (e.g. streamed rows, tool-boundary rows, errored replies) —
+            // Curtis: "also the retry button", the menu was inconsistent
+            // between two screenshots of the same thread. Retrying a user
+            // message resends it; retrying an assistant message re-asks.
+            Button {
+                onRetry?(message)
+            } label: {
+                Label("Retry", systemImage: "arrow.counterclockwise")
             }
 
             // Share

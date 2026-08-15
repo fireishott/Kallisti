@@ -226,6 +226,14 @@ final class GatewayControlService {
 
     private let apiClient: RelayAPIClient
     private let accessTokenProvider: @MainActor () async -> String?
+    /// Build 127: whether the current session authenticates via the gateway
+    /// session cookie (basic / kallisti-pairing login) rather than a stored
+    /// bearer. In cookie-auth mode there IS no bearer token (login deletes
+    /// the keychain access token), so requiring one threw "Not authenticated
+    /// — please pair your device first" and the restart button never worked
+    /// for basic/pairing logins. The relay client rides the cookie in
+    /// URLSession.shared when no Authorization header is set.
+    private let usesCookieAuth: @MainActor () async -> Bool
 
     /// Latest operation state, published for observers (settings progress
     /// card, chat suspension). nil until the first submit.
@@ -233,10 +241,12 @@ final class GatewayControlService {
 
     init(
         apiClient: RelayAPIClient,
-        accessTokenProvider: @escaping @MainActor () async -> String?
+        accessTokenProvider: @escaping @MainActor () async -> String?,
+        usesCookieAuth: @escaping @MainActor () async -> Bool = { false }
     ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        self.usesCookieAuth = usesCookieAuth
     }
 
     /// True while a submitted restart has not reached a terminal phase.
@@ -254,14 +264,18 @@ final class GatewayControlService {
         let token = await accessTokenProvider()
         // Build 107: check for nil/empty token before making the request.
         // Passing nil causes an unauthenticated request which returns 401.
-        guard let token, !token.isEmpty else {
+        // Build 127: except in cookie-auth mode (basic/pairing login), where
+        // there is no bearer token and the session cookie authenticates.
+        let cookieAuth = await usesCookieAuth()
+        let hasToken = token.map { !$0.isEmpty } ?? false
+        guard cookieAuth || hasToken else {
             throw GatewayControlError.restartRejected(
                 message: "Not authenticated — please pair your device first."
             )
         }
         return try await apiClient.getGatewayControl(
-            path: "gw/restart/preflight?target=\(target)",
-            accessToken: token
+            path: "gw/restart/preflight?target=\\(target)",
+            accessToken: cookieAuth ? nil : token
         )
     }
 
@@ -270,7 +284,11 @@ final class GatewayControlService {
     func submitRestart(target: String, preflight: RestartPreflight) async throws -> RestartOperation {
         let token = await accessTokenProvider()
         // Build 107: check for nil/empty token before making the request.
-        guard let token, !token.isEmpty else {
+        // Build 127: cookie-auth mode (basic/pairing login) has no bearer —
+        // the session cookie authenticates.
+        let cookieAuth = await usesCookieAuth()
+        let hasToken = token.map { !$0.isEmpty } ?? false
+        guard cookieAuth || hasToken else {
             throw GatewayControlError.restartRejected(
                 message: "Not authenticated — please pair your device first."
             )
@@ -279,7 +297,7 @@ final class GatewayControlService {
         do {
             result = try await apiClient.postGatewayRestart(
                 body: RestartSubmission(target: target, preflightVersion: preflight.preflightVersion),
-                accessToken: token,
+                accessToken: cookieAuth ? nil : token,
                 idempotencyKey: UUID().uuidString
             )
         } catch let RelayAPIClient.ClientError.serverError(_, message, _, status) where status == 409 {

@@ -95,6 +95,18 @@ struct AppRootView: View {
             if launchSurfaceFirstAppearedAt == nil {
                 launchSurfaceFirstAppearedAt = .now
             }
+            // Build 127: the base gate (connecting / reconnecting /
+            // conversation refresh) is NOT a hard trap. If a conversation
+            // refresh hangs (chatStore.isLoading stuck true with an empty
+            // conversation), base stays true forever and the surface pins on
+            // "Connected" with a spinner that never retires. Apply the same
+            // max-hold as the cold-launch path so a hung refresh degrades to
+            // the chat's own connection banner instead of an opaque splash.
+            let baseElapsed = surfaceHeartbeat.timeIntervalSince(launchSurfaceFirstAppearedAt ?? .now)
+            if baseElapsed > Self.launchSurfaceMaxHold {
+                hasShownConnectedApp = true
+                return false
+            }
             return true
         }
         // Base gate says hide. During a warm reconnect, wait for the connected
@@ -283,6 +295,13 @@ struct AppRootView: View {
         // cancelled and this one exits immediately.
         .task(id: showLoadingSurface) {
             guard showLoadingSurface else { return }
+            // Build 127: the keyboard is a system window that floats ABOVE
+            // the opaque loading surface. If the composer was focused when
+            // the surface mounted (reconnect mid-typing), the keyboard stays
+            // up and keystrokes still land in the hidden text field — the
+            // "connecting screen with the kb still being able to type" bug.
+            // Resign first responder globally so the surface is truly modal.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(0.5))
                 guard !Task.isCancelled else { break }
@@ -390,6 +409,15 @@ struct LoadingSurface: View {
         }
     }
 
+    /// Build 127: show the spinner only while actual work is happening.
+    /// Once the stage is .connected AND the model catalog finished loading,
+    /// a spinning wheel reads as "stuck" — the surface is just holding for
+    /// the minimum display time before retiring, so the status line (model
+    /// + latency) carries the moment instead.
+    private var showSpinner: Bool {
+        stage != .connected || modelLoading
+    }
+
     var body: some View {
         ZStack {
             // Opaque branded background.
@@ -441,9 +469,11 @@ struct LoadingSurface: View {
                     }
                 }
 
-                ProgressView()
-                    .tint(Design.Brand.accent)
-                    .padding(.top, Design.Spacing.sm)
+                if showSpinner {
+                    ProgressView()
+                        .tint(Design.Brand.accent)
+                        .padding(.top, Design.Spacing.sm)
+                }
 
                 if reconnectAttempt >= 5 {
                     Text("Connection struggling - attempt \(reconnectAttempt)")
