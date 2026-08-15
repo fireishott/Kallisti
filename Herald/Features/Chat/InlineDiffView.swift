@@ -235,7 +235,7 @@ struct InlineDiffView: View {
                     content: String(line.dropFirst()),
                     prefixColor: Design.Colors.success,
                     contentColor: Design.Colors.foreground,
-                    backgroundColor: Design.Colors.success.opacity(0.10)
+                    backgroundColor: Design.Colors.success.opacity(0.16)
                 ))
             } else if line.hasPrefix("-") {
                 result.append(DiffLine(
@@ -243,7 +243,7 @@ struct InlineDiffView: View {
                     content: String(line.dropFirst()),
                     prefixColor: Design.Colors.danger,
                     contentColor: Design.Colors.foreground,
-                    backgroundColor: Design.Colors.danger.opacity(0.10)
+                    backgroundColor: Design.Colors.danger.opacity(0.16)
                 ))
             } else if !line.isEmpty {
                 result.append(DiffLine(
