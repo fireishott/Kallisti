@@ -255,6 +255,9 @@ final class AppContainer {
                     return nativeToken
                 }
                 return await sessionStore.currentAccessToken()
+            },
+            usesCookieAuth: { [nativeGatewayClient] in
+                await nativeGatewayClient?.usesCookieAuth() ?? false
             }
         )
 

@@ -42,6 +42,11 @@ struct ChatInputBar: View {
     /// produces a staged attachment instead of a file:// URL string in the
     /// text field.
     var onPasteImage: ((UIImage) -> Void)? = nil
+    /// Build 127: when the host is not online (connecting / reconnecting /
+    /// unreachable), the composer is read-only — no focus, no editing, no
+    /// keyboard. Fixes the "connecting screen with the keyboard still up and
+    /// typing" bug.
+    var isEnabled: Bool = true
 
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
@@ -67,7 +72,7 @@ struct ChatInputBar: View {
     }
 
     private var placeholderText: String {
-        return "Reply to \(profileStore.displayProfileName)"
+        return "Send message"
     }
 
     /// Parses the command and any trailing argument from the text field.
@@ -156,7 +161,8 @@ struct ChatInputBar: View {
                             enterToSend: settingsStore.settings.enterToSend,
                             canSend: { canSend },
                             onSend: handlePrimaryAction,
-                            onPasteImage: { image in onPasteImage?(image) }
+                            onPasteImage: { image in onPasteImage?(image) },
+                            isEnabled: isEnabled
                         )
                         .accessibilityLabel(placeholderText)
                         .font(Design.Typography.body)
@@ -164,7 +170,14 @@ struct ChatInputBar: View {
                         .frame(
                             minHeight: PasteAwareComposerTextView.minimumHeight,
                             idealHeight: PasteAwareComposerTextView.minimumHeight,
-                            maxHeight: PasteAwareComposerTextView.maximumHeight
+                            // Build 127: cap the EMPTY composer at one row.
+                            // maximumHeight lets the capsule expand to fill any
+                            // height the parent proposes (it rendered ~2x the
+                            // 40pt buttons), so the empty field became a tall
+                            // slab with dead space under the placeholder.
+                            maxHeight: text.isEmpty
+                                ? PasteAwareComposerTextView.minimumHeight
+                                : PasteAwareComposerTextView.maximumHeight
                         )
                         .overlay(alignment: .topLeading) {
                             if text.isEmpty {
@@ -198,7 +211,11 @@ struct ChatInputBar: View {
                             .stroke(Design.Colors.border, lineWidth: 1)
                     )
                     .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous))
-                    .onTapGesture { isFocused.wrappedValue = true }
+                    .onTapGesture {
+                        // Build 127: do not allow focus while the host is offline.
+                        guard isEnabled else { return }
+                        isFocused.wrappedValue = true
+                    }
 
                     // Build 125: the action button SWAPS.
                     // Empty composer -> talk button (waveform accent circle)
@@ -352,9 +369,9 @@ struct ChatInputBar: View {
                     Button(action: steerAction) {
                         Image(systemName: "steeringwheel")
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Design.Colors.background)
+                            .foregroundStyle(Design.Colors.foreground)
                             .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                            .background(Design.Brand.accent)
+                            .background(Design.Colors.surface)
                             .clipShape(Circle())
                     }
                     .accessibilityLabel("Queue message after current reply")
@@ -552,6 +569,8 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
     let canSend: () -> Bool
     let onSend: () -> Void
     let onPasteImage: ((UIImage) -> Void)?
+    /// Build 127: read-only composer while the host is not online.
+    var isEnabled: Bool = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -573,6 +592,8 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         textView.showsVerticalScrollIndicator = true
         textView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: -4)
         textView.accessibilityIdentifier = "chat.composer"
+        // Build 127: read-only while the host is offline.
+        textView.isEditable = isEnabled
         textView.onPasteImage = { image in
             context.coordinator.parent.onPasteImage?(image)
         }
@@ -583,6 +604,15 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteInterceptingTextView, context: Context) {
         if uiView.text != text {
             uiView.text = text
+        }
+        // Build 127: sync editable state. When the host drops offline, kill
+        // first responder so the keyboard cannot stay up over the connecting
+        // / reconnect UI, and stop accepting edits.
+        if uiView.isEditable != isEnabled {
+            uiView.isEditable = isEnabled
+        }
+        if !isEnabled && uiView.isFirstResponder {
+            uiView.resignFirstResponder()
         }
         // Build 109: recompute scroll state EVERY update, not only when text
         // changes. The old guard meant an empty composer ("" == "") never
