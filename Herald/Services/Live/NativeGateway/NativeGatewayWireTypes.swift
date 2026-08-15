@@ -153,6 +153,25 @@ struct NativeToolCompletePayload: Decodable {
     /// `payload["inline_diff"]` (display.py `render_edit_diff_with_delta`).
     /// Parsed by `CodeDiffParser` into the app's CodeDiff model.
     let inlineDiff: String?
+    /// Raw `result` object (when it decoded as a dict). Desktop parity: the
+    /// Electron app falls back to `result.diff` / `result.inline_diff` when
+    /// the gateway's rendered `inline_diff` is absent (snapshot capture
+    /// failed, result shape changed). Without this fallback iOS renders no
+    /// diff card where desktop renders one.
+    let resultObject: [String: NativeJSONValue]?
+
+    /// Diff text from the tool result object, mirroring desktop
+    /// `inlineDiffFromResult` (keys `inline_diff`, `diff`).
+    var resultDiff: String? {
+        guard let resultObject else { return nil }
+        for key in ["inline_diff", "diff"] {
+            if case .string(let value)? = resultObject[key],
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
 
     enum CodingKeys: String, CodingKey {
         case toolCallID = "tool_call_id"
@@ -183,6 +202,13 @@ struct NativeToolCompletePayload: Decodable {
             output = v.isEmpty ? nil : String(describing: v)
         } else {
             output = nil
+        }
+        // Capture the raw result object (when dict) so the caller can fall
+        // back to result.diff / result.inline_diff for the diff card.
+        if case .object(let obj)? = try? c.decode(NativeJSONValue.self, forKey: .result) {
+            resultObject = obj
+        } else {
+            resultObject = nil
         }
         isError = try c.decodeIfPresent(Bool.self, forKey: .isError)
             ?? (c.contains(.error) ? true : nil)
