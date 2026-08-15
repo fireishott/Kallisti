@@ -441,8 +441,25 @@ final class PasteInterceptingTextView: UITextView {
         let insets = textContainerInset.top + textContainerInset.bottom
         let minHeight = lineHeight + insets
         let maxHeight = lineHeight * 5 + insets
-        let measured = sizeThatFits(CGSize(width: max(bounds.width, 200), height: .greatestFiniteMagnitude)).height
+        let measured = sizeThatFits(CGSize(width: PasteAwareComposerTextView.measurementWidth(self), height: .greatestFiniteMagnitude)).height
         return CGSize(width: UIView.noIntrinsicMetric, height: min(max(measured, minHeight), maxHeight))
+    }
+
+    /// Build 112: re-decide the scroll flag once UIKit has laid the view out
+    /// with REAL bounds. The first `updateUIView` pass runs before layout
+    /// (`bounds.width == 0`), and the old 200pt measurement fallback made a
+    /// short message look like 5+ lines, flipping `isScrollEnabled` on. A
+    /// scroll-enabled UITextView then reports `contentSize >= frame` in
+    /// `sizeThatFits`, which keeps `needsScroll` true forever — the composer
+    /// pinned at max height with dead space under the text. With the real
+    /// width, the flag settles correctly and the box collapses to the text.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let shouldScroll = PasteAwareComposerTextView.needsScroll(self)
+        if isScrollEnabled != shouldScroll {
+            isScrollEnabled = shouldScroll
+            invalidateIntrinsicContentSize()
+        }
     }
 
     /// Hardware keyboard shift+Return inserts a newline instead of sending
@@ -520,16 +537,29 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         }
     }
 
-    private static func needsScroll(_ textView: UITextView) -> Bool {
+    // fileprivate: called from PasteInterceptingTextView.layoutSubviews (same file).
+    fileprivate static func needsScroll(_ textView: UITextView) -> Bool {
         // Build 110: measure the TEXT, not contentSize. contentSize tracks the
         // frame SwiftUI already proposed - when the VStack proposes the full
         // chat height, contentSize balloons with it, needsScroll returns true,
         // isScrollEnabled flips back on, and the composer expands to fill the
         // screen again (the b107/b109 slab). sizeThatFits with infinite height
         // returns the height the text actually needs, independent of frame.
-        let width = max(textView.bounds.width, 200)
+        let width = measurementWidth(textView)
         let measured = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         return measured >= maxHeight(textView) - 1
+    }
+
+    /// The width the text actually wraps at. During the first layout pass the
+    /// representable's bounds are still zero, so the old hardcoded 200pt
+    /// fallback measured a short message as 5+ lines and trapped the composer
+    /// at max height. Use the real bounds once layout settles; before that,
+    /// estimate the composer's text width (screen minus outer horizontal md
+    /// padding minus the text field's own horizontal md padding).
+    fileprivate static func measurementWidth(_ textView: UITextView) -> CGFloat {
+        if textView.bounds.width > 0 { return textView.bounds.width }
+        let screen = UIScreen.main.bounds.width
+        return max(screen - Design.Spacing.md * 4, 200)
     }
 
     private static func maxHeight(_ textView: UITextView) -> CGFloat {
