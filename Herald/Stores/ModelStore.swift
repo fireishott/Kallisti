@@ -99,6 +99,12 @@ final class ModelStore {
     }
 
     func loadModels(force: Bool = false) async {
+        // Build 114: connection, foreground, and ChatScreen activation can all
+        // request the catalog together. One in-flight RPC owns readiness;
+        // duplicate callers observe the same isLoading state instead of
+        // spawning overlapping requests that flap the picker and loading UI.
+        guard !isLoading else { return }
+
         if !force,
            let lastLoadedAt,
            Date().timeIntervalSince(lastLoadedAt) < Self.refreshInterval,

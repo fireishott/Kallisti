@@ -1051,11 +1051,35 @@ struct ChatScreen: View {
     }
 
     private var connectionIndicatorColor: Color {
-        chatStore.connectionStatus.dotColor
+        Self.connectionIndicatorColor(
+            status: chatStore.connectionStatus,
+            modelsReady: !modelStore.isLoading && modelStore.activeModel != nil
+        )
     }
 
     private var connectionStatusLabel: String {
-        chatStore.connectionStatus.displayLabel
+        if chatStore.connectionStatus == .connected,
+           modelStore.isLoading || modelStore.activeModel == nil {
+            return "Loading models"
+        }
+        return chatStore.connectionStatus.displayLabel
+    }
+
+    nonisolated static func connectionIndicatorColor(
+        status: ConnectionStatus,
+        modelsReady: Bool
+    ) -> Color {
+        if status == .connected, !modelsReady {
+            return .yellow
+        }
+        return status.dotColor
+    }
+
+    nonisolated static func shouldRedactTranscript(
+        isLoading: Bool,
+        messageCount: Int
+    ) -> Bool {
+        isLoading && messageCount == 0
     }
 
     // MARK: - Message List
@@ -1121,7 +1145,12 @@ struct ChatScreen: View {
                 .padding(.vertical, Design.Spacing.md)
             }
             .scrollDismissesKeyboard(.interactively)
-            .redacted(reason: chatStore.isLoading ? .placeholder : [])
+            .redacted(
+                reason: Self.shouldRedactTranscript(
+                    isLoading: chatStore.isLoading,
+                    messageCount: chatStore.conversation?.messages.count ?? 0
+                ) ? .placeholder : []
+            )
             .onTapGesture {
                 isComposerFocused = false
             }

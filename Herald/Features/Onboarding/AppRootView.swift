@@ -85,7 +85,9 @@ struct AppRootView: View {
             // Task finishes probing keychain, the loading surface is the
             // only thing the body should mount - returning users no longer
             // see OnboardingFlowView for one frame while the Task races.
-            hasResolvedStoredLogin: nativeClient?.hasResolvedStoredLogin ?? false
+            hasResolvedStoredLogin: nativeClient?.hasResolvedStoredLogin ?? false,
+            isConversationRefreshing: container.chatStore.isLoading,
+            hasUsableConversation: !(container.chatStore.conversation?.messages.isEmpty ?? true)
         )
         if base {
             // Connecting window (or unresolved init): record when the
@@ -95,12 +97,17 @@ struct AppRootView: View {
             }
             return true
         }
-        // Base gate says hide. On a cold launch that usually means "socket
-        // just connected" - hold the surface until the app is actually
-        // ready (green dot on the model picker = connected + models loaded)
-        // and the minimum display time has elapsed, so the launch screen
-        // registers instead of flashing for a frame.
-        guard !hasShownConnectedApp else { return false }
+        // Base gate says hide. During a warm reconnect, wait for the connected
+        // callback's conversation reload to finish before exposing chat. This
+        // prevents a returning user from landing on stale cached history.
+        if hasShownConnectedApp {
+            return container.chatStore.isLoading
+                && (container.chatStore.conversation?.messages.isEmpty ?? true)
+        }
+
+        // On a cold launch, hold until the app is actually ready (green dot on
+        // the model picker = connected + models loaded) and the minimum display
+        // time has elapsed, so the launch screen registers instead of flashing.
         // Never hold a fresh install with nothing to connect to behind the
         // splash - those devices must land in onboarding immediately.
         // (Stale keychain auth with no relay is exactly this case: it must
@@ -143,7 +150,9 @@ struct AppRootView: View {
         isBootstrapping: Bool,
         hasTerminalLegacyFailure: Bool,
         reconnectDebounced: Bool = false,
-        hasResolvedStoredLogin: Bool = true
+        hasResolvedStoredLogin: Bool = true,
+        isConversationRefreshing: Bool = false,
+        hasUsableConversation: Bool = false
     ) -> Bool {
         if isNative {
             // Build 76: BEFORE the init Task has resolved credential state,
@@ -172,14 +181,14 @@ struct AppRootView: View {
                 }
                 return true  // launch surface: configured cold start, connection pending
             }
-            // Build 69 (r1): after the first verified connect (isLaunchReady),
-            // NEVER show the loading surface again. Mid-session reconnects
-            // are communicated by the chat connection banner; the old
-            // `isRecovering && hasStoredLogin -> reconnectDebounced` branch
-            // re-showed the full opaque surface on every reconnect, producing
-            // the launch respring loop (content -> surface -> content 4-10x)
-            // whenever the socket connected then dropped during startup.
-            return false
+            // Build 114: after the first verified connect, cover a sustained
+            // disconnect/reconnect for returning users. NativeKallistiClient's
+            // three-second reconnect grace keeps brief transport churn green,
+            // so this does not resurrect the old content/surface respring loop.
+            // Once connected, keep the surface through the authoritative chat
+            // refresh before revealing cached content.
+            return hasStoredLogin
+                && (isRecovering || (isConversationRefreshing && !hasUsableConversation))
         }
         return !hasTerminalLegacyFailure && (!isLaunchReady || isBootstrapping)
     }

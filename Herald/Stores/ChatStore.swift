@@ -4309,7 +4309,7 @@ final class ChatStore {
 
                     if let anchorID {
                         // The anchor may be addressed either by its own id in the refreshed
-                        // array or by the local id of its server twin.  Resolve both.
+                        // array or by the local id of its server twin. Resolve both.
                         let anchorIdx = refreshedConversation.messages.firstIndex(where: { $0.id == anchorID })
                             ?? localToRefreshedIndex[anchorID]
                         if let anchorIdx {
@@ -4319,6 +4319,31 @@ final class ChatStore {
                                 localToRefreshedIndex[localID] = idx + 1
                             }
                             localToRefreshedIndex[localMsg.id] = anchorIdx + 1
+                        } else {
+                            refreshedConversation.messages.append(localMsg)
+                            localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
+                        }
+                    } else if let localIdx = localMessages.firstIndex(where: { $0.id == localMsg.id }) {
+                        // Build 114: a local-only row at the beginning of the local
+                        // transcript has no predecessor to anchor to. Appending it
+                        // moved old prompts below newer server history. Use the first
+                        // represented successor as a right-hand anchor and insert the
+                        // row immediately before it. Transcript identity, not clocks,
+                        // remains the ordering authority.
+                        var successorIndex: Int?
+                        for successor in localMessages[localMessages.index(after: localIdx)...] {
+                            if let index = refreshedConversation.messages.firstIndex(where: { $0.id == successor.id })
+                                ?? localToRefreshedIndex[successor.id] {
+                                successorIndex = index
+                                break
+                            }
+                        }
+                        if let successorIndex {
+                            refreshedConversation.messages.insert(localMsg, at: successorIndex)
+                            for (localID, idx) in localToRefreshedIndex where idx >= successorIndex {
+                                localToRefreshedIndex[localID] = idx + 1
+                            }
+                            localToRefreshedIndex[localMsg.id] = successorIndex
                         } else {
                             refreshedConversation.messages.append(localMsg)
                             localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
