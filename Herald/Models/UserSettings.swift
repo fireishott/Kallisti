@@ -523,6 +523,12 @@ enum ReasoningEffort: String, Codable, CaseIterable, Hashable, Sendable {
 struct UserSettings: Codable, Hashable, Sendable {
     var userName: String
     var avatarInitials: String
+    /// Build 118: display name shown in the sessions sidebar header.
+    /// Defaults to "Kallisti" but users can change it to match their agent.
+    var appDisplayName: String
+    /// Build 118: alternate app icon selection. nil = default (no alternate).
+    /// "GlassKallisti" = the iOS 26 glass UI coin.
+    var appIconName: String?
     var notificationsEnabled: Bool
     var hapticFeedbackEnabled: Bool
     var environment: AppEnvironment
@@ -554,6 +560,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     init(
         userName: String = "User",
         avatarInitials: String = "U",
+        appDisplayName: String = "Kallisti",
+        appIconName: String? = nil,
         notificationsEnabled: Bool = true,
         hapticFeedbackEnabled: Bool = true,
         environment: AppEnvironment = AppEnvironmentPolicy.currentBuild.defaultEnvironment,
@@ -584,6 +592,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
+        self.appDisplayName = appDisplayName
+        self.appIconName = appIconName
         self.notificationsEnabled = notificationsEnabled
         self.hapticFeedbackEnabled = hapticFeedbackEnabled
         self.environment = environment
@@ -616,6 +626,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case userName
         case avatarInitials
+        case appDisplayName
+        case appIconName
         case notificationsEnabled
         case hapticFeedbackEnabled
         case environment
@@ -649,6 +661,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? "User"
         avatarInitials = try container.decodeIfPresent(String.self, forKey: .avatarInitials) ?? "U"
+        appDisplayName = try container.decodeIfPresent(String.self, forKey: .appDisplayName) ?? "Kallisti"
+        appIconName = try container.decodeIfPresent(String.self, forKey: .appIconName)
         notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
         hapticFeedbackEnabled = try container.decodeIfPresent(Bool.self, forKey: .hapticFeedbackEnabled) ?? true
         environment = try container.decodeIfPresent(AppEnvironment.self, forKey: .environment) ?? AppEnvironmentPolicy.currentBuild.defaultEnvironment
@@ -690,6 +704,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(userName, forKey: .userName)
         try container.encode(avatarInitials, forKey: .avatarInitials)
+        try container.encode(appDisplayName, forKey: .appDisplayName)
+        try container.encodeIfPresent(appIconName, forKey: .appIconName)
         try container.encode(notificationsEnabled, forKey: .notificationsEnabled)
         try container.encode(hapticFeedbackEnabled, forKey: .hapticFeedbackEnabled)
         try container.encode(environment, forKey: .environment)

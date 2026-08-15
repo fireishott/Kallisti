@@ -294,6 +294,10 @@ final class SessionListStore {
 
     func switchToSession(_ session: SessionSummary) async {
         do {
+            // Build 118: show the frosted switch overlay while the target
+            // conversation loads from the host.
+            chatStore.isSwitchingConversation = true
+            defer { chatStore.isSwitchingConversation = false }
             // Cancel any in-flight streaming from the previous session.
             // Without this, switching sessions mid-stream leaves the stop
             // button visible on the new chat (activeStreams survives the

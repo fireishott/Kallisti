@@ -41,6 +41,7 @@ struct iPadSidebarView: View {
     @Environment(KallistiHostStore.self) private var hostStore
     @Environment(SessionListStore.self) private var sessionStore
     @Environment(NotesStore.self) private var notesStore
+    @Environment(SettingsStore.self) private var settingsStore
     @State private var renamingSession: SessionSummary?
     @State private var renameText = ""
 
@@ -131,7 +132,7 @@ struct iPadSidebarView: View {
 
     private var headerRow: some View {
         HStack {
-            Text("Kallisti")
+            Text(settingsStore.settings.appDisplayName)
                 .font(Design.Typography.screenTitle)
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()
@@ -141,9 +142,13 @@ struct iPadSidebarView: View {
                     selectedSection = .chat
                 }
             } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: Design.Size.iconSmall))
+                // Build 118: bigger + chat bubble vector for discoverability.
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: Design.Size.iconMedium, weight: .semibold))
                     .foregroundStyle(Design.Brand.accent)
+                    .frame(width: 40, height: 40)
+                    .background(Design.Brand.accent.opacity(0.12))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
             .help("New chat session")

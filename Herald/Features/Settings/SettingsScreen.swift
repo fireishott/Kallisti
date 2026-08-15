@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
@@ -1507,6 +1508,94 @@ struct SettingsScreen: View {
                     }
                 }
                 .accessibilityIdentifier("settings.appearance.chatTextColor")
+
+                Divider()
+                    .overlay(Design.Colors.divider)
+
+                // Build 118: app display name — shows in the sessions sidebar
+                // header. Defaults to "Kallisti"; users can rename it to match
+                // their agent.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("App Name")
+                        .brandEyebrow()
+                    TextField("Kallisti", text: appDisplayNameBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(Design.Typography.body)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.appearance.appDisplayName")
+                }
+
+                Divider()
+                    .overlay(Design.Colors.divider)
+
+                // Build 118: alternate app icon picker. Default coin plus the
+                // iOS 26 glass UI coin. On iOS 17.4+ setAlternateIconName is
+                // prompt-free; earlier versions show a confirmation alert.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("App Icon")
+                        .brandEyebrow()
+                    HStack(spacing: 16) {
+                        appIconButton(name: nil, label: "Default")
+                        appIconButton(name: "GlassKallisti", label: "Glass")
+                    }
+                }
+                .accessibilityIdentifier("settings.appearance.appIcon")
+            }
+        }
+    }
+
+    // MARK: - App Icon (Build 118)
+
+    private var currentAppIconName: String? {
+        UIApplication.shared.alternateIconName
+    }
+
+    private func appIconButton(name: String?, label: String) -> some View {
+        let isSelected = currentAppIconName == name
+        return Button {
+            setAppIcon(name)
+        } label: {
+            VStack(spacing: 6) {
+                Group {
+                    if let name {
+                        // Alternate icon imagesets are loadable via UIImage(named:).
+                        Image(uiImage: UIImage(named: name) ?? UIImage())
+                            .resizable()
+                    } else {
+                        // The primary AppIcon.appiconset is not addressable via
+                        // UIImage(named:), so the default preview shows the
+                        // original Kallisti seal - the coin IS the icon.
+                        Image("KallistiSeal")
+                            .resizable()
+                    }
+                }
+                .frame(width: 60, height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(
+                            isSelected ? Design.Brand.accent : Design.Colors.border,
+                            lineWidth: isSelected ? 2.5 : 1
+                        )
+                )
+                Text(label)
+                    .font(Design.Typography.caption2)
+                    .foregroundStyle(
+                        isSelected ? Design.Brand.accent : Design.Colors.secondaryForeground
+                    )
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func setAppIcon(_ name: String?) {
+        guard UIApplication.shared.supportsAlternateIcons else { return }
+        UIApplication.shared.setAlternateIconName(name) { error in
+            if let error {
+                NSLog("[Kallisti] setAlternateIconName failed: %@", error.localizedDescription)
+            } else {
+                settingsStore.settings.appIconName = name
             }
         }
     }
@@ -2096,6 +2185,14 @@ struct SettingsScreen: View {
     private var mimoVoiceStyleBinding: Binding<String> {
         Binding(get: { settingsStore.settings.mimoVoiceStyle }, set: { settingsStore.settings.mimoVoiceStyle = $0 })
     }
+
+    // Build 118: app display name shown in the sessions sidebar header.
+    private var appDisplayNameBinding: Binding<String> {
+        Binding(
+            get: { settingsStore.settings.appDisplayName },
+            set: { settingsStore.settings.appDisplayName = $0 }
+        )
+    }
     private var availableAppleVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix("en") }
@@ -2323,7 +2420,13 @@ struct SettingsScreen: View {
         subtitle: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
-        Toggle(isOn: isOn) {
+        // Build 118: full-row tap target. A stock Toggle only responds on the
+        // switch itself; wrapping the row in a Button makes the whole row
+        // tappable (Curtis's "touch the whole row" ask) while keeping a
+        // switch-style indicator.
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
             HStack(spacing: Design.Spacing.sm) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
@@ -2340,10 +2443,30 @@ struct SettingsScreen: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
                 }
+
+                Spacer(minLength: Design.Spacing.sm)
+
+                // Switch-style indicator (native Switch look without the
+                // native hit-testing limitation).
+                ZStack(alignment: isOn.wrappedValue ? .trailing : .leading) {
+                    Capsule()
+                        .fill(
+                            isOn.wrappedValue
+                                ? Design.Brand.accent
+                                : Design.Colors.border
+                        )
+                        .frame(width: 46, height: 28)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 24, height: 24)
+                        .padding(2)
+                }
+                .animation(Design.Motion.quickResponse, value: isOn.wrappedValue)
             }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
         }
-        .tint(Design.Brand.accent)
-        .frame(minHeight: Design.Size.minTapTarget)
+        .buttonStyle(.plain)
     }
 
     private func openConfiguredURL(_ url: URL?) {
