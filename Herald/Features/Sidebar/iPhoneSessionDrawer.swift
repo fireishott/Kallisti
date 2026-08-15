@@ -132,23 +132,29 @@ struct iPhoneSessionDrawer: View {
                 .font(Design.Typography.screenTitle)
                 .foregroundStyle(Design.Colors.foreground)
             Spacer()
-            Button {
-                Task {
-                    await sessionStore.createNewSession()
-                    if sessionStore.errorMessage == nil {
-                        withAnimation(Design.Motion.standard) { isOpen = false }
+            VStack(spacing: 2) {
+                Button {
+                    Task {
+                        await sessionStore.createNewSession()
+                        if sessionStore.errorMessage == nil {
+                            withAnimation(Design.Motion.standard) { isOpen = false }
+                        }
                     }
+                } label: {
+                    // Build 118: bigger + chat bubble vector for discoverability.
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: Design.Size.iconMedium, weight: .semibold))
+                        .foregroundStyle(Design.Brand.accent)
+                        .frame(width: 40, height: 40)
+                        .background(Design.Brand.accent.opacity(0.12))
+                        .clipShape(Circle())
                 }
-            } label: {
-                // Build 118: bigger + chat bubble vector for discoverability.
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: Design.Size.iconMedium, weight: .semibold))
-                    .foregroundStyle(Design.Brand.accent)
-                    .frame(width: 40, height: 40)
-                    .background(Design.Brand.accent.opacity(0.12))
-                    .clipShape(Circle())
+                .buttonStyle(.plain)
+                // Build 120: small caption under the icon.
+                Text("New Chat")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, Design.Spacing.md)

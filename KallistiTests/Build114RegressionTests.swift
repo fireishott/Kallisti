@@ -72,7 +72,8 @@ struct Build114RegressionTests {
     func composerSizingContract() {
         #expect(PasteAwareComposerTextView.minimumHeight < PasteAwareComposerTextView.maximumHeight)
         let lineHeight = UIFont.systemFont(ofSize: 15).lineHeight
-        #expect(PasteAwareComposerTextView.minimumHeight == lineHeight + 8)
+        // Build 120: default is TWO rows (avoids the 1-row -> 5-row slab).
+        #expect(PasteAwareComposerTextView.minimumHeight == lineHeight * 2 + 8)
         #expect(PasteAwareComposerTextView.maximumHeight == lineHeight * 5 + 8)
     }
 

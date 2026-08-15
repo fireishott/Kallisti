@@ -122,15 +122,20 @@ struct ChatInputBar: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            // Composer container
+            // Composer container. Build 120: iMessage-style. The text field is
+            // its own capsule that stretches to fill the row; the + button
+            // lives OUTSIDE the capsule on the left, the mic sits INSIDE the
+            // capsule at the trailing edge, and the action button (send / stop
+            // / steer / voice) sits outside on the right. This kills the old
+            // one-bubble layout where the field was squeezed between the + and
+            // mic icons with wide dead space on both sides.
             VStack(spacing: 0) {
                 if !pendingAttachments.isEmpty {
                     attachmentPreviewStrip
                 }
 
-                // Build 114: one compact row. The text field grows from one to
-                // five lines; after five lines UITextView scrolls internally.
                 HStack(alignment: .bottom, spacing: Design.Spacing.xs) {
+                    // + button - outside the capsule, iMessage style
                     Button(action: onAttach) {
                         Image(systemName: "plus")
                             .font(.system(size: Design.Size.iconMedium, weight: .medium))
@@ -141,45 +146,59 @@ struct ChatInputBar: View {
                     }
                     .accessibilityLabel("Add attachment")
 
-                    PasteAwareComposerTextView(
-                        text: $text,
-                        placeholder: speechService?.isListening == true ? "Listening..." : placeholderText,
-                        isFocused: isFocused,
-                        enterToSend: settingsStore.settings.enterToSend,
-                        canSend: { canSend },
-                        onSend: handlePrimaryAction,
-                        onPasteImage: { image in onPasteImage?(image) }
-                    )
-                    .accessibilityLabel(placeholderText)
-                    .font(Design.Typography.body)
-                    .foregroundStyle(Design.Colors.foreground)
-                    .frame(
-                        minHeight: PasteAwareComposerTextView.minimumHeight,
-                        idealHeight: PasteAwareComposerTextView.minimumHeight,
-                        maxHeight: PasteAwareComposerTextView.maximumHeight
-                    )
-                    .overlay(alignment: .topLeading) {
-                        if text.isEmpty {
-                            Text(speechService?.isListening == true ? "Listening..." : placeholderText)
-                                .font(Design.Typography.body)
-                                .foregroundStyle(Design.Colors.tertiaryForeground)
-                                .padding(.top, 4)
-                                .allowsHitTesting(false)
+                    // Text capsule - own background, stretches to fill
+                    HStack(spacing: 0) {
+                        PasteAwareComposerTextView(
+                            text: $text,
+                            placeholder: speechService?.isListening == true ? "Listening..." : placeholderText,
+                            isFocused: isFocused,
+                            enterToSend: settingsStore.settings.enterToSend,
+                            canSend: { canSend },
+                            onSend: handlePrimaryAction,
+                            onPasteImage: { image in onPasteImage?(image) }
+                        )
+                        .accessibilityLabel(placeholderText)
+                        .font(Design.Typography.body)
+                        .foregroundStyle(Design.Colors.foreground)
+                        .frame(
+                            minHeight: PasteAwareComposerTextView.minimumHeight,
+                            idealHeight: PasteAwareComposerTextView.minimumHeight,
+                            maxHeight: PasteAwareComposerTextView.maximumHeight
+                        )
+                        .overlay(alignment: .topLeading) {
+                            if text.isEmpty {
+                                Text(speechService?.isListening == true ? "Listening..." : placeholderText)
+                                    .font(Design.Typography.body)
+                                    .foregroundStyle(Design.Colors.tertiaryForeground)
+                                    .padding(.top, 4)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                        // Mic lives INSIDE the capsule at the trailing edge.
+                        if !isStreaming {
+                            Button { toggleDictation() } label: {
+                                Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
+                                    .font(.system(size: Design.Size.iconMedium, weight: .medium))
+                                    .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
+                                    .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
+                            }
+                            .accessibilityLabel(speechService?.isListening == true ? "Stop dictation" : "Start dictation")
                         }
                     }
+                    .padding(.leading, Design.Spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous)
+                            .fill(Design.Colors.surface2)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous)
+                            .stroke(Design.Colors.border, lineWidth: 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous))
+                    .onTapGesture { isFocused.wrappedValue = true }
 
-                    if !isStreaming {
-                        Button { toggleDictation() } label: {
-                            Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
-                                .font(.system(size: Design.Size.iconMedium, weight: .medium))
-                                .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
-                                .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                                .background(speechService?.isListening == true ? Design.Colors.surface : .clear)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityLabel(speechService?.isListening == true ? "Stop dictation" : "Start dictation")
-                    }
-
+                    // Voice-mode entry - outside the capsule, right side.
                     if !isStreaming && speechService?.isListening != true && !canSend {
                         Button { router.isVoiceOverlayPresented = true } label: {
                             Image(systemName: "waveform")
@@ -195,21 +214,9 @@ struct ChatInputBar: View {
 
                     actionButton
                 }
-                // Build 118: kill the fat composer margins. Inner horizontal
-                // sm(12) -> xs(8), vertical xs(8) -> xxs(4).
-                .padding(.horizontal, Design.Spacing.xs)
+                .padding(.horizontal, Design.Spacing.xxs)
                 .padding(.vertical, Design.Spacing.xxs)
             }
-            .background(Design.Colors.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: Design.CornerRadius.xxl)
-                    .stroke(Design.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
-            .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
-            .onTapGesture { isFocused.wrappedValue = true }
-            // Outer horizontal xs(8) -> xxs(4), bottom md(16) -> xs(8).
-            .padding(.horizontal, Design.Spacing.xxs)
             .padding(.bottom, Design.Spacing.xs)
         }
         .animation(Design.Motion.quickResponse, value: isSlashMode)
@@ -334,12 +341,14 @@ struct ChatInputBar: View {
                 }
             }
         } else if canSend {
+            // Build 120: big white circle with a bold vector arrow so the
+            // send affordance pops against the dark composer.
             Button(action: sendAction) {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Design.Colors.background)
+                    .font(.system(size: 18, weight: .heavy))
+                    .foregroundStyle(Color.black)
                     .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                    .background(Design.Brand.accent)
+                    .background(Color.white)
                     .clipShape(Circle())
             }
             .accessibilityLabel("Send message")
@@ -465,7 +474,7 @@ final class PasteInterceptingTextView: UITextView {
     override var intrinsicContentSize: CGSize {
         let lineHeight = font?.lineHeight ?? 18
         let insets = textContainerInset.top + textContainerInset.bottom
-        let minHeight = lineHeight + insets
+        let minHeight = lineHeight * 2 + insets   // Build 120: 2-row default
         let maxHeight = lineHeight * 5 + insets
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -509,7 +518,9 @@ final class PasteInterceptingTextView: UITextView {
 /// ChatInputBar so image paste stages a PendingAttachment instead of dumping a
 /// file URL string into the message text.
 struct PasteAwareComposerTextView: UIViewRepresentable {
-    static let minimumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight + 8
+    // Build 120: default to TWO rows. A one-row default trips the
+    // measurement fallback and renders as a 5-row slab on some layouts.
+    static let minimumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight * 2 + 8
     static let maximumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight * 5 + 8
 
     @Binding var text: String
