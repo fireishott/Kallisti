@@ -35,6 +35,13 @@ final class ChatStore {
     /// conversation from the host. Drives the frosted chat-switch overlay so
     /// the user sees progress instead of a frozen old thread.
     var isSwitchingConversation = false
+    /// Build 118: realtime status line for the chat-switch overlay.
+    /// Phased honestly by SessionListStore.switchToSession: the network fetch
+    /// first, then a media phase when the loaded conversation carries
+    /// attachments (their thumbnails genuinely begin loading under the
+    /// overlay). "Loading conversation...", "Downloading attachments...",
+    /// "Loading images...", etc. - not a fake spinner.
+    var switchStatus: String?
     var pendingMessageSentAt: Date?
     /// Build 33 WSB: durable outbox — in-memory mirror of the on-disk manifest
     /// (Application Support/Herald/Outbox/outbox.json). Items survive

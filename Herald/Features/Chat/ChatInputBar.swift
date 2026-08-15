@@ -155,6 +155,7 @@ struct ChatInputBar: View {
                     .foregroundStyle(Design.Colors.foreground)
                     .frame(
                         minHeight: PasteAwareComposerTextView.minimumHeight,
+                        idealHeight: PasteAwareComposerTextView.minimumHeight,
                         maxHeight: PasteAwareComposerTextView.maximumHeight
                     )
                     .overlay(alignment: .topLeading) {
@@ -456,11 +457,20 @@ final class PasteInterceptingTextView: UITextView {
 
     /// Auto-grow between 1 and 5 lines (matches the old
     /// `TextField(axis: .vertical).lineLimit(1...5)`).
+    /// Build 118: when the text is empty, return EXACTLY the one-line
+    /// minimum. The old code measured `sizeThatFits` on an empty view and
+    /// clamped to the range, which let the frame settle at the maximumHeight
+    /// when SwiftUI proposed a tall height on a fresh chat - the composer
+    /// opened as a 5-row slab. Empty => one line, period.
     override var intrinsicContentSize: CGSize {
         let lineHeight = font?.lineHeight ?? 18
         let insets = textContainerInset.top + textContainerInset.bottom
         let minHeight = lineHeight + insets
         let maxHeight = lineHeight * 5 + insets
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: minHeight)
+        }
         let measured = sizeThatFits(CGSize(width: PasteAwareComposerTextView.measurementWidth(self), height: .greatestFiniteMagnitude)).height
         return CGSize(width: UIView.noIntrinsicMetric, height: min(max(measured, minHeight), maxHeight))
     }

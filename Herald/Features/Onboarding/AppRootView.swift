@@ -256,6 +256,7 @@ struct AppRootView: View {
                 onResetConnection: showResetButton ? {
                     Task { await container.nativeGatewayClient?.resetConnection() }
                 } : nil,
+                appDisplayName: container.settingsStore.settings.appDisplayName,
                 modelLoading: modelStore.isLoading,
                 activeModelName: modelStore.activeModel?.name,
                 latencyMs: container.connectorLatencyMs
@@ -349,6 +350,8 @@ struct LoadingSurface: View {
     let stage: ConnectionStage
     let reconnectAttempt: Int
     let onResetConnection: (() -> Void)?
+    /// Build 118: user-configurable app name (defaults to "Kallisti").
+    let appDisplayName: String
     /// Build 108 (realtime status): live detail rendered under the stage
     /// label. modelLoading + activeModelName come straight from ModelStore;
     /// latencyMs comes from AppContainer's 3s latency monitor.
@@ -414,7 +417,7 @@ struct LoadingSurface: View {
                     }
 
                 VStack(spacing: Design.Spacing.xs) {
-                    Text("Kallisti")
+                    Text(appDisplayName)
                         .font(Design.Typography.sectionTitle)
                         .foregroundStyle(Design.Colors.foreground)
 

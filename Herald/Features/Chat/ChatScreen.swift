@@ -1798,12 +1798,14 @@ struct ChatScreen: View {
                     )
 
                 VStack(spacing: Design.Spacing.xs) {
-                    Text("Loading Chat")
+                    Text(chatSwitchStatusText)
                         .font(Design.Typography.sectionTitle)
                         .foregroundStyle(Design.Colors.foreground)
-                    Text(chatSwitchStatusText)
-                        .font(Design.Typography.body)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    if let detail = chatStore.switchStatus {
+                        Text(detail)
+                            .font(Design.Typography.body)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
                 }
             }
             .padding(Design.Spacing.xl)

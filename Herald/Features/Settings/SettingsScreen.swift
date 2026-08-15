@@ -1529,14 +1529,15 @@ struct SettingsScreen: View {
                     .overlay(Design.Colors.divider)
 
                 // Build 118: alternate app icon picker. Default coin plus the
-                // iOS 26 glass UI coin. On iOS 17.4+ setAlternateIconName is
-                // prompt-free; earlier versions show a confirmation alert.
+                // iOS 26 glass UI coin. Uses the asset-catalog alternate-icon
+                // API (ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES), so
+                // setAlternateIconName swaps the home-screen icon instantly.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("App Icon")
                         .brandEyebrow()
                     HStack(spacing: 16) {
-                        appIconButton(name: nil, label: "Default")
-                        appIconButton(name: "GlassKallisti", label: "Glass")
+                        appIconButton(name: nil, label: "Default", preview: "AppIconImage")
+                        appIconButton(name: "AppIcon-GlassCoin", label: "Glass", preview: "AppIconGlassCoin")
                     }
                 }
                 .accessibilityIdentifier("settings.appearance.appIcon")
@@ -1550,27 +1551,16 @@ struct SettingsScreen: View {
         UIApplication.shared.alternateIconName
     }
 
-    private func appIconButton(name: String?, label: String) -> some View {
+    private func appIconButton(name: String?, label: String, preview: String) -> some View {
         let isSelected = currentAppIconName == name
         return Button {
             setAppIcon(name)
         } label: {
             VStack(spacing: 6) {
-                Group {
-                    if let name {
-                        // Alternate icon imagesets are loadable via UIImage(named:).
-                        Image(uiImage: UIImage(named: name) ?? UIImage())
-                            .resizable()
-                    } else {
-                        // The primary AppIcon.appiconset is not addressable via
-                        // UIImage(named:), so the default preview shows the
-                        // original Kallisti seal - the coin IS the icon.
-                        Image("KallistiSeal")
-                            .resizable()
-                    }
-                }
-                .frame(width: 60, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                Image(preview)
+                    .resizable()
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(

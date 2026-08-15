@@ -295,9 +295,16 @@ final class SessionListStore {
     func switchToSession(_ session: SessionSummary) async {
         do {
             // Build 118: show the frosted switch overlay while the target
-            // conversation loads from the host.
+            // conversation loads from the host. Phase the status honestly:
+            // the network fetch first, then a media phase when the loaded
+            // conversation carries attachments (their thumbnails genuinely
+            // begin loading under the overlay).
             chatStore.isSwitchingConversation = true
-            defer { chatStore.isSwitchingConversation = false }
+            chatStore.switchStatus = "Loading conversation..."
+            defer {
+                chatStore.isSwitchingConversation = false
+                chatStore.switchStatus = nil
+            }
             // Cancel any in-flight streaming from the previous session.
             // Without this, switching sessions mid-stream leaves the stop
             // button visible on the new chat (activeStreams survives the
@@ -314,6 +321,11 @@ final class SessionListStore {
             persistence.currentSessionId = session.id
             let conversation = try await heraldClient.loadConversation(id: session.id)
             chatStore.conversation = conversation
+            // If the target conversation carries media, the thumbnails are
+            // genuinely loading now - surface that as the realtime status.
+            if conversation.messages.contains(where: { !$0.attachments.isEmpty }) {
+                chatStore.switchStatus = "Loading images..."
+            }
             persistence.currentSessionId = conversation.id
             if let latestUsage = conversation.latestUsage {
                 chatStore.lastTokenUsage = latestUsage
