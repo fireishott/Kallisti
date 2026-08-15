@@ -394,7 +394,21 @@ struct NativeHistoryMessage: Decodable {
         content = try container.decodeIfPresent(String.self, forKey: .text)
             ?? container.decodeIfPresent(String.self, forKey: .content)
             ?? ""
-        timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        // Build 128: the gateway's session.history projection emits
+        // `timestamp` as a NUMBER (unix seconds float), not an ISO8601
+        // string. decodeIfPresent(String.self) THROWS a typeMismatch when the
+        // key is present but numeric, which surfaced as "The data couldn't be
+        // read because it isn't in the correct format" when opening any
+        // session from a second device (cross-device continuation bug).
+        // Normalize: String stays, Number converts to ISO8601. Same lenient
+        // pattern as NativeSessionListItem.started_at (build 44 fix).
+        if let v = try? container.decodeIfPresent(String.self, forKey: .timestamp) {
+            timestamp = v
+        } else if let number = try? container.decode(Double.self, forKey: .timestamp) {
+            timestamp = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: number))
+        } else {
+            timestamp = nil
+        }
         // Hermes emits row_id as the raw state.db integer row id; it survives
         // the NativeJSONValue round-trip as a JSON number. Decode leniently
         // (Int, then Double, then String) so either serialization works.
