@@ -200,31 +200,41 @@ struct ChatInputBar: View {
                     .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous))
                     .onTapGesture { isFocused.wrappedValue = true }
 
-                    // Build 123: ONE action button. The send button IS the talk
-                    // button - a single accent circle that sends when there's a
-                    // draft and opens voice mode when empty. No arrow swap.
-                    // While streaming, actionButton takes over (Stop / Steer).
+                    // Build 125: the action button SWAPS.
+                    // Empty composer -> talk button (waveform accent circle)
+                    // opens voice mode. Text present -> send button, a plain
+                    // arrow.up vector matching the mic style - NO white/accent
+                    // circle fill. While streaming, actionButton takes over
+                    // (Stop / Steer).
                     if isStreaming {
                         actionButton
                     } else if speechService?.isListening != true {
-                        Button {
-                            if canSend {
-                                sendAction()
-                            } else {
-                                router.isVoiceOverlayPresented = true
+                        if canSend {
+                            Button(action: sendAction) {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                                    .frame(width: 40, height: 40)
                             }
-                        } label: {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundStyle(Design.Colors.background)
-                                .frame(width: 40, height: 40)
-                                .background(Design.Brand.accent)
-                                .clipShape(Circle())
+                            .accessibilityLabel("Send message")
+                            .accessibilityHint("Send the drafted message")
+                            .simultaneousGesture(longPressToQueueGesture)
+                            .transition(.scale.combined(with: .opacity))
+                        } else {
+                            Button {
+                                router.isVoiceOverlayPresented = true
+                            } label: {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundStyle(Design.Colors.background)
+                                    .frame(width: 40, height: 40)
+                                    .background(Design.Brand.accent)
+                                    .clipShape(Circle())
+                            }
+                            .accessibilityLabel("Start voice mode")
+                            .accessibilityHint("Open voice mode")
+                            .transition(.scale.combined(with: .opacity))
                         }
-                        .accessibilityLabel(canSend ? "Send message" : "Start voice mode")
-                        .accessibilityHint(canSend ? "Send the drafted message" : "Open voice mode")
-                        .simultaneousGesture(canSend ? longPressToQueueGesture : nil)
-                        .transition(.scale.combined(with: .opacity))
                     }
                 }
                 .padding(.horizontal, Design.Spacing.xxs)
