@@ -1053,7 +1053,10 @@ struct ChatScreen: View {
     private var connectionIndicatorColor: Color {
         Self.connectionIndicatorColor(
             status: chatStore.connectionStatus,
-            modelsReady: !modelStore.isLoading && modelStore.activeModel != nil
+            modelsReady: !modelStore.isLoading && modelStore.activeModel != nil,
+            streamStalled: chatStore.stallSnapshot != nil
+                || chatStore.streamingPhase == .stalled
+                || chatStore.streamingPhase == .reconnecting
         )
     }
 
@@ -1062,14 +1065,30 @@ struct ChatScreen: View {
            modelStore.isLoading || modelStore.activeModel == nil {
             return "Loading models"
         }
+        // Build 116: never claim plain "Connected" while the model stream is
+        // stalled or reconnecting - the banner and the pill must agree, or
+        // the green dot + "Stream stalled" pair reads as a contradiction.
+        if chatStore.connectionStatus == .connected,
+           chatStore.stallSnapshot != nil
+            || chatStore.streamingPhase == .stalled
+            || chatStore.streamingPhase == .reconnecting {
+            return "Stream stalled"
+        }
         return chatStore.connectionStatus.displayLabel
     }
 
     nonisolated static func connectionIndicatorColor(
         status: ConnectionStatus,
-        modelsReady: Bool
+        modelsReady: Bool,
+        streamStalled: Bool = false
     ) -> Color {
         if status == .connected, !modelsReady {
+            return .yellow
+        }
+        // Build 116: a stalled/reconnecting stream is not "fully operational".
+        // Show warning yellow so the dot agrees with the stall banner instead
+        // of a confident green next to "Stream stalled".
+        if status == .connected, streamStalled {
             return .yellow
         }
         return status.dotColor

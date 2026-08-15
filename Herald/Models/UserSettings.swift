@@ -543,6 +543,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var mimoTTSModel: String
     var mimoVoiceStyle: String
     var enterToSend: Bool
+    var longPressToQueue: Bool
     var showReasoning: Bool
     var useStreaming: Bool
     var reasoningEffort: ReasoningEffort
@@ -573,6 +574,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         mimoTTSModel: String = "mimo-v2.5-tts",
         mimoVoiceStyle: String = "",
         enterToSend: Bool = false,
+        longPressToQueue: Bool = true,
         showReasoning: Bool = true,
         useStreaming: Bool = true,
         reasoningEffort: ReasoningEffort = .medium,
@@ -602,6 +604,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.mimoTTSModel = mimoTTSModel
         self.mimoVoiceStyle = mimoVoiceStyle
         self.enterToSend = enterToSend
+        self.longPressToQueue = longPressToQueue
         self.showReasoning = showReasoning
         self.useStreaming = useStreaming
         self.reasoningEffort = reasoningEffort
@@ -633,6 +636,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case mimoTTSModel
         case mimoVoiceStyle
         case enterToSend
+        case longPressToQueue
         case showReasoning
         case useStreaming
         case reasoningEffort
@@ -673,6 +677,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         mimoTTSModel = try container.decodeIfPresent(String.self, forKey: .mimoTTSModel) ?? "mimo-v2.5-tts"
         mimoVoiceStyle = try container.decodeIfPresent(String.self, forKey: .mimoVoiceStyle) ?? ""
         enterToSend = try container.decodeIfPresent(Bool.self, forKey: .enterToSend) ?? false
+        longPressToQueue = try container.decodeIfPresent(Bool.self, forKey: .longPressToQueue) ?? true
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
         useStreaming = try container.decodeIfPresent(Bool.self, forKey: .useStreaming) ?? true
         reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
@@ -705,6 +710,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(mimoTTSModel, forKey: .mimoTTSModel)
         try container.encode(mimoVoiceStyle, forKey: .mimoVoiceStyle)
         try container.encode(enterToSend, forKey: .enterToSend)
+        try container.encode(longPressToQueue, forKey: .longPressToQueue)
         try container.encode(showReasoning, forKey: .showReasoning)
         try container.encode(useStreaming, forKey: .useStreaming)
         try container.encode(reasoningEffort, forKey: .reasoningEffort)

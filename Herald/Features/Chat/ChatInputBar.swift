@@ -51,6 +51,9 @@ struct ChatInputBar: View {
 
     @State private var speechService: (any SpeechDictationService)? = createSpeechDictationService()
     @State private var dictationBaseText = ""
+    /// Build 116: set by a completed long-press so the release-tap that
+    /// follows the gesture does not send/queue a second copy of the draft.
+    @State private var suppressNextTap = false
 
     private var canSend: Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -202,7 +205,7 @@ struct ChatInputBar: View {
             .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
             .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xxl))
             .onTapGesture { isFocused.wrappedValue = true }
-            .padding(.horizontal, Design.Spacing.md)
+            .padding(.horizontal, Design.Spacing.xs)
             .padding(.bottom, Design.Spacing.md)
         }
         .animation(Design.Motion.quickResponse, value: isSlashMode)
@@ -295,6 +298,9 @@ struct ChatInputBar: View {
             // composer has a draft or attachment — tapping it queues the new
             // message behind the active job (Send Next) instead of silently
             // cancelling the current work.
+            // Build 116: the mid-turn send button is a steering wheel, so the
+            // affordance reads as "steer the conversation" rather than a plain
+            // send arrow. Long press also queues (settings-gated).
             HStack(spacing: 8) {
                 // Stop / Interrupt
                 Button(action: onStop) {
@@ -307,10 +313,10 @@ struct ChatInputBar: View {
                 }
                 .accessibilityLabel("Stop generating")
 
-                // Send Next — only when there's a draft
+                // Steer / Send Next — only when there's a draft
                 if canSend {
-                    Button(action: onQueueNext) {
-                        Image(systemName: "arrow.up")
+                    Button(action: steerAction) {
+                        Image(systemName: "steeringwheel")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(Design.Colors.background)
                             .frame(width: 36, height: 36)
@@ -318,11 +324,13 @@ struct ChatInputBar: View {
                             .clipShape(Circle())
                     }
                     .accessibilityLabel("Queue message after current reply")
+                    .accessibilityHint("Steer the conversation")
+                    .simultaneousGesture(longPressToQueueGesture)
                     .transition(.scale.combined(with: .opacity))
                 }
             }
         } else if canSend {
-            Button(action: handlePrimaryAction) {
+            Button(action: sendAction) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(Design.Colors.background)
@@ -331,8 +339,43 @@ struct ChatInputBar: View {
                     .clipShape(Circle())
             }
             .accessibilityLabel("Send message")
+            .simultaneousGesture(longPressToQueueGesture)
             .transition(.scale.combined(with: .opacity))
         }
+    }
+
+    /// Build 116: optional long-press on the send button queues the draft
+    /// behind the active turn (steer) instead of sending immediately. Gated
+    /// by the Long Press to Queue setting.
+    private var longPressToQueueGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.45)
+            .onEnded { _ in
+                guard settingsStore.settings.longPressToQueue else { return }
+                suppressNextTap = true
+                onQueueNext()
+            }
+    }
+
+    /// Send button tap. A just-completed long press leaves `suppressNextTap`
+    /// set, so the release-tap that follows must not send a second copy.
+    private func sendAction() {
+        guard !consumeSuppressedTap() else { return }
+        handlePrimaryAction()
+    }
+
+    /// Steer button tap. Same suppression: a long press already queued the
+    /// draft, so the release-tap must not queue it again.
+    private func steerAction() {
+        guard !consumeSuppressedTap() else { return }
+        onQueueNext()
+    }
+
+    private func consumeSuppressedTap() -> Bool {
+        if suppressNextTap {
+            suppressNextTap = false
+            return true
+        }
+        return false
     }
 
     // MARK: - Dictation

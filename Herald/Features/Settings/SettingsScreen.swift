@@ -1650,6 +1650,16 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 settingsToggle(
+                    icon: "steeringwheel",
+                    iconColor: Design.Colors.foreground,
+                    title: "Long Press to Queue",
+                    subtitle: "Hold the send button to queue a message behind the current reply",
+                    isOn: longPressToQueueBinding
+                )
+
+                sectionDivider
+
+                settingsToggle(
                     icon: "brain",
                     iconColor: Design.Colors.foreground,
                     title: "Show Reasoning",
@@ -2126,6 +2136,13 @@ struct SettingsScreen: View {
         )
     }
 
+    private var longPressToQueueBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.longPressToQueue },
+            set: { settingsStore.settings.longPressToQueue = $0 }
+        )
+    }
+
     private var showReasoningBinding: Binding<Bool> {
         Binding(
             get: { settingsStore.settings.showReasoning },
@@ -2303,6 +2320,7 @@ struct SettingsScreen: View {
         icon: String,
         iconColor: Color,
         title: String,
+        subtitle: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
         Toggle(isOn: isOn) {
@@ -2312,9 +2330,16 @@ struct SettingsScreen: View {
                     .foregroundStyle(iconColor)
                     .frame(width: 20, alignment: .center)
 
-                Text(title)
-                    .font(Design.Typography.callout)
-                    .foregroundStyle(Design.Colors.foreground)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(Design.Typography.caption2)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                }
             }
         }
         .tint(Design.Brand.accent)
