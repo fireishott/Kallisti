@@ -21,13 +21,13 @@ enum QuickNoteConstants {
     }
 }
 
-/// Parsed parameters from a `herald://share` URL.
+/// Parsed parameters from a `kallisti://share` URL.
 struct SharedContentParams: Equatable {
     let text: String
     let title: String?
 }
 
-/// Parses `herald://share?text=...&title=...` URLs for receiving shared content.
+/// Parses `kallisti://share?text=...&title=...` URLs for receiving shared content.
 enum ShareURLParser {
     static func parse(_ url: URL) -> SharedContentParams? {
         guard url.scheme == "kallisti", url.host == "share" else { return nil }

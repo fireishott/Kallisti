@@ -25,7 +25,7 @@ struct ConnectionOverlayTests {
         #expect(show == true)
     }
 
-    @Test("Native mid-session reconnect keeps the chat visible")
+    @Test("Native mid-session reconnect shows the loading surface")
     func nativeReconnectDebounced() {
         let show = AppRootView.shouldShowLoadingSurface(
             isNative: true,
@@ -36,10 +36,10 @@ struct ConnectionOverlayTests {
             hasTerminalLegacyFailure: false,
             reconnectDebounced: true
         )
-        #expect(show == false)
+        #expect(show == true)
     }
 
-    @Test("Native mid-session reconnect without debounce hides the loading surface")
+    @Test("Native sustained reconnect shows the loading surface without a second debounce")
     func nativeReconnectNotDebounced() {
         let show = AppRootView.shouldShowLoadingSurface(
             isNative: true,
@@ -49,6 +49,35 @@ struct ConnectionOverlayTests {
             isBootstrapping: false,
             hasTerminalLegacyFailure: false,
             reconnectDebounced: false
+        )
+        #expect(show == true)
+    }
+
+    @Test("Connected session stays covered while conversation refreshes")
+    func nativeConnectedRefreshingConversation() {
+        let show = AppRootView.shouldShowLoadingSurface(
+            isNative: true,
+            isLaunchReady: true,
+            isRecovering: false,
+            hasStoredLogin: true,
+            isBootstrapping: false,
+            hasTerminalLegacyFailure: false,
+            isConversationRefreshing: true
+        )
+        #expect(show == true)
+    }
+
+    @Test("Connected session keeps populated chat visible during background refresh")
+    func nativeConnectedRefreshingPopulatedConversation() {
+        let show = AppRootView.shouldShowLoadingSurface(
+            isNative: true,
+            isLaunchReady: true,
+            isRecovering: false,
+            hasStoredLogin: true,
+            isBootstrapping: false,
+            hasTerminalLegacyFailure: false,
+            isConversationRefreshing: true,
+            hasUsableConversation: true
         )
         #expect(show == false)
     }

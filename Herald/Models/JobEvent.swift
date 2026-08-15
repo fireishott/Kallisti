@@ -42,6 +42,14 @@ struct ToolCompletedPayload: Codable, Sendable, Hashable {
     init(toolCallId: String, output: String, isError: Bool = false, durationMs: Int? = nil) {
         self.toolCallId = toolCallId; self.output = output; self.isError = isError; self.durationMs = durationMs
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        toolCallId = try container.decode(String.self, forKey: .toolCallId)
+        output = try container.decode(String.self, forKey: .output)
+        isError = try container.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+        durationMs = try container.decodeIfPresent(Int.self, forKey: .durationMs)
+    }
 }
 
 struct CommentaryPayload: Codable, Sendable, Hashable {

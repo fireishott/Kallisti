@@ -121,56 +121,13 @@ struct ChatInputBar: View {
 
             // Composer container
             VStack(spacing: 0) {
-                // Attachment preview strip
                 if !pendingAttachments.isEmpty {
                     attachmentPreviewStrip
                 }
 
-                // Text input area — Build 107: paste-intercepting UITextView
-                // (image paste routes to the attachment pipeline instead of
-                // inserting a file:// URL string). Return-key handling moved
-                // into the coordinator; the old onKeyPress/onChange newline
-                // hacks are gone.
-                PasteAwareComposerTextView(
-                    text: $text,
-                    placeholder: speechService?.isListening == true ? "Listening..." : placeholderText,
-                    isFocused: isFocused,
-                    enterToSend: settingsStore.settings.enterToSend,
-                    canSend: { canSend },
-                    onSend: handlePrimaryAction,
-                    onPasteImage: { image in
-                        onPasteImage?(image)
-                    }
-                )
-                    .accessibilityLabel(placeholderText)
-                    .font(Design.Typography.body)
-                    .foregroundStyle(Design.Colors.foreground)
-                    .padding(.horizontal, Design.Spacing.md)
-                    .padding(.top, pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs)
-                    .padding(.bottom, Design.Spacing.xs)
-                    // Build 110: hard-cap the proposed height at the SwiftUI
-                    // layer so a scroll-enabled UITextView can NEVER expand to
-                    // fill the chat area. The representable's intrinsicContentSize
-                    // clamps to 5 lines, but once isScrollEnabled flips true a
-                    // UIScrollView ignores intrinsic size - the frame cap is the
-                    // only thing that stops the slab. 5 lines of body (15pt) +
-                    // the 4pt top/bottom insets.
-                    .frame(maxHeight: (UIFont.systemFont(ofSize: 15).lineHeight * 5) + 8)
-                    .overlay(alignment: .topLeading) {
-                        // Placeholder overlay (UITextView has no native one)
-                        if text.isEmpty {
-                            Text(speechService?.isListening == true ? "Listening..." : placeholderText)
-                                .font(Design.Typography.body)
-                                .foregroundStyle(Design.Colors.tertiaryForeground)
-                                .padding(.horizontal, Design.Spacing.md)
-                                .padding(.top, (pendingAttachments.isEmpty ? Design.Spacing.sm : Design.Spacing.xs) + 4)
-                                .allowsHitTesting(false)
-                        }
-                    }
-
-                // Bottom action bar
-                HStack(spacing: Design.Spacing.xs) {
-                    // + Attachment button
+                // Build 114: one compact row. The text field grows from one to
+                // five lines; after five lines UITextView scrolls internally.
+                HStack(alignment: .bottom, spacing: Design.Spacing.xs) {
                     Button(action: onAttach) {
                         Image(systemName: "plus")
                             .font(.system(size: Design.Size.iconMedium, weight: .medium))
@@ -181,13 +138,34 @@ struct ChatInputBar: View {
                     }
                     .accessibilityLabel("Add attachment")
 
-                    Spacer()
+                    PasteAwareComposerTextView(
+                        text: $text,
+                        placeholder: speechService?.isListening == true ? "Listening..." : placeholderText,
+                        isFocused: isFocused,
+                        enterToSend: settingsStore.settings.enterToSend,
+                        canSend: { canSend },
+                        onSend: handlePrimaryAction,
+                        onPasteImage: { image in onPasteImage?(image) }
+                    )
+                    .accessibilityLabel(placeholderText)
+                    .font(Design.Typography.body)
+                    .foregroundStyle(Design.Colors.foreground)
+                    .frame(
+                        minHeight: PasteAwareComposerTextView.minimumHeight,
+                        maxHeight: PasteAwareComposerTextView.maximumHeight
+                    )
+                    .overlay(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text(speechService?.isListening == true ? "Listening..." : placeholderText)
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.tertiaryForeground)
+                                .padding(.top, 4)
+                                .allowsHitTesting(false)
+                        }
+                    }
 
-                    // Dictation mic button
                     if !isStreaming {
-                        Button {
-                            toggleDictation()
-                        } label: {
+                        Button { toggleDictation() } label: {
                             Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
@@ -198,11 +176,8 @@ struct ChatInputBar: View {
                         .accessibilityLabel(speechService?.isListening == true ? "Stop dictation" : "Start dictation")
                     }
 
-                    // Talk mode button (right side, before send)
                     if !isStreaming && speechService?.isListening != true && !canSend {
-                        Button {
-                            router.isVoiceOverlayPresented = true
-                        } label: {
+                        Button { router.isVoiceOverlayPresented = true } label: {
                             Image(systemName: "waveform")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(Design.Colors.background)
@@ -214,11 +189,10 @@ struct ChatInputBar: View {
                         .transition(.scale.combined(with: .opacity))
                     }
 
-                    // Send / Stop button
                     actionButton
                 }
                 .padding(.horizontal, Design.Spacing.sm)
-                .padding(.bottom, Design.Spacing.sm)
+                .padding(.vertical, Design.Spacing.xs)
             }
             .background(Design.Colors.surface)
             .overlay(
@@ -479,6 +453,9 @@ final class PasteInterceptingTextView: UITextView {
 /// ChatInputBar so image paste stages a PendingAttachment instead of dumping a
 /// file URL string into the message text.
 struct PasteAwareComposerTextView: UIViewRepresentable {
+    static let minimumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight + 8
+    static let maximumHeight: CGFloat = UIFont.systemFont(ofSize: 15).lineHeight * 5 + 8
+
     @Binding var text: String
     let placeholder: String
     let isFocused: Binding<Bool>
@@ -504,7 +481,8 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         // and the composer rendered as a huge empty slab (b107 regression).
         // needsScroll flips this to true only when content exceeds 5 lines.
         textView.isScrollEnabled = false
-        textView.showsVerticalScrollIndicator = false
+        textView.showsVerticalScrollIndicator = true
+        textView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: -4)
         textView.accessibilityIdentifier = "chat.composer"
         textView.onPasteImage = { image in
             context.coordinator.parent.onPasteImage?(image)

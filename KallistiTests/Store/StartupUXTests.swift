@@ -11,8 +11,8 @@ final class StartupUXTests: XCTestCase {
         ))
     }
 
-    func testStoredLoginReconnectKeepsChatVisible() {
-        XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
+    func testStoredLoginReconnectShowsLoadingSurface() {
+        XCTAssertTrue(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: true,
             hasStoredLogin: true, isBootstrapping: false,
             hasTerminalLegacyFailure: false,
@@ -129,12 +129,9 @@ final class StartupUXTests: XCTestCase {
         ))
     }
 
-    /// Build 69 (r1) regression: once the user has connected once, the
-    /// loading surface must NEVER come back, even if hasResolvedStoredLogin
-    /// briefly flickers. This locks in the post-connect regression guard -
-    /// the gate only matters during the cold-launch resolution window.
-    func testPostConnectReconnectNeverShowsLoadingSurface() {
-        XCTAssertFalse(AppRootView.shouldShowLoadingSurface(
+    /// Build 114: a sustained reconnect covers stale chat until recovery.
+    func testPostConnectReconnectShowsLoadingSurface() {
+        XCTAssertTrue(AppRootView.shouldShowLoadingSurface(
             isNative: true, isLaunchReady: true, isRecovering: true,
             hasStoredLogin: true, hasConfiguredRelay: true,
             isBootstrapping: false,

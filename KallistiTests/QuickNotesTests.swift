@@ -23,7 +23,7 @@ final class QuickNotesTests: XCTestCase {
     func test_quickNoteActivityType_matchesBundlePrefix() {
         XCTAssertEqual(
             QuickNoteConstants.activityType,
-            "net.fihonline.herald.viewNote"
+            "net.fihonline.kallisti.viewNote"
         )
     }
 
@@ -75,7 +75,7 @@ final class QuickNotesTests: XCTestCase {
     func test_parseShareURL_extractsText() {
         let text = "Hello World"
         let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
-        let url = URL(string: "herald://share?text=\(encoded)")!
+        let url = URL(string: "kallisti://share?text=\(encoded)")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -84,7 +84,7 @@ final class QuickNotesTests: XCTestCase {
     }
 
     func test_parseShareURL_extractsTitle() {
-        let url = URL(string: "herald://share?text=hello&title=My%20Note")!
+        let url = URL(string: "kallisti://share?text=hello&title=My%20Note")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -93,7 +93,7 @@ final class QuickNotesTests: XCTestCase {
     }
 
     func test_parseShareURL_titleDefaultsToNil() {
-        let url = URL(string: "herald://share?text=hello")!
+        let url = URL(string: "kallisti://share?text=hello")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -102,7 +102,7 @@ final class QuickNotesTests: XCTestCase {
     }
 
     func test_parseShareURL_returnsNilForMissingText() {
-        let url = URL(string: "herald://share?title=Test")!
+        let url = URL(string: "kallisti://share?title=Test")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -118,7 +118,7 @@ final class QuickNotesTests: XCTestCase {
     }
 
     func test_parseShareURL_returnsNilForWrongHost() {
-        let url = URL(string: "herald://chat?text=hello")!
+        let url = URL(string: "kallisti://chat?text=hello")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -127,7 +127,7 @@ final class QuickNotesTests: XCTestCase {
 
     func test_parseShareURL_handlesMultilineText() {
         let text = "line1%0Aline2%0Aline3"
-        let url = URL(string: "herald://share?text=\(text)")!
+        let url = URL(string: "kallisti://share?text=\(text)")!
 
         let parsed = ShareURLParser.parse(url)
 
@@ -137,7 +137,7 @@ final class QuickNotesTests: XCTestCase {
 
     func test_parseShareURL_handlesSpecialCharacters() {
         let text = "hello%20world%21%40%23"
-        let url = URL(string: "herald://share?text=\(text)")!
+        let url = URL(string: "kallisti://share?text=\(text)")!
 
         let parsed = ShareURLParser.parse(url)
 

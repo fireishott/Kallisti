@@ -83,26 +83,10 @@ struct PendingAttachment: Identifiable, Sendable {
         }
         guard jpegData.count <= maxFileSize else { return nil }
 
-        // Create thumbnail - aspect-fit into a 120x120 square. Drawing the
-        // full image into the square directly (the pre-Build-68 approach)
-        // squashed non-square photos (portrait shots looked stretched).
-        let thumbSize = CGSize(width: 120, height: 120)
-        let renderer = UIGraphicsImageRenderer(size: thumbSize)
-        let thumbImage = renderer.image { _ in
-            let imageSize = image.size
-            guard imageSize.width > 0, imageSize.height > 0 else {
-                image.draw(in: CGRect(origin: .zero, size: thumbSize))
-                return
-            }
-            let scale = min(thumbSize.width / imageSize.width, thumbSize.height / imageSize.height)
-            let scaled = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-            let origin = CGPoint(
-                x: (thumbSize.width - scaled.width) / 2,
-                y: (thumbSize.height - scaled.height) / 2
-            )
-            image.draw(in: CGRect(origin: origin, size: scaled))
-        }
-        let thumbData = thumbImage.jpegData(compressionQuality: 0.6)
+        // Build 114: generate an aspect-fill crop, not an aspect-fit square.
+        // Aspect-fit baked blank pixels into thumbnailBase64, producing white
+        // bars until preview fetched the uncropped original image.
+        let thumbData = croppedThumbnailData(from: image)
 
         return PendingAttachment(
             kind: .image,
@@ -112,6 +96,24 @@ struct PendingAttachment: Identifiable, Sendable {
             localStoragePath: stageLocally(data: jpegData, preferredFileName: fileName ?? "photo.jpg"),
             thumbnailData: thumbData
         )
+    }
+
+    static func croppedThumbnailData(from image: UIImage) -> Data? {
+        let thumbSize = CGSize(width: 120, height: 120)
+        guard image.size.width > 0, image.size.height > 0 else { return nil }
+        let scale = max(thumbSize.width / image.size.width, thumbSize.height / image.size.height)
+        let scaledSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let origin = CGPoint(
+            x: (thumbSize.width - scaledSize.width) / 2,
+            y: (thumbSize.height - scaledSize.height) / 2
+        )
+        let renderer = UIGraphicsImageRenderer(size: thumbSize)
+        let thumbnail = renderer.image { context in
+            context.cgContext.setFillColor(UIColor.clear.cgColor)
+            context.cgContext.fill(CGRect(origin: .zero, size: thumbSize))
+            image.draw(in: CGRect(origin: origin, size: scaledSize))
+        }
+        return thumbnail.jpegData(compressionQuality: 0.6)
     }
 
     /// Create a file attachment from a URL.
