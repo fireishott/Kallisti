@@ -2368,8 +2368,14 @@ private final class StreamEventHandler: @unchecked Sendable {
             }
         case "tool.complete":
             if let tool = event.params.decodePayload(NativeToolCompletePayload.self) {
+                // Desktop parity: prefer the gateway-rendered inline_diff, but
+                // fall back to the diff embedded in the tool result object
+                // (write_file/patch return `diff` in their result) when the
+                // rendered path is absent — e.g. snapshot capture failed.
                 if let inlineDiff = tool.inlineDiff, !inlineDiff.isEmpty {
                     pendingDiffTexts.append(inlineDiff)
+                } else if let resultDiff = tool.resultDiff, !resultDiff.isEmpty {
+                    pendingDiffTexts.append(resultDiff)
                 }
                 continuation.yield(.toolCompleted(
                     toolCallID: tool.toolCallID ?? "",

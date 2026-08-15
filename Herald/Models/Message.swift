@@ -149,6 +149,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         case id, clientMessageID, sender, content, timestamp, jobID, status, attachments
         case reasoning, reasoningDuration
         case toolActivities
+        case codeDiff
     }
 
     init(from decoder: Decoder) throws {
@@ -165,7 +166,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         reasoningDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .reasoningDuration)
         toolActivities = try container.decodeIfPresent([ToolActivity].self, forKey: .toolActivities) ?? []
         toolActivity = nil
-        codeDiff = nil
+        codeDiff = try container.decodeIfPresent(CodeDiff.self, forKey: .codeDiff)
         isStreaming = false
         voiceSessionDuration = nil
         errorCategory = nil
@@ -189,6 +190,9 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
         try container.encodeIfPresent(reasoningDuration, forKey: .reasoningDuration)
         if !toolActivities.isEmpty {
             try container.encode(toolActivities, forKey: .toolActivities)
+        }
+        if let codeDiff {
+            try container.encode(codeDiff, forKey: .codeDiff)
         }
     }
 }

@@ -106,9 +106,27 @@ enum CodeDiffParser {
         var files: [FileDiff] = []
         var current: FileDiffBuilder? = nil
 
+        var pendingFrom: String? = nil
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty || line.contains("┊ review diff") { continue }
+
+            // Raw unified diff header pair: "--- a/foo.swift" then "+++ b/foo.swift".
+            // The result-diff fallback (write_file/patch `result.diff`) ships this
+            // shape; the gateway-rendered inline_diff ships "a/X → b/Y" instead.
+            if line.hasPrefix("--- ") {
+                pendingFrom = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            if line.hasPrefix("+++ ") {
+                let toPath = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                if let fromPath = pendingFrom {
+                    if let c = current { files.append(c.build()) }
+                    current = FileDiffBuilder(fromPath: fromPath, toPath: toPath)
+                    pendingFrom = nil
+                    continue
+                }
+            }
 
             // File section header: "a/foo.swift → b/foo.swift",
             // "/dev/null → b/foo.swift" (added), "a/foo.swift → /dev/null" (deleted)
