@@ -42,6 +42,12 @@ final class ChatStore {
     /// overlay). "Loading conversation...", "Downloading attachments...",
     /// "Loading images...", etc. - not a fake spinner.
     var switchStatus: String?
+    /// Build 124: number of messages the server has that this device has not
+    /// rendered yet, discovered during a foreground catch-up refresh or the
+    /// server-turn watch. Drives the "N new messages" pill so a thread opened
+    /// on another device (desktop, iPad, another iPhone) catches up without
+    /// the user hunting for a refresh gesture. 0 = in sync.
+    var pendingNewMessageCount = 0
     var pendingMessageSentAt: Date?
     /// Build 33 WSB: durable outbox — in-memory mirror of the on-disk manifest
     /// (Application Support/Herald/Outbox/outbox.json). Items survive
@@ -3833,12 +3839,22 @@ final class ChatStore {
                 guard !Task.isCancelled else { break }
 
                 let capturedGeneration = self.conversationGeneration
+                let localSnapshot = self.conversation
                 let fresh = await self.refreshActiveConversation()
                 guard capturedGeneration == self.conversationGeneration else {
                     Self.logger.info("Server turn watch: generation moved, stopping")
                     break
                 }
-                self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
+                // Build 124: if the watch's refresh pulled in rows this device
+                // never rendered (turn finished server-side while the user was
+                // reading history), surface the "N new messages" pill.
+                if let fresh, let localSnapshot, localSnapshot.id == fresh.id {
+                    let newCount = Self.countNewMessages(local: localSnapshot, refreshed: fresh)
+                    if newCount > 0 {
+                        self.pendingNewMessageCount = newCount
+                    }
+                }
+                self.conversation = self.mergeConversationMetadata(from: localSnapshot, into: fresh)
                 self.pendingServerReconciliation = false
                 if let latestUsage = self.conversation?.latestUsage {
                     self.lastTokenUsage = latestUsage
@@ -3879,6 +3895,77 @@ final class ChatStore {
             return try? await heraldClient.loadConversation(id: activeID)
         }
         return await heraldClient.loadConversation()
+    }
+
+    // MARK: - Cross-device catch-up (Build 124)
+
+    /// Build 124: silent catch-up refresh on foreground. When the app returns
+    /// to the foreground, re-fetch the active conversation and merge — even
+    /// when a local cache exists — so content produced on another device
+    /// (desktop, iPad, another phone) appears without a manual refresh.
+    /// Sets `pendingNewMessageCount` when the server has rows this device has
+    /// not rendered yet.
+    func performForegroundCatchUp() async {
+        guard isPollingEnabled, conversation != nil else { return }
+        // Don't clobber a local send/stream in flight — those paths own the
+        // conversation and will reconcile on their own.
+        guard !hasPendingMessages, !isStreaming else { return }
+        // If the server-turn watch is already refreshing, let it own the loop.
+        guard serverTurnPollTask == nil else { return }
+
+        let capturedGeneration = conversationGeneration
+        let localSnapshot = conversation
+        let refreshed = await refreshActiveConversation()
+        guard conversationGeneration == capturedGeneration else { return }
+        guard let refreshed, let localSnapshot, localSnapshot.id == refreshed.id else { return }
+
+        let newCount = Self.countNewMessages(local: localSnapshot, refreshed: refreshed)
+        conversation = mergeConversationMetadata(from: localSnapshot, into: refreshed)
+        if sendPhase == .idle {
+            streamingPhase = .idle
+        }
+        if let conversation {
+            var cacheCopy = conversation
+            cacheCopy.contextPercent = nil
+            cacheCopy.latestUsage = nil
+            persistence.saveConversationCache(cacheCopy)
+            onConversationChanged?()
+        }
+        if newCount > 0 {
+            pendingNewMessageCount = newCount
+        }
+        restartPendingPollingIfNeeded()
+        clearNotificationsForCurrentConversation()
+    }
+
+    /// Build 124: count server messages that have no counterpart in the local
+    /// snapshot — rows produced on another device that this device has not
+    /// rendered. Identity uses the same hierarchy as the merge: id,
+    /// clientMessageID+sender, jobID+sender, then content fingerprint.
+    static func countNewMessages(local: Conversation?, refreshed: Conversation) -> Int {
+        guard let local else { return 0 }
+        guard local.id == refreshed.id else { return 0 }
+        let localIDs = Set(local.messages.map(\.id))
+        let localClientKeys = Set(local.messages.compactMap { msg in
+            msg.clientMessageID.map { "\($0.uuidString)|\(msg.sender)" }
+        })
+        let localJobKeys = Set(local.messages.compactMap { msg in
+            msg.jobID.map { "\($0.uuidString)|\(msg.sender)" }
+        })
+        let localFingerprints = Set(local.messages.map(Self.messageFingerprint))
+        return refreshed.messages.filter { msg in
+            if localIDs.contains(msg.id) { return false }
+            if let cid = msg.clientMessageID,
+               localClientKeys.contains("\(cid.uuidString)|\(msg.sender)") {
+                return false
+            }
+            if let jid = msg.jobID,
+               localJobKeys.contains("\(jid.uuidString)|\(msg.sender)") {
+                return false
+            }
+            if localFingerprints.contains(Self.messageFingerprint(msg)) { return false }
+            return true
+        }.count
     }
 
     /// Merge a server-resolved message with whatever already streamed into the

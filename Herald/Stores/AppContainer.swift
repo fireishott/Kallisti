@@ -1300,6 +1300,14 @@ final class AppContainer {
         // the gateway and refresh until the server reports idle.
         await chatStore.startServerTurnWatchIfNeeded()
 
+        // Build 124: silent cross-device catch-up. A turn started on another
+        // device (desktop, iPad) may have COMPLETED while this phone was
+        // backgrounded — the server-turn watch above only runs while the
+        // server still reports the session busy. Force one quiet refresh so
+        // the thread catches up to the other device's content, and surface
+        // "N new messages" when rows landed that this device never rendered.
+        await chatStore.performForegroundCatchUp()
+
         // Build 33 WSB: reconcile the durable outbox on every foreground —
         // accepted jobs are settled against the relay, expired retry backoffs
         // and queued items for the current conversation are resubmitted.
