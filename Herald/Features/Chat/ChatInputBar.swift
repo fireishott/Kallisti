@@ -31,7 +31,7 @@ struct ChatInputBar: View {
     @Binding var text: String
     @Binding var pendingAttachments: [PendingAttachment]
     let isStreaming: Bool
-    var isFocused: FocusState<Bool>.Binding
+    var isFocused: Binding<Bool>
     let onSend: () -> Void
     let onStop: () -> Void
     let onQueueNext: () -> Void   // Build 31: queue a message after the active turn
@@ -464,7 +464,7 @@ final class PasteInterceptingTextView: UITextView {
 struct PasteAwareComposerTextView: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let isFocused: FocusState<Bool>.Binding
+    let isFocused: Binding<Bool>
     let enterToSend: Bool
     let canSend: () -> Bool
     let onSend: () -> Void
@@ -507,7 +507,12 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         uiView.isScrollEnabled = Self.needsScroll(uiView)
         uiView.invalidateIntrinsicContentSize()
         context.coordinator.updatePlaceholder(uiView)
-        // Sync focus from the SwiftUI FocusState binding.
+        // Sync focus from the SwiftUI binding. Build 111: plain Binding, not
+        // FocusState — FocusState has no .focused() anchor on a UIKit-backed
+        // UITextView, so the focus engine zeroes it on every body re-render
+        // (each keystroke), and the resign branch below dropped the keyboard
+        // after every character. UIKit owns first responder; the binding only
+        // mirrors the delegate callbacks and the tap-to-focus gesture.
         if isFocused.wrappedValue && !uiView.isFirstResponder {
             uiView.becomeFirstResponder()
         } else if !isFocused.wrappedValue && uiView.isFirstResponder {
