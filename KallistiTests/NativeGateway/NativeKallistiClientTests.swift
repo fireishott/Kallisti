@@ -312,6 +312,24 @@ struct NativeKallistiClientTests {
         #expect(components.queryItems?.first(where: { $0.name == "path" })?.value == "images/old photo.jpg")
     }
 
+    @Test("Build 113 preserves cross-platform MEDIA handoff for every supported attachment class")
+    func build113MediaDirectiveContinuity() {
+        let cases: [(path: String, kind: String, mime: String)] = [
+            ("/home/fihadmin/.hermes/images/photo.jpeg", "image", "image/jpeg"),
+            ("/home/fihadmin/.hermes/media/clip.mov", "video", "video/quicktime"),
+            ("/home/fihadmin/.hermes/attachments/report.pdf", "pdf", "application/pdf"),
+            ("/home/fihadmin/.hermes/attachments/testflight_feedback-7.zip", "file", "application/zip"),
+            ("/home/fihadmin/.hermes/attachments/voice.m4a", "audio", "audio/mp4"),
+        ]
+        for item in cases {
+            let resolved = NativeKallistiClient.resolveHistoryMedia(in: "Sent from desktop\nMEDIA: \(item.path)\n") { URL(string: "https://relay.example/v1/native/media?path=\($0)") }
+            #expect(!resolved.text.contains("MEDIA:"))
+            #expect(resolved.attachments.count == 1)
+            #expect(resolved.attachments.first?.kind == item.kind)
+            #expect(resolved.attachments.first?.mimeType == item.mime)
+        }
+    }
+
     @Test("Build 50 connection labels are truthful and complete")
     func build50ConnectionStageLabels() {
         #expect(ConnectionStage.allCases.map(\.displayLabel) == [

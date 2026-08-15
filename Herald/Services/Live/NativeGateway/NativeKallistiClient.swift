@@ -182,8 +182,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// any non-trivial file. The previous 10s cap caused every sizable upload to
     /// surface as REQUESTTIMEOUT, so we now give uploads a generous 60s budget.
     private static let attachmentUploadTimeoutNanos: UInt64 = 60_000_000_000
-    nonisolated(unsafe) private static let nativeMediaPattern = try! NSRegularExpression(
-        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|mp4|mov|m4v|webm|mp3|m4a|wav|aac|zip|txt|md|csv|json|xml|ya?ml|docx?|xlsx?|pptx?|rtf)))(?=[\s`"',;:)\]}])|$)"#,
+    // Media directives cross the desktop -> gateway -> iOS boundary. Keep this
+    // parser non-fatal: malformed text must never make launch depend on regex
+    // compilation. The test suite exercises every supported extension.
+    nonisolated(unsafe) private static let nativeMediaPattern = try? NSRegularExpression(
+        pattern: #"MEDIA:\s*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|((?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|mp4|mov|m4v|webm|mp3|m4a|wav|aac|zip|txt|md|csv|json|xml|ya?ml|docx?|xlsx?|pptx?|rtf)))(?=[\s`"',;:)\]}]|$)"#,
         options: [.caseInsensitive]
     )
     // Build 112: user messages with attachments come back from session.history
@@ -191,7 +194,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
     // connector's directive convention, mirrored by _extract_directive_attachments
     // in session_store.py). Mirror the connector's regex so the app resolves the
     // same attachments the HTTP facade would have.
-    nonisolated(unsafe) private static let nativeDirectivePattern = try! NSRegularExpression(
+    // Same rule for connector-originated user attachment directives: parsing
+    // failure degrades that one message, never the entire application.
+    nonisolated(unsafe) private static let nativeDirectivePattern = try? NSRegularExpression(
         pattern: #"@(?:image|file):\s*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|(\S+))"#,
         options: [.caseInsensitive]
     )
@@ -2081,7 +2086,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     nonisolated static func resolveNativeMedia(in text: String, mediaURLProvider: (String) -> URL?) -> String {
         let fullRange = NSRange(text.startIndex..., in: text)
-        let matches = nativeMediaPattern.matches(in: text, range: fullRange)
+        let matches = nativeMediaPattern?.matches(in: text, range: fullRange) ?? []
         guard !matches.isEmpty else { return text }
         let mutable = NSMutableString(string: text)
         for match in matches.reversed() {
@@ -2111,7 +2116,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         mediaURLProvider: (String) -> URL?
     ) -> (text: String, attachments: [MessageAttachment]) {
         let fullRange = NSRange(text.startIndex..., in: text)
-        let matches = nativeMediaPattern.matches(in: text, range: fullRange)
+        let matches = nativeMediaPattern?.matches(in: text, range: fullRange) ?? []
         guard !matches.isEmpty else { return (text, []) }
         let mutable = NSMutableString(string: text)
         var attachments: [MessageAttachment] = []
@@ -2149,7 +2154,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         mediaURLProvider: (String) -> URL?
     ) -> (text: String, attachments: [MessageAttachment]) {
         let fullRange = NSRange(text.startIndex..., in: text)
-        let matches = nativeDirectivePattern.matches(in: text, range: fullRange)
+        let matches = nativeDirectivePattern?.matches(in: text, range: fullRange) ?? []
         guard !matches.isEmpty else { return (text, []) }
         let mutable = NSMutableString(string: text)
         var attachments: [MessageAttachment] = []
