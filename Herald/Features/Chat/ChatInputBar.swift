@@ -135,12 +135,13 @@ struct ChatInputBar: View {
                 }
 
                 HStack(alignment: .bottom, spacing: Design.Spacing.xs) {
-                    // + button - outside the capsule, iMessage style
+                    // + button - outside the capsule, iMessage style.
+                    // Build 123: 40pt visual, keeps the row slim when empty.
                     Button(action: onAttach) {
                         Image(systemName: "plus")
-                            .font(.system(size: Design.Size.iconMedium, weight: .medium))
+                            .font(.system(size: 20, weight: .medium))
                             .foregroundStyle(Design.Colors.secondaryForeground)
-                            .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
+                            .frame(width: 40, height: 40)
                             .background(Design.Colors.surface)
                             .clipShape(Circle())
                     }
@@ -176,12 +177,13 @@ struct ChatInputBar: View {
                         }
 
                         // Mic lives INSIDE the capsule at the trailing edge.
+                        // Build 123: 40pt visual keeps the empty capsule slim.
                         if !isStreaming {
                             Button { toggleDictation() } label: {
                                 Image(systemName: speechService?.isListening == true ? "stop.fill" : "mic")
-                                    .font(.system(size: Design.Size.iconMedium, weight: .medium))
+                                    .font(.system(size: 20, weight: .medium))
                                     .foregroundStyle(speechService?.isListening == true ? .red : Design.Colors.secondaryForeground)
-                                    .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
+                                    .frame(width: 40, height: 40)
                             }
                             .accessibilityLabel(speechService?.isListening == true ? "Stop dictation" : "Start dictation")
                         }
@@ -198,26 +200,37 @@ struct ChatInputBar: View {
                     .contentShape(RoundedRectangle(cornerRadius: Design.CornerRadius.xl, style: .continuous))
                     .onTapGesture { isFocused.wrappedValue = true }
 
-                    // Voice-mode entry - outside the capsule, right side.
-                    if !isStreaming && speechService?.isListening != true && !canSend {
-                        Button { router.isVoiceOverlayPresented = true } label: {
+                    // Build 123: ONE action button. The send button IS the talk
+                    // button - a single accent circle that sends when there's a
+                    // draft and opens voice mode when empty. No arrow swap.
+                    // While streaming, actionButton takes over (Stop / Steer).
+                    if isStreaming {
+                        actionButton
+                    } else if speechService?.isListening != true {
+                        Button {
+                            if canSend {
+                                sendAction()
+                            } else {
+                                router.isVoiceOverlayPresented = true
+                            }
+                        } label: {
                             Image(systemName: "waveform")
-                                .font(.system(size: Design.Size.iconMedium, weight: .medium))
+                                .font(.system(size: 20, weight: .medium))
                                 .foregroundStyle(Design.Colors.background)
-                                .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
+                                .frame(width: 40, height: 40)
                                 .background(Design.Brand.accent)
                                 .clipShape(Circle())
                         }
-                        .accessibilityLabel("Start voice mode")
+                        .accessibilityLabel(canSend ? "Send message" : "Start voice mode")
+                        .accessibilityHint(canSend ? "Send the drafted message" : "Open voice mode")
+                        .simultaneousGesture(canSend ? longPressToQueueGesture : nil)
                         .transition(.scale.combined(with: .opacity))
                     }
-
-                    actionButton
                 }
                 .padding(.horizontal, Design.Spacing.xxs)
-                .padding(.vertical, Design.Spacing.xxs)
+                .padding(.vertical, Design.Spacing.xxxs)
             }
-            .padding(.bottom, Design.Spacing.xs)
+            .padding(.bottom, Design.Spacing.xxs)
         }
         .animation(Design.Motion.quickResponse, value: isSlashMode)
         .animation(Design.Motion.quickResponse, value: isStreaming)

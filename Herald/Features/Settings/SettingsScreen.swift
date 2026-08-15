@@ -1423,14 +1423,16 @@ struct SettingsScreen: View {
                     .overlay(Design.Colors.divider)
 
                 // Pre-2.1 themes, kept as secondary options.
+                // Build 123: drop the horizontal ScrollView (it left dead
+                // space after the last swatch); spread the swatches evenly
+                // across the full row instead.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Other Themes")
                         .brandEyebrow()
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(ThemePreset.legacyPresets) { theme in
-                                themeSwatch(theme)
-                            }
+                    HStack(spacing: 12) {
+                        ForEach(ThemePreset.legacyPresets) { theme in
+                            themeSwatch(theme)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -1515,13 +1517,23 @@ struct SettingsScreen: View {
                 // Build 118: app display name — shows in the sessions sidebar
                 // header. Defaults to "Kallisti"; users can rename it to match
                 // their agent.
+                // Build 123: drop the black roundedBorder bar; style like the
+                // relay URL field (background capsule + hairline border).
                 VStack(alignment: .leading, spacing: 8) {
                     Text("App Name")
                         .brandEyebrow()
                     TextField("Kallisti", text: appDisplayNameBinding)
-                        .textFieldStyle(.roundedBorder)
                         .font(Design.Typography.body)
+                        .foregroundStyle(Design.Colors.foreground)
                         .autocorrectionDisabled()
+                        .padding(.horizontal, Design.Spacing.md)
+                        .padding(.vertical, 10)
+                        .background(Design.Colors.background)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Design.CornerRadius.lg)
+                                .stroke(Design.Colors.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.lg))
                         .accessibilityIdentifier("settings.appearance.appDisplayName")
                 }
 
@@ -1532,12 +1544,15 @@ struct SettingsScreen: View {
                 // iOS 26 glass UI coin. Uses the asset-catalog alternate-icon
                 // API (ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES), so
                 // setAlternateIconName swaps the home-screen icon instantly.
+                // Build 123: bigger previews fill the row; no dead space
+                // beside the icons.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("App Icon")
                         .brandEyebrow()
-                    HStack(spacing: 16) {
+                    HStack(spacing: 24) {
                         appIconButton(name: nil, label: "Default", preview: "AppIconImage")
                         appIconButton(name: "AppIcon-GlassCoin", label: "Glass", preview: "AppIconGlassCoin")
+                        Spacer(minLength: 0)
                     }
                 }
                 .accessibilityIdentifier("settings.appearance.appIcon")
@@ -1559,10 +1574,10 @@ struct SettingsScreen: View {
             VStack(spacing: 6) {
                 Image(preview)
                     .resizable()
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14)
+                    RoundedRectangle(cornerRadius: 16)
                         .strokeBorder(
                             isSelected ? Design.Brand.accent : Design.Colors.border,
                             lineWidth: isSelected ? 2.5 : 1
