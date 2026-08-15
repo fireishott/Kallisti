@@ -4457,6 +4457,12 @@ final class ChatStore {
                 mimeType: remote.mimeType,
                 thumbnailBase64: remote.thumbnailBase64 ?? match.thumbnailBase64,
                 localStoragePath: match.localStoragePath,
+                // Build 116: preserve the remote's native-media URL. The remote
+                // history row carries mediaURL (connector /v1/native/media);
+                // dropping it left the merged attachment with only a local
+                // staged path that is often gone after a relaunch or cleanup,
+                // so image loads failed and Retry had nothing to fetch.
+                mediaURL: remote.mediaURL ?? match.mediaURL,
                 messageID: remote.messageID ?? match.messageID,
                 remoteIndex: remote.remoteIndex ?? match.remoteIndex
             )
