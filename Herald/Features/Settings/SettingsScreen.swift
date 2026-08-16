@@ -256,6 +256,10 @@ struct SettingsScreen: View {
     @State private var updateInfo: NativeKallistiClient.HermesUpdateInfo?
     @State private var isChangelogPresented = false
     @State private var skippedVersion: String?
+    // Build 128.49: live update progress streamed from the connector while
+    // `hermes update --yes` runs in the background.
+    @State private var updateProgressLines: [String] = []
+    @State private var updateProgressState: String? // idle | running | done | failed
     private let skippedVersionKey = "kallisti.skippedUpdateVersion"
     private var skippedVersionCurrent: String? {
         UserDefaults.standard.string(forKey: skippedVersionKey)
@@ -602,6 +606,8 @@ struct SettingsScreen: View {
                 UpdateChangelogSheet(
                     info: info,
                     isUpdating: $isUpdatingAgent,
+                    progressLines: updateProgressLines,
+                    progressState: updateProgressState,
                     onUpdateNow: {
                         Task { await updateAgent() }
                     },
@@ -729,13 +735,62 @@ struct SettingsScreen: View {
     private func updateAgent() async {
         isUpdatingAgent = true
         updateAgentResult = nil
+        updateProgressLines = []
+        updateProgressState = nil
 
-        // NATIVE mode: `hermes update --yes` through cli.exec. No relay
-        // facade, no bearer token - the gateway runs it locally.
-        if let featureClient = container.nativeGatewayClient?.featureClient {
+        // Build 128.49: NATIVE mode runs `hermes update --yes` on the host in
+        // the background (connector survives it) and streams live output via
+        // /v1/gw/update/progress - the same "watch it happen" feel the
+        // Electron dashboard gets. Falls back to blocking cli.exec only when
+        // the connector progress path is unavailable.
+        if let nativeClient = container.nativeGatewayClient {
+            if let initial = await nativeClient.startUpdate() {
+                updateProgressLines = initial.output ?? []
+                updateProgressState = initial.state
+                // Poll until terminal. The connector keeps the process state
+                // for the whole update even if the gateway restarts under it.
+                var lastState = initial.state
+                var pollCount = 0
+                while lastState == "running" && pollCount < 600 {
+                    try? await Task.sleep(for: .seconds(1))
+                    pollCount += 1
+                    guard let progress = await nativeClient.updateProgress() else {
+                        // Transient poll failure - keep waiting unless the
+                        // socket is clearly dead.
+                        continue
+                    }
+                    if let lines = progress.output {
+                        updateProgressLines = lines
+                    }
+                    lastState = progress.state
+                    updateProgressState = progress.state
+                    if progress.isDone || progress.isFailed {
+                        break
+                    }
+                }
+                if lastState == "done" {
+                    updateAgentResult = "Update complete"
+                } else if lastState == "failed" {
+                    updateAgentResult = "Update failed"
+                } else {
+                    updateAgentResult = "Update still running"
+                }
+                isUpdatingAgent = false
+                // Auto-refresh the section so it reflects the new version
+                // instead of showing a stale "Update available" row.
+                await checkForUpdates()
+                updateAgentResult = nil
+                updateProgressLines = []
+                updateProgressState = nil
+                isChangelogPresented = false
+                try? await Task.sleep(for: .seconds(8))
+                updateCheckResult = nil
+                return
+            }
+            // Fall through to legacy blocking path if startUpdate failed.
             do {
-                let output = try await featureClient.cliExec(argv: ["update", "--yes"], timeout: 300)
-                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let output = try await container.nativeGatewayClient?.featureClient.cliExec(argv: ["update", "--yes"], timeout: 300)
+                let trimmed = (output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 updateAgentResult = trimmed.isEmpty ? "Update complete" : trimmed
             } catch {
                 updateAgentResult = "Update failed: \(error.localizedDescription)"
@@ -765,8 +820,12 @@ struct SettingsScreen: View {
         }
 
         isUpdatingAgent = false
-        try? await Task.sleep(for: .seconds(8))
+        // Build 128.49: refresh the section after the legacy update path too,
+        // so the row never sits on a stale "Update available".
+        await checkForUpdates()
         updateAgentResult = nil
+        try? await Task.sleep(for: .seconds(8))
+        updateCheckResult = nil
     }
 
     private func gatewayRestartButton(label: String, target: String) -> some View {
@@ -2566,6 +2625,9 @@ struct SettingsScreen: View {
 private struct UpdateChangelogSheet: View {
     let info: NativeKallistiClient.HermesUpdateInfo
     @Binding var isUpdating: Bool
+    // Build 128.49: live update output streamed from the connector.
+    let progressLines: [String]
+    let progressState: String?
     let onUpdateNow: () -> Void
     let onSkip: () -> Void
 
@@ -2603,11 +2665,15 @@ private struct UpdateChangelogSheet: View {
 
                         sectionDivider
 
-                        // Changelog body
+                        // Changelog body. Build 128.49: prefers the structured
+                        // commits (grouped Added / Fixed / Other); falls back
+                        // to the legacy plain-text changelog.
                         Text("What's new")
                             .font(Design.Typography.callout.weight(.semibold))
                             .foregroundStyle(Design.Colors.foreground)
-                        if let changelog = info.changelog, !changelog.isEmpty {
+                        if let commits = info.commits, !commits.isEmpty {
+                            changelogView(commits)
+                        } else if let changelog = info.changelog, !changelog.isEmpty {
                             Text(changelog)
                                 .font(Design.Typography.body)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
@@ -2616,6 +2682,42 @@ private struct UpdateChangelogSheet: View {
                             Text("No changelog available.")
                                 .font(Design.Typography.body)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+
+                        // Build 128.49: live update progress while running.
+                        if isUpdating || !progressLines.isEmpty {
+                            sectionDivider
+                            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                                HStack(spacing: Design.Spacing.sm) {
+                                    if progressState == "running" || progressState == nil {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    }
+                                    Text(progressTitle)
+                                        .font(Design.Typography.callout.weight(.semibold))
+                                        .foregroundStyle(Design.Colors.foreground)
+                                    Spacer()
+                                }
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        ForEach(Array(progressLines.enumerated()), id: \.offset) { _, line in
+                                            Text(line)
+                                                .font(.system(.caption2, design: .monospaced))
+                                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                                .textSelection(.enabled)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                    .padding(Design.Spacing.sm)
+                                }
+                                .frame(maxHeight: 220)
+                                .background(Design.Colors.background)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                                        .stroke(Design.Colors.border, lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
+                            }
                         }
 
                         if let urlString = info.releaseURL,
@@ -2649,7 +2751,7 @@ private struct UpdateChangelogSheet: View {
                                             .controlSize(.small)
                                             .tint(.white)
                                     } else {
-                                        Text("Update Now")
+                                        Text(updateButtonTitle)
                                             .font(Design.Typography.callout.weight(.semibold))
                                     }
                                     Spacer()
@@ -2657,7 +2759,7 @@ private struct UpdateChangelogSheet: View {
                                 .padding(.vertical, Design.Spacing.sm)
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(Design.Brand.accent)
+                            .tint(progressState == "failed" ? Design.Colors.danger : Design.Brand.accent)
                             .disabled(isUpdating)
 
                             Button {
@@ -2682,6 +2784,68 @@ private struct UpdateChangelogSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(Design.Brand.accent)
+                }
+            }
+        }
+    }
+
+    private var progressTitle: String {
+        switch progressState {
+        case "running": return "Updating…"
+        case "done": return "Update complete"
+        case "failed": return "Update failed"
+        default: return "Updating…"
+        }
+    }
+
+    private var updateButtonTitle: String {
+        switch progressState {
+        case "done": return "Update Complete"
+        case "failed": return "Retry Update"
+        default: return "Update Now"
+        }
+    }
+
+    /// Build 128.49: group structured commits by conventional-commit type
+    /// so the user sees "what was added" and "what was fixed" at a glance.
+    private func changelogView(_ commits: [NativeKallistiClient.UpdateCommit]) -> some View {
+        let added = commits.filter { ($0.summary ?? "").hasPrefix("feat") }
+        let fixed = commits.filter { ($0.summary ?? "").hasPrefix("fix") }
+        let other = commits.filter { c in
+            let s = c.summary ?? ""
+            return !s.hasPrefix("feat") && !s.hasPrefix("fix")
+        }
+        return VStack(alignment: .leading, spacing: Design.Spacing.md) {
+            if !added.isEmpty {
+                groupSection("Added", commits: added)
+            }
+            if !fixed.isEmpty {
+                groupSection("Fixed", commits: fixed)
+            }
+            if !other.isEmpty {
+                groupSection("Other", commits: other)
+            }
+        }
+    }
+
+    private func groupSection(_ title: String, commits: [NativeKallistiClient.UpdateCommit]) -> some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            Text(title)
+                .font(Design.Typography.caption.weight(.semibold))
+                .foregroundStyle(Design.Brand.accent)
+            ForEach(Array(commits.enumerated()), id: \.offset) { _, commit in
+                HStack(alignment: .top, spacing: Design.Spacing.sm) {
+                    if let sha = commit.sha, !sha.isEmpty {
+                        Text(sha)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .frame(width: 54, alignment: .leading)
+                    }
+                    Text(commit.summary ?? "")
+                        .font(Design.Typography.body)
+                        .foregroundStyle(Design.Colors.foreground)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

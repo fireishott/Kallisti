@@ -854,8 +854,35 @@ final class NativeKallistiClient: HeraldClientProtocol {
         var behindCount: Int?
         var releaseURL: String?
         var changelog: String?
+        // Build 128.49: structured commits (sha/summary/author/at) from the
+        // connector so the changelog sheet can group "Added" / "Fixed" by
+        // conventional-commit type instead of dumping raw oneline text.
+        var commits: [UpdateCommit]?
         var lastCheckedAt: String?
         var error: String?
+    }
+
+    /// One commit the install is behind origin/main by.
+    struct UpdateCommit: Decodable {
+        var sha: String?
+        var summary: String?
+        var author: String?
+        var at: Int?
+    }
+
+    /// Live state of an in-flight Hermes update (Build 128.49).
+    struct UpdateProgress: Decodable {
+        var state: String?        // idle | running | done | failed
+        var exitCode: Int?
+        var pid: Int?
+        var startedAt: String?
+        var finishedAt: String?
+        var output: [String]?
+        var error: String?
+
+        var isRunning: Bool { state == "running" }
+        var isDone: Bool { state == "done" }
+        var isFailed: Bool { state == "failed" }
     }
 
     func updateCheck() async -> HermesUpdateInfo? {
@@ -879,6 +906,80 @@ final class NativeKallistiClient: HeraldClientProtocol {
             return envelope.data?.components?.hermesAgent
         } catch {
             Self.logger.warning("updateCheck: decode failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Build 128.49: start `hermes update --yes` on the host in the
+    /// background. The connector runs in its own venv, so it survives the
+    /// update and can stream progress via updateProgress(). Returns the
+    /// initial progress snapshot, or nil on auth/network failure.
+    func startUpdate() async -> UpdateProgress? {
+        struct Envelope: Decodable {
+            struct DataBox: Decodable {
+                let state: String?
+                let alreadyRunning: Bool?
+                let pid: Int?
+                let output: [String]?
+            }
+            let data: DataBox?
+        }
+        guard let payload = await postFacadeJSONData(
+            path: "/v1/gw/update/apply",
+            body: ["target": "hermes-agent"],
+            logTag: "updateApply"
+        ) else { return nil }
+        do {
+            let envelope = try JSONDecoder().decode(Envelope.self, from: payload)
+            guard let data = envelope.data else { return nil }
+            return UpdateProgress(
+                state: data.state,
+                exitCode: nil,
+                pid: data.pid,
+                startedAt: nil,
+                finishedAt: nil,
+                output: data.output,
+                error: nil
+            )
+        } catch {
+            Self.logger.warning("startUpdate: decode failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Build 128.49: poll the in-flight Hermes update for live output lines
+    /// and terminal state (done/failed + exit code).
+    func updateProgress() async -> UpdateProgress? {
+        struct Envelope: Decodable {
+            struct DataBox: Decodable {
+                let state: String?
+                let exitCode: Int?
+                let pid: Int?
+                let startedAt: String?
+                let finishedAt: String?
+                let output: [String]?
+                let error: String?
+            }
+            let data: DataBox?
+        }
+        guard let payload = await getFacadeJSON(
+            path: "/v1/gw/update/progress",
+            logTag: "updateProgress"
+        ) else { return nil }
+        do {
+            let envelope = try JSONDecoder().decode(Envelope.self, from: payload)
+            guard let data = envelope.data else { return nil }
+            return UpdateProgress(
+                state: data.state,
+                exitCode: data.exitCode,
+                pid: data.pid,
+                startedAt: data.startedAt,
+                finishedAt: data.finishedAt,
+                output: data.output,
+                error: data.error
+            )
+        } catch {
+            Self.logger.warning("updateProgress: decode failed: \(error.localizedDescription)")
             return nil
         }
     }

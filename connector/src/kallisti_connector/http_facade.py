@@ -1069,11 +1069,14 @@ def _read_hermes_latest_version() -> tuple[str | None, int | None, str | None]:
 
 # Build 69 (r7): changelog for the update UI. Reads ONLY the install's git
 # log (HEAD..origin/main, newest 12) - no Hermes code is modified, no
-# subprocess writes anything. Cached in-memory for 10 minutes so the
-# Settings screen polling doesn't shell out on every tap.
-_hermes_changelog_cache: tuple[float, str | None] = (0.0, None)
-
-
+# subprocess writes anything.
+#
+# Build 128.49: cache removed. The behind count (_read_hermes_behind_count)
+# was always fresh while the changelog was cached 10 min, so the iOS UI
+# could show "2 commits behind" next to a 1-line stale changelog when
+# origin/main advanced between the cache fill and the request. Both now run
+# fresh git every time (a local `git log`/`rev-list` costs ~50ms) so the
+# count and the changelog can never disagree.
 def _read_hermes_behind_count() -> int | None:
     """Read-only git rev-list count of commits on origin/main not in HEAD."""
     repo = Path(os.path.expanduser("~/.hermes")) / "hermes-agent"
@@ -1093,31 +1096,50 @@ def _read_hermes_behind_count() -> int | None:
         return None
 
 
-def _read_hermes_changelog() -> str | None:
-    global _hermes_changelog_cache
-    now = time.time()
-    cached_ts, cached = _hermes_changelog_cache
-    if cached_ts and now - cached_ts < 600:
-        return cached
+def _read_hermes_commits() -> list[dict]:
+    """Structured commits HEAD is behind origin/main by, newest first.
+
+    Each entry: {sha (7 chars), summary, author, at (unix ts)}. Mirrors the
+    Hermes dashboard's `_recent_upstream_commits` so the iOS Software Update
+    sheet can group by conventional-commit type (feat → Added, fix → Fixed)
+    instead of dumping raw oneline text.
+    """
     repo = Path(os.path.expanduser("~/.hermes")) / "hermes-agent"
     try:
         if not (repo / ".git").is_dir():
-            return None
+            return []
         result = _run_subprocess(
-            ["git", "-C", str(repo), "log", "--oneline", "-12", "HEAD..origin/main"],
+            [
+                "git", "-C", str(repo), "log",
+                "--format=%H%x1f%s%x1f%an%x1f%ct",
+                "HEAD..origin/main", "-n20",
+            ],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0:
-            return None
-        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
-        if not lines:
-            return "Up to date."
-        changelog = "\n".join(lines)
-        _hermes_changelog_cache = (now, changelog)
-        return changelog
+            return []
+        commits: list[dict] = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = (line.split("\x1f") + ["", "", "", "0"])[:4]
+            sha, summary, author, at = parts
+            commits.append(
+                {"sha": sha[:7], "summary": summary, "author": author, "at": int(at or 0)}
+            )
+        return commits
     except Exception as exc:
-        logger.debug("changelog read failed: %s", exc)
+        logger.debug("commits read failed: %s", exc)
+        return []
+
+
+def _read_hermes_changelog() -> str | None:
+    """Legacy plain-text changelog (kept for backward compat). New clients
+    prefer the structured `commits` field from _read_hermes_commits."""
+    commits = _read_hermes_commits()
+    if not commits:
         return None
+    return "\n".join(f"{c['sha']} {c['summary']}" for c in commits)
 
 
 async def _read_active_model(ctx: "FacadeContext") -> str | None:
@@ -3744,7 +3766,11 @@ async def gateway_update_check(request: Request) -> JSONResponse:
             "behindCount": hermes_behind,
             "releaseDate": None,
             "releaseURL": "https://github.com/NousResearch/hermes-agent/releases",
+            # Build 128.49: structured commits (sha/summary/author/at) so the
+            # iOS sheet can group "Added" / "Fixed" cleanly, plus the legacy
+            # plain-text changelog for older clients.
             "changelog": _read_hermes_changelog(),
+            "commits": _read_hermes_commits(),
             "error": hermes_error,
             "lastCheckedAt": last_checked,
         },
@@ -3799,6 +3825,146 @@ async def gateway_update_apply(request: Request) -> JSONResponse:
             "status": "unsupported",
             "message": f"Component '{target}' updates are managed on the host",
         })
+
+
+# Build 128.49: live Hermes update progress. The connector runs in its own
+# venv (Hermes-iOS/connector/.venv) while `hermes update` rewrites the
+# hermes-agent venv, so the connector SURVIVES the update and can stream the
+# child's stdout back to the iOS sheet — the same "watch it happen" feel the
+# Electron dashboard gets from its detached action log.
+#
+# State is module-level so /v1/gw/update/apply (start) and
+# /v1/gw/update/progress (poll) share one in-flight process. A second apply
+# while one is running returns alreadyRunning instead of double-spawning.
+_update_proc: asyncio.subprocess.Process | None = None
+_update_state: dict[str, Any] = {
+    "state": "idle",  # idle | running | done | failed
+    "exitCode": None,
+    "pid": None,
+    "startedAt": None,
+    "finishedAt": None,
+    "output": [],
+    "error": None,
+}
+
+
+def _hermes_update_binary() -> Path | None:
+    """Locate the hermes CLI the update should run."""
+    candidates = [
+        Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        / "hermes-agent" / "venv" / "bin" / "hermes",
+        Path(os.path.expanduser("~/.local/bin/hermes")),
+    ]
+    for bin_path in candidates:
+        if bin_path.is_file():
+            return bin_path
+    return None
+
+
+async def _drain_update_output(proc: asyncio.subprocess.Process) -> None:
+    """Read the child's stdout/stderr line-by-line into _update_state["output"]
+    (ring buffer, last 200 lines) and flip state to done/failed on exit."""
+    global _update_proc
+    lines: list[str] = []
+    try:
+        assert proc.stdout is not None
+        while True:
+            raw = await proc.stdout.readline()
+            if not raw:
+                break
+            line = raw.decode("utf-8", "replace").rstrip("\n")
+            if line:
+                lines.append(line)
+                if len(lines) > 200:
+                    lines.pop(0)
+                _update_state["output"] = list(lines)
+    except Exception as exc:
+        logger.warning("update output drain failed: %s", exc)
+    finally:
+        try:
+            exit_code = await proc.wait()
+        except Exception:
+            exit_code = None
+        _update_state["exitCode"] = exit_code
+        _update_state["state"] = "done" if exit_code == 0 else "failed"
+        _update_state["finishedAt"] = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
+        _update_state["output"] = list(lines)
+        _update_proc = None
+
+
+async def gateway_update_apply_hermes(request: Request) -> JSONResponse:
+    """Start `hermes update --yes` in the background and return immediately.
+
+    The iOS app then polls /v1/gw/update/progress to stream live output into
+    the Software Update sheet. Auth matches the update check (gateway cookie
+    or paired bearer).
+    """
+    await require_native_or_paired_auth(request)
+    global _update_proc
+
+    if _update_proc is not None and _update_proc.returncode is None:
+        return JSONResponse({
+            "state": "running",
+            "alreadyRunning": True,
+            "pid": _update_proc.pid,
+            "output": _update_state.get("output", []),
+        })
+
+    bin_path = _hermes_update_binary()
+    if bin_path is None:
+        _update_state.update({
+            "state": "failed",
+            "exitCode": None,
+            "error": "hermes binary not found",
+            "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "finishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "output": [],
+        })
+        return JSONResponse(_update_state, status_code=500)
+
+    _update_state.update({
+        "state": "running",
+        "exitCode": None,
+        "pid": None,
+        "error": None,
+        "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "finishedAt": None,
+        "output": [],
+    })
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(bin_path), "update", "--yes",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(bin_path.parent.parent.parent),
+        )
+    except Exception as exc:
+        _update_state.update({
+            "state": "failed",
+            "exitCode": None,
+            "error": str(exc),
+            "finishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        return JSONResponse(_update_state, status_code=500)
+
+    _update_proc = proc
+    _update_state["pid"] = proc.pid
+    _update_state["output"] = [f"⚕ Updating Hermes Agent (pid {proc.pid})…"]
+    asyncio.create_task(_drain_update_output(proc))
+    return JSONResponse({
+        "state": "running",
+        "alreadyRunning": False,
+        "pid": proc.pid,
+        "output": _update_state["output"],
+    })
+
+
+async def gateway_update_progress(request: Request) -> JSONResponse:
+    """Return the live state + output tail of the in-flight Hermes update."""
+    await require_native_or_paired_auth(request)
+    return JSONResponse(_update_state)
 
 
 async def hermes_logs_proxy(request: Request) -> JSONResponse:
@@ -4191,6 +4357,10 @@ routes = [
     # the request to api.xiaomimimo.com using its own key.
     Route("/v1/gw/update", gateway_update_apply, methods=["GET", "POST"]),
     Route("/v1/gw/update/check", gateway_update_check, methods=["POST"]),
+    # Build 128.49: live Hermes update apply + progress (connector survives
+    # `hermes update` so it can stream output to the iOS sheet).
+    Route("/v1/gw/update/apply", gateway_update_apply_hermes, methods=["POST"]),
+    Route("/v1/gw/update/progress", gateway_update_progress, methods=["GET"]),
     Route("/v1/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     # Build 103 WS-C: authoritative Hermes log endpoints reading from
     # profiles/{profile}/logs/* (not connector journald).
@@ -4202,6 +4372,8 @@ routes = [
     # Without these aliases the facade returns 404 for update check/apply.
     Route("/gw/update", gateway_update_apply, methods=["GET", "POST"]),
     Route("/gw/update/check", gateway_update_check, methods=["POST"]),
+    Route("/gw/update/apply", gateway_update_apply_hermes, methods=["POST"]),
+    Route("/gw/update/progress", gateway_update_progress, methods=["GET"]),
     Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
     # Native-completion to push bridge (Task 12)
