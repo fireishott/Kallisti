@@ -1777,7 +1777,9 @@ struct ChatScreen: View {
         // Without this, the new chat inherits the old session's streaming
         // state (activeStreams, streamingTask) and shows a stop button
         // for a chat that doesn't belong to it.
-        chatStore.cancelStreaming()
+        // Build 128.50: creating a new chat must NOT interrupt a server-side
+        // turn running on another device - only the composer Stop tap does.
+        chatStore.cancelStreaming(interruptServerTurn: false)
         await sessionListStore.createNewSession()
         // Scroll to top — new session's conversation is empty
         withAnimation(Design.Motion.standard) {
