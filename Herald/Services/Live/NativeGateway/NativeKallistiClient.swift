@@ -1884,7 +1884,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 // row, so the history and title come back intact. This is
                 // exactly what the desktop/electron client does on reconnect.
                 if let resumeError = response.error {
-                    Self.logger.info("ensureSessionForSwitch: status failed (\\(resumeError)), trying session.resume for \(nativeId)")
+                    Self.logger.info("ensureSessionForSwitch: status failed (\(resumeError)), trying session.resume for \(nativeId)")
                 }
                 let resume = try await client.send(
                     method: "session.resume",
@@ -2540,6 +2540,38 @@ final class NativeKallistiClient: HeraldClientProtocol {
         let response = try await client.send(method: "prompt.cancel", params: ["job_id": jobID.uuidString])
         if let error = response.error { throw error }
     }
+
+    /// Build 128.50: interrupt the CURRENT session's running turn server-side
+    /// via session.interrupt. Unlike cancelJob (which needs the local jobID
+    /// from activeStreams), this works when dropping into a session that is
+    /// mid-turn on the server from another device - the app has no jobID for
+    /// that turn, only the session. Returns true when the gateway accepted
+    /// the interrupt.
+    func interruptSession() async -> Bool {
+        guard let client else { return false }
+        guard let currentConversation else { return false }
+        let interruptID: String
+        if let key = await idMap.sessionKey(for: currentConversation.id), !key.isEmpty {
+            interruptID = key
+        } else if let native = await idMap.nativeId(for: currentConversation.id), !native.isEmpty {
+            interruptID = native
+        } else {
+            return false
+        }
+        do {
+            let response = try await client.send(
+                method: "session.interrupt",
+                params: ["session_id": interruptID],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            return response.error == nil
+        } catch {
+            Self.logger.warning("interruptSession: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    var supportsServerTurnInterrupt: Bool { true }
 
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
 

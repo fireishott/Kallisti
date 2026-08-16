@@ -110,6 +110,18 @@ protocol HeraldClientProtocol {
 
     /// Cancel a running or queued job.
     func cancelJob(jobID: UUID) async throws
+
+    /// Build 128.50: interrupt the CURRENT session's running turn server-side
+    /// via session.interrupt. Unlike cancelJob (which needs the local jobID
+    /// from activeStreams), this works when dropping into a session that is
+    /// mid-turn on the server from another device - the app has no jobID for
+    /// that turn, only the session. Returns true when the gateway accepted
+    /// the interrupt.
+    func interruptSession() async -> Bool
+
+    /// Build 128.50: whether this client implementation can interrupt a
+    /// server-side turn at all (relay path has no session.interrupt).
+    var supportsServerTurnInterrupt: Bool { get }
 }
 
 // MARK: - Default implementations
@@ -142,4 +154,14 @@ extension HeraldClientProtocol {
     func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
         try await createSession(title: title)
     }
+
+    /// Default: no-op for clients without session.interrupt (mocks, legacy
+    /// relay path). The native gateway client overrides this with the
+    /// real gateway call.
+    func interruptSession() async -> Bool { false }
+
+    /// Default: only the native gateway client can interrupt a server-side
+    /// turn; relay/mock clients return false so the UI falls back to local
+    /// teardown only.
+    var supportsServerTurnInterrupt: Bool { false }
 }

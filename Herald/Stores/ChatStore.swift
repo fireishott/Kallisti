@@ -498,6 +498,12 @@ final class ChatStore {
 
     var isStreaming: Bool { streamingMessageID != nil }
 
+    /// Build 128.50: true while the server-turn watch has surfaced a synthetic
+    /// "Thinking..." bubble for a session running mid-turn on another device.
+    /// Drives the drop-in Stop control in the composer without colliding with
+    /// the local-stream machinery (watchdog, scroll-to-bottom, Live Activity).
+    var isServerTurnActive: Bool { serverTurnPlaceholderID != nil }
+
     /// Build 33: set while a Hermes gateway restart is in flight. Sends are
     /// queued visibly instead of being submitted to a dying gateway, streams
     /// are suspended, and the status indicator reports the restart.
@@ -563,6 +569,13 @@ final class ChatStore {
     /// Called when the conversation title changes (server-derived or renamed).
     /// Used by SessionListStore to update sidebar immediately.
     var onTitleChanged: (@MainActor (_ conversationID: UUID, _ newTitle: String) -> Void)?
+
+    /// Build 128.50: called when a turn finishes (stream .finished or a
+    /// terminal job-status poll). Used by AppContainer to force-refresh the
+    /// session list so previews, timestamps, and the in-flight blue dot stay
+    /// in sync across devices immediately - not up to 30s later on the
+    /// auto-refresh tick.
+    var onTurnCompleted: (@MainActor () -> Void)?
     var useStreaming: Bool = false
 
     /// Maximum number of log entries to keep in memory and on disk.
@@ -948,6 +961,17 @@ final class ChatStore {
         // stay durably queued; resumeAfterRestart() drains them.
         guard !restartInProgress else {
             sendPhase = .queued
+            return
+        }
+        // Build 128.50: queue HOLD. When the user has held the queue, stop
+        // the FIFO chain from submitting NEW items after the active turn
+        // finishes. Items stay durably .queued; releasing the hold drains
+        // them. Retryable-failure promotion below is skipped too, so a held
+        // queue is fully frozen (no surprise auto-resends).
+        guard !isQueueHeld else {
+            if !outboxItems.contains(where: { $0.conversationID == targetID && $0.isInFlight }) {
+                sendPhase = .queued
+            }
             return
         }
         // One in-flight outbox job PER CONVERSATION — the rest wait in
@@ -2139,6 +2163,10 @@ final class ChatStore {
                     self.updateConnectionStatus(.connected)
                     self.activeStreams.removeAll()
                     self.streamingPhase = .idle
+                    // Build 128.50: turn done - push an immediate session-list
+                    // refresh so other devices see the new preview/timestamp/
+                    // blue-dot state without waiting for the 30s auto-tick.
+                    self.onTurnCompleted?()
                     // Build 78: sweep orphaned streaming placeholders.
                     // activeStreams was just cleared above; any remaining
                     // isStreaming placeholder is now ownerless and would
@@ -3168,6 +3196,16 @@ final class ChatStore {
     }
 
     func cancelStreaming() {
+        // Build 128.50: when there is no LOCAL job to cancel (activeStreams
+        // empty) but a server-side turn is in flight (dropped into a session
+        // running on another device), interrupt the session itself. The old
+        // code only cancelled local jobIDs, so tapping Stop on a drop-in
+        // mid-turn session did nothing server-side - the turn kept running
+        // and its output landed later as a confusing ghost reply.
+        if activeStreams.isEmpty, isServerTurnActive {
+            stopServerTurn()
+            return
+        }
         // Build 31: cancel the server-side job before tearing down local state.
         // Previously this only did local teardown — the server job kept running
         // to completion, and its output landed in the conversation on the next
@@ -3364,6 +3402,28 @@ final class ChatStore {
         return outboxItems.filter {
             $0.conversationID == conversationID && $0.state == .queued
         }.count
+    }
+
+    /// Build 128.50: when true, queued messages are HELD - the FIFO chain
+    /// stops submitting new items even after the active turn finishes.
+    /// Mirrors the Electron app's hold-the-queue behavior: compose several
+    /// messages, hold them, then release when ready (set false to drain).
+    /// Persisted per-install so the preference survives relaunches.
+    private(set) var isQueueHeld: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.queueHeldKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.queueHeldKey) }
+    }
+    private static let queueHeldKey = "kallisti.queueHeld"
+
+    /// Toggle the hold. When releasing, immediately drains eligible queued
+    /// items so the user doesn't have to poke the composer.
+    func setQueueHeld(_ held: Bool) {
+        guard held != isQueueHeld else { return }
+        isQueueHeld = held
+        onConversationChanged?()
+        if !held {
+            Task { await submitNextEligible() }
+        }
     }
 
     /// `streamingPhase` is UI-only state that outlives the transport it describes.
@@ -4048,6 +4108,29 @@ final class ChatStore {
         self.conversation = conversation
         persistence.saveConversationCache(conversation)
         onConversationChanged?()
+    }
+
+    /// Build 128.50: interrupt a server-side turn this device dropped into
+    /// (session running on another device/desktop). Sends session.interrupt
+    /// for the current conversation, then tears down the synthetic
+    /// "Thinking..." bubble and the server-turn watch so the UI settles to a
+    /// clean idle state. The gateway stops the actual job server-side.
+    func stopServerTurn() {
+        let client = heraldClient
+        Task {
+            if client.supportsServerTurnInterrupt {
+                let interrupted = await client.interruptSession()
+                Logger.app.info("stopServerTurn: interrupt returned \(interrupted)")
+            }
+        }
+        serverTurnPollTask?.cancel()
+        serverTurnPollTask = nil
+        removeServerTurnPlaceholder()
+        streamingPhase = .idle
+        pendingServerReconciliation = false
+        sendPhase = .idle
+        sendPhaseOwner = nil
+        appendLog(level: .info, "stopServerTurn: drop-in turn interrupted")
     }
 
     /// Build 128.47: remove the synthetic "Thinking..." bubble and clear its

@@ -288,10 +288,16 @@ struct ChatScreen: View {
                     restartBanner
                 }
                 messageList
+                // Build 128.50: queue status bar - shows held/queued state and
+                // a Hold/Release toggle so queued messages don't silently fire
+                // after the active turn (Electron parity).
+                if chatStore.queuedCountForCurrentConversation > 0 || chatStore.isQueueHeld {
+                    queueStatusBar
+                }
                 ChatInputBar(
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
-                    isStreaming: chatStore.isStreaming,
+                    isStreaming: chatStore.isStreaming || chatStore.isServerTurnActive,
                     isFocused: $isComposerFocused,
                     onSend: sendMessage,
                     onStop: { chatStore.cancelStreaming() },
@@ -1311,7 +1317,7 @@ struct ChatScreen: View {
                                 .font(.system(size: 12, weight: .semibold))
                             Text(chatStore.pendingNewMessageCount == 1
                                  ? "1 new message"
-                                 : "\\(chatStore.pendingNewMessageCount) new messages")
+                                 : "\(chatStore.pendingNewMessageCount) new messages")
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .foregroundStyle(Design.Colors.foreground)
@@ -1473,6 +1479,51 @@ struct ChatScreen: View {
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, 4)
         .background(Design.Colors.warning.opacity(0.08))
+    }
+
+    // Build 128.50: queue status bar (Electron parity). Shows how many
+    // messages are queued behind the active turn and whether they're HELD
+    // (won't auto-fire) or will drain automatically when the turn ends.
+    private var queueStatusBar: some View {
+        HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
+                .font(.system(size: 13))
+                .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
+            Text(queueStatusText)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .lineLimit(1)
+            Spacer()
+            Button {
+                chatStore.setQueueHeld(!chatStore.isQueueHeld)
+            } label: {
+                Text(chatStore.isQueueHeld ? "Release" : "Hold")
+                    .font(Design.Typography.caption.weight(.semibold))
+                    .foregroundStyle(chatStore.isQueueHeld ? Design.Brand.accent : Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Design.Colors.surface)
+                            .overlay(
+                                Capsule()
+                                    .stroke(Design.Colors.border, lineWidth: 1)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, 5)
+        .background(chatStore.isQueueHeld ? Design.Colors.warning.opacity(0.10) : Design.Brand.accent.opacity(0.06))
+    }
+
+    private var queueStatusText: String {
+        let count = chatStore.queuedCountForCurrentConversation
+        if chatStore.isQueueHeld {
+            return count > 0 ? "\(count) queued message\(count == 1 ? "" : "s") held" : "Queue held"
+        }
+        return count > 0 ? "\(count) queued message\(count == 1 ? "" : "s") - will send after this turn" : "Queue ready"
     }
 
     // D4: contextWarningBanner removed — was driven by fabricated percentage.
