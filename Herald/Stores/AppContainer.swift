@@ -515,6 +515,14 @@ final class AppContainer {
                     await nativeClient.connect()
                 }
             }
+            // Build 128.45: Config Editor fallback credential. In cookie-auth
+            // mode the keychain bearer is deleted and the session cookie rides
+            // URLSession.shared, but the cookie expires after 12h. The relay
+            // session token survives in the keychain and the connector accepts
+            // it as a paired credential, so wire it as the fallback.
+            nativeClient.configFallbackTokenProvider = { @MainActor in
+                await sessionStore.currentAccessToken()
+            }
             heraldClient = nativeClient
             nativeGatewayClient = nativeClient
         } else {

@@ -19,8 +19,24 @@ actor NativeSessionIdMap {
     }
 
     func register(uuid: UUID, nativeId: String) {
-        uuidToNative[uuid.uuidString] = nativeId
-        nativeToUuid[nativeId] = uuid.uuidString
+        let key = uuid.uuidString
+        // Build 128.45 (cross-session merge fix): keep the bidirectional map
+        // internally consistent. Re-pointing a UUID to a NEW native session
+        // (resume/switch/createSession with an existing conversationID) must
+        // drop the OLD nativeId's reverse entry, or the old server session
+        // still resolves to this same local UUID - two server sessions share
+        // one thread, and ChatStore's merge splices both histories together
+        // out of order. Same for the forward direction: if this nativeId was
+        // already owned by another UUID, that UUID must lose it so one server
+        // session never maps to two local conversations.
+        if let oldNative = uuidToNative[key], oldNative != nativeId {
+            nativeToUuid.removeValue(forKey: oldNative)
+        }
+        if let oldUuid = nativeToUuid[nativeId], oldUuid != key {
+            uuidToNative.removeValue(forKey: oldUuid)
+        }
+        uuidToNative[key] = nativeId
+        nativeToUuid[nativeId] = key
         save()
     }
 
@@ -274,6 +290,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// the SAME socket as chat. Stateless: each call fetches the current
     /// client so reconnects are handled transparently. The class is
     /// @MainActor, so the closure captures self.client directly.
+    /// Build 128.45: fallback credential for the Config Editor when cookie
+    /// auth is active and the session cookie has expired. AppContainer wires
+    /// this to sessionStore.currentAccessToken() (the relay session token),
+    /// which the connector accepts as a paired credential.
+    var configFallbackTokenProvider: (@MainActor () async -> String?)? = nil
+
     var featureClient: NativeGatewayFeatureClient {
         NativeGatewayFeatureClient { [weak self] in
             self?.client
@@ -322,6 +344,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // feature client suppresses the Authorization header in
             // cookie-auth mode and lets URLSession.shared ride the cookie.
             await self?.usesCookieAuth() ?? false
+        } fallbackTokenProvider: { [weak self] in
+            // Build 128.45: relay session token fallback for the Config
+            // Editor (cookie TTL is 12h; once expired, cookie-auth mode has
+            // no other credential unless we hand it the relay token).
+            await self?.configFallbackTokenProvider?()
         }
     }
 
@@ -1065,6 +1092,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
         if !hasConnectedOnce {
             connectionStage = .preparing
         }
+        // Build 128.45 (desync fix): terminate every in-flight stream
+        // handler before the transport is replaced. The socket is dead; the
+        // gateway will not replay the turn's terminal events on the
+        // reconnected socket, so leaving handlers registered left the chat
+        // consumer hanging forever (iPad: stale stop button + thinking
+        // bubble while the server kept streaming - Electron showed the real
+        // state). Terminating with a bare .failed lets ChatStore keep the
+        // placeholder and hand off to job-status polling, which recovers
+        // the response when the server finishes.
+        for (_, handler) in activeStreamHandlers {
+            handler.terminate(reason: "Connection lost")
+        }
+        activeStreamHandlers.removeAll()
         client = nil
         transport = nil
         scheduleReconnect()
@@ -1454,6 +1494,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     // MARK: - Conversation
 
     func loadConversation() async -> Conversation {
+        // Build 128.45: this is the "most recent" catch-all load. The native
+        // session is resolved by the caller's ensureConversation flow and the
+        // idMap; this placeholder conversation carries no sessionKey yet (the
+        // real id-bound loadConversation(id:) stamps it). A nil sessionKey on
+        // a brand-new local chat is correct - there is no server session to
+        // mismatch against.
         let conv = Conversation(title: "New Chat")
         currentConversation = conv
         return conv
@@ -1546,7 +1592,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         let conv = Conversation(
             id: id,
             title: decoded.title ?? "Untitled",
-            messages: Self.mapRestoredHistoryStatuses(messages)
+            messages: Self.mapRestoredHistoryStatuses(messages),
+            sessionKey: nativeId
         )
         currentConversation = conv
         return conv
@@ -2355,6 +2402,22 @@ private final class StreamEventHandler: @unchecked Sendable {
         self.sessionId = sessionId
         self.continuation = continuation
         self.mediaURLProvider = mediaURLProvider
+    }
+
+    /// Build 128.45 (desync fix): terminate the stream because the
+    /// transport died. The gateway does NOT replay the in-flight turn's
+    /// terminal events over a fresh socket, so a handler left registered
+    /// hangs the ChatStore consumer forever (iPad stuck showing the stop
+    /// button / thinking bubble while the server keeps working - Electron
+    /// was fine). Yields a bare .failed with no category so ChatStore keeps
+    /// the placeholder (acceptedJobID != nil) and hands off to the
+    /// job-status polling fallback, which recovers the response when the
+    /// server finishes.
+    func terminate(reason: String) {
+        guard !completed else { return }
+        completed = true
+        continuation.yield(.failed(reason))
+        continuation.finish()
     }
 
     func handle(_ event: NativeGatewayEvent) {
