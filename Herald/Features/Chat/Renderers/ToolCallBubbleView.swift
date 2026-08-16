@@ -39,6 +39,11 @@ struct ToolCallBubbleView: View {
                 }
                 .padding(.horizontal, Design.Spacing.sm)
                 .padding(.vertical, Design.Spacing.xs)
+                // Build 128.41: the whole header bar is the tap target -
+                // label stretches full width so taps anywhere on the pill
+                // (icon, word, or empty space) expand the tool detail.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
