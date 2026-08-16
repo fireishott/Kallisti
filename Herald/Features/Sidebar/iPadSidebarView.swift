@@ -410,6 +410,12 @@ struct iPadSidebarView: View {
                                     : Design.Colors.foreground
                             )
                             .lineLimit(1)
+                        if session.hasActivity {
+                            Circle()
+                                .fill(Color.blue)
+                                .frame(width: 7, height: 7)
+                                .accessibilityLabel("Active turn in progress")
+                        }
                         if showPinIndicator {
                             Image(systemName: "pin.fill")
                                 .font(.system(size: 8))

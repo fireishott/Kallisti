@@ -174,10 +174,27 @@ final class SessionListStore {
             guard loadGeneration == capturedGeneration else { return }
             currentOffset = response.sessions.count
             totalCount = response.total
-            // On first-page load, replace the visible window entirely rather
-            // than merging — this prevents foreign-device rows from surviving
-            // a scope switch.
-            splitSessions(response.sessions)
+            // Blue-dot pass: ask the native gateway which session keys have an
+            // active turn in flight, then mark matching rows. Best-effort -
+            // empty/error leaves all dots off and the list still loads.
+            let activeKeys = await heraldClient.activeSessionKeys()
+            if !activeKeys.isEmpty {
+                var marked = response.sessions
+                for index in marked.indices where marked[index].sessionKey != nil {
+                    if activeKeys.contains(marked[index].sessionKey ?? "") {
+                        marked[index].hasActivity = true
+                    }
+                }
+                // On first-page load, replace the visible window entirely rather
+                // than merging — this prevents foreign-device rows from surviving
+                // a scope switch.
+                splitSessions(marked)
+            } else {
+                // On first-page load, replace the visible window entirely rather
+                // than merging — this prevents foreign-device rows from surviving
+                // a scope switch.
+                splitSessions(response.sessions)
+            }
             lastLoadAt = Date()
             saveCachedSessions()
         } catch {
