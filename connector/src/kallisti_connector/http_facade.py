@@ -4019,6 +4019,77 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
+# ── Config.yaml endpoints (Build 128.41) ────────────────────────────────
+#
+# GET  /v1/config          → { path, size, mtime, content }
+# PUT  /v1/config          → body { content }  (validates YAML, backs up, writes)
+#
+# The Hermes config file is private (mode 600) and edits can break the
+# gateway, so both routes require a live bearer/paired auth, the PUT backs
+# up the current file to config.yaml.bak.<ts> before writing, and the write
+# is atomic (tmp + rename). The app's Settings > Config Editor screen uses
+# these. Writing does NOT restart the gateway - the user does that from the
+# Gateway section if the change needs a restart.
+
+
+def _config_path() -> Path:
+    return Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")) / "config.yaml"
+
+
+async def config_get(request: Request) -> JSONResponse:
+    await require_native_or_paired_auth(request)
+    path = _config_path()
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="config.yaml not found")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"read failed: {e}")
+    return JSONResponse({
+        "path": str(path),
+        "size": len(content.encode("utf-8")),
+        "mtime": path.stat().st_mtime,
+        "content": content,
+    })
+
+
+async def config_put(request: Request) -> JSONResponse:
+    await require_native_or_paired_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+
+    # Validate YAML before touching the real file.
+    try:
+        import yaml as _yaml
+        _yaml.safe_load(content)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"invalid YAML: {e}")
+
+    path = _config_path()
+    try:
+        # Backup the live file before overwriting.
+        backup = path.with_name(f"config.yaml.bak.{int(time.time())}")
+        shutil.copy2(path, backup)
+        # Atomic write.
+        tmp = path.with_name(f"config.yaml.tmp.{os.getpid()}")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"write failed: {e}")
+
+    return JSONResponse({
+        "ok": True,
+        "path": str(path),
+        "size": len(content.encode("utf-8")),
+        "backup": str(backup),
+    })
+
+
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -4044,6 +4115,9 @@ routes = [
     Route("/v1/gw/profile/switch", switch_profile, methods=["POST"]),
     Route("/v1/session", get_session, methods=["GET"]),
     Route("/v1/commands", list_commands, methods=["GET"]),
+    Route("/v1/config", config_get, methods=["GET"]),
+    Route("/v1/config", config_put, methods=["PUT"]),
+    Route("/gw/config", config_get, methods=["GET"]),
     Route("/gw/restart", gateway_restart, methods=["POST"]),
     Route("/v1/gw/restart", gateway_restart, methods=["POST"]),
     # Build 33 Workstream A — preflight MUST be registered before the

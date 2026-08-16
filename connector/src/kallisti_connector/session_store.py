@@ -1467,6 +1467,11 @@ def session_list(
                 "source": r["source"] or "api_server",
                 "isPinned": bool(meta.get("pinned", r["pinned"])),
                 "isArchived": bool(meta.get("archived", r["archived"])),
+                # Build 128.41: expose the REAL Hermes session id so the app
+                # can offer "Copy Session ID" (resume with hermes -r, paste
+                # into @session links). The app-facing UUID is a deterministic
+                # alias; sessionKey is the id that actually exists in state.db.
+                "sessionKey": hermes_id,
             })
 
             if len(sessions) >= limit:
