@@ -583,6 +583,7 @@ struct ChatScreen: View {
             compactStatusControl
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     scrollToTop()
                 }
                 .accessibilityAction(named: "Scroll to top") {
@@ -628,6 +629,7 @@ struct ChatScreen: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 scrollToTop()
             }
             .accessibilityAction(named: "Scroll to top") {
@@ -671,6 +673,7 @@ struct ChatScreen: View {
     /// one-tap surface in the toolbar. Spins while a refresh is in flight.
     private var catchUpButton: some View {
         Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             Task {
                 guard !isCatchingUp else { return }
                 isCatchingUp = true
