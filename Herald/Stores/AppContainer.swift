@@ -827,6 +827,17 @@ final class AppContainer {
         container.chatStore.onConversationChanged = { [weak container] in
             container?.updateWidgetData()
         }
+        // Build 128.50: turn completed - force-refresh the session list so
+        // previews, timestamps, and the in-flight blue dot update immediately
+        // on THIS device (and the next server poll picks them up elsewhere).
+        // Previously the sidebar only refreshed on the 30s auto-tick or a
+        // manual pull-down, so after sending a fresh message the row still
+        // showed the old preview/time and looked out of sync with the desktop.
+        container.chatStore.onTurnCompleted = { [weak container] in
+            Task { [weak container] in
+                await container?.sessionListStore.loadSessions(forceRefresh: true)
+            }
+        }
         // Keep session list in sync when title is derived or renamed
         container.chatStore.onTitleChanged = { [weak container] (conversationID: UUID, newTitle: String) in
             container?.sessionListStore.updateSessionTitle(id: conversationID, newTitle: newTitle)

@@ -15,15 +15,18 @@ struct HeraldSelectorSheet: View {
     @Environment(ChatStore.self) private var chatStore
     @Environment(ProfileStore.self) private var profileStore
     @Environment(KallistiHostStore.self) private var hostStore
+    @Environment(SkillsStore.self) private var skillsStore
 
     enum Tab: String, CaseIterable {
         case models
         case profiles
+        case skills
 
         var label: String {
             switch self {
             case .models: return "Models"
             case .profiles: return "Profiles"
+            case .skills: return "Skills"
             }
         }
 
@@ -31,6 +34,7 @@ struct HeraldSelectorSheet: View {
             switch self {
             case .models: return "cpu"
             case .profiles: return "brain.head.profile"
+            case .skills: return "wrench.and.screwdriver"
             }
         }
     }
@@ -107,6 +111,8 @@ struct HeraldSelectorSheet: View {
                         modelList
                     case .profiles:
                         profileList
+                    case .skills:
+                        skillsList
                     }
                 }
             }
@@ -381,6 +387,20 @@ struct HeraldSelectorSheet: View {
                 }
             }
         }
+    }
+
+    // MARK: - Skills Tab (Build 128.50)
+
+    /// Embeds the same SkillsBrowserView the iPad sidebar uses, so the hub
+    /// shows the full available skill list with search + detail navigation.
+    /// The sheet's task also force-loads the catalog so the count in the
+    /// active state card and this list stay in sync.
+    @ViewBuilder
+    private var skillsList: some View {
+        SkillsBrowserView()
+            .task {
+                await skillsStore.loadSkills(force: true)
+            }
     }
 
     // MARK: - Actions
