@@ -1328,7 +1328,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 previewText: native.previewText ?? "",
                 lastActivity: native.lastActivity.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now,
                 isPinned: native.isPinned ?? false,
-                isArchived: native.isArchived ?? false
+                isArchived: native.isArchived ?? false,
+                sessionKey: native.sessionId
             ))
         }
         return SessionListResponse(sessions: sessions, total: decoded.total ?? sessions.count)
@@ -1366,7 +1367,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 previewText: native.previewText ?? "",
                 lastActivity: native.lastActivity.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now,
                 isPinned: native.isPinned ?? false,
-                isArchived: native.isArchived ?? false
+                isArchived: native.isArchived ?? false,
+                sessionKey: native.sessionId
             ))
         }
         return sessions

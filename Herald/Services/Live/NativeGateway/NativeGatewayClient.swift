@@ -7,6 +7,7 @@ enum NativeGatewayClientError: Error, Equatable {
     case encodingFailed
     case transportClosed
     case unexpectedFrame
+    case httpStatus(String)
 }
 
 extension NativeGatewayClientError: LocalizedError {
@@ -25,6 +26,8 @@ extension NativeGatewayClientError: LocalizedError {
             return "Connection to the gateway was lost."
         case .unexpectedFrame:
             return "Received an unexpected response from the gateway."
+        case .httpStatus(let detail):
+            return detail
         }
     }
 }

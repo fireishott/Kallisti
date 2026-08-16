@@ -385,6 +385,15 @@ struct iPhoneSessionDrawer: View {
             } label: {
                 Label("Archive", systemImage: "archivebox")
             }
+            // Build 128.41: copy the REAL Hermes session id (state.db id,
+            // e.g. 20260815_194256_f67d9a) for paste into hermes -r or an
+            // @session link. Falls back to the app-facing UUID when the
+            // connector hasn't populated sessionKey yet.
+            Button {
+                UIPasteboard.general.string = session.sessionKey ?? session.id.uuidString
+            } label: {
+                Label("Copy Session ID", systemImage: "doc.on.doc")
+            }
             Button(role: .destructive) {
                 Task { await sessionStore.deleteSession(session) }
             } label: {

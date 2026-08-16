@@ -1106,6 +1106,7 @@ extension LiveHeraldClient {
         let source: String?
         let isPinned: Bool?
         let isArchived: Bool?
+        let sessionKey: String?
     }
 
     private struct SessionAPIResponse: Decodable {
@@ -1127,7 +1128,8 @@ extension LiveHeraldClient {
                 lastActivity: entry.updatedAt ?? .now,
                 source: entry.source,
                 isPinned: entry.isPinned ?? false,
-                isArchived: entry.isArchived ?? false
+                isArchived: entry.isArchived ?? false,
+                sessionKey: entry.sessionKey
             )
         }
         return SessionListResponse(sessions: sessions, total: response.total)
@@ -1149,7 +1151,8 @@ extension LiveHeraldClient {
                 lastActivity: entry.updatedAt ?? .now,
                 source: entry.source,
                 isPinned: entry.isPinned ?? false,
-                isArchived: entry.isArchived ?? false
+                isArchived: entry.isArchived ?? false,
+                sessionKey: entry.sessionKey
             )
         }
     }

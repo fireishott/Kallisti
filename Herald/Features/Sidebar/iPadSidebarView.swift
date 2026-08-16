@@ -494,6 +494,14 @@ struct iPadSidebarView: View {
             Label("Archive", systemImage: "archivebox")
         }
 
+        // Build 128.41: copy the REAL Hermes session id for paste into
+        // hermes -r or an @session link.
+        Button {
+            UIPasteboard.general.string = session.sessionKey ?? session.id.uuidString
+        } label: {
+            Label("Copy Session ID", systemImage: "doc.on.doc")
+        }
+
         Divider()
 
         Button(role: .destructive) {

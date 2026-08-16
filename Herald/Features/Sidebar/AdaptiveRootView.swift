@@ -170,6 +170,8 @@ struct AdaptiveRootView: View {
             GatewayStatusScreen()
         case .gatewayLogs:
             GatewayLogsScreen()
+        case .configEditor:
+            ConfigEditorScreen()
         }
     }
 
