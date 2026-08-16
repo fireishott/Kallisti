@@ -349,7 +349,9 @@ final class SessionListStore {
             // Without this, switching sessions mid-stream leaves the stop
             // button visible on the new chat (activeStreams survives the
             // conversation swap and makes isStreaming return true).
-            chatStore.cancelStreaming()
+            // Build 128.50: navigation must not interrupt a server-side turn
+            // running on another device - only the composer Stop tap does.
+            chatStore.cancelStreaming(interruptServerTurn: false)
 
             // Clear stale context metrics from the previous session so the
             // new session doesn't incorrectly show a "Session nearly full"

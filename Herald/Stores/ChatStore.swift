@@ -271,6 +271,11 @@ final class ChatStore {
     /// turn (started on another device) is in flight. Not backed by any local
     /// stream - lives only while the server-turn watch reports running=true.
     private var serverTurnPlaceholderID: UUID?
+    /// Build 128.50: the conversation the server-turn watch is scoped to.
+    /// The watch loop refuses to write into any OTHER conversation (a New
+    /// Chat or session switch while the remote turn is still running must
+    /// never bleed the old session's content/placeholder into the new one).
+    private var serverTurnWatchConversationID: UUID?
     /// Placeholders created before the gateway returns a job ID. Transcript
     /// polling can run during session provisioning, so these need explicit
     /// ownership before they can move into `activeStreams`.
@@ -2929,7 +2934,12 @@ final class ChatStore {
     ///   background fetch can detect when the user has since switched again.
     @discardableResult
     func installLocalConversation(id sessionID: UUID, title: String = "New Chat") -> UInt64 {
-        cancelStreaming()
+        // Build 128.50: navigation away must NOT interrupt a server-side turn
+        // running on another device. Cancel the watch + local streaming but
+        // leave the remote job alone (the desktop keeps working). Only an
+        // explicit Stop tap on the composer interrupts (stopServerTurn).
+        cancelStreaming(interruptServerTurn: false)
+        cancelServerTurnWatch()
         lastTokenUsage = nil
         lastContextInfo = nil
         pendingMessageSentAt = nil
@@ -3195,14 +3205,16 @@ final class ChatStore {
         }
     }
 
-    func cancelStreaming() {
+    func cancelStreaming(interruptServerTurn: Bool = true) {
         // Build 128.50: when there is no LOCAL job to cancel (activeStreams
         // empty) but a server-side turn is in flight (dropped into a session
         // running on another device), interrupt the session itself. The old
         // code only cancelled local jobIDs, so tapping Stop on a drop-in
         // mid-turn session did nothing server-side - the turn kept running
         // and its output landed later as a confusing ghost reply.
-        if activeStreams.isEmpty, isServerTurnActive {
+        // Navigation away passes interruptServerTurn: false so New Chat /
+        // session switch cancels the watch WITHOUT killing the remote job.
+        if activeStreams.isEmpty, isServerTurnActive, interruptServerTurn {
             stopServerTurn()
             return
         }
@@ -4011,6 +4023,12 @@ final class ChatStore {
         // server-side turn (started on another device) is visible mid-turn.
         // The refresh loop below only merges PERSISTED rows; without this
         // placeholder the phone shows dead air until the turn completes.
+        // Build 128.50: scope the watch to THIS conversation. If the user
+        // hits New Chat or switches sessions while the remote turn is still
+        // running, the loop must not merge the old session's content into
+        // the new conversation (the thread-mixing bug class).
+        guard let watchConversationID = conversation?.id else { return }
+        serverTurnWatchConversationID = watchConversationID
         ensureServerTurnPlaceholder()
 
         Self.logger.info("Server turn watch: session running server-side, starting refresh loop")
@@ -4020,6 +4038,14 @@ final class ChatStore {
             for delay in Self.pollingBackoffSeconds {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
+                // Build 128.50: if the user navigated away (New Chat / switch),
+                // stop the watch immediately - the remote turn keeps running on
+                // the other device, but THIS conversation is no longer the one
+                // being watched. Never write into the new conversation.
+                guard self.conversation?.id == watchConversationID else {
+                    Self.logger.info("Server turn watch: conversation changed, stopping")
+                    break
+                }
 
                 let capturedGeneration = self.conversationGeneration
                 let localSnapshot = self.conversation
@@ -4067,6 +4093,7 @@ final class ChatStore {
             if self.serverTurnPollTask?.isCancelled == false {
                 self.serverTurnPollTask = nil
             }
+            self.serverTurnWatchConversationID = nil
             // Build 128.47: whatever stopped the watch (idle, generation
             // move, cancellation) - make sure no synthetic bubble is left
             // behind on the active conversation.
@@ -4110,6 +4137,18 @@ final class ChatStore {
         onConversationChanged?()
     }
 
+    /// Build 128.50: stop the server-turn WATCH without interrupting the
+    /// server job. Used when the user navigates away (New Chat / session
+    /// switch) - the remote turn keeps running on the other device; this
+    /// device just stops polling and clears the synthetic placeholder so it
+    /// never bleeds into the newly selected conversation.
+    func cancelServerTurnWatch() {
+        serverTurnPollTask?.cancel()
+        serverTurnPollTask = nil
+        serverTurnWatchConversationID = nil
+        removeServerTurnPlaceholder()
+    }
+
     /// Build 128.50: interrupt a server-side turn this device dropped into
     /// (session running on another device/desktop). Sends session.interrupt
     /// for the current conversation, then tears down the synthetic
@@ -4125,6 +4164,7 @@ final class ChatStore {
         }
         serverTurnPollTask?.cancel()
         serverTurnPollTask = nil
+        serverTurnWatchConversationID = nil
         removeServerTurnPlaceholder()
         streamingPhase = .idle
         pendingServerReconciliation = false

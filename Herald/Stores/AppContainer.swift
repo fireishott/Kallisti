@@ -1247,7 +1247,9 @@ final class AppContainer {
         // the SSE connection is dead, but activeStreams/streamingPhase/pendingMessageSentAt
         // may still be set, causing the UI to show a perpetual "thinking" placeholder
         // even though the relay has already completed the response.
-        chatStore.cancelStreaming()
+        // Build 128.50: restore settles LOCAL stale state only - never interrupt
+        // a server-side turn that may genuinely be running on another device.
+        chatStore.cancelStreaming(interruptServerTurn: false)
 
         do {
             let conversation = try await chatStore.heraldClient.loadConversation(id: conversationID)
