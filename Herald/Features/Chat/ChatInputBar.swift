@@ -353,7 +353,7 @@ struct ChatInputBar: View {
                 Button(action: onStop) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
                         .frame(width: 40, height: 40)
                 }
                 .accessibilityLabel("Stop generating")

@@ -47,19 +47,28 @@ struct NativeGatewayFeatureClient {
     /// sees a stale-or-missing Bearer when the cookie is the real auth.
     /// The session cookie rides URLSession.shared automatically.
     private let cookieAuthProvider: @MainActor () async -> Bool
+    /// Build 128.45: cookie-auth fallback. In cookie-auth mode the keychain
+    /// bearer is DELETED and the session cookie authenticates, but the cookie
+    /// has a 12h TTL - once it expires, configDocument() has no credential
+    /// left and 401s forever until the user re-pairs. The relay session token
+    /// (keychain, survives reinstalls) is accepted by the connector as a
+    /// paired credential, so we retry once with it before giving up.
+    private let fallbackTokenProvider: @MainActor () async -> String?
 
     init(
         clientProvider: @escaping @MainActor () -> NativeGatewayClient?,
         currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil },
         gatewayBaseURLProvider: @escaping @MainActor () -> String = { "http://localhost:9119" },
         accessTokenProvider: @escaping @MainActor () async -> String? = { nil },
-        cookieAuthProvider: @escaping @MainActor () async -> Bool = { false }
+        cookieAuthProvider: @escaping @MainActor () async -> Bool = { false },
+        fallbackTokenProvider: @escaping @MainActor () async -> String? = { nil }
     ) {
         self.clientProvider = clientProvider
         self.currentSessionIdProvider = currentSessionIdProvider
         self.gatewayBaseURLProvider = gatewayBaseURLProvider
         self.accessTokenProvider = accessTokenProvider
         self.cookieAuthProvider = cookieAuthProvider
+        self.fallbackTokenProvider = fallbackTokenProvider
     }
 
     // MARK: - Version info (native mode)
@@ -122,8 +131,19 @@ struct NativeGatewayFeatureClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            var (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode != 200 {
+                // Build 128.45: cookie-auth fallback - same 12h cookie TTL
+                // hole as the Config Editor. Retry once with the relay token.
+                if let fallback = await fallbackTokenProvider(), !fallback.isEmpty {
+                    var retry = request
+                    retry.setValue("Bearer \(fallback)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: retry)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                } else {
+                    return nil
+                }
+            }
             let decoded = try JSONDecoder().decode(NativeProfileEnvelope.self, from: data)
             let entries = decoded.profiles ?? []
             let mapped = entries.map {
@@ -620,16 +640,25 @@ struct NativeGatewayFeatureClient {
     }
 
     private struct ConfigGetResponse: Decodable {
-        let path: String?
-        let size: Int?
-        let content: String?
+        // The connector wraps every JSON body as {"data":...,"meta":...} via
+        // envelope_middleware, so the config fields live one level deep.
+        struct DataBox: Decodable {
+            let path: String?
+            let size: Int?
+            let mtime: Double?
+            let content: String?
+        }
+        let data: DataBox?
     }
 
     private struct ConfigPutResponse: Decodable {
-        let ok: Bool?
-        let path: String?
-        let size: Int?
-        let backup: String?
+        struct DataBox: Decodable {
+            let ok: Bool?
+            let path: String?
+            let size: Int?
+            let backup: String?
+        }
+        let data: DataBox?
     }
 
     /// Load config.yaml text from the connector. Returns nil on transport or
@@ -651,14 +680,26 @@ struct NativeGatewayFeatureClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            var (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode != 200 {
+                // Build 128.45: cookie expired/missing fallback. Retry once
+                // with the relay session token as Bearer (connector accepts
+                // it as a paired credential).
+                if let fallback = await fallbackTokenProvider(), !fallback.isEmpty {
+                    var retry = request
+                    retry.setValue("Bearer \(fallback)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await URLSession.shared.data(for: retry)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                } else {
+                    return nil
+                }
+            }
             let decoded = try JSONDecoder().decode(ConfigGetResponse.self, from: data)
-            guard let content = decoded.content else { return nil }
+            guard let content = decoded.data?.content else { return nil }
             return ConfigDocument(
-                path: decoded.path ?? "~/.hermes/config.yaml",
+                path: decoded.data?.path ?? "~/.hermes/config.yaml",
                 content: content,
-                size: decoded.size ?? content.utf8.count
+                size: decoded.data?.size ?? content.utf8.count
             )
         } catch { return nil }
     }
@@ -687,17 +728,29 @@ struct NativeGatewayFeatureClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONEncoder().encode(["content": content])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        var (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw NativeGatewayClientError.unexpectedFrame
         }
-        guard http.statusCode == 200 else {
+        if http.statusCode != 200,
+           let fallback = await fallbackTokenProvider(), !fallback.isEmpty {
+            // Build 128.45: cookie expired/missing fallback - retry once with
+            // the relay session token as Bearer (paired credential).
+            var retry = request
+            retry.setValue("Bearer \(fallback)", forHTTPHeaderField: "Authorization")
+            retry.httpBody = try JSONEncoder().encode(["content": content])
+            (data, response) = try await URLSession.shared.data(for: retry)
+        }
+        guard let http2 = response as? HTTPURLResponse else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        guard http2.statusCode == 200 else {
             let detail = (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
                 ?? "HTTP \(http.statusCode)"
             throw NativeGatewayClientError.httpStatus(detail)
         }
         let decoded = try JSONDecoder().decode(ConfigPutResponse.self, from: data)
-        return decoded.backup
+        return decoded.data?.backup
     }
 
     private struct ErrorDetail: Decodable {

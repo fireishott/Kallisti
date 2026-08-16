@@ -267,6 +267,10 @@ final class ChatStore {
     /// of every attempt; nil between attempts.
     private var acceptedJobID: UUID?
     private var activeStreams: [UUID: UUID] = [:]  // jobId → placeholderId
+    /// Build 128.47: synthetic "Thinking..." bubble shown while a server-side
+    /// turn (started on another device) is in flight. Not backed by any local
+    /// stream - lives only while the server-turn watch reports running=true.
+    private var serverTurnPlaceholderID: UUID?
     /// Placeholders created before the gateway returns a job ID. Transcript
     /// polling can run during session provisioning, so these need explicit
     /// ownership before they can move into `activeStreams`.
@@ -602,6 +606,11 @@ final class ChatStore {
             // first launch and after session switches.
             conversation?.contextPercent = nil
             conversation?.latestUsage = nil
+            // Build 128.46: a relaunch restores the cache as-is, including any
+            // stale .sending user row or isStreaming placeholder left by a
+            // force-quit mid-send/mid-turn. Settle them before the server fetch
+            // so the thread never renders as stuck mid-turn with no recovery.
+            settleStaleTransientState()
         }
         // After clearConversation(), bypass the local cache and force a
         // server fetch so the UI never shows the stale archived conversation.
@@ -699,6 +708,10 @@ final class ChatStore {
             }
         } catch {
             Self.logger.warning("Failed to load selected conversation \(id): \(error.localizedDescription)")
+            // Build 128.46: server fetch failed - keep the restored cache but
+            // settle stale transient state so the thread doesn't render stuck
+            // mid-turn with no way out.
+            settleStaleTransientState()
         }
     }
 
@@ -1103,7 +1116,22 @@ final class ChatStore {
         }
 
         sendPhase = .creatingConversation
-        let sessionEstablished = await heraldClient.ensureConversation(id: targetID)
+        // Build 128.45: fresh-chat hardening. ensureConversation returns false
+        // on TRANSIENT transport failures (socket still warming up after
+        // launch, proxy idle reap, cell handoff) as well as on a genuinely
+        // dead session - by design it preserves the idMap so a blip does not
+        // orphan history. The caller previously failed the message instantly
+        // ("Could not reach the Kallisti host") on the first blip. Retry a
+        // few times with short backoff so a socket that is coming up has time
+        // to connect; only fail after the retries are exhausted.
+        var sessionEstablished = await heraldClient.ensureConversation(id: targetID)
+        var ensureAttempt = 1
+        while !sessionEstablished, ensureAttempt < 3 {
+            try? await Task.sleep(for: .seconds(Double(ensureAttempt) * 2.0))
+            guard !Task.isCancelled else { break }
+            sessionEstablished = await heraldClient.ensureConversation(id: targetID)
+            ensureAttempt += 1
+        }
         guard sessionEstablished else {
             if let earlyPlaceholderID,
                let placeholderIndex = conversation?.messages.firstIndex(where: { $0.id == earlyPlaceholderID }) {
@@ -1208,7 +1236,8 @@ final class ChatStore {
                 // indefinitely. The watchdog resets on every event, so
                 // trickle-events let it run forever. Settle any
                 // placeholder that no longer has an active stream.
-                let _owned78a = Set(self.activeStreams.values)
+                var _owned78a = Set(self.activeStreams.values)
+                if let sid = self.serverTurnPlaceholderID { _owned78a.insert(sid) }
                 if let _conv78a = self.conversation {
                     for _idx78a in _conv78a.messages.indices where _conv78a.messages[_idx78a].isStreaming {
                         if !_owned78a.contains(_conv78a.messages[_idx78a].id) {
@@ -1408,7 +1437,8 @@ final class ChatStore {
             // Same rationale as the send path above — settle any
             // isStreaming placeholder that is no longer backed by an
             // active stream entry.
-            let _owned78b = Set(self.activeStreams.values)
+            var _owned78b = Set(self.activeStreams.values)
+            if let sid = self.serverTurnPlaceholderID { _owned78b.insert(sid) }
             if let _conv78b = self.conversation {
                 for _idx78b in _conv78b.messages.indices where _conv78b.messages[_idx78b].isStreaming {
                     if !_owned78b.contains(_conv78b.messages[_idx78b].id) {
@@ -2622,6 +2652,25 @@ final class ChatStore {
                     appendLog(level: .info, "watchdog: no progress for \(Int(elapsed.components.seconds))s - probing socket before declaring stall")
                     await self.heraldClient.reconnectIfNeeded()
                 }
+                // Build 128.45: harden the foreground stream. Before declaring
+                // a visible stall, ask the SERVER whether the job is actually
+                // still running. A WS blip (proxy idle reap, cell handoff,
+                // 1006 closure) can silence deltas while the gateway keeps
+                // billing and streaming server-side; declaring stall then
+                // showed the red banner and the retry loop re-submitted the
+                // SAME job. resumeActiveSessionIfNeeded() reattaches a parked
+                // session and returns true when a live in-flight job is
+                // running - if so, reset the watchdog clock and keep waiting
+                // (the consumer's reconnect + terminal events will finish the
+                // turn normally). Only declare stall when the server agrees
+                // the job is gone.
+                let serverRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
+                if serverRunning {
+                    appendLog(level: .info, "watchdog: server reports job still running - resetting stall clock")
+                    self.streamingProgressAt = .now
+                    self.streamingPhase = .streaming
+                    continue
+                }
                 self.streamingPhase = .stalled
                 // Build 64: mirror the no-progress stall onto the Live
                 // Activity so the Lock Screen / Dynamic Island reflects the
@@ -3597,6 +3646,58 @@ final class ChatStore {
         conversation?.messages.contains(where: { $0.sender == .user && $0.status == .sending }) == true
     }
 
+    /// Build 128.46: reconcile transient send/stream state left over from a
+    /// force-quit or background kill. The conversation cache can hold a user
+    /// row stuck in `.sending` (optimistic row written, send never completed)
+    /// or a placeholder with `isStreaming=true` (stream cut off mid-turn).
+    /// After a relaunch nothing owns either: activeStreams and
+    /// pendingStreamPlaceholders are in-memory and empty, and the outbox is
+    /// the only record of whether a send is genuinely live.
+    ///
+    /// Rules:
+    /// - A `.sending` user row is stale when the outbox has no live record for
+    ///   it (queued / drafted / materializing / submitting / accepted). No
+    ///   record at all, or a terminal/failure record, means the send never
+    ///   landed or already ended -> downgrade to `.failed` so `hasPendingMessages`
+    ///   stops blocking the refresh button and the server-turn watch.
+    /// - A placeholder with `isStreaming=true` that no live stream owns is
+    ///   stale (always true right after relaunch). Stop animating it; if it is
+    ///   empty, mark `.failed`/interrupted so the thread never renders a ghost
+    ///   mid-turn bubble.
+    private func settleStaleTransientState() {
+        guard var conversation = conversation else { return }
+        var changed = false
+        var livePlaceholders = Set(activeStreams.values).union(pendingStreamPlaceholders)
+        if let serverTurnPlaceholderID { livePlaceholders.insert(serverTurnPlaceholderID) }
+        for idx in conversation.messages.indices {
+            let message = conversation.messages[idx]
+            if message.sender == .user, message.status == .sending {
+                let record = outboxItems.first { $0.clientMessageID == message.id }
+                let isLive = record.map { $0.isInFlight || $0.state == .queued || $0.state == .drafted } ?? false
+                if !isLive {
+                    conversation.messages[idx].status = .failed
+                    conversation.messages[idx].errorCategory = record?.lastError ?? "interrupted"
+                    changed = true
+                }
+            }
+            if message.isStreaming && !livePlaceholders.contains(message.id) {
+                conversation.messages[idx].isStreaming = false
+                let empty = conversation.messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && conversation.messages[idx].reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if empty {
+                    conversation.messages[idx].status = .failed
+                    conversation.messages[idx].errorCategory = "interrupted"
+                }
+                changed = true
+            }
+        }
+        if changed {
+            self.conversation = conversation
+            persistence.saveConversationCache(conversation)
+            onConversationChanged?()
+        }
+    }
+
     private func hasPendingDuplicateMessage(_ content: String, attachments: [PendingAttachment]) -> Bool {
         guard let messages = conversation?.messages else { return false }
         let attSig = attachmentSignature(for: attachments.map { MessageAttachment(from: $0) })
@@ -3831,11 +3932,26 @@ final class ChatStore {
         guard !hasPendingMessages, !isStreaming else { return }
         guard serverTurnPollTask == nil else { return }
 
+        // Build 128.47: heal the socket before probing. A dead/phantom WS
+        // makes resumeActiveSessionIfNeeded return false and the watch never
+        // starts, so the phone shows dead air during a server-side turn.
+        await heraldClient.reconnectIfNeeded()
+
         // Probe the gateway: is the ACTIVE session actually running a job
         // right now? resumeActiveSessionIfNeeded reattaches a parked session
         // and returns true when a live in-flight job is running server-side.
         let running = await heraldClient.resumeActiveSessionIfNeeded()
-        guard running else { return }
+        guard running else {
+            // Build 128.47: turn finished (or never running) - clear any stale
+            // synthetic placeholder a previous watch left behind.
+            removeServerTurnPlaceholder()
+            return
+        }
+        // Build 128.47: surface a synthetic "Thinking..." bubble so a
+        // server-side turn (started on another device) is visible mid-turn.
+        // The refresh loop below only merges PERSISTED rows; without this
+        // placeholder the phone shows dead air until the turn completes.
+        ensureServerTurnPlaceholder()
 
         Self.logger.info("Server turn watch: session running server-side, starting refresh loop")
         serverTurnPollTask = Task { [weak self] in
@@ -3870,6 +3986,10 @@ final class ChatStore {
                     self.persistence.saveConversationCache(conversation)
                     self.onConversationChanged?()
                 }
+                // Build 128.47: a server refresh can drop the synthetic
+                // placeholder (it is not a persisted row) - re-assert it so
+                // the "Thinking..." bubble survives mid-turn refreshes.
+                self.ensureServerTurnPlaceholder()
                 // A local send/stream can take ownership mid-watch; hand off.
                 if self.hasPendingMessages || self.isStreaming {
                     Self.logger.info("Server turn watch: local machinery took over, stopping")
@@ -3879,6 +3999,7 @@ final class ChatStore {
                 let stillRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
                 if !stillRunning {
                     Self.logger.info("Server turn watch: server idle, stopping")
+                    self.removeServerTurnPlaceholder()
                     break
                 }
             }
@@ -3886,7 +4007,59 @@ final class ChatStore {
             if self.serverTurnPollTask?.isCancelled == false {
                 self.serverTurnPollTask = nil
             }
+            // Build 128.47: whatever stopped the watch (idle, generation
+            // move, cancellation) - make sure no synthetic bubble is left
+            // behind on the active conversation.
+            self.removeServerTurnPlaceholder()
         }
+    }
+
+    /// Build 128.47: create (first call) or re-assert (after a server refresh
+    /// dropped it) the synthetic "Thinking..." bubble for a server-side turn.
+    /// Creates the placeholder ID on first call so the bubble renders
+    /// immediately; later calls only re-append when missing.
+    private func ensureServerTurnPlaceholder() {
+        if serverTurnPlaceholderID == nil {
+            let placeholderID = UUID()
+            serverTurnPlaceholderID = placeholderID
+            conversation?.messages.append(Message(
+                id: placeholderID,
+                sender: .herald,
+                content: "",
+                status: .sending,
+                isStreaming: true
+            ))
+            if let conversation {
+                persistence.saveConversationCache(conversation)
+                onConversationChanged?()
+            }
+            return
+        }
+        guard let placeholderID = serverTurnPlaceholderID,
+              var conversation = conversation else { return }
+        if conversation.messages.contains(where: { $0.id == placeholderID }) { return }
+        conversation.messages.append(Message(
+            id: placeholderID,
+            sender: .herald,
+            content: "",
+            status: .sending,
+            isStreaming: true
+        ))
+        self.conversation = conversation
+        persistence.saveConversationCache(conversation)
+        onConversationChanged?()
+    }
+
+    /// Build 128.47: remove the synthetic "Thinking..." bubble and clear its
+    /// state. No-op when no placeholder is active.
+    private func removeServerTurnPlaceholder() {
+        guard let placeholderID = serverTurnPlaceholderID else { return }
+        serverTurnPlaceholderID = nil
+        guard var conversation = conversation else { return }
+        conversation.messages.removeAll { $0.id == placeholderID }
+        self.conversation = conversation
+        persistence.saveConversationCache(conversation)
+        onConversationChanged?()
     }
 
     /// Re-attaches transient streaming artifacts (tool timeline, code diff) onto the
@@ -3914,11 +4087,24 @@ final class ChatStore {
     /// not rendered yet.
     func performForegroundCatchUp() async {
         guard isPollingEnabled, conversation != nil else { return }
+        // Build 128.47: heal the socket BEFORE the HTTP refresh. A gateway
+        // restart kills the WS silently (receive() never surfaces the error),
+        // leaving a phantom "connected" socket; refreshActiveConversation is
+        // pure HTTP so it returns 200s while the realtime channel stays dead.
+        await heraldClient.reconnectIfNeeded()
+        // Build 128.46: settle stale transient state first - a force-quit can
+        // leave .sending rows / isStreaming placeholders in the cache that no
+        // live send or stream owns, and they would trip the guards below
+        // forever (the refresh button did nothing).
+        settleStaleTransientState()
         // Don't clobber a local send/stream in flight — those paths own the
         // conversation and will reconcile on their own.
         guard !hasPendingMessages, !isStreaming else { return }
-        // If the server-turn watch is already refreshing, let it own the loop.
-        guard serverTurnPollTask == nil else { return }
+        // A manual refresh supersedes the server-turn backoff loop. Cancel it
+        // so this refresh runs immediately; it re-arms below if the server
+        // session is still running.
+        serverTurnPollTask?.cancel()
+        serverTurnPollTask = nil
 
         let capturedGeneration = conversationGeneration
         let localSnapshot = conversation
@@ -3943,6 +4129,9 @@ final class ChatStore {
         }
         restartPendingPollingIfNeeded()
         clearNotificationsForCurrentConversation()
+        // Build 128.46: re-arm the server-turn watch if the session is still
+        // running server-side (we cancelled it above to force this refresh).
+        await startServerTurnWatchIfNeeded()
     }
 
     /// Build 124: count server messages that have no counterpart in the local
@@ -4007,6 +4196,26 @@ final class ChatStore {
         // different session and its local-only messages would contaminate
         // the refreshed conversation's message list.
         guard localConversation.id == refreshedConversation.id else {
+            return refreshedConversation
+        }
+
+        // Build 128.45 (out-of-order fix): refuse to splice local-only rows
+        // across a SESSION re-point. The same local UUID can be re-pointed
+        // at a different native session when the gateway resumes/recreates a
+        // session (ensureSessionForSwitch, 4001 retry). Before this guard the
+        // old session's cached rows were treated as "local only" and spliced
+        // into the new session's thread - two server sessions shown as one,
+        // with the older rows appearing BELOW the newer ones (the 10:47 B →
+        // 10:49 B → 10:43 A → 10:44 A inversion). If the refreshed
+        // conversation lives under a different native session than the local
+        // cache, the server is authoritative for the NEW session: drop the
+        // local cache entirely instead of contaminating it.
+        if let refreshedKey = refreshedConversation.sessionKey,
+           let localKey = localConversation.sessionKey,
+           refreshedKey != localKey {
+            Self.logger.warning(
+                "Build 128.45: conversation \(localConversation.id.uuidString.prefix(8)) re-pointed from session \(localKey) to \(refreshedKey) - discarding stale local cache"
+            )
             return refreshedConversation
         }
 
@@ -4403,7 +4612,8 @@ final class ChatStore {
         // Build 108 WS-D: Do NOT settle as empty_response if the job is still
         // running. Stream ownership and server state, not empty text, decide
         // whether a response failed.
-        let livePlaceholders = Set(activeStreams.values).union(pendingStreamPlaceholders)
+        var livePlaceholders = Set(activeStreams.values).union(pendingStreamPlaceholders)
+        if let serverTurnPlaceholderID { livePlaceholders.insert(serverTurnPlaceholderID) }
         let settledLocalOnly: [Message] = localOnly.map { message in
             guard message.isStreaming else { return message }
             guard !livePlaceholders.contains(message.id) else { return message }
