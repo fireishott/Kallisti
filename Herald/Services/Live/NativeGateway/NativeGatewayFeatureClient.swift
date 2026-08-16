@@ -40,17 +40,26 @@ struct NativeGatewayFeatureClient {
     /// requires native-or-paired auth). Optional: version rows are
     /// unauthenticated and pass nil.
     private let accessTokenProvider: @MainActor () async -> String?
+    /// Build 128: when cookie auth is active (basic/pairing login), the
+    /// keychain bearer is DELETED and the session cookie authenticates —
+    /// same bug class as the b127 restart button. Returning `true` here
+    /// suppresses the Authorization header so the connector facade never
+    /// sees a stale-or-missing Bearer when the cookie is the real auth.
+    /// The session cookie rides URLSession.shared automatically.
+    private let cookieAuthProvider: @MainActor () async -> Bool
 
     init(
         clientProvider: @escaping @MainActor () -> NativeGatewayClient?,
         currentSessionIdProvider: @escaping @MainActor () async -> String? = { nil },
         gatewayBaseURLProvider: @escaping @MainActor () -> String = { "http://localhost:9119" },
-        accessTokenProvider: @escaping @MainActor () async -> String? = { nil }
+        accessTokenProvider: @escaping @MainActor () async -> String? = { nil },
+        cookieAuthProvider: @escaping @MainActor () async -> Bool = { false }
     ) {
         self.clientProvider = clientProvider
         self.currentSessionIdProvider = currentSessionIdProvider
         self.gatewayBaseURLProvider = gatewayBaseURLProvider
         self.accessTokenProvider = accessTokenProvider
+        self.cookieAuthProvider = cookieAuthProvider
     }
 
     // MARK: - Version info (native mode)
@@ -632,7 +641,13 @@ struct NativeGatewayFeatureClient {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = await accessTokenProvider(), !token.isEmpty {
+        // Build 128: only attach a Bearer when we're NOT in cookie-auth
+        // mode. In cookie mode the keychain token is DELETED and the
+        // session cookie authenticates; URLSession.shared rides the cookie
+        // automatically so this branch can just skip the header entirely.
+        if await !cookieAuthProvider(),
+           let token = await accessTokenProvider(),
+           !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         do {
@@ -661,7 +676,14 @@ struct NativeGatewayFeatureClient {
         request.httpMethod = "PUT"
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = await accessTokenProvider(), !token.isEmpty {
+        // Build 128: same cookie-auth guard as configDocument -- the
+        // session cookie rides URLSession.shared, so when cookie auth is
+        // active we MUST NOT send an Authorization header (a stale or
+        // missing Bearer in this slot caused 401 in the b127/b128 bug
+        // class).
+        if await !cookieAuthProvider(),
+           let token = await accessTokenProvider(),
+           !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONEncoder().encode(["content": content])

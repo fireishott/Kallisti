@@ -141,14 +141,15 @@ struct ChatInputBar: View {
 
                 HStack(alignment: .bottom, spacing: Design.Spacing.xs) {
                     // + button - outside the capsule, iMessage style.
+                    // Build 128: now a plain 40pt vector (no filled
+                    // background circle), matching the send arrow and
+                    // waveform buttons on the right side of the row.
                     // Build 123: 40pt visual, keeps the row slim when empty.
                     Button(action: onAttach) {
                         Image(systemName: "plus")
                             .font(.system(size: 20, weight: .medium))
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .frame(width: 40, height: 40)
-                            .background(Design.Colors.surface)
-                            .clipShape(Circle())
                     }
                     .accessibilityLabel("Add attachment")
 

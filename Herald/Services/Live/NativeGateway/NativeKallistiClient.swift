@@ -316,6 +316,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // bearer-auth modes both work.
             guard let self else { return nil }
             return try? await self.authCoordinator.refreshAccessTokenIfNeeded()
+        } cookieAuthProvider: { [weak self] in
+            // Build 128: when cookie auth is active the keychain bearer
+            // is DELETED and the session cookie authenticates. The
+            // feature client suppresses the Authorization header in
+            // cookie-auth mode and lets URLSession.shared ride the cookie.
+            await self?.usesCookieAuth() ?? false
         }
     }
 
@@ -1645,7 +1651,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     return true
                 }
             } catch {
-                // Treat any probe failure as stale; fall through to recreate.
+                // Build 128: same transport guard as ensureConversation.
+                // A THROWN transport error (notConnected / transportClosed /
+                // requestTimeout) means we never reached the server, so we
+                // can't know whether the session is stale. Preserve the
+                // idMap and return false so the caller waits / retries
+                // instead of minting a fresh empty session that orphans the
+                // user's history (the b127/b128 bug class).
+                if SessionListStore.isTransientConnectivityError(error) {
+                    Self.logger.warning("ensureSessionForSwitch: transport failure for \(id.uuidString.prefix(8)) (\(error.localizedDescription)) — keeping idMap")
+                    return false
+                }
+                // Definitive probe failure (non-transport): treat as stale;
+                // fall through to recreate, as before.
             }
             await idMap.remove(uuid: id)
         }
@@ -1705,7 +1723,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     return true
                 }
             } catch {
-                // Treat any probe failure as stale; fall through to recreate.
+                // Build 128: a thrown transport error (notConnected,
+                // transportClosed, requestTimeout) means the probe didn't
+                // actually reach the server -- it does NOT mean the session
+                // is stale. Preserve the idMap and report failure so the
+                // caller can decide whether to recreate or wait. This is the
+                // mirror of the b127 restart-button bug: a connectivity blip
+                // wiped a perfectly good idMap and forced a fresh empty
+                // session, so the user's old chat opened blank.
+                if SessionListStore.isTransientConnectivityError(error) {
+                    Self.logger.warning("ensureConversation: transport failure for \(id.uuidString.prefix(8)) (\(error.localizedDescription)) — keeping idMap")
+                    return false
+                }
+                // Definitive probe failure (non-transport): treat as stale
+                // and fall through to recreate, as before.
             }
             await idMap.remove(uuid: id)
         }
@@ -1717,6 +1748,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Adopt a locally-minted conversation id as the active native
+    /// conversation without going through the network. Mirrors what the
+    /// success branch of `ensureConversation` does (re-point
+    /// `currentConversation`) but skips the probe, so ChatStore can
+    /// install an empty local chat and the next send resolves the right
+    /// session UUID without waiting for `loadConversationInBackground`.
+    func adoptConversation(id: UUID, title: String) {
+        if currentConversation?.id != id {
+            currentConversation = Conversation(id: id, title: title)
         }
     }
 

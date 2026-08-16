@@ -256,39 +256,62 @@ final class SessionListStore {
     }
 
     func createNewSession(title: String = "New Chat") async {
+        // Build 128: mint a local UUID, install the empty local conversation
+        // IMMEDIATELY, then bind server-side in the background. Previously
+        // this called heraldClient.createSession(title:) FIRST and only
+        // installed the local conversation on success -- so when the
+        // gateway was unreachable, the user was silently left in the OLD
+        // thread and thought they had started a new chat (this morning's
+        // exact bug: tapping "+ New Chat" with a dead host opened a blank
+        // composer over the prior conversation, and the next message went
+        // to the prior server session).
+        let localID = UUID()
+        let capturedGeneration = chatStore.installLocalConversation(id: localID, title: title)
+        recentSessions.insert(SessionSummary(id: localID, title: title, previewText: "New conversation", source: "ios"), at: 0)
+        saveCachedSessions()
         do {
-            let session = try await heraldClient.createSession(title: title)
-            recentSessions.insert(session, at: 0)
-            // Build 77: immediate new-chat UI handoff.
-            //
-            // Previously we waited for `ensureConversation` (server-side bind)
-            // + `loadConversation` (authoritative history) serially before
-            // calling `switchToSession`, which itself awaited `loadConversation`.
-            // The user saw the OLD conversation for the full duration of those
-            // round trips. Now we install an empty local conversation the
-            // instant we have the new session UUID, then background the
-            // ensure/load work. The background path is identity- and
-            // generation-guarded so a slow or stale response cannot overwrite
-            // a session the user has since switched away from.
-            let capturedGeneration = chatStore.installLocalConversation(id: session.id, title: title)
-            let newSessionID = session.id
-            Task { [weak self, weak chatStore] in
-                guard let self, let chatStore else { return }
-                await chatStore.loadConversationInBackground(
-                    id: newSessionID,
-                    capturedGeneration: capturedGeneration,
-                    errorRelay: { [weak self] message in
-                        self?.errorMessage = message
-                    }
-                )
-                // Cache save runs after the background work regardless of
-                // whether the response merged, discarded, or errored — the
-                // sidebar list itself is already up to date (we inserted at
-                // index 0 above).
-                self.saveCachedSessions()
+            // Bind the server-side session using the SAME local UUID the
+            // UI is now showing. The native gateway client (FIX 1b / 1d)
+            // registers `conversationID` in its idMap under `localID`, so
+            // the very next streaming send resolves this id directly --
+            // no orphaned empty session, no fresh random UUID minted on
+            // send.
+            let session = try await heraldClient.createSession(title: title, conversationID: localID)
+            // The server echoed back the same UUID we minted (the
+            // native gateway's createSession binds it under the passed
+            // conversationID). Update the sidebar row to reflect the
+            // server-side SessionSummary (lastActivity timestamp) but keep
+            // the same row id so the sidebar doesn't visually swap.
+            if let idx = recentSessions.firstIndex(where: { $0.id == localID }) {
+                recentSessions[idx] = session
+                saveCachedSessions()
             }
         } catch {
-            errorMessage = error.localizedDescription
+            // Keep the local empty chat on screen and surface a SOFT
+            // errorMessage instead of leaving the user in the old thread.
+            // The next send will retry the bind via ensureConversation.
+            if !SessionListStore.isTransientConnectivityError(error) {
+                errorMessage = "Couldn't reach the host. Your new chat is local-only until you reconnect."
+            } else {
+                // Transient (wifi blip, reconnect in progress): don't even
+                // pop the banner -- the connection surface already
+                // communicates state.
+                Logger.app.info("createNewSession: transient bind failure for \(localID.uuidString.prefix(8)): \(error.localizedDescription)")
+            }
+            return
+        }
+        // Background the loadConversation work so the sidebar reflects the
+        // authoritative title/preview once the gateway is reachable.
+        Task { [weak self, weak chatStore] in
+            guard let self, let chatStore else { return }
+            await chatStore.loadConversationInBackground(
+                id: localID,
+                capturedGeneration: capturedGeneration,
+                errorRelay: { [weak self] message in
+                    self?.errorMessage = message
+                }
+            )
+            self.saveCachedSessions()
         }
     }
 

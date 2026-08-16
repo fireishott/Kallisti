@@ -143,6 +143,17 @@ extension MockHeraldClient {
         SessionSummary(title: title, previewText: "New conversation", source: "ios")
     }
 
+    /// Build 128: mock ignores the caller-minted conversation id but echoes
+    /// it back on the returned summary so the test/UI matches the real
+    /// gateway's behavior (idMap stays consistent across the local install
+    /// + the bind).
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
+        if let conversationID {
+            return SessionSummary(id: conversationID, title: title, previewText: "New conversation", source: "ios")
+        }
+        return try await createSession(title: title)
+    }
+
     func deleteSession(id: UUID) async throws {}
 
     func archiveSession(id: UUID) async throws {}

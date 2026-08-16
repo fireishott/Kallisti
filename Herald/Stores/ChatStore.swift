@@ -2864,6 +2864,13 @@ final class ChatStore {
         if sendPhase == .idle {
             streamingPhase = .idle
         }
+        // Build 128: re-point the native client's currentConversation at the
+        // freshly minted UUID so the next streaming turn resolves the right
+        // session id WITHOUT a redundant session.status probe. The
+        // background loadConversationInBackground still runs ensureConversation
+        // + loadConversation server-side, but the UI's first message can hit
+        // the gateway immediately instead of waiting on the round trip.
+        heraldClient.adoptConversation(id: sessionID, title: title)
         onConversationChanged?()
         return captured
     }
