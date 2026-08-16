@@ -352,11 +352,9 @@ struct ChatInputBar: View {
                 // Stop / Interrupt
                 Button(action: onStop) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Design.Colors.foreground)
-                        .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                        .background(Design.Colors.surface)
-                        .clipShape(Circle())
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.red)
+                        .frame(width: 40, height: 40)
                 }
                 .accessibilityLabel("Stop generating")
 
@@ -364,11 +362,9 @@ struct ChatInputBar: View {
                 if canSend {
                     Button(action: steerAction) {
                         Image(systemName: "steeringwheel")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Design.Colors.foreground)
-                            .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
-                            .background(Design.Colors.surface)
-                            .clipShape(Circle())
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .frame(width: 40, height: 40)
                     }
                     .accessibilityLabel("Queue message after current reply")
                     .accessibilityHint("Steer the conversation")
