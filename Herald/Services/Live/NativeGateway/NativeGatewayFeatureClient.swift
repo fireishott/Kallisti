@@ -599,4 +599,86 @@ struct NativeGatewayFeatureClient {
         }
         let config: Config?
     }
+
+    // MARK: - Config Editor (Build 128.41)
+
+    /// Fetch the Hermes config.yaml from the connector facade.
+    /// GET /v1/config → { path, size, mtime, content }
+    struct ConfigDocument {
+        var path: String
+        var content: String
+        var size: Int
+    }
+
+    private struct ConfigGetResponse: Decodable {
+        let path: String?
+        let size: Int?
+        let content: String?
+    }
+
+    private struct ConfigPutResponse: Decodable {
+        let ok: Bool?
+        let path: String?
+        let size: Int?
+        let backup: String?
+    }
+
+    /// Load config.yaml text from the connector. Returns nil on transport or
+    /// auth failure (the screen shows its own error state).
+    func configDocument() async -> ConfigDocument? {
+        let gatewayBase = await gatewayBaseURLProvider()
+        guard let facadeBase = NativeKallistiClient.facadeBaseURL(for: gatewayBase) else { return nil }
+        guard let url = URL(string: facadeBase.hasSuffix("/") ? facadeBase + "v1/config" : facadeBase + "/v1/config") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = await accessTokenProvider(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            let decoded = try JSONDecoder().decode(ConfigGetResponse.self, from: data)
+            guard let content = decoded.content else { return nil }
+            return ConfigDocument(
+                path: decoded.path ?? "~/.hermes/config.yaml",
+                content: content,
+                size: decoded.size ?? content.utf8.count
+            )
+        } catch { return nil }
+    }
+
+    /// Save config.yaml text back to the connector.
+    /// PUT /v1/config with { content } — the connector validates YAML, backs
+    /// up the live file, and writes atomically. Returns the backup path.
+    func saveConfigDocument(_ content: String) async throws -> String? {
+        let gatewayBase = await gatewayBaseURLProvider()
+        guard let facadeBase = NativeKallistiClient.facadeBaseURL(for: gatewayBase),
+              let url = URL(string: facadeBase.hasSuffix("/") ? facadeBase + "v1/config" : facadeBase + "/v1/config") else {
+            throw NativeGatewayClientError.notConnected
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await accessTokenProvider(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(["content": content])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        guard http.statusCode == 200 else {
+            let detail = (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
+                ?? "HTTP \(http.statusCode)"
+            throw NativeGatewayClientError.httpStatus(detail)
+        }
+        let decoded = try JSONDecoder().decode(ConfigPutResponse.self, from: data)
+        return decoded.backup
+    }
+
+    private struct ErrorDetail: Decodable {
+        let detail: String?
+    }
 }

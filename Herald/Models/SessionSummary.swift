@@ -10,6 +10,10 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
     var source: String?
     var isPinned: Bool
     var isArchived: Bool
+    /// The real Hermes session id (e.g. 20260815_194256_f67d9a) as stored
+    /// in state.db. The app-facing id is a deterministic UUID alias;
+    /// this is what you'd paste into hermes -r or an @session link.
+    var sessionKey: String?
 
     init(
         id: UUID = UUID(),
@@ -18,7 +22,8 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
         lastActivity: Date = .now,
         source: String? = nil,
         isPinned: Bool = false,
-        isArchived: Bool = false
+        isArchived: Bool = false,
+        sessionKey: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -27,6 +32,7 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
         self.source = source
         self.isPinned = isPinned
         self.isArchived = isArchived
+        self.sessionKey = sessionKey
     }
 
     /// Icon name for the session source (iMessage, Telegram, CLI, etc.)

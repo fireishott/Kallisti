@@ -500,6 +500,31 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // Build 128.41: config.yaml editor - fetch/save the Hermes
+                // config from the host (connector backs up before writing).
+                NavigationLink(value: Route.configEditor) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "curlybraces")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        Text("Config Editor")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+
+                sectionDivider
+
                 // Build 69 (r7): expandable Software Update row.
                 softwareUpdateSection
             }
