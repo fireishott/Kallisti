@@ -31,6 +31,19 @@ protocol HeraldClientProtocol {
     /// Create a new session.
     func createSession(title: String) async throws -> SessionSummary
 
+    /// Build 128: create a new session bound to a caller-minted conversation
+    /// UUID. Used by SessionListStore.createNewSession so the local empty
+    /// chat it installed via chatStore.installLocalConversation already
+    /// matches the server-side session id — on the very next streaming
+    /// send, idMap.nativeId(for: conversation.id) returns the freshly bound
+    /// native id instead of minting a NEW one and orphaning the previous
+    /// chat (the b127/b128 bug class).
+    ///
+    /// The native gateway uses this to register the caller's UUID (NOT a
+    /// fresh random UUID) in its idMap. Default: delegates to the single-arg
+    /// overload — mock and legacy relay clients ignore the conversationID.
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary
+
     /// Delete a session by ID.
     func deleteSession(id: UUID) async throws
 
@@ -54,6 +67,16 @@ protocol HeraldClientProtocol {
     /// session and bind the mapping before the job runs.
     /// - Returns: `true` if the server session was created or already existed.
     func ensureConversation(id: UUID) async -> Bool
+
+    /// Adopt a locally-minted conversation id as the active native
+    /// conversation without going through the network. Used by ChatStore
+    /// when it installs an empty local conversation immediately and binds
+    /// the server session in the background, so the next streaming turn
+    /// resolves the right session UUID without waiting for the round trip.
+    /// Clients with a backing store (the native gateway) should also
+    /// persist the mapping here if they maintain one, so a follow-up send
+    /// in the same tick finds the local id already registered.
+    func adoptConversation(id: UUID, title: String)
 
     /// Get the authoritative status of a job.
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse?
@@ -95,4 +118,17 @@ extension HeraldClientProtocol {
     /// legacy relay path). The native gateway client overrides this with
     /// its 8s session.list probe + forced fresh connect.
     func reconnectIfNeeded() async {}
+
+    /// Default: no-op for clients without a backing idMap (mocks, legacy
+    /// relay path). The native gateway client overrides this to re-point
+    /// `currentConversation` and register the local UUID so the next send
+    /// resolves the right session without a redundant transcript download.
+    func adoptConversation(id: UUID, title: String) {}
+
+    /// Default: delegates to the single-arg overload so conformances that
+    /// pre-date the b128 conversation-binding change keep working. The
+    /// native gateway client overrides this to bind the caller's UUID.
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
+        try await createSession(title: title)
+    }
 }

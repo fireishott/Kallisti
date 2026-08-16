@@ -91,6 +91,13 @@ extension ResilientHeraldClient {
         try await primary.createSession(title: title)
     }
 
+    /// Build 128: forward the conversationID overload so the caller's minted
+    /// UUID flows through the resilient wrapper unchanged (the primary is
+    /// responsible for registering it in its idMap).
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
+        try await primary.createSession(title: title, conversationID: conversationID)
+    }
+
     func deleteSession(id: UUID) async throws {
         try await primary.deleteSession(id: id)
     }
