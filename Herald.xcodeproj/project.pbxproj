@@ -296,6 +296,7 @@
 		D52051FC91E077E4DBE8F930 /* SkillDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8512BFE6A2C8FF7E3CFF91A9 /* SkillDetailView.swift */; };
 		D52969A62978FA9B91EC4A9C /* NativeGatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE693FCC35AF80B560A7CCAC /* NativeGatewayClient.swift */; };
 		D5C8CD2BBF5C4270FA5BFA35 /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */; };
+		B2581941A21D04EA2BCC10E8 /* ConfigEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */; };
 		D60A80BF27579278E4059BBC /* MessageAttachmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC5E563F9C5DC22502D5B3D6 /* MessageAttachmentsView.swift */; };
 		D7626D502ABA67E81E94A161 /* MockHandwritingRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2D09B0484E5E3255AC0165 /* MockHandwritingRecognizer.swift */; };
 		D8D9CF1516F56231BB67BF17 /* LiveNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FCBEE8C83861E878B8407B3 /* LiveNotificationService.swift */; };
@@ -675,6 +676,7 @@
 		A41BAD0607E25A2A92A7EC81 /* InboxActionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxActionResult.swift; sourceTree = "<group>"; };
 		A48B9834AB39B26D1AC88AFE /* MockNotesRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockNotesRepository.swift; sourceTree = "<group>"; };
 		A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
+		6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigEditorScreen.swift; sourceTree = "<group>"; };
 		A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolActivityRail.swift; sourceTree = "<group>"; };
 		0D314D55A4F48791D662A908 /* TerminalOutputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputView.swift; sourceTree = "<group>"; };
 		A65EB193F422B75698743CB5 /* LiveSessionBootstrapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSessionBootstrapService.swift; sourceTree = "<group>"; };
@@ -1072,6 +1074,7 @@
 				6ADA0FD3C551D728D7AB9C24 /* GatewayLogsScreen.swift */,
 				98D7B13A1FCB0BC4E2ECCE5D /* GatewayStatusScreen.swift */,
 				A4EF3A954FAF696E52505ABC /* SettingsScreen.swift */,
+				6FD4F14ED93E60616ED30771 /* ConfigEditorScreen.swift */,
 				DC710002D88B4B50511DE76E /* SettingsSectionView.swift */,
 				CF4387FB83B93C3A5563A93D /* WallpaperPickerSheet.swift */,
 			);
@@ -2092,6 +2095,7 @@
 				00B7D464C0B0FC2006656D81 /* SessionListStore.swift in Sources */,
 				A6205ED0807251DED1AD3A1E /* SessionSummary.swift in Sources */,
 				D5C8CD2BBF5C4270FA5BFA35 /* SettingsScreen.swift in Sources */,
+				B2581941A21D04EA2BCC10E8 /* ConfigEditorScreen.swift in Sources */,
 				8B6FA44295C507A5B13A0C67 /* SettingsSectionView.swift in Sources */,
 				333AA3708E82A256E70A30B4 /* SettingsStore.swift in Sources */,
 				23AE35457F62C96AFAE45C4D /* SetupCodeScannerView.swift in Sources */,
