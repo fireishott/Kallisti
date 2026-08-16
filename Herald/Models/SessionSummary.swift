@@ -14,6 +14,9 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
     /// in state.db. The app-facing id is a deterministic UUID alias;
     /// this is what you'd paste into hermes -r or an @session link.
     var sessionKey: String?
+    /// True when the gateway reports this session has an active turn in
+    /// flight (status working). Rendered as a blue dot next to the row.
+    var hasActivity: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -23,7 +26,8 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
         source: String? = nil,
         isPinned: Bool = false,
         isArchived: Bool = false,
-        sessionKey: String? = nil
+        sessionKey: String? = nil,
+        hasActivity: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -33,6 +37,7 @@ struct SessionSummary: Codable, Identifiable, Hashable, Sendable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.sessionKey = sessionKey
+        self.hasActivity = hasActivity
     }
 
     /// Icon name for the session source (iMessage, Telegram, CLI, etc.)

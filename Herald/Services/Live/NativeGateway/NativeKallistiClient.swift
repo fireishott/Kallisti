@@ -7,14 +7,25 @@ import UIKit
 /// short-hex session_id model. Stores the mapping in UserDefaults.
 actor NativeSessionIdMap {
     private static let defaultsKey = "NativeGwSessionIdMap"
+    private static let defaultsKeyFull = "NativeGwSessionKeyMap"
     private var uuidToNative: [String: String] = [:]
     private var nativeToUuid: [String: String] = [:]
+    /// FULL gateway session key (e.g. 20260816_144338_2bbd59) per UUID.
+    /// Kept separate from the SHORT live id: session.resume requires the
+    /// FULL key while session.history/status require the SHORT id.
+    private var uuidToKey: [String: String] = [:]
+    private var keyToUuid: [String: String] = [:]
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
            let map = try? JSONDecoder().decode([String: String].self, from: data) {
             uuidToNative = map
             for (k, v) in map { nativeToUuid[v] = k }
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.defaultsKeyFull),
+           let map = try? JSONDecoder().decode([String: String].self, from: data) {
+            uuidToKey = map
+            for (k, v) in map { keyToUuid[v] = k }
         }
     }
 
@@ -48,16 +59,61 @@ actor NativeSessionIdMap {
         nativeToUuid[nativeId].flatMap(UUID.init)
     }
 
+    /// Register the FULL gateway session key for a UUID (dual-id fix).
+    /// Keeps the key namespace independent of the SHORT live id so a
+    /// session that was resumed (and re-pointed to a new live id) still
+    /// resolves by its stable FULL key.
+    func registerKey(uuid: UUID, sessionKey: String) {
+        let key = uuid.uuidString
+        if let oldKey = uuidToKey[key], oldKey != sessionKey {
+            keyToUuid.removeValue(forKey: oldKey)
+        }
+        if let oldUuid = keyToUuid[sessionKey], oldUuid != key {
+            uuidToKey.removeValue(forKey: oldUuid)
+        }
+        uuidToKey[key] = sessionKey
+        keyToUuid[sessionKey] = key
+        saveKeys()
+    }
+
+    /// The FULL gateway session key for a UUID, if known.
+    func sessionKey(for uuid: UUID) -> String? {
+        uuidToKey[uuid.uuidString]
+    }
+
+    /// Resolve a UUID by FULL gateway session key. Used by listSessions so
+    /// rows carrying the FULL key map to the SAME app UUID the conversation
+    /// already holds (prevents sidebar row UUID drift / lost highlight).
+    func uuid(forKey key: String) -> UUID? {
+        keyToUuid[key].flatMap(UUID.init)
+    }
+
+    /// Remove a UUID's FULL-key mapping too.
+    func removeKey(uuid: UUID) {
+        if let key = uuidToKey.removeValue(forKey: uuid.uuidString) {
+            keyToUuid.removeValue(forKey: key)
+            saveKeys()
+        }
+    }
+
     func remove(uuid: UUID) {
         if let native = uuidToNative.removeValue(forKey: uuid.uuidString) {
             nativeToUuid.removeValue(forKey: native)
             save()
         }
+        removeKey(uuid: uuid)
     }
 
     private func save() {
         if let data = try? JSONEncoder().encode(uuidToNative) {
             UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        }
+        saveKeys()
+    }
+
+    private func saveKeys() {
+        if let data = try? JSONEncoder().encode(uuidToKey) {
+            UserDefaults.standard.set(data, forKey: Self.defaultsKeyFull)
         }
     }
 }
@@ -1361,12 +1417,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // message, model switch) failed with "session not found" / 4001
             // or created a brand-new server session (context loss + cold
             // start latency on every follow-up).
+            // Dual-id fix: session.list rows carry the FULL key as sessionId.
+            // Resolve the UUID by FULL key FIRST so the row maps to the SAME
+            // app UUID the conversation already holds (launch highlight),
+            // then fall back to the SHORT-id map, then mint + register both.
             let uuid: UUID
-            if let existing = await idMap.uuid(for: native.sessionId) {
+            if let existing = await idMap.uuid(forKey: native.sessionId) {
                 uuid = existing
+            } else if let existing = await idMap.uuid(for: native.sessionId) {
+                uuid = existing
+                await idMap.registerKey(uuid: uuid, sessionKey: native.sessionId)
             } else {
                 uuid = UUID()
                 await idMap.register(uuid: uuid, nativeId: native.sessionId)
+                await idMap.registerKey(uuid: uuid, sessionKey: native.sessionId)
             }
             sessions.append(SessionSummary(
                 id: uuid,
@@ -1379,6 +1443,44 @@ final class NativeKallistiClient: HeraldClientProtocol {
             ))
         }
         return SessionListResponse(sessions: sessions, total: decoded.total ?? sessions.count)
+    }
+
+    /// Blue-dot source: session keys with an active turn in flight.
+    ///
+    /// Probes `session.active_list` (live in-memory sessions only) and
+    /// returns the FULL gateway session keys whose status is `working`
+    /// (or waiting/starting - anything not idle). The sidebar matches
+    /// these against each row's `sessionKey` to render the activity dot.
+    /// Returns empty on any failure - the dot is best-effort decoration,
+    /// never worth an error state.
+    func activeSessionKeys() async -> Set<String> {
+        guard let client, connectionStatus == .connected else { return [] }
+        do {
+            let response = try await client.send(
+                method: "session.active_list",
+                params: [String: String](),
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            if let error = response.error {
+                Logger.app.debug("activeSessionKeys: active_list error \(error)")
+                return []
+            }
+            guard let result = response.result else { return [] }
+            let data = try JSONEncoder().encode(result)
+            let decoded = try JSONDecoder().decode(NativeActiveSessionListResult.self, from: data)
+            let active = decoded.sessions.filter { item in
+                let status = (item.status ?? "").lowercased()
+                return status != "idle" && !status.isEmpty
+            }
+            let keys = Set(active.compactMap { $0.sessionKey })
+            if !keys.isEmpty {
+                Logger.app.debug("activeSessionKeys: \(keys.count) working session(s)")
+            }
+            return keys
+        } catch {
+            Logger.app.debug("activeSessionKeys: probe failed \(error.localizedDescription)")
+            return []
+        }
     }
 
     func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] {
@@ -1401,11 +1503,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 if src != "ios" && src != "tui" { continue }
             }
             let uuid: UUID
-            if let existing = await idMap.uuid(for: native.sessionId) {
+            if let existing = await idMap.uuid(forKey: native.sessionId) {
                 uuid = existing
+            } else if let existing = await idMap.uuid(for: native.sessionId) {
+                uuid = existing
+                await idMap.registerKey(uuid: uuid, sessionKey: native.sessionId)
             } else {
                 uuid = UUID()
                 await idMap.register(uuid: uuid, nativeId: native.sessionId)
+                await idMap.registerKey(uuid: uuid, sessionKey: native.sessionId)
             }
             sessions.append(SessionSummary(
                 id: uuid,
@@ -1453,6 +1559,13 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // "session not found" (or orphan the previous session).
         let uuid = conversationID ?? UUID()
         await idMap.register(uuid: uuid, nativeId: decoded.sessionId)
+        // Dual-id fix: session.create returns BOTH the SHORT live id and the
+        // FULL stored_session_id. Register the FULL key so later session.resume
+        // probes (refresh / thinking bubble) and session.list row matching
+        // resolve this conversation by its stable key.
+        if let storedKey = decoded.storedSessionId, !storedKey.isEmpty {
+            await idMap.registerKey(uuid: uuid, sessionKey: storedKey)
+        }
         return SessionSummary(id: uuid, title: title, lastActivity: .now)
     }
 
@@ -1693,6 +1806,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
                        let decoded = try? JSONDecoder().decode(NativeResumeResult.self, from: data),
                        let resumedLiveID = decoded.sessionId, !resumedLiveID.isEmpty {
                         await idMap.register(uuid: id, nativeId: resumedLiveID)
+                        // Dual-id fix: also keep the FULL session key so
+                        // session.resume probes (thinking bubble / refresh)
+                        // and session.list row matching resolve the same UUID.
+                        if let resumedKey = decoded.sessionKey, !resumedKey.isEmpty {
+                            await idMap.registerKey(uuid: id, sessionKey: resumedKey)
+                        }
                         Self.logger.info("ensureSessionForSwitch: re-pointed idMap \(id) -> \(resumedLiveID) after resume")
                     }
                     return true
@@ -2331,12 +2450,26 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// watchdog instead of declaring "took too long".
     func resumeActiveSessionIfNeeded() async -> Bool {
         guard let client else { return false }
-        guard let currentConversation,
-              let nativeId = await idMap.nativeId(for: currentConversation.id) else { return false }
+        guard let currentConversation else { return false }
+        // Dual-id fix: session.resume requires the FULL gateway session key
+        // (db.get_session lookup), NOT the SHORT live id. The old code sent
+        // idMap.nativeId (SHORT after createSession/ensureSessionForSwitch),
+        // which the gateway rejected with 4007 -> watch never started -> no
+        // thinking bubble on refresh. Prefer the FULL key when registered.
+        // NOTE: 'await' cannot appear on the right of ?? - resolve each
+        // actor call sequentially.
+        let resumeID: String
+        if let key = await idMap.sessionKey(for: currentConversation.id), !key.isEmpty {
+            resumeID = key
+        } else if let native = await idMap.nativeId(for: currentConversation.id), !native.isEmpty {
+            resumeID = native
+        } else {
+            return false
+        }
         do {
             let response = try await client.send(
                 method: "session.resume",
-                params: ["session_id": nativeId],
+                params: ["session_id": resumeID],
                 timeoutNanos: Self.probeTimeoutNanos
             )
             guard response.error == nil, let result = response.result else { return false }
@@ -2367,11 +2500,17 @@ private struct NativeResumeResult: Decodable {
     /// follow-up session.history call, or the lookup 4001s "session not
     /// found" against the live registry.
     let sessionId: String?
+    /// The FULL gateway session key (e.g. 20260816_144338_2bbd59). The
+    /// resume payload carries it alongside the short live id; the app keeps
+    /// it in the idMap's key map so session.resume probes (thinking bubble,
+    /// refresh) send the FULL key the gateway's db lookup requires.
+    let sessionKey: String?
     let running: Bool?
     let status: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
+        case sessionKey = "session_key"
         case running
         case status
     }

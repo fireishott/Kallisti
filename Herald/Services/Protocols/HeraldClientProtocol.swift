@@ -98,6 +98,12 @@ protocol HeraldClientProtocol {
     /// this before declaring a no-progress stall.
     func reconnectIfNeeded() async
 
+    /// Returns the gateway session keys (e.g. 20260816_144338_2bbd59) that
+    /// currently have an active turn in flight (status working). Used by the
+    /// sidebar to render the blue "has action" dot. Clients without a native
+    /// gateway connection return an empty set (default no-op).
+    func activeSessionKeys() async -> Set<String>
+
     /// Send a message to a specific conversation with a specific client message ID.
     /// Used by notification actions where the target conversation may not be the current one.
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message
@@ -118,6 +124,11 @@ extension HeraldClientProtocol {
     /// legacy relay path). The native gateway client overrides this with
     /// its 8s session.list probe + forced fresh connect.
     func reconnectIfNeeded() async {}
+
+    /// Default: no active sessions for clients without a native gateway
+    /// connection (mocks, legacy relay path). The native gateway client
+    /// overrides this with a session.active_list probe.
+    func activeSessionKeys() async -> Set<String> { [] }
 
     /// Default: no-op for clients without a backing idMap (mocks, legacy
     /// relay path). The native gateway client overrides this to re-point

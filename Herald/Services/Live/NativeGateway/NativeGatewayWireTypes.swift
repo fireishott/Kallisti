@@ -297,6 +297,11 @@ struct NativeSessionCreateResult: Decodable {
 /// "The data couldn't be read because it is missing" in the resume picker).
 struct NativeSessionListItem: Decodable {
     let sessionId: String
+    /// FULL gateway session key (e.g. 20260816_144338_2bbd59). The gateway's
+    /// session.list returns the FULL key in the `id` field, so sessionId is
+    /// typically this FULL key; keep the key alias explicit for callers that
+    /// need the resume-compatible id distinct from any SHORT live id.
+    let sessionKey: String?
     let title: String?
     let lastActivity: String?
     let previewText: String?
@@ -309,6 +314,7 @@ struct NativeSessionListItem: Decodable {
         case sessionId
         case sessionIdAlias = "session_id"
         case sessionIdGateway = "id"
+        case sessionKey = "session_key"
         case title
         case lastActivity = "last_activity"
         case lastActivityAlias = "started_at"
@@ -335,6 +341,10 @@ struct NativeSessionListItem: Decodable {
                 debugDescription: "session.list item missing id/session_id"
             )
         }
+        // The gateway's list payload does not carry session_key separately
+        // (the `id` field IS the full key), but keep the tolerant decode for
+        // future wire revisions / relay compatibility.
+        sessionKey = try c.decodeIfPresent(String.self, forKey: .sessionKey)
         title = try c.decodeIfPresent(String.self, forKey: .title)
         // The gateway sends `started_at` as a NUMBER (unix seconds), not an
         // ISO8601 string. decodeIfPresent(String.self) THROWS a typeMismatch
@@ -371,6 +381,29 @@ struct NativeSessionListItem: Decodable {
 struct NativeSessionListResult: Decodable {
     let sessions: [NativeSessionListItem]
     let total: Int?
+}
+
+/// Response from `session.active_list` - live in-memory gateway sessions.
+/// Used by the sidebar blue dot: any item whose status is not `idle`
+/// counts as "has action".
+struct NativeActiveSessionListItem: Decodable {
+    let sessionId: String?
+    let sessionKey: String?
+    let status: String?
+    let title: String?
+    let current: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "id"
+        case sessionKey = "session_key"
+        case status
+        case title
+        case current
+    }
+}
+
+struct NativeActiveSessionListResult: Decodable {
+    let sessions: [NativeActiveSessionListItem]
 }
 
 /// Response from `session.history`
