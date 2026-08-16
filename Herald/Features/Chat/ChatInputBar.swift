@@ -179,7 +179,7 @@ struct ChatInputBar: View {
                                 Text(speechService?.isListening == true ? "Listening..." : placeholderText)
                                     .font(Design.Typography.body)
                                     .foregroundStyle(Design.Colors.tertiaryForeground)
-                                    .padding(.top, 4)
+                                    .padding(.top, 11)
                                     .allowsHitTesting(false)
                             }
                         }
@@ -577,7 +577,7 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         textView.font = UIFont.systemFont(ofSize: 15)   // Design.Typography.body
         textView.textColor = UIColor(Design.Colors.foreground)
         textView.backgroundColor = .clear
-        textView.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        textView.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         // Build 109: start NON-scrollable. A scroll-enabled UITextView is a
         // UIScrollView, so SwiftUI lets it expand to fill all proposed height
@@ -585,7 +585,7 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
         // needsScroll flips this to true only when content exceeds 5 lines.
         textView.isScrollEnabled = false
         textView.showsVerticalScrollIndicator = true
-        textView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: -4)
+        textView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: -4)
         textView.accessibilityIdentifier = "chat.composer"
         // Build 127: read-only while the host is offline.
         textView.isEditable = isEnabled
