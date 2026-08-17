@@ -753,6 +753,49 @@ struct NativeGatewayFeatureClient {
         return decoded.data?.backup
     }
 
+    /// Validate YAML content without writing to disk. Build 128.59.
+    /// Returns true if valid; throws with the YAML error detail if invalid.
+    func validateConfigDocument(_ content: String) async throws -> Bool {
+        let gatewayBase = await gatewayBaseURLProvider()
+        guard let facadeBase = NativeKallistiClient.facadeBaseURL(for: gatewayBase),
+              let url = URL(string: facadeBase.hasSuffix("/") ? facadeBase + "v1/config/validate" : facadeBase + "/v1/config/validate") else {
+            throw NativeGatewayClientError.notConnected
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if await !cookieAuthProvider(),
+           let token = await accessTokenProvider(),
+           !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(["content": content])
+        var (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200,
+           let fallback = await fallbackTokenProvider(), !fallback.isEmpty {
+            var retry = request
+            retry.setValue("Bearer \(fallback)", forHTTPHeaderField: "Authorization")
+            retry.httpBody = try JSONEncoder().encode(["content": content])
+            (data, response) = try await URLSession.shared.data(for: retry)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        if http.statusCode == 200 { return true }
+        // 422 = validation failed — connector returns { valid: false, error: "..." }
+        if http.statusCode == 422 {
+            struct ValidateError: Decodable { let error: String? }
+            if let err = try? JSONDecoder().decode(ValidateError.self, from: data),
+               let msg = err.error {
+                throw NativeGatewayClientError.httpStatus(msg)
+            }
+        }
+        let detail = (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
+            ?? "HTTP \(http.statusCode)"
+        throw NativeGatewayClientError.httpStatus(detail)
+    }
+
     private struct ErrorDetail: Decodable {
         let detail: String?
     }
