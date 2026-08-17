@@ -2618,6 +2618,33 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    func isServerTurnAwaitingUserInput() async -> Bool {
+        guard let client, let currentConversation else { return false }
+        let resumeID: String
+        if let key = await idMap.sessionKey(for: currentConversation.id), !key.isEmpty {
+            resumeID = key
+        } else if let native = await idMap.nativeId(for: currentConversation.id), !native.isEmpty {
+            resumeID = native
+        } else {
+            return false
+        }
+        do {
+            let response = try await client.send(
+                method: "session.resume",
+                params: ["session_id": resumeID],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            guard response.error == nil, let result = response.result else { return false }
+            let data = try JSONEncoder().encode(result)
+            let decoded = try JSONDecoder().decode(NativeResumeResult.self, from: data)
+            // Parked on user input: a clarify question or approval prompt is
+            // blocking the turn. The model is NOT working - the user is.
+            return decoded.pendingClarify != nil || decoded.pendingApproval != nil
+        } catch {
+            return false
+        }
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
     }
@@ -2640,12 +2667,19 @@ private struct NativeResumeResult: Decodable {
     let sessionKey: String?
     let running: Bool?
     let status: String?
+    /// When the gateway session is parked on a clarify question (the turn
+    /// emitted clarify.request and is waiting for the user to answer).
+    let pendingClarify: [String: Any]?
+    /// When the gateway session is parked on an approval prompt.
+    let pendingApproval: [String: Any]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case sessionKey = "session_key"
         case running
         case status
+        case pendingClarify = "pending_clarify"
+        case pendingApproval = "pending_approval"
     }
 }
 

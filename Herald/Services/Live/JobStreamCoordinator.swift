@@ -412,6 +412,12 @@ actor JobStreamCoordinator {
             let output = payloadJSON["output"] as? String ?? ""
             payload = .toolCompleted(ToolCompletedPayload(toolCallId: toolCallId, output: output, isError: payloadJSON["is_error"] as? Bool ?? false, durationMs: payloadJSON["duration_ms"] as? Int))
 
+        case "tool.output":
+            eventType = .toolOutput
+            let toolCallId = payloadJSON["tool_call_id"] as? String ?? payloadJSON["tool_id"] as? String ?? ""
+            let chunk = payloadJSON["chunk"] as? String ?? payloadJSON["output"] as? String ?? ""
+            payload = .toolOutput(ToolOutputPayload(toolCallId: toolCallId, chunk: chunk))
+
         case "approval.required":
             eventType = .approvalRequired
             let toolCallId = payloadJSON["tool_call_id"] as? String ?? ""
@@ -579,6 +585,11 @@ actor JobStreamCoordinator {
         case .toolCompleted:
             if case .toolCompleted(let payload) = envelope.payload {
                 return .toolCompleted(toolCallID: payload.toolCallId, resultPreview: payload.output, isError: payload.isError, durationMs: payload.durationMs)
+            }
+            return nil
+        case .toolOutput:
+            if case .toolOutput(let payload) = envelope.payload {
+                return .toolOutput(toolCallID: payload.toolCallId, chunk: payload.chunk)
             }
             return nil
         case .commentary:
