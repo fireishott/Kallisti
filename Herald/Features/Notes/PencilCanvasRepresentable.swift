@@ -321,7 +321,7 @@ final class NotePaperUIView: UIView {
         let marginColor: UIColor = isDark
             ? UIColor.red.withAlphaComponent(0.12)
             : UIColor.red.withAlphaComponent(0.06)
-        let lineWidth: CGFloat = isDark ? 0.75 : 0.5
+        let lineWidth: CGFloat = isDark ? 2.0 : 1.5
 
         ctx.setStrokeColor(lineColor.cgColor)
         ctx.setLineWidth(lineWidth)
@@ -354,7 +354,7 @@ final class NotePaperUIView: UIView {
         if style.showsMarginLine {
             let leftMargin: CGFloat = 72
             ctx.setStrokeColor(marginColor.cgColor)
-            ctx.setLineWidth(1.0)
+            ctx.setLineWidth(1.5)
             ctx.move(to: CGPoint(x: leftMargin, y: 0))
             ctx.addLine(to: CGPoint(x: leftMargin, y: size.height))
             ctx.strokePath()

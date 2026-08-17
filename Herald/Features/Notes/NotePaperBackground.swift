@@ -18,7 +18,7 @@ struct NotePaperBackground: View {
 
             let lineColor = resolvedLineColor
             let marginColor = Color.red.opacity(colorScheme == .dark ? 0.12 : 0.06)
-            let lineWidth: CGFloat = colorScheme == .dark ? 0.75 : 0.5
+            let lineWidth: CGFloat = colorScheme == .dark ? 2.0 : 1.5
 
             // Horizontal ruled lines
             if style.showsRuledLines || style.showsGrid {
@@ -50,7 +50,7 @@ struct NotePaperBackground: View {
                 var marginPath = Path()
                 marginPath.move(to: CGPoint(x: leftMargin, y: 0))
                 marginPath.addLine(to: CGPoint(x: leftMargin, y: size.height))
-                context.stroke(marginPath, with: .color(marginColor), lineWidth: 1.0)
+                context.stroke(marginPath, with: .color(marginColor), lineWidth: 1.5)
             }
         }
     }
