@@ -90,7 +90,7 @@ protocol HeraldClientProtocol {
     /// (a clarify question or approval prompt) rather than the model working.
     /// Server-turn watch uses this to tear down the synthetic Thinking bubble:
     /// when control has passed to the user, a spinner is a lie.
-    func isServerTurnAwaitingUserInput() async -> Bool { false }
+    func isServerTurnAwaitingUserInput() async -> Bool
 
     /// Build 84 Option C-A (probe-through-phantom): force a real liveness
     /// probe on the transport even when `connectionStatus == .connected`.
@@ -164,6 +164,11 @@ extension HeraldClientProtocol {
     /// relay path). The native gateway client overrides this with the
     /// real gateway call.
     func interruptSession() async -> Bool { false }
+
+    /// Default: assume the server turn is NOT parked waiting on the user.
+    /// Only transports that can decode pending_clarify/pending_approval
+    /// (native gateway) override this.
+    func isServerTurnAwaitingUserInput() async -> Bool { false }
 
     /// Default: only the native gateway client can interrupt a server-side
     /// turn; relay/mock clients return false so the UI falls back to local
