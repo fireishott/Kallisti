@@ -317,8 +317,15 @@ struct MessageBubble: View, Equatable {
                 }
 
                 HStack(spacing: Design.Spacing.xs) {
-                    Text(message.timestamp, style: .time)
-                        .brandEyebrow()
+                    if message.isStreaming {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(context.date, style: .time)
+                                .brandEyebrow()
+                        }
+                    } else {
+                        Text(message.timestamp, style: .time)
+                            .brandEyebrow()
+                    }
 
                     Image(systemName: message.status.displayIcon)
                         .font(.system(size: Design.Size.iconTiny))
@@ -390,7 +397,20 @@ struct MessageBubble: View, Equatable {
                     MessageAttachmentsView(attachments: message.attachments, alignment: .leading)
                 }
 
-                if !message.isStreaming {
+                // Build 128.54: a streaming row must never show a frozen
+                // creation stamp (7:59 PM for 40 minutes while the turn runs).
+                // While streaming, render a LIVE clock via TimelineView so the
+                // stamp ticks with the current time; once settled, show the
+                // completion time stamped by the .finished handler.
+                if message.isStreaming {
+                    HStack(spacing: Design.Spacing.xs) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(context.date, style: .time)
+                                .brandEyebrow()
+                        }
+                        bubbleMenu
+                    }
+                } else {
                     HStack(spacing: Design.Spacing.xs) {
                         Text(message.timestamp, style: .time)
                             .brandEyebrow()

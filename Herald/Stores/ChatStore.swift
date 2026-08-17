@@ -2300,6 +2300,17 @@ final class ChatStore {
                         // delivered check.
                         isCredibleCompletion = !resolvedText.isEmpty
                             || !resolved.attachments.isEmpty
+                        // Build 128.54: the settled row shows COMPLETION time,
+                        // not stream-start time. The placeholder's timestamp is
+                        // frozen at creation (e.g. 7:59 PM) while a deep turn
+                        // can run 30+ minutes; leaving it made long turns read
+                        // as old messages sitting below newer ones (Curtis
+                        // "look at time stamps" screenshots 2026-08-16). The
+                        // stamp is stamped when the terminal write lands so the
+                        // bubble reads the time it actually finished.
+                        if resolved.timestamp < Date().addingTimeInterval(-2) {
+                            resolved.timestamp = Date()
+                        }
                         self.conversation?.messages[idx] = resolved
                         // Build 117 fix: do NOT mark the user message as
                         // .delivered here.  The user message's delivery status
@@ -4034,6 +4045,16 @@ final class ChatStore {
                     break
                 }
                 self.conversation = self.mergeConversationMetadata(from: self.conversation, into: fresh)
+                // Build 128.54: sweep ghost placeholders on the LIVE path.
+                // settleStaleTransientState only ran on cache-restore and
+                // fetch-failure, so an SSE stream that died silently (socket
+                // alive, no data, no terminal event) left a permanently stuck
+                // ".sending"/"Thinking..." row stamped with its creation time
+                // forever (Curtis screenshots 20:07-20:47, identical frame).
+                // After every poll merge, settle any streaming row that has no
+                // live owner (not in activeStreams, pendingStreamPlaceholders,
+                // or the server-turn placeholder set).
+                self.settleStaleTransientState()
                 // Build 28: a successful merge that includes the terminal
                 // turn satisfies the pending reconciliation marker set at
                 // .finished.  Future merges are ordinary refreshes.
