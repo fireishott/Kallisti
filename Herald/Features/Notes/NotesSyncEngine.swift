@@ -252,48 +252,53 @@ final class NotesSyncEngine {
         reasoningStartedAt = .now
         reasoningDuration = nil
 
-        var finalContent = ""
-        var message: Message?
-        var streamError: String?
-        let watchdogTask = Task { [weak self] in
-            // A sync must never hang silently. If the gateway streams nothing
-            // terminal within 120s, cancel the consumer so the engine moves on.
-            try? await Task.sleep(nanoseconds: 120_000_000_000)
-            guard !Task.isCancelled else { return }
-            if self?.isReasoningActive == true {
-                self?.isReasoningActive = false
-                streamError = "Sync timed out waiting for the gateway (120s)."
-                self?.stage = .failed(streamError ?? "Timed out")
+        // Run the stream consumer in a child Task so the watchdog can truly
+        // cancel it. A bare for-await over AsyncStream blocks forever if the
+        // gateway goes silent; cancelling the consuming task terminates the
+        // iteration, so the sync can never hang at "Creating session..." again.
+        let consumeTask = Task { () -> (Message?, String?) in
+            var finalContent = ""
+            var message: Message?
+            var streamError: String?
+            for await update in client.sendNoteMessageStreaming(
+                text: messageText,
+                attachments: attachments,
+                clientMessageID: UUID(),
+                conversationID: note.id,
+                title: sessionTitle
+            ) {
+                if Task.isCancelled { streamError = "Sync cancelled."; break }
+                switch update {
+                case .textDelta(let delta):
+                    finalContent += delta
+                case .reasoningDelta(let delta):
+                    liveReasoning += delta
+                case .toolActivity(let label):
+                    // Surface tool phases as reasoning lines so a long tool run
+                    // is visible instead of a frozen bubble.
+                    if !liveReasoning.isEmpty { liveReasoning += "\n" }
+                    liveReasoning += "[tool] \(label)"
+                case .finished(let msg, _, _, _):
+                    message = msg
+                case .failed(let error, _, _):
+                    streamError = error
+                default:
+                    break
+                }
+                if message != nil || streamError != nil { break }
             }
+            return (message, streamError)
         }
-        defer { watchdogTask.cancel() }
 
-        for await update in client.sendNoteMessageStreaming(
-            text: messageText,
-            attachments: attachments,
-            clientMessageID: UUID(),
-            conversationID: note.id,
-            title: sessionTitle
-        ) {
-            switch update {
-            case .textDelta(let delta):
-                finalContent += delta
-            case .reasoningDelta(let delta):
-                liveReasoning += delta
-            case .toolActivity(let label):
-                // Surface tool phases as reasoning lines so a long tool run is
-                // visible instead of a frozen bubble.
-                if !liveReasoning.isEmpty { liveReasoning += "\n" }
-                liveReasoning += "[tool] \(label)"
-            case .finished(let msg, _, _, _):
-                message = msg
-            case .failed(let error, _, _):
-                streamError = error
-            default:
-                break
-            }
-            if message != nil || streamError != nil { break }
+        let watchdogTask = Task {
+            // A sync must never hang silently. If the gateway streams nothing
+            // terminal within 120s, cancel the consumer (terminates the
+            // for-await) so the engine moves on to a clear failure.
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            consumeTask.cancel()
         }
+        let (message, streamError) = await consumeTask.value
+        watchdogTask.cancel()
 
         isReasoningActive = false
         if let startedAt = reasoningStartedAt {
