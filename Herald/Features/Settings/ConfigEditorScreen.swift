@@ -408,7 +408,7 @@ private struct ConfigRestartOverlay: View {
                     .symbolEffect(.pulse, options: .repeating)
 
                 Text(phaseText)
-                    .font(Design.Typography.title3)
+                    .font(Design.Typography.headline)
                     .foregroundStyle(Design.Colors.foreground)
 
                 // Phase dots
