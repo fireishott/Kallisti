@@ -141,14 +141,28 @@ final class NotesSyncEngine {
         stage = .preparing
         lastSyncError = nil
 
-        // Gather dirty notes: changed drawing since last sync, or never synced.
+        // Gather dirty notes: changed drawing since last sync, never synced,
+        // or touched after the last sync (covers notes created before the
+        // sync feature landed whose revision counters stayed at 0 while the
+        // drawing blob on disk has content).
         let notes = notesStore.activeNotes
         let dirty = notes.filter { note in
-            note.currentDrawingRevision > note.lastSyncedDrawingRevision
+            note.lastSyncedDrawingRevision < note.currentDrawingRevision
+                || note.lastSyncedAt == nil
         }
         pendingNotesCount = dirty.count
+        // Never leave a silent no-op: a manual tap with nothing to push
+        // should still report back so it doesn't look broken.
         if dirty.isEmpty {
-            stage = .idle
+            if trigger == .manual {
+                stage = .done
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if stage == .done { stage = .idle }
+            } else {
+                stage = .idle
+            }
+            lastSyncDate = .now
+            logger.info("Sync run found no dirty notes (\(notes.count) active)")
             isSyncing = false
             return
         }

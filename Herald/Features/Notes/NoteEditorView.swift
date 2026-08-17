@@ -140,6 +140,15 @@ struct NoteEditorView: View {
                 .disabled(syncEngine.isSyncing)
                 .accessibilityLabel("Sync note")
                 .accessibilityHint("Syncs this note and all changed notes to their sessions")
+                // Thinking bubble: while a manual sync runs, show the agent
+                // "thinking" the way chat does, with animated dots.
+                .overlay(alignment: .top) {
+                    if syncEngine.isSyncing {
+                        ThinkingSyncBubble(statusText: syncEngine.statusText)
+                            .offset(y: -44)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    }
+                }
                 // Attachment button (Phase 3)
                 Menu {
                     Button {
@@ -216,20 +225,22 @@ struct NoteEditorView: View {
 
     @ViewBuilder
     private var inkView: some View {
-        PencilCanvasRepresentable(
-            drawing: $drawing,
-            pageStyle: pageStyle,
-            pencilOnly: pencilOnly,
-            onDrawingChanged: { newDrawing in
-                schedulePersist(newDrawing)
-            },
-            onToolUseBegan: {},
-            onToolUseEnded: {
-                // Immediate persist on pencil-up
-                persistDrawing(drawing)
-            }
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { proxy in
+            PencilCanvasRepresentable(
+                drawing: $drawing,
+                pageStyle: pageStyle,
+                pencilOnly: pencilOnly,
+                canvasWidth: proxy.size.width,
+                onDrawingChanged: { newDrawing in
+                    schedulePersist(newDrawing)
+                },
+                onToolUseBegan: {},
+                onToolUseEnded: {
+                    // Immediate persist on pencil-up
+                    persistDrawing(drawing)
+                }
+            )
+        }
     }
 
     @ViewBuilder
@@ -446,6 +457,50 @@ struct NoteEditorView: View {
     private func deleteAttachment(_ attachment: NoteAttachment) async {
         await notesStore.deleteAttachment(attachment)
         attachments.removeAll { $0.id == attachment.id }
+    }
+}
+
+// MARK: - Thinking Sync Bubble
+
+/// Chat-style "thinking" bubble shown over the sync button while a manual
+/// sync is pushing notes - animated dots + live status, matching the feel
+/// of a streaming chat response.
+struct ThinkingSyncBubble: View {
+    let statusText: String
+    @State private var animating = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle()
+                        .fill(Design.Brand.accent)
+                        .frame(width: 6, height: 6)
+                        .offset(y: animating ? -3 : 2)
+                        .animation(
+                            .easeInOut(duration: 0.45)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(i) * 0.15),
+                            value: animating
+                        )
+                }
+            }
+            Text(statusText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Design.Colors.foreground)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Design.Brand.accent.opacity(0.35), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+        .onAppear { animating = true }
+        .onDisappear { animating = false }
     }
 }
 
