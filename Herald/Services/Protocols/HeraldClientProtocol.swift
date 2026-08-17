@@ -86,6 +86,11 @@ protocol HeraldClientProtocol {
     /// reconnect). Returns true when the session is live and still running,
     /// so the caller can keep the stream alive instead of declaring a stall.
     func resumeActiveSessionIfNeeded() async -> Bool
+    /// Whether the server-side turn is parked waiting on the USER
+    /// (a clarify question or approval prompt) rather than the model working.
+    /// Server-turn watch uses this to tear down the synthetic Thinking bubble:
+    /// when control has passed to the user, a spinner is a lie.
+    func isServerTurnAwaitingUserInput() async -> Bool { false }
 
     /// Build 84 Option C-A (probe-through-phantom): force a real liveness
     /// probe on the transport even when `connectionStatus == .connected`.

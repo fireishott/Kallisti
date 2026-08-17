@@ -52,6 +52,21 @@ struct ToolCompletedPayload: Codable, Sendable, Hashable {
     }
 }
 
+struct ToolOutputPayload: Codable, Sendable, Hashable {
+    let toolCallId: String
+    let chunk: String
+
+    init(toolCallId: String, chunk: String) {
+        self.toolCallId = toolCallId; self.chunk = chunk
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        toolCallId = try container.decode(String.self, forKey: .toolCallId)
+        chunk = try container.decode(String.self, forKey: .chunk)
+    }
+}
+
 struct CommentaryPayload: Codable, Sendable, Hashable {
     let text: String
 }
@@ -122,6 +137,7 @@ enum JobEventType: String, Codable, Sendable {
     case toolStarted = "tool.started"
     case toolProgress = "tool.progress"
     case toolCompleted = "tool.completed"
+    case toolOutput = "tool.output"
     case commentary
     case approvalRequired = "approval.required"
     case runCompleted = "run.completed"
@@ -148,6 +164,7 @@ enum JobEventPayload: Sendable, Hashable {
     case toolStarted(ToolStartedPayload)
     case toolProgress(ToolProgressPayload)
     case toolCompleted(ToolCompletedPayload)
+    case toolOutput(ToolOutputPayload)
     case commentary(CommentaryPayload)
     case approvalRequired(ApprovalRequiredPayload)
     case runCompleted(RunCompletedPayload)
@@ -229,6 +246,8 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
             payload = .toolProgress(try container.decode(ToolProgressPayload.self, forKey: .payload))
         case .toolCompleted:
             payload = .toolCompleted(try container.decode(ToolCompletedPayload.self, forKey: .payload))
+        case .toolOutput:
+            payload = .toolOutput(try container.decode(ToolOutputPayload.self, forKey: .payload))
         case .commentary:
             payload = .commentary(try container.decode(CommentaryPayload.self, forKey: .payload))
         case .approvalRequired:
@@ -266,6 +285,8 @@ struct JobEventEnvelope: Codable, Sendable, Hashable {
         case .toolProgress(let p):
             try container.encode(p, forKey: .payload)
         case .toolCompleted(let p):
+            try container.encode(p, forKey: .payload)
+        case .toolOutput(let p):
             try container.encode(p, forKey: .payload)
         case .commentary(let p):
             try container.encode(p, forKey: .payload)

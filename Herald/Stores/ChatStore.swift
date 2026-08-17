@@ -4185,6 +4185,17 @@ final class ChatStore {
                     self.removeServerTurnPlaceholder()
                     break
                 }
+                // Build 128.65: if the server-side turn is parked waiting on
+                // the USER (clarify question / approval prompt), the model is
+                // not working - the spinner is a lie. Tear down the synthetic
+                // Thinking bubble and stop the watch; the user's answer comes
+                // back through the normal send path.
+                let awaitingUser = await self.heraldClient.isServerTurnAwaitingUserInput()
+                if awaitingUser {
+                    Self.logger.info("Server turn watch: session awaiting user input, stopping")
+                    self.removeServerTurnPlaceholder()
+                    break
+                }
             }
 
             if self.serverTurnPollTask?.isCancelled == false {
