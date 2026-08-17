@@ -95,10 +95,10 @@ struct NoteEditorView: View {
 
             Divider()
 
-            // Live OCR banner - what the recognizer read from the strokes,
-            // updated on every settle. Replaces the old sync thought bubble.
+            // Live OCR thinking bubble - the recognizer's readout rendered
+            // like a typed chat thought: collapsible, with 3 size options.
             if viewMode == .ink, !liveOCRText.isEmpty || isOCRWorking {
-                OCRReadoutBanner(text: liveOCRText, isWorking: isOCRWorking)
+                NoteOCRThinkingBubble(text: liveOCRText, isWorking: isOCRWorking)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -524,43 +524,154 @@ struct NoteEditorView: View {
     }
 }
 
-// MARK: - Live OCR Readout Banner
+// MARK: - OCR Thinking Bubble
 
-/// Banner showing what the recognizer read from the current strokes in
-/// real time - an OCR readout, not an animated status ghost. Appears under
-/// the editor header while writing in ink mode and updates on every settle.
-struct OCRReadoutBanner: View {
+/// Chat-style thinking bubble for the live OCR readout. Shows what the
+/// recognizer read as if it were a typed chat thought - complete with
+/// expand/collapse chevron and 3 size/view options (compact, standard,
+/// large). Matches the ReasoningView pattern used for chat reasoning.
+struct NoteOCRThinkingBubble: View {
     let text: String
     let isWorking: Bool
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "text.viewfinder")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Design.Brand.accent)
-                .frame(width: 18)
-            if isWorking && text.isEmpty {
-                Text("Reading handwriting...")
-                    .font(.footnote)
-                    .foregroundStyle(Design.Colors.secondaryForeground)
-            } else if !text.isEmpty {
-                Text(text)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(Design.Colors.foreground)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
+    enum SizeOption: Int, CaseIterable, Identifiable {
+        case compact, standard, large
+        var id: Int { rawValue }
+
+        var label: String {
+            switch self {
+            case .compact: return "Compact"
+            case .standard: return "Standard"
+            case .large: return "Large"
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Design.Colors.backgroundRaised)
+
+        var icon: String {
+            switch self {
+            case .compact: return "text.bubble"
+            case .standard: return "rectangle"
+            case .large: return "arrow.up.left.and.arrow.down.right"
+            }
+        }
+    }
+
+    @State private var isExpanded = false
+    @State private var sizeOption: SizeOption = .standard
+
+    private var viewportHeight: CGFloat {
+        switch sizeOption {
+        case .compact: return 64
+        case .standard: return 132
+        case .large: return max(240, UIScreen.main.bounds.height * 0.52)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            header
+            if isExpanded {
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(text.isEmpty ? "Waiting for handwriting…" : text)
+                        .font(.system(.footnote, design: .default))
+                        .italic()
+                        .foregroundStyle(Design.Colors.secondaryForeground.opacity(0.9))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: viewportHeight)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, Design.Spacing.sm)
+        .padding(.vertical, Design.Spacing.xs)
+        .background(Design.Colors.surface.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: Design.CornerRadius.md))
         .overlay(
-            Rectangle()
-                .fill(Design.Brand.accent.opacity(0.25))
-                .frame(width: 2),
-            alignment: .leading
+            RoundedRectangle(cornerRadius: Design.CornerRadius.md)
+                .stroke(isWorking ? Design.Brand.accent.opacity(0.35) : Design.Colors.border,
+                        lineWidth: 1)
         )
+        .task(id: isWorking) {
+            if isWorking {
+                withAnimation(Design.Motion.standard) { isExpanded = true }
+            }
+        }
+        .animation(Design.Motion.standard, value: sizeOption)
+        .animation(Design.Motion.standard, value: isExpanded)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: Design.Spacing.xs) {
+            Button {
+                withAnimation(Design.Motion.standard) {
+                    isExpanded.toggle()
+                    if sizeOption == .large { sizeOption = .standard }
+                }
+            } label: {
+                HStack(spacing: Design.Spacing.xs) {
+                    Image(systemName: isWorking ? "brain.head.profile" : "brain")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(isWorking ? Design.Brand.accent : Design.Colors.secondaryForeground)
+
+                    Text(headerLabel)
+                        .font(.system(.caption, weight: .medium))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            if isExpanded {
+                // 3 size/view options: compact, standard, large
+                HStack(spacing: 2) {
+                    ForEach(SizeOption.allCases) { option in
+                        Button {
+                            withAnimation(Design.Motion.standard) {
+                                sizeOption = option
+                                if option == .large { isExpanded = true }
+                            }
+                        } label: {
+                            Image(systemName: option.icon)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(sizeOption == option ? Design.Brand.accent : Design.Colors.secondaryForeground)
+                                .frame(width: 28, height: 24)
+                                .background(
+                                    sizeOption == option ? Design.Brand.accent.opacity(0.15) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(option.label)
+                    }
+                }
+            }
+
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isWorking ? Design.Brand.accent : Design.Colors.secondaryForeground)
+                .frame(width: 16, height: 28)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(Design.Motion.standard) {
+                        isExpanded.toggle()
+                        if sizeOption == .large { sizeOption = .standard }
+                    }
+                }
+                .accessibilityLabel(isExpanded ? "Collapse OCR readout" : "Expand OCR readout")
+        }
+        .padding(.vertical, Design.Spacing.xxs)
+    }
+
+    private var headerLabel: String {
+        if isWorking {
+            return "Reading handwriting…"
+        }
+        return text.isEmpty ? "OCR Readout" : "Recognized"
     }
 }
 
