@@ -94,31 +94,6 @@ struct ReasoningView: View {
                     content
                 }
                 .frame(maxHeight: viewportHeight)
-                .mask(
-                    // Build 128.56: fade the OLD lines only in the small view.
-                    // In the large viewport the whole tail stays readable so the
-                    // user can actually monitor the stream.
-                    //
-                    // Build 128.62: NEVER pass nil here. The previous
-                    // `isLarge ? nil : LinearGradient(...)` compiled fine, but
-                    // a nil mask through SwiftUI's conditional modifier path
-                    // rendered the ENTIRE view blank when a live thought was
-                    // expanded. Large mode now uses a fully-opaque gradient -
-                    // visually identical to no mask, but always a real view.
-                    isLarge
-                        ? LinearGradient(
-                            colors: [.black, .black],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                        : LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0.0),
-                                .init(color: .black, location: 0.22),
-                                .init(color: .black, location: 1.0),
-                            ],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                )
                 .onChange(of: lines.count) {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                         proxy.scrollTo(max(lines.count - 1, 0), anchor: .bottom)
