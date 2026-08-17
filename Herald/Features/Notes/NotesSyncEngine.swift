@@ -44,6 +44,14 @@ final class NotesSyncEngine {
     private(set) var lastSyncError: String?
     private(set) var isSyncing = false
 
+    /// The agent's live reasoning stream from the gateway while a note syncs -
+    /// rendered with the SAME ReasoningView component chat uses. Updated by the
+    /// sync engine from `reasoning.delta` events; the notes UI consumes it.
+    private(set) var liveReasoning: String = ""
+    private(set) var isReasoningActive = false
+    private(set) var reasoningStartedAt: Date?
+    private(set) var reasoningDuration: TimeInterval?
+
     /// Label describing what the engine is doing right now (for the progress bar).
     var statusText: String {
         switch stage {
@@ -236,14 +244,68 @@ final class NotesSyncEngine {
         // name) and appends a new message to it on every later edit. The
         // conversationID is stable per note, so the session thread persists.
         stage = .creatingSession
-        let message = await client.sendNoteMessage(
+
+        // Reset reasoning state so the notes UI shows the agent's live
+        // reasoning stream for THIS note - the same bubble chat uses.
+        liveReasoning = ""
+        isReasoningActive = true
+        reasoningStartedAt = .now
+        reasoningDuration = nil
+
+        var finalContent = ""
+        var message: Message?
+        var streamError: String?
+        let watchdogTask = Task { [weak self] in
+            // A sync must never hang silently. If the gateway streams nothing
+            // terminal within 120s, cancel the consumer so the engine moves on.
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            guard !Task.isCancelled else { return }
+            if self?.isReasoningActive == true {
+                self?.isReasoningActive = false
+                streamError = "Sync timed out waiting for the gateway (120s)."
+                self?.stage = .failed(streamError ?? "Timed out")
+            }
+        }
+        defer { watchdogTask.cancel() }
+
+        for await update in client.sendNoteMessageStreaming(
             text: messageText,
             attachments: attachments,
             clientMessageID: UUID(),
             conversationID: note.id,
             title: sessionTitle
-        )
+        ) {
+            switch update {
+            case .textDelta(let delta):
+                finalContent += delta
+            case .reasoningDelta(let delta):
+                liveReasoning += delta
+            case .toolActivity(let label):
+                // Surface tool phases as reasoning lines so a long tool run is
+                // visible instead of a frozen bubble.
+                if !liveReasoning.isEmpty { liveReasoning += "\n" }
+                liveReasoning += "[tool] \(label)"
+            case .finished(let msg, _, _, _):
+                message = msg
+            case .failed(let error, _, _):
+                streamError = error
+            default:
+                break
+            }
+            if message != nil || streamError != nil { break }
+        }
 
+        isReasoningActive = false
+        if let startedAt = reasoningStartedAt {
+            reasoningDuration = Date.now.timeIntervalSince(startedAt)
+        }
+
+        if let streamError {
+            throw NotesSyncError.sendFailed(streamError)
+        }
+        guard let message else {
+            throw NotesSyncError.sendFailed("Gateway closed the stream before completing.")
+        }
         if message.status == .failed || message.content.hasPrefix("Note sync error") || message.content.hasPrefix("Note sync requires") {
             throw NotesSyncError.sendFailed(message.content)
         }

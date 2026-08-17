@@ -95,11 +95,16 @@ struct NoteEditorView: View {
 
             Divider()
 
-            // Live OCR thinking bubble - the recognizer's readout rendered
-            // like a typed chat thought: collapsible, with 3 size options.
-            if viewMode == .ink, !liveOCRText.isEmpty || isOCRWorking {
-                NoteOCRThinkingBubble(text: liveOCRText, isWorking: isOCRWorking)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            // Chat reasoning bubble during note sync - the agent's live
+            // reasoning stream from the gateway, rendered with the SAME
+            // ReasoningView component chat uses. NOT a local OCR readout.
+            if viewMode == .ink, syncEngine.isReasoningActive || !syncEngine.liveReasoning.isEmpty {
+                ReasoningView(
+                    reasoning: syncEngine.liveReasoning,
+                    isStreaming: syncEngine.isReasoningActive,
+                    duration: syncEngine.reasoningDuration
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             // Attachment strip (Phase 3)
