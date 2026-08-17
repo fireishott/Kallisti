@@ -63,7 +63,7 @@ final class NotesSyncEngine {
         case .done:
             return "Notes synced"
         case .failed(let message):
-            return "Sync failed: \\(message)"
+            return "Sync failed: \(message)"
         }
     }
 
@@ -184,7 +184,7 @@ final class NotesSyncEngine {
                 try await syncSingleNote(note, client: client)
                 synced += 1
             } catch {
-                logger.error("Sync failed for note \\(note.id): \\(error.localizedDescription)")
+                logger.error("Sync failed for note \(note.id): \(error.localizedDescription)")
                 if firstError == nil { firstError = error.localizedDescription }
             }
         }
