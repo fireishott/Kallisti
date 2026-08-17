@@ -5,10 +5,15 @@ import SwiftUI
 /// - iPhone (both orientations): TabView with slide-out session drawer
 struct AdaptiveRootView: View {
     @Environment(TabRouter.self) private var router
+    @Environment(SettingsStore.self) private var settingsStore
     @State private var selectedSection: SidebarSection = .chat
     @State private var isRightPanelOpen = false
     @State private var rightPanelTab: RightPanelTab = .logs
     @State private var rightPanelWidth: CGFloat = 320
+    /// Build 128.67: sidebar visibility. Tied to the Auto-Close Sidebar
+    /// setting - when enabled, selecting a conversation collapses the
+    /// sidebar to the detail column.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     private let minInspectorWidth: CGFloat = 280
     private let maxInspectorWidth: CGFloat = 480
@@ -39,10 +44,17 @@ struct AdaptiveRootView: View {
 
             HStack(spacing: 0) {
                 // True two-column split: sidebar + content (detail)
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     iPadSidebarView(
                         selectedSection: $selectedSection,
-                        isRightPanelOpen: $isRightPanelOpen
+                        isRightPanelOpen: $isRightPanelOpen,
+                        onConversationSelected: {
+                            if settingsStore.settings.autoCloseSidebarOnSelection {
+                                withAnimation(Design.Motion.standard) {
+                                    columnVisibility = .detailOnly
+                                }
+                            }
+                        }
                     )
                 } detail: {
                     contentColumn

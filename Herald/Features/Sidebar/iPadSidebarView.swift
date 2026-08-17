@@ -38,6 +38,9 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 struct iPadSidebarView: View {
     @Binding var selectedSection: SidebarSection
     @Binding var isRightPanelOpen: Bool
+    /// Build 128.67: called when a conversation is selected so the
+    /// container can collapse the sidebar (Settings > Auto-Close Sidebar).
+    var onConversationSelected: (() -> Void)? = nil
     @Environment(KallistiHostStore.self) private var hostStore
     @Environment(SessionListStore.self) private var sessionStore
     @Environment(NotesStore.self) private var notesStore
@@ -142,6 +145,7 @@ struct iPadSidebarView: View {
                         HapticEngine.newChat()
                         await sessionStore.createNewSession()
                         selectedSection = .chat
+                        onConversationSelected?()
                     }
                 } label: {
                     // Build 118: bigger + chat bubble vector for discoverability.
@@ -382,6 +386,7 @@ struct iPadSidebarView: View {
     private func sessionRow(_ session: SessionSummary, showPinIndicator: Bool = false) -> some View {
         Button {
             selectedSection = .chat
+            onConversationSelected?()
             Task { await sessionStore.switchToSession(session) }
         } label: {
             HStack(spacing: Design.Spacing.sm) {

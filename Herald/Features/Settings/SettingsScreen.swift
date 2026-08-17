@@ -1839,6 +1839,16 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 settingsToggle(
+                    icon: "sidebar.left",
+                    iconColor: Design.Colors.foreground,
+                    title: "Auto-Close Sidebar",
+                    subtitle: "Close the sidebar after selecting a conversation",
+                    isOn: autoCloseSidebarBinding
+                )
+
+                sectionDivider
+
+                settingsToggle(
                     icon: "brain",
                     iconColor: Design.Colors.foreground,
                     title: "Show Reasoning",
@@ -2391,6 +2401,13 @@ struct SettingsScreen: View {
         Binding(
             get: { settingsStore.settings.longPressToQueue },
             set: { settingsStore.settings.longPressToQueue = $0 }
+        )
+    }
+
+    private var autoCloseSidebarBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.autoCloseSidebarOnSelection },
+            set: { settingsStore.settings.autoCloseSidebarOnSelection = $0 }
         )
     }
 
