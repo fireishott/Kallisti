@@ -1203,9 +1203,30 @@ struct ChatScreen: View {
     /// Keep the active turn as one immutable visual tail. Server refreshes can
     /// insert persisted tool-boundary rows while the turn is still running;
     /// raw array order then makes its thought card jump through the thread.
+    ///
+    /// Build 128.52: order the transcript by TIMESTAMP, not raw array index.
+    /// The array is the merge/insertion order, which can diverge from wall
+    /// clock when a row's stream starts early but its terminal write lands
+    /// late - a message stamped 7:59 PM used to render BELOW an 8:04 PM row
+    /// simply because its completion arrived last (Curtis screenshot
+    /// 2026-08-16 20:07). Sorting here fixes the visible order without
+    /// touching the merge logic that builds the array. Stable sort: equal
+    /// timestamps (same-second tool-boundary rows, optimistic user rows)
+    /// keep their array-relative order.
     nonisolated static func transcriptRows(_ messages: [Message]) -> [Message] {
-        guard let active = messages.last(where: { $0.isStreaming }) else { return messages }
-        return messages.filter { $0.id != active.id } + [active]
+        let active = messages.last(where: { $0.isStreaming })
+        let sorted = messages.enumerated().sorted { lhs, rhs in
+            let lTime = lhs.element.timestamp.timeIntervalSince1970
+            let rTime = rhs.element.timestamp.timeIntervalSince1970
+            if lTime != rTime { return lTime < rTime }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+        // The live placeholder stays pinned at the bottom of the visible
+        // transcript even though its creation timestamp is the OLDEST part of
+        // the turn - it is the current activity and must not jump through the
+        // thread as server refreshes insert persisted tool rows.
+        guard let active else { return sorted }
+        return sorted.filter { $0.id != active.id } + [active]
     }
 
     // MARK: - Message List
