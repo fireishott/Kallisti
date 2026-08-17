@@ -520,6 +520,51 @@ enum ReasoningEffort: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
+/// How often the app pushes note changes to the gateway as a session message.
+/// `.manual` means sync only runs when the user taps the sync button.
+enum NotesSyncInterval: String, Codable, CaseIterable, Hashable, Sendable {
+    case manual
+    case minutes2
+    case minutes5
+    case minutes15
+    case minutes30
+    case hours1
+    case hours3
+    case hours6
+    case hours12
+    case hours24
+
+    var displayLabel: String {
+        switch self {
+        case .manual: "Manual / Off"
+        case .minutes2: "Every 2 minutes"
+        case .minutes5: "Every 5 minutes"
+        case .minutes15: "Every 15 minutes"
+        case .minutes30: "Every 30 minutes"
+        case .hours1: "Every hour"
+        case .hours3: "Every 3 hours"
+        case .hours6: "Every 6 hours"
+        case .hours12: "Every 12 hours"
+        case .hours24: "Every 24 hours"
+        }
+    }
+
+    var intervalSeconds: TimeInterval? {
+        switch self {
+        case .manual: nil
+        case .minutes2: 120
+        case .minutes5: 300
+        case .minutes15: 900
+        case .minutes30: 1800
+        case .hours1: 3600
+        case .hours3: 10800
+        case .hours6: 21600
+        case .hours12: 43200
+        case .hours24: 86400
+        }
+    }
+}
+
 struct UserSettings: Codable, Hashable, Sendable {
     var userName: String
     var avatarInitials: String
@@ -556,6 +601,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var dashboardURL: String?
     var dashboardUsername: String?
     var dashboardPassword: String?
+    var notesSyncInterval: NotesSyncInterval
 
     init(
         userName: String = "User",
@@ -588,7 +634,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         reasoningEffort: ReasoningEffort = .medium,
         dashboardURL: String? = nil,
         dashboardUsername: String? = nil,
-        dashboardPassword: String? = nil
+        dashboardPassword: String? = nil,
+        notesSyncInterval: NotesSyncInterval = .manual
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -621,6 +668,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.dashboardURL = dashboardURL
         self.dashboardUsername = dashboardUsername
         self.dashboardPassword = dashboardPassword
+        self.notesSyncInterval = notesSyncInterval
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -655,6 +703,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case dashboardURL
         case dashboardUsername
         case dashboardPassword
+        case notesSyncInterval
     }
 
     init(from decoder: Decoder) throws {
@@ -698,6 +747,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardURL = try container.decodeIfPresent(String.self, forKey: .dashboardURL)
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
         dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
+        notesSyncInterval = try container.decodeIfPresent(NotesSyncInterval.self, forKey: .notesSyncInterval) ?? .manual
     }
 
     func encode(to encoder: Encoder) throws {
@@ -733,6 +783,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encodeIfPresent(dashboardURL, forKey: .dashboardURL)
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
         try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
+        try container.encode(notesSyncInterval, forKey: .notesSyncInterval)
     }
 
     func applyingEnvironmentPolicy(

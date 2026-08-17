@@ -12,14 +12,14 @@ struct JSONRPCRequest<Params: Encodable>: Encodable {
 
 /// A response frame correlated to a request by `id`.
 /// Exactly one of `result`/`error` is non-nil per JSON-RPC 2.0.
-struct NativeGatewayResponse: Decodable {
+struct NativeGatewayResponse: Decodable, Sendable {
     let jsonrpc: String?
     let id: Int
     let result: NativeJSONValue?
     let error: NativeGatewayError?
 }
 
-struct NativeGatewayError: Decodable, Error, Equatable, LocalizedError {
+struct NativeGatewayError: Decodable, Error, Equatable, LocalizedError, Sendable {
     let code: Int
     let message: String
 
@@ -32,7 +32,7 @@ struct NativeGatewayError: Decodable, Error, Equatable, LocalizedError {
 
 /// A server-initiated event — dispatched by `params.type`.
 /// Shape confirmed from live capture: `{"jsonrpc":"2.0","method":"event","params":{"type":"...","session_id":"...","payload":{...}}}`
-struct NativeGatewayEvent: Decodable {
+struct NativeGatewayEvent: Decodable, Sendable {
     let jsonrpc: String?
     let method: String?
     let params: NativeGatewayEventParams
@@ -465,7 +465,7 @@ struct NativeSessionHistoryResult: Decodable {
 // MARK: - Untyped JSON Value
 
 /// Minimal untyped JSON value for `NativeGatewayResponse.result` and event payloads.
-enum NativeJSONValue: Codable {
+enum NativeJSONValue: Codable, Sendable {
     case object([String: NativeJSONValue])
     case array([NativeJSONValue])
     case string(String)

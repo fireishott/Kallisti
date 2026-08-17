@@ -3,6 +3,7 @@ import SwiftUI
 /// List of notes with search, sort, and management actions.
 struct NotesListView: View {
     @Environment(NotesStore.self) private var notesStore
+    @Environment(NotesSyncEngine.self) private var syncEngine
     @State private var searchQuery = ""
     @State private var sortOrder: NoteSortOrder = .updatedAt
     @State private var showDeleted = false
@@ -65,10 +66,34 @@ struct NotesListView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if syncEngine.isSyncing || syncEngine.stage != .idle {
+                SyncProgressBarView(
+                    statusText: syncEngine.statusText,
+                    currentTitle: syncEngine.currentProgress?.noteTitle,
+                    index: syncEngine.currentProgress?.index,
+                    total: syncEngine.currentProgress?.total,
+                    failed: syncEngine.lastSyncError
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .navigationTitle("Notes")
         .searchable(text: $searchQuery, prompt: "Search notes")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    Task { await syncEngine.syncNow() }
+                } label: {
+                    if syncEngine.isSyncing {
+                        ProgressView()
+                    } else {
+                        Image(systemName: syncEngine.hasPendingSync ? "icloud.and.arrow.up" : "icloud.and.arrow.up")
+                    }
+                }
+                .disabled(syncEngine.isSyncing)
+                .help("Sync notes to sessions")
+
                 Menu {
                     Button {
                         Task { _ = await notesStore.createNote() }
@@ -212,4 +237,62 @@ enum NoteSortOrder: String, CaseIterable {
         case .title:     "Title"
         }
     }
+}
+
+
+// MARK: - Sync Progress Bar
+
+/// Realtime sync progress indicator shown across the notes UI.
+struct SyncProgressBarView: View {
+    let statusText: String
+    let currentTitle: String?
+    let index: Int?
+    let total: Int?
+    let failed: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let failed {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(statusText)
+                    .font(.footnote.weight(.medium))
+                    .lineLimit(1)
+                Spacer()
+                if let index, let total {
+                    Text("\(index)/\(total)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !failed.isEmptyOrNil, let currentTitle {
+                Text(currentTitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            ProgressView(value: progressFraction)
+                .tint(failed != nil ? .red : Design.Brand.accent)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
+    }
+
+    private var progressFraction: Double {
+        guard let index, let total, total > 0 else { return 0 }
+        return Double(index) / Double(total)
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var isEmptyOrNil: Bool { self?.isEmpty ?? true }
 }

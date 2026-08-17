@@ -32,6 +32,7 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
 struct NoteEditorView: View {
     @Binding var noteId: UUID
     @Environment(NotesStore.self) private var notesStore
+    @Environment(NotesSyncEngine.self) private var syncEngine
     @State private var title: String = ""
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
@@ -104,6 +105,18 @@ struct NoteEditorView: View {
                 enrichedView
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if syncEngine.isSyncing || syncEngine.stage != .idle {
+                SyncProgressBarView(
+                    statusText: syncEngine.statusText,
+                    currentTitle: syncEngine.currentProgress?.noteTitle,
+                    index: syncEngine.currentProgress?.index,
+                    total: syncEngine.currentProgress?.total,
+                    failed: syncEngine.lastSyncError
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 // Pencil-only toggle
@@ -114,6 +127,19 @@ struct NoteEditorView: View {
                 }
                 .accessibilityLabel(pencilOnly ? "Pencil only mode" : "Any input mode")
                 .accessibilityHint("Toggle between pencil-only and finger drawing")
+                // Sync button: push this note to its session
+                Button {
+                    Task { await syncEngine.syncNow() }
+                } label: {
+                    if syncEngine.isSyncing {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "icloud.and.arrow.up")
+                    }
+                }
+                .disabled(syncEngine.isSyncing)
+                .accessibilityLabel("Sync note")
+                .accessibilityHint("Syncs this note and all changed notes to their sessions")
                 // Attachment button (Phase 3)
                 Menu {
                     Button {

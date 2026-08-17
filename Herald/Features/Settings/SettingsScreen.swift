@@ -46,6 +46,7 @@ struct SettingsScreen: View {
                         appearanceSection
                         preferencesSection
                         voiceSection
+                        notesSection
                         locationSection
                         privacySection
                         aboutSection
@@ -2137,6 +2138,70 @@ struct SettingsScreen: View {
             // at connection time (Infrastructure stays warm). Nothing to
             // create here - container.auxService is already wired.
         }
+    }
+
+    // MARK: - Notes Sync
+
+    private var notesSection: some View {
+        SettingsSectionView(title: "Notes Sync") {
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                Menu {
+                    ForEach(NotesSyncInterval.allCases, id: \.self) { interval in
+                        Button {
+                            settingsStore.settings.notesSyncInterval = interval
+                        } label: {
+                            if settingsStore.settings.notesSyncInterval == interval {
+                                Label(interval.displayLabel, systemImage: "checkmark")
+                            } else {
+                                Text(interval.displayLabel)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Auto-sync")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text(settingsStore.settings.notesSyncInterval.displayLabel)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                    .contentShape(Rectangle())
+                }
+
+                sectionDivider
+
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Design.Brand.primary)
+                        .frame(width: 20, alignment: .center)
+                    Text("Last sync")
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                    Spacer()
+                    Text(lastSyncLabel)
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+                .frame(minHeight: Design.Size.minTapTarget)
+
+                Text("Each note syncs to its own chat session titled with the note name. Every edit appends a new message to that session.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+        }
+    }
+
+    private var lastSyncLabel: String {
+        guard let date = container.notesSyncEngine.lastSyncDate else { return "Never" }
+        return date.formatted(.relative(presentation: .named))
     }
 
     // MARK: - Location

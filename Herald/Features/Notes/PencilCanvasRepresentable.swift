@@ -90,13 +90,33 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             context.coordinator.updatePaper(style: context.coordinator.currentStyle)
         }
 
-        // Restore tool picker and first responder after sheet/rotation/backgrounding
-        if let picker = context.coordinator.toolPicker {
-            picker.setVisible(true, forFirstResponder: canvas)
+        // Restore tool picker and first responder after sheet/rotation/backgrounding.
+        // Only when the canvas is actually on screen - never resurrect the picker
+        // for an off-screen or removed view (that is how the floating markup bar
+        // leaks onto other screens when the note editor closes).
+        if canvas.window != nil,
+           let picker = context.coordinator.toolPicker {
+            if !picker.isVisible {
+                picker.setVisible(true, forFirstResponder: canvas)
+            }
             if !canvas.isFirstResponder {
                 canvas.becomeFirstResponder()
             }
         }
+    }
+
+    /// UIKit teardown - called by SwiftUI when this view is removed from the hierarchy.
+    /// This is the missing half of the tool-picker lifecycle. Without it the
+    /// PKToolPicker (a system floating window) stays visible forever, overlapping
+    /// the composer and other chrome after leaving the note editor.
+    static func dismantleUIView(_ uiView: PKCanvasView, coordinator: Coordinator) {
+        coordinator.toolPicker?.setVisible(false, forFirstResponder: uiView)
+        coordinator.toolPicker?.removeObserver(uiView)
+        coordinator.toolPicker = nil
+        if uiView.isFirstResponder {
+            uiView.resignFirstResponder()
+        }
+        coordinator.canvasView = nil
     }
 
     // MARK: - Coordinator

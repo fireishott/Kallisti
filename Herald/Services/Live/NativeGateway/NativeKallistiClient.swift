@@ -2068,6 +2068,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         message: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
+        conversationID: UUID? = nil,
+        sessionTitle: String? = nil,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
         // Build 26 (latency fix): verify the socket is genuinely alive BEFORE
@@ -2087,12 +2089,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
 
         // Get or create session
-        let sessionUUID = currentConversation?.id ?? UUID()
+        let sessionUUID = conversationID ?? currentConversation?.id ?? UUID()
         var nativeSessionId = await idMap.nativeId(for: sessionUUID)
 
         if nativeSessionId == nil {
             do {
-                let summary = try await createSession(title: "New Chat", conversationID: sessionUUID)
+                let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID)
                 nativeSessionId = await idMap.nativeId(for: summary.id)
             } catch {
                 continuation.yield(.failed("Failed to create session: \(error)"))
@@ -2647,6 +2649,58 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
+    }
+
+    /// Send a note's content as a message to a SPECIFIC conversation/session,
+    /// used by note-as-session sync. Unlike `send`, this targets the note's
+    /// own gateway session (created with the note title if needed) and never
+    /// touches the currently-open chat conversation.
+    func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
+        var finalContent = ""
+        for await update in sendStreamingToConversation(
+            message: text,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            title: title
+        ) {
+            switch update {
+            case .textDelta(let delta):
+                finalContent += delta
+            case .finished(let msg, _, _, _):
+                return msg
+            case .failed(let error, _, _):
+                return Message(id: clientMessageID, sender: .herald, content: "Note sync error: \(error)", timestamp: .now)
+            default:
+                break
+            }
+        }
+        return Message(id: clientMessageID, sender: .herald, content: finalContent, timestamp: .now)
+    }
+
+    /// Streaming variant of sendNoteMessage. Resolves the note's session by the
+    /// conversation UUID (creating it with `title` when absent) and submits the
+    /// message against THAT session, leaving `currentConversation` untouched.
+    func sendStreamingToConversation(
+        message: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        conversationID: UUID,
+        title: String
+    ) -> AsyncStream<StreamingUpdate> {
+        return AsyncStream { continuation in
+            Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                await self._sendStreaming(
+                    message: message,
+                    attachments: attachments,
+                    clientMessageID: clientMessageID,
+                    conversationID: conversationID,
+                    sessionTitle: title,
+                    continuation: continuation
+                )
+            }
+        }
     }
 }
 

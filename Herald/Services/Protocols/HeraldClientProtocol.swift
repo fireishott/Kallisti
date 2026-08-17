@@ -14,6 +14,10 @@ protocol HeraldClientProtocol {
     func disconnect() async
     func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) async -> Message
     func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) -> AsyncStream<StreamingUpdate>
+    /// Send a message to a SPECIFIC conversation/session (used by note-as-session
+    /// sync). Default implementation reports the capability is unavailable;
+    /// the native gateway client overrides it with a real targeted send.
+    func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message
     func loadConversation() async -> Conversation
     func clearConversation() async throws -> Conversation
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation
@@ -175,3 +179,19 @@ extension HeraldClientProtocol {
     /// teardown only.
     var supportsServerTurnInterrupt: Bool { false }
 }
+
+
+// MARK: - Default sendNoteMessage (unavailable for non-native clients)
+
+extension HeraldClientProtocol {
+    func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
+        Message(
+            id: clientMessageID,
+            clientMessageID: clientMessageID,
+            sender: .herald,
+            content: "Note sync requires the native gateway client.",
+            status: .failed
+        )
+    }
+}
+

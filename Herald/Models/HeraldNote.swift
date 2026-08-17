@@ -15,6 +15,13 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
     var currentTextRevision: Int
     var pageStyle: NotePageStyle
     var syncState: NoteSyncState
+    /// The gateway session UUID this note maps to (nil until first sync).
+    /// Each note IS a session: the title becomes the session title and every
+    /// subsequent edit appends a new message to the same session.
+    var sessionConversationID: UUID?
+    /// Drawing revision last pushed to the gateway (0 = never synced).
+    var lastSyncedDrawingRevision: Int
+    var lastSyncedAt: Date?
     let createdAt: Date
     var updatedAt: Date
     var deletedAt: Date?
@@ -33,6 +40,9 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         currentTextRevision: Int = 0,
         pageStyle: NotePageStyle = .linesMedium,
         syncState: NoteSyncState = .local,
+        sessionConversationID: UUID? = nil,
+        lastSyncedDrawingRevision: Int = 0,
+        lastSyncedAt: Date? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now,
         deletedAt: Date? = nil
@@ -47,6 +57,9 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         self.currentTextRevision = currentTextRevision
         self.pageStyle = pageStyle
         self.syncState = syncState
+        self.sessionConversationID = sessionConversationID
+        self.lastSyncedDrawingRevision = lastSyncedDrawingRevision
+        self.lastSyncedAt = lastSyncedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
@@ -67,6 +80,9 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         currentTextRevision = try container.decode(Int.self, forKey: .currentTextRevision)
         pageStyle = try container.decodeIfPresent(NotePageStyle.self, forKey: .pageStyle) ?? .linesMedium
         syncState = try container.decode(NoteSyncState.self, forKey: .syncState)
+        sessionConversationID = try container.decodeIfPresent(UUID.self, forKey: .sessionConversationID)
+        lastSyncedDrawingRevision = try container.decodeIfPresent(Int.self, forKey: .lastSyncedDrawingRevision) ?? 0
+        lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
