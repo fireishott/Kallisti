@@ -227,6 +227,8 @@ struct ChatScreen: View {
 
     @State private var showAttachmentPicker = false
     @State private var showCanvas = false
+    /// Build 128.52: queue manager sheet - view/edit/delete queued messages.
+    @State private var showQueueManager = false
     /// Build 118: breathing animation state for the chat-switch overlay coin.
     @State private var switchCoinBreathes = false
 
@@ -372,6 +374,15 @@ struct ChatScreen: View {
                 .environment(hostStore)
                 .presentationDetents([.large, .medium])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showQueueManager) {
+            QueueManagerSheet(
+                queued: chatStore.queuedMessagesForCurrentConversation,
+                onEdit: { id, newText in chatStore.editQueuedMessage(id, newText: newText) },
+                onDelete: { id in chatStore.removeQueuedItem(id) }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showCanvas) {
             CanvasView(store: canvasStore, onDismiss: { showCanvas = false })
@@ -1486,13 +1497,23 @@ struct ChatScreen: View {
     // (won't auto-fire) or will drain automatically when the turn ends.
     private var queueStatusBar: some View {
         HStack(spacing: Design.Spacing.sm) {
-            Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
-                .font(.system(size: 13))
-                .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
-            Text(queueStatusText)
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
-                .lineLimit(1)
+            Button {
+                showQueueManager = true
+            } label: {
+                HStack(spacing: Design.Spacing.sm) {
+                    Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
+                    Text(queueStatusText)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open queue manager")
+            .accessibilityHint("View, edit, or delete queued messages")
             Spacer()
             Button {
                 chatStore.setQueueHeld(!chatStore.isQueueHeld)
@@ -2019,5 +2040,160 @@ struct ChatScreen: View {
             return "Reconnecting to host"
         }
         return "Loading messages"
+    }
+}
+
+
+
+// MARK: - Queue Manager Sheet (Build 128.52)
+
+/// Build 128.52: shows every queued-but-not-yet-submitted message in the
+/// current conversation with per-item edit and delete controls.
+/// - Tap the left (queue) segment of the queue status bar to open it.
+/// - Edit puts the item's text into a TextEditor; Save writes it back to the
+///   durable outbox record and the optimistic transcript row.
+/// - Delete removes the outbox record, its staged attachments, its optimistic
+///   row, and the queued transcript bubble.
+struct QueueManagerSheet: View {
+    let queued: [ChatOutboxRecord]
+    let onEdit: (UUID, String) -> Void
+    let onDelete: (UUID) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    /// clientMessageID of the item currently being edited (nil = none).
+    @State private var editingID: UUID?
+    @State private var editText = ""
+    /// clientMessageID of the item awaiting delete confirmation.
+    @State private var confirmDeleteID: UUID?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if queued.isEmpty {
+                    VStack(spacing: Design.Spacing.md) {
+                        Image(systemName: "list.bullet.below.rectangle")
+                            .font(.system(size: 34))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        Text("Nothing queued")
+                            .font(Design.Typography.sectionTitle)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        Text("Messages you queue behind the active turn show up here.")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        if let editingID, let item = queued.first(where: { $0.clientMessageID == editingID }) {
+                            Section("Edit") {
+                                TextEditor(text: $editText)
+                                    .frame(minHeight: 90)
+                                    .padding(4)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Design.CornerRadius.sm)
+                                            .stroke(Design.Colors.border, lineWidth: 1)
+                                    )
+                                HStack {
+                                    Button("Cancel") {
+                                        self.editingID = nil
+                                        editText = ""
+                                    }
+                                    .buttonStyle(.bordered)
+                                    Spacer()
+                                    Button("Save") {
+                                        onEdit(item.clientMessageID, editText)
+                                        self.editingID = nil
+                                        editText = ""
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                                .font(Design.Typography.body.weight(.medium))
+                            }
+                        }
+
+                        Section("Queued (\(queued.count))") {
+                            ForEach(queued) { item in
+                                queuedRow(item)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Queue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func queuedRow(_ item: ChatOutboxRecord) -> some View {
+        HStack(alignment: .top, spacing: Design.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.cleanText.isEmpty ? "[attachment\(item.attachmentRefs.count == 1 ? "" : "s")]" : item.cleanText)
+                    .font(Design.Typography.body)
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(3)
+                HStack(spacing: 4) {
+                    if !item.attachmentRefs.isEmpty {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Design.Colors.tertiaryForeground)
+                    }
+                    Text(item.createdAt, format: .dateTime.hour().minute())
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Design.Colors.tertiaryForeground)
+                }
+            }
+            Spacer()
+            if editingID == item.clientMessageID {
+                Button {
+                    self.editingID = nil
+                    editText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    editingID = item.clientMessageID
+                    editText = item.cleanText
+                } label: {
+                    Image(systemName: "pencil.circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit queued message")
+            }
+            Button {
+                if confirmDeleteID == item.clientMessageID {
+                    onDelete(item.clientMessageID)
+                    confirmDeleteID = nil
+                    editingID = nil
+                } else {
+                    confirmDeleteID = item.clientMessageID
+                }
+            } label: {
+                Image(systemName: confirmDeleteID == item.clientMessageID ? "trash.circle.fill" : "trash.circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(confirmDeleteID == item.clientMessageID ? Design.Colors.warning : Design.Colors.secondaryForeground)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(confirmDeleteID == item.clientMessageID ? "Tap again to delete" : "Delete queued message")
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tap outside the action buttons dismisses any pending delete
+            // confirmation or edit without changing anything.
+            confirmDeleteID = nil
+        }
     }
 }

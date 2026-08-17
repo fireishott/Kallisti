@@ -314,7 +314,12 @@ final class ChatStore {
     /// 3-5 minutes end to end; the old 180s absolute deadline fired BEFORE the
     /// image even rendered, the client declared timeout, and the auto-retry
     /// resubmitted the generation — wasting real money per loop.
-    static var absoluteJobDeadline: Duration = .seconds(600)
+    // Build 128.52: bumped 600s -> 1200s so deep (100+ turn) sessions with
+    // long tool chains (terminal pipelines, image lanes, multi-stage
+    // research) are not killed mid-thought. The Hermes gateway allows 1800s
+    // per turn; 1200 leaves a 10-minute cushion on top of the 300s
+    // no-progress window and still guarantees a terminal state.
+    static var absoluteJobDeadline: Duration = .seconds(1200)
 
     /// Timestamp of the last streaming progress signal. Updated on every
     /// textDelta, reasoningDelta, toolActivity, keepalive, and messageSent.
@@ -1864,6 +1869,20 @@ final class ChatStore {
                 }
                 conversation?.messages[idx].toolActivity = stallText
                 lastStallMessage = stallText
+                // Build 128.52: before re-arming the stall snapshot, ask
+                // the server whether the job is actually still running.
+                // A long tool chain (terminal pipelines, image lanes) can
+                // keep Hermes busy for minutes with zero deltas reaching
+                // the client; re-marking stalled every 5 polls is exactly
+                // the "Stream stalled - 24s elapsed - attempt 1" banner
+                // Curtis saw while `tool: terminal (263s)` was legitimately
+                // executing. When the server confirms the job lives, keep
+                // the waiting label but do NOT mark the turn stalled.
+                let serverRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
+                if serverRunning {
+                    appendLog(level: .info, "poll loop: server reports job still running - keeping waiting state (\(elapsedSecs)s)")
+                    continue
+                }
                 // Build 64: refresh the banner snapshot so the
                 // ChatScreen TimelineView reads attempt count +
                 // connection state from the same source of truth that
@@ -2788,6 +2807,24 @@ final class ChatStore {
             // with no deltas, so the no-progress stall must not fire while a
             // tool is executing. The absolute deadline above is the hard cap.
             if elapsed > stallTimeout && self.activeToolCount == 0 {
+                // Build 128.52: mirror the legacy watchdog's probe-through-
+                // phantom before declaring a visible stall. A long tool run
+                // (terminal pipelines, image lanes) can emit zero deltas for
+                // minutes while the server is genuinely working, and the
+                // timeout windows (60s thinking / 300s streaming) are shorter
+                // than the tool's execution. Asking the server first prevents
+                // the "Stream stalled" banner + polling fallback from firing
+                // on a live turn: resumeActiveSessionIfNeeded() reattaches a
+                // parked session and returns true when an in-flight job is
+                // still running. Only declare the stall when the server agrees
+                // the job is gone.
+                let serverRunning = await self.heraldClient.resumeActiveSessionIfNeeded()
+                if serverRunning {
+                    appendLog(level: .info, "attemptWatchdog: server reports job still running - resetting stall clock")
+                    self.streamingProgressAt = .now
+                    self.streamingPhase = .streaming
+                    continue
+                }
                 let jobID = self.acceptedJobID ?? UUID()
                 // Build 64: capture the snapshot so the banner reads
                 // attempt count + connection state.
@@ -3414,6 +3451,45 @@ final class ChatStore {
         return outboxItems.filter {
             $0.conversationID == conversationID && $0.state == .queued
         }.count
+    }
+
+    /// Build 128.52: full list of queued-but-not-yet-submitted items for the
+    /// current conversation, oldest first (FIFO by sequence). Drives the queue
+    /// manager sheet so the user can view, edit, and delete what is waiting
+    /// behind the active turn.
+    var queuedMessagesForCurrentConversation: [ChatOutboxRecord] {
+        guard let conversationID = conversation?.id else { return [] }
+        return outboxItems
+            .filter { $0.conversationID == conversationID && $0.state == .queued }
+            .sorted { $0.sequence < $1.sequence }
+    }
+
+    /// Build 128.52: edit the text of a queued (not yet submitted) message.
+    /// Updates the durable outbox record and its optimistic row in the
+    /// transcript. Refuses to touch items that have already been leased or
+    /// submitted — the user must not rewrite an in-flight job.
+    func editQueuedMessage(_ clientMessageID: UUID, newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            // Empty edit = user cleared the field; treat as delete.
+            removeQueuedItem(clientMessageID)
+            return
+        }
+        guard let idx = outboxItems.firstIndex(where: {
+            $0.clientMessageID == clientMessageID && $0.state == .queued
+        }) else { return }
+        outboxItems[idx].cleanText = trimmed
+        outboxItems[idx].updatedAt = .now
+        persistOutbox()
+        if let messageIdx = conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
+            let attachments = conversation?.messages[messageIdx].attachments ?? []
+            let displayContent = trimmed.isEmpty && !attachments.isEmpty
+                ? "[\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")]"
+                : trimmed
+            conversation?.messages[messageIdx].content = displayContent
+        }
+        cacheModifiedConversation()
+        onConversationChanged?()
     }
 
     /// Build 128.50: when true, queued messages are HELD - the FIFO chain
@@ -4792,14 +4868,50 @@ final class ChatStore {
             // A subsequent refresh that returns the full history will
             // re-anchor them properly via the D2b splice below.
             let serverIsTruncated = refreshedConversation.messages.count < localConversation.messages.count
-            if serverIsTruncated {
-                Self.logger.warning(
-                    "Build 119: server history truncated (server=\(refreshedConversation.messages.count) < local=\(localConversation.messages.count)) \u{2014} appending \(settledLocalOnly.count) local-only message(s) to end instead of splicing, to prevent the follow-up-above-older-rows bug"
-                )
-                for localMsg in settledLocalOnly {
-                    refreshedConversation.messages.append(localMsg)
-                }
-            } else {
+                        if serverIsTruncated {
+                            Self.logger.warning(
+                                "Build 128.52: server history truncated (server=\\(refreshedConversation.messages.count) < local=\\(localConversation.messages.count)) - splicing \\(settledLocalOnly.count) local-only message(s) with successor-aware anchors instead of blind appending"
+                            )
+                            // Build 119 originally appended EVERY local-only row to the
+                            // end whenever the server returned fewer rows than local
+                            // holds. That prevented the follow-up-above-older-rows bug
+                            // but created its mirror: STALE older local rows landed
+                            // BELOW newer server rows in the same thread (2026-08-16
+                            // screenshot: 7:29 PM prompts rendered below 7:37 PM
+                            // content). Splice each row at its transcript anchor:
+                            // insert immediately BEFORE the first local successor that
+                            // exists in the refreshed array, which preserves local
+                            // transcript order for both old and new local-only rows.
+                            // Rows with no represented successor (true newest rows)
+                            // append to the end, preserving the Build 119 invariant.
+                            let localMessages = localConversation.messages
+                            var refreshedIDsForAnchor = Set(refreshedConversation.messages.map(\.id))
+                            refreshedIDsForAnchor.formUnion(localToRefreshedIndex.keys)
+                            for localMsg in settledLocalOnly {
+                                let localIdx = localMessages.firstIndex(where: { $0.id == localMsg.id })
+                                var successorIndex: Int?
+                                if let localIdx {
+                                    for successor in localMessages[localMessages.index(after: localIdx)...] {
+                                        if let index = refreshedConversation.messages.firstIndex(where: { $0.id == successor.id })
+                                            ?? localToRefreshedIndex[successor.id] {
+                                            successorIndex = index
+                                            break
+                                        }
+                                    }
+                                }
+                                if let successorIndex {
+                                    refreshedConversation.messages.insert(localMsg, at: successorIndex)
+                                    for (localID, idx) in localToRefreshedIndex where idx >= successorIndex {
+                                        localToRefreshedIndex[localID] = idx + 1
+                                    }
+                                    localToRefreshedIndex[localMsg.id] = successorIndex
+                                } else {
+                                    refreshedConversation.messages.append(localMsg)
+                                    localToRefreshedIndex[localMsg.id] = refreshedConversation.messages.count - 1
+                                }
+                                refreshedIDsForAnchor.insert(localMsg.id)
+                            }
+                        } else {
                 let localMessages = localConversation.messages
                 // This is deliberately mutable.  Local-only messages are inserted
                 // in transcript order, and each insertion must become an anchor for
