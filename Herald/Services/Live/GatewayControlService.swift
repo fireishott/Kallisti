@@ -274,8 +274,8 @@ final class GatewayControlService {
             )
         }
         return try await apiClient.getGatewayControl(
-            path: "gw/restart/preflight?target=\\(target)",
-            accessToken: cookieAuth ? nil : token
+            path: "gw/restart/preflight?target=\(target)",
+            accessToken: hasToken ? token : nil
         )
     }
 
@@ -297,7 +297,7 @@ final class GatewayControlService {
         do {
             result = try await apiClient.postGatewayRestart(
                 body: RestartSubmission(target: target, preflightVersion: preflight.preflightVersion),
-                accessToken: cookieAuth ? nil : token,
+                accessToken: hasToken ? token : nil,
                 idempotencyKey: UUID().uuidString
             )
         } catch let RelayAPIClient.ClientError.serverError(_, message, _, status) where status == 409 {
