@@ -2678,6 +2678,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return Message(id: clientMessageID, sender: .herald, content: finalContent, timestamp: .now)
     }
 
+    /// Streaming variant of sendNoteMessage. Yields the gateway's live
+    /// reasoning deltas so the notes UI can render the agent's actual reasoning
+    /// stream (same component chat uses), not a local OCR readout.
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate> {
+        sendStreamingToConversation(
+            message: text,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            conversationID: conversationID,
+            title: title
+        )
+    }
+
     /// Streaming variant of sendNoteMessage. Resolves the note's session by the
     /// conversation UUID (creating it with `title` when absent) and submits the
     /// message against THAT session, leaving `currentConversation` untouched.

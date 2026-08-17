@@ -18,6 +18,12 @@ protocol HeraldClientProtocol {
     /// sync). Default implementation reports the capability is unavailable;
     /// the native gateway client overrides it with a real targeted send.
     func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message
+    /// Streaming variant of sendNoteMessage for note-as-session sync. Yields
+    /// live reasoning deltas plus text, tool, and terminal events so the notes
+    /// UI can render the agent's ACTUAL reasoning bubble (same component chat
+    /// uses) while a note syncs. Default implementation reports the capability
+    /// is unavailable; the native gateway client overrides it.
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate>
     func loadConversation() async -> Conversation
     func clearConversation() async throws -> Conversation
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation
@@ -192,6 +198,13 @@ extension HeraldClientProtocol {
             content: "Note sync requires the native gateway client.",
             status: .failed
         )
+    }
+
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { continuation in
+            continuation.yield(.failed("Note sync requires the native gateway client."))
+            continuation.finish()
+        }
     }
 }
 
