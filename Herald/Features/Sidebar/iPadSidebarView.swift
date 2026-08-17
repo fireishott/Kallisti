@@ -205,7 +205,13 @@ struct iPadSidebarView: View {
         // Recent notes
         Section("Recent") {
             ForEach(notesStore.recentNotes) { note in
-                NoteRowView(note: note)
+                Button {
+                    notesStore.selectedNoteId = note.id
+                } label: {
+                    NoteRowView(note: note)
+                }
+                .buttonStyle(.plain)
+                .help("Open this note")
             }
         }
     }

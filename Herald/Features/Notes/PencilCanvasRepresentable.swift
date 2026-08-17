@@ -8,6 +8,12 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     var pageStyle: NotePageStyle
     var pencilOnly: Bool = true
+    /// Explicit column width from the SwiftUI layout (GeometryReader).
+    /// Without this, a sidebar drag changes the frame but SwiftUI never
+    /// re-invokes updateUIView (no state changed), so the canvas keeps
+    /// its old width. Passing the width as a tracked property forces the
+    /// update pass and the canvas follows the sidebar.
+    var canvasWidth: CGFloat? = nil
     var onDrawingChanged: ((PKDrawing) -> Void)?
     var onToolUseBegan: (() -> Void)?
     var onToolUseEnded: (() -> Void)?
@@ -84,9 +90,14 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 
         // Keep canvas width in sync with the view frame so lines span the
         // full column width (matches iOS Notes behavior).  Only height
-        // auto-grows; width is driven by the SwiftUI layout.
-        if canvas.bounds.width > 0, canvas.contentSize.width != canvas.bounds.width {
-            canvas.contentSize.width = canvas.bounds.width
+        // auto-grows; width is driven by the SwiftUI layout. When an explicit
+        // width is tracked (sidebar drag case), prefer it over bounds so the
+        // resize actually happens even if SwiftUI doesn't relayout bounds.
+        let targetWidth = (canvasWidth ?? canvas.bounds.width)
+        if targetWidth > 0, canvas.contentSize.width != targetWidth {
+            canvas.contentSize.width = targetWidth
+            // The paper layer must follow or the ruled lines stop at the old
+            // column edge after a sidebar resize.
             context.coordinator.updatePaper(style: context.coordinator.currentStyle)
         }
 
