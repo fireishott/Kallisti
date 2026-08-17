@@ -86,6 +86,10 @@ final class AppContainer {
     let cronStore: CronStore
     let canvasStore: HeraldCanvasStore
     let notesStore: NotesStore
+    /// Notes sync engine. Option 1 architecture: every note is a gateway
+    /// session titled with the note name; edits append messages to that
+    /// session. Cadence from settings; manual sync always available.
+    let notesSyncEngine: NotesSyncEngine
     let attachmentService: AttachmentService
     let sensorUploadService: SensorUploadService?
     let dashboardLogService: DashboardLogService
@@ -199,6 +203,12 @@ final class AppContainer {
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
         self.notesStore = notesStore ?? NotesStore()
+        let chatStoreRef = self.chatStore
+        self.notesSyncEngine = NotesSyncEngine(
+            notesStore: self.notesStore,
+            settingsStore: self.settingsStore,
+            clientProvider: { await chatStoreRef.heraldClient }
+        )
         self.attachmentService = attachmentService ?? AttachmentService(
             apiClient: apiClient,
             accessTokenProvider: { [nativeGatewayClient] in
@@ -1021,6 +1031,7 @@ final class AppContainer {
     }
 
     func initialize() async {
+        notesSyncEngine.start()
         // Build 108 §15A.4: run the legacy → shared-Keychain token migration
         // once per launch.  Idempotent and best-effort; if the shared
         // Keychain entry is unreachable (no entitlement yet) we log and
