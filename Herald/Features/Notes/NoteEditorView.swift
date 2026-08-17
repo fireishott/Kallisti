@@ -56,6 +56,17 @@ struct NoteEditorView: View {
     @State private var commandResults: [NoteCommandResult] = []
     @State private var showShareToNotes = false
 
+    // Live OCR banner state - surfaces what the recognizer read from the
+    // most recent stroke batch, updating as you write.
+    @State private var liveOCRText: String = ""
+    @State private var isOCRWorking = false
+    /// Revision whose OCR was skipped because a run was in flight; the
+    /// in-flight run re-reads this revision when it finishes.
+    @State private var pendingOCRRRevision: Int?
+
+    /// Serializes on-device OCR so a stroke batch doesn't queue multiple runs.
+    private let recognitionCoordinator = NoteRecognitionCoordinator()
+
     var body: some View {
         VStack(spacing: 0) {
             // Title field
@@ -83,6 +94,13 @@ struct NoteEditorView: View {
             .accessibilityLabel("Note view mode")
 
             Divider()
+
+            // Live OCR banner - what the recognizer read from the strokes,
+            // updated on every settle. Replaces the old sync thought bubble.
+            if viewMode == .ink, !liveOCRText.isEmpty || isOCRWorking {
+                OCRReadoutBanner(text: liveOCRText, isWorking: isOCRWorking)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             // Attachment strip (Phase 3)
             if !attachments.isEmpty {
@@ -140,15 +158,6 @@ struct NoteEditorView: View {
                 .disabled(syncEngine.isSyncing)
                 .accessibilityLabel("Sync note")
                 .accessibilityHint("Syncs this note and all changed notes to their sessions")
-                // Thinking bubble: while a manual sync runs, show the agent
-                // "thinking" the way chat does, with animated dots.
-                .overlay(alignment: .top) {
-                    if syncEngine.isSyncing {
-                        ThinkingSyncBubble(statusText: syncEngine.statusText)
-                            .offset(y: -44)
-                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    }
-                }
                 // Attachment button (Phase 3)
                 Menu {
                     Button {
@@ -316,6 +325,11 @@ struct NoteEditorView: View {
         guard let note = notesStore.notes.first(where: { $0.id == noteId }) else { return }
         title = note.title
         pageStyle = note.pageStyle
+        // Reset the live OCR readout for the new note - the banner must
+        // never carry text from the previous note.
+        liveOCRText = ""
+        isOCRWorking = false
+        pendingOCRRRevision = nil
 
         // Load the latest drawing revision
         Task {
@@ -364,6 +378,7 @@ struct NoteEditorView: View {
     }
 
     /// Persist the drawing immediately. Called on pencil-up and on disappear.
+    /// After the blob lands, kick live OCR so the banner shows what was read.
     private func persistDrawing(_ newDrawing: PKDrawing) {
         let data = newDrawing.dataRepresentation()
         guard !data.isEmpty else { return }
@@ -372,6 +387,55 @@ struct NoteEditorView: View {
             guard let note = notesStore.notes.first(where: { $0.id == noteId }) else { return }
             let newRevision = note.currentDrawingRevision + 1
             _ = await notesStore.saveDrawing(noteId: noteId, data: data, revision: newRevision)
+
+            // Serialize OCR: if a run is in flight, record the newest
+            // revision and let the active run re-read it on completion so
+            // the banner always reflects the latest strokes.
+            if isOCRWorking {
+                if let current = pendingOCRRRevision {
+                    if newRevision > current { pendingOCRRRevision = newRevision }
+                } else {
+                    pendingOCRRRevision = newRevision
+                }
+                return
+            }
+            await runLiveOCR(revision: newRevision, noteId: noteId)
+        }
+    }
+
+    /// Run on-device recognition for the saved revision and surface the
+    /// recognized text in the live readout banner. Re-reads any revision
+    /// that arrived while recognition was in flight.
+    private func runLiveOCR(revision: Int, noteId: UUID) async {
+        var rev = revision
+        while true {
+            isOCRWorking = true
+            let rec = await recognitionCoordinator.recognize(
+                noteId: noteId,
+                drawingRevision: rev
+            )
+            isOCRWorking = false
+            if let rec, !rec.rawText.isEmpty {
+                liveOCRText = rec.rawText
+                currentRecognition = rec
+                // Re-parse directives from the live read so recognized view,
+                // enrichment, and the banner all agree on the same text.
+                let parser = NoteDirectiveParser()
+                parsedDirectives = parser.parse(
+                    text: rec.effectiveText,
+                    noteId: noteId,
+                    sourceTextRevision: rev.hashValue
+                )
+            } else if rec?.rawText.isEmpty == true {
+                liveOCRText = ""
+            }
+            // If a newer stroke batch landed during the run, read it too.
+            if let pending = pendingOCRRRevision, pending > rev {
+                pendingOCRRRevision = nil
+                rev = pending
+                continue
+            }
+            break
         }
     }
 
@@ -460,47 +524,43 @@ struct NoteEditorView: View {
     }
 }
 
-// MARK: - Thinking Sync Bubble
+// MARK: - Live OCR Readout Banner
 
-/// Chat-style "thinking" bubble shown over the sync button while a manual
-/// sync is pushing notes - animated dots + live status, matching the feel
-/// of a streaming chat response.
-struct ThinkingSyncBubble: View {
-    let statusText: String
-    @State private var animating = false
+/// Banner showing what the recognizer read from the current strokes in
+/// real time - an OCR readout, not an animated status ghost. Appears under
+/// the editor header while writing in ink mode and updates on every settle.
+struct OCRReadoutBanner: View {
+    let text: String
+    let isWorking: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .fill(Design.Brand.accent)
-                        .frame(width: 6, height: 6)
-                        .offset(y: animating ? -3 : 2)
-                        .animation(
-                            .easeInOut(duration: 0.45)
-                                .repeatForever(autoreverses: true)
-                                .delay(Double(i) * 0.15),
-                            value: animating
-                        )
-                }
+            Image(systemName: "text.viewfinder")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Design.Brand.accent)
+                .frame(width: 18)
+            if isWorking && text.isEmpty {
+                Text("Reading handwriting...")
+                    .font(.footnote)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            } else if !text.isEmpty {
+                Text(text)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
             }
-            Text(statusText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Design.Colors.foreground)
-                .lineLimit(2)
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(Design.Colors.backgroundRaised)
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Design.Brand.accent.opacity(0.35), lineWidth: 1)
+            Rectangle()
+                .fill(Design.Brand.accent.opacity(0.25))
+                .frame(width: 2),
+            alignment: .leading
         )
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
-        .onAppear { animating = true }
-        .onDisappear { animating = false }
     }
 }
 
