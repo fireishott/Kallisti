@@ -264,29 +264,86 @@ struct YamlEditorView: UIViewRepresentable {
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            // Keep the gutter in lockstep with the text view's scroll.
+            // The editor text view is the only scroll view wired to this
+            // delegate. Regenerate the visible gutter on every scroll frame -
+            // this self-corrects any drift instead of relying on the label
+            // staying in perfect sync with the text view's content.
+            guard let tv = scrollView as? UITextView else { return }
             guard let container = scrollView.superview as? LineNumberedTextView else { return }
-            container.gutterScroll.contentOffset = CGPoint(x: 0, y: scrollView.contentOffset.y)
+            container.gutterScroll.contentOffset = CGPoint(x: 0, y: tv.contentOffset.y)
+            updateVisibleGutter(for: tv.text ?? "", textView: tv)
+        }
+
+        /// Build the gutter for the lines currently visible in the viewport.
+        /// Numbers are absolute document line numbers, positioned so line N's
+        /// number sits exactly beside line N's text. Regenerating from the
+        /// scroll position every frame means the gutter can never drift or
+        /// freeze at the top of the document.
+        private func updateVisibleGutter(for text: String, textView: UITextView) {
+            guard let container = textView.superview as? LineNumberedTextView else { return }
+
+            let lineHeight = YamlEditorView.lineHeight
+            let insetTop = textView.textContainerInset.top
+            let totalLineCount = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
+
+            // Which document line sits at (or above) the viewport's top edge?
+            let contentTop = max(0, textView.contentOffset.y)
+            var firstVisible = Int(floor((contentTop - insetTop) / lineHeight))
+            firstVisible = max(0, min(firstVisible, totalLineCount - 1))
+
+            // How many lines fit in the viewport (+2 line buffer so a fast
+            // scroll never briefly shows an empty gutter). Before layout the
+            // text view bounds may be zero, so fall back to the container
+            // height for the initial render.
+            let viewportHeight = textView.bounds.height > 0 ? textView.bounds.height : container.bounds.height
+            let visibleLineCount = max(1, Int(ceil(viewportHeight / lineHeight)) + 2)
+            let lastVisible = min(totalLineCount - 1, firstVisible + visibleLineCount)
+
+            // Absolute line numbers for the visible window only.
+            let numbers = (firstVisible + 1...lastVisible + 1).map(String.init).joined(separator: "\n")
+
+            // Same paragraph metrics as the text view so label row heights
+            // match the editor's line spacing exactly.
+            let para = NSMutableParagraphStyle()
+            para.lineSpacing = YamlEditorView.editorLineSpacing
+            container.gutterLabel.attributedText = NSAttributedString(
+                string: numbers,
+                attributes: [
+                    .font: YamlEditorView.editorFont,
+                    .foregroundColor: UIColor(Design.Colors.tertiaryForeground),
+                    .paragraphStyle: para,
+                ]
+            )
+
+            // Position the label at the first visible line's content offset.
+            let lineTop = insetTop + CGFloat(firstVisible) * lineHeight
+            container.gutterLabel.frame = CGRect(
+                x: 0,
+                y: lineTop,
+                width: YamlEditorView.gutterWidth,
+                height: CGFloat(lastVisible - firstVisible + 1) * lineHeight
+            )
+            container.gutterScroll.contentSize = CGSize(
+                width: YamlEditorView.gutterWidth,
+                height: insetTop + CGFloat(totalLineCount) * lineHeight + textView.textContainerInset.bottom
+            )
         }
 
         private func updateGutter(for text: String, textView: UITextView) {
             guard let container = textView.superview as? LineNumberedTextView else { return }
             let lineCount = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
-            let numbers = (1...lineCount).map(String.init).joined(separator: "\n")
-            container.gutterLabel.text = numbers
 
             let insetTop = textView.textContainerInset.top
             let contentHeight = insetTop + CGFloat(lineCount) * YamlEditorView.lineHeight + textView.textContainerInset.bottom
-            container.gutterLabel.frame = CGRect(
-                x: 0,
-                y: insetTop,
-                width: YamlEditorView.gutterWidth,
-                height: max(0, contentHeight - insetTop)
-            )
+
+            // Sync the gutter scroll position with the text view so the
+            // visible window aligns with wherever the user is scrolled.
+            container.gutterScroll.contentOffset = CGPoint(x: 0, y: textView.contentOffset.y)
             container.gutterScroll.contentSize = CGSize(
                 width: YamlEditorView.gutterWidth,
-                height: max(contentHeight, textView.contentSize.height)
+                height: contentHeight
             )
+            updateVisibleGutter(for: text, textView: textView)
         }
     }
 }
