@@ -60,13 +60,21 @@ struct ToolActivityRail: View {
             .clipShape(Capsule())
 
             if let latest = latestActivity {
-                // Build 128.56: real terminal rendering for live stdout.
-                // Plain tool-call bubbles still cover args/preview JSON, but
-                // actual streamed output renders through TerminalOutputView.
+                // Build 128.58: finished tools render terminal-style too.
+                // Tools like read_file return results instead of stdout, so
+                // liveOutput may stay empty while resultPreview carries the
+                // actual output - that still belongs in the terminal view.
                 if !latest.liveOutput.isEmpty {
                     TerminalOutputView(
                         text: latest.liveOutput,
                         isActive: latest.isActive,
+                        maxChars: 48 * 1024
+                    )
+                    .transition(.opacity)
+                } else if let result = latest.resultPreview, !result.isEmpty {
+                    TerminalOutputView(
+                        text: result,
+                        isActive: false,
                         maxChars: 48 * 1024
                     )
                     .transition(.opacity)
@@ -128,11 +136,44 @@ struct ToolActivityRail: View {
     private var expandedTimeline: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
             ForEach(activities) { activity in
-                ToolCallBubbleView(
-                    name: activity.name ?? activity.label,
-                    args: activity.argsPreview,
-                    result: activity.liveOutput.isEmpty ? activity.resultPreview : activity.liveOutput
-                )
+                // Build 128.58: the expanded timeline uses the terminal look
+                // for anything with output - streamed stdout OR tool result -
+                // instead of raw JSON argument dumps.
+                if !activity.liveOutput.isEmpty || !(activity.resultPreview ?? "").isEmpty {
+                    VStack(alignment: .leading, spacing: Design.Spacing.xxxs) {
+                        HStack(spacing: Design.Spacing.xs) {
+                            if activity.isActive {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(Design.Colors.secondaryForeground)
+                            } else {
+                                Image(systemName: activity.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(activity.isError ? Design.Colors.danger : Design.Colors.success)
+                            }
+                            Text(activity.name ?? activity.label)
+                                .brandEyebrow()
+                                .lineLimit(1)
+                            Spacer()
+                            if let ms = activity.durationMs {
+                                Text("\(ms) ms")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(Design.Colors.secondaryForeground)
+                            }
+                        }
+                        TerminalOutputView(
+                            text: activity.liveOutput.isEmpty ? (activity.resultPreview ?? "") : activity.liveOutput,
+                            isActive: activity.isActive,
+                            maxChars: 48 * 1024
+                        )
+                    }
+                } else {
+                    ToolCallBubbleView(
+                        name: activity.name ?? activity.label,
+                        args: activity.argsPreview,
+                        result: activity.resultPreview
+                    )
+                }
             }
         }
         .padding(.vertical, Design.Spacing.xxs)
