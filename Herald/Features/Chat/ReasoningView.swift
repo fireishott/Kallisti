@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Displays a Herald message's streamed reasoning / chain-of-thought.
 ///
@@ -6,6 +7,12 @@ import SwiftUI
 /// full weight, older lines fading toward the top of a clipped viewport, under a
 /// shimmering "Thinking… Xs" header.  Once the answer arrives it collapses to a
 /// tappable "Thought for Xs" row.
+///
+/// Build 128.56: two-level expand. The default small viewport (132pt) auto-expands
+/// when the turn starts and collapses when it finishes. A dedicated expand control
+/// in the header switches to a large monitor viewport (roughly half the screen
+/// height) so the live reasoning is easy to read while it streams; tapping the
+/// header chevron still collapses/expands the small view.
 struct ReasoningView: View {
     let reasoning: String
     let isStreaming: Bool
@@ -13,10 +20,20 @@ struct ReasoningView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
+    @State private var isLarge = false
     @State private var shimmerPhase: CGFloat = -1
     @State private var startedAt: Date = .now
 
     private let streamingViewportHeight: CGFloat = 132
+    /// Build 128.56: large monitor viewport - ~52% of the screen height so a
+    /// long reasoning tail can be watched without fighting the chat layout.
+    private var largeViewportHeight: CGFloat {
+        max(240, UIScreen.main.bounds.height * 0.52)
+    }
+
+    private var viewportHeight: CGFloat {
+        isLarge ? largeViewportHeight : streamingViewportHeight
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.xs) {
@@ -45,9 +62,11 @@ struct ReasoningView: View {
                 shimmerPhase = -1
                 withAnimation(reduceMotion ? nil : Design.Motion.standard) {
                     isExpanded = false
+                    isLarge = false
                 }
             }
         }
+        .animation(reduceMotion ? nil : Design.Motion.standard, value: isLarge)
     }
 
     // MARK: - Body
@@ -71,19 +90,24 @@ struct ReasoningView: View {
 
         if isStreaming {
             ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
+                ScrollView(.vertical, showsIndicators: true) {
                     content
                 }
-                .frame(maxHeight: streamingViewportHeight)
+                .frame(maxHeight: viewportHeight)
                 .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.0),
-                            .init(color: .black, location: 0.22),
-                            .init(color: .black, location: 1.0),
-                        ],
-                        startPoint: .top, endPoint: .bottom
-                    )
+                    // Build 128.56: fade the OLD lines only in the small view.
+                    // In the large viewport the whole tail stays readable so the
+                    // user can actually monitor the stream.
+                    isLarge
+                        ? nil
+                        : LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0.0),
+                                .init(color: .black, location: 0.22),
+                                .init(color: .black, location: 1.0),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        )
                 )
                 .onChange(of: lines.count) {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
@@ -106,17 +130,17 @@ struct ReasoningView: View {
 
     private var showBody: Bool { isExpanded }
 
-        // MARK: - Header
+    // MARK: - Header
 
-        private var header: some View {
+    private var header: some View {
+        HStack(spacing: Design.Spacing.xxs) {
             Button {
-                // Build 128.52: the thinking bubble is tappable WHILE streaming.
-                // It auto-expands when the turn starts so the live reasoning is
-                // visible immediately; tapping collapses it to the shimmering
-                // header and tapping again re-expands. Previously the header was
-                // disabled during streaming, so you could never shrink a long
-                // reasoning tail out of the way mid-turn.
-                withAnimation(reduceMotion ? nil : Design.Motion.standard) { isExpanded.toggle() }
+                // Collapse / expand the small view (chevron). Also collapses a
+                // large view back to the small viewport.
+                withAnimation(reduceMotion ? nil : Design.Motion.standard) {
+                    isExpanded.toggle()
+                    if isLarge { isLarge = false }
+                }
             } label: {
                 HStack(spacing: Design.Spacing.xs) {
                     Image(systemName: "brain")
@@ -126,7 +150,7 @@ struct ReasoningView: View {
                     if isStreaming {
                         TimelineView(.periodic(from: startedAt, by: 1)) { context in
                             shimmering(
-                                Text("Thinking… \\(Int(context.date.timeIntervalSince(startedAt)))s")
+                                Text("Thinking… \(Int(context.date.timeIntervalSince(startedAt)))s")
                             )
                         }
                     } else {
@@ -134,19 +158,50 @@ struct ReasoningView: View {
                             .font(.system(.caption, weight: .medium))
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(isStreaming ? Design.Brand.accent : Design.Colors.secondaryForeground)
-                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isStreaming ? "Kallisti is thinking (tap to collapse or expand)" : headerLabel)
+
+            Spacer(minLength: 0)
+
+            // Build 128.56: dedicated expand control - flips between the small
+            // viewport and the large monitor viewport. Enabled whenever the body
+            // is showing (or a stream is in flight and auto-expanded).
+            if showBody || (isStreaming && isExpanded) {
+                Button {
+                    withAnimation(reduceMotion ? nil : Design.Motion.standard) {
+                        isLarge.toggle()
+                        if isLarge { isExpanded = true }
+                    }
+                } label: {
+                    Image(systemName: isLarge ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isLarge ? Design.Brand.accent : Design.Colors.secondaryForeground)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isLarge ? "Shrink thinking bubble" : "Expand thinking bubble")
+            }
+
+            // Chevron: reflects the small-view collapse state.
+            Image(systemName: showBody ? "chevron.down" : "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isStreaming ? Design.Brand.accent : Design.Colors.secondaryForeground)
+                .frame(width: 16, height: 28)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(reduceMotion ? nil : Design.Motion.standard) {
+                        isExpanded.toggle()
+                        if isLarge { isLarge = false }
+                    }
+                }
+                .accessibilityLabel(showBody ? "Collapse thinking details" : "Expand thinking details")
         }
+        .padding(.vertical, Design.Spacing.xxs)
+    }
 
     /// A gradient sweep across the label.  Falls back to flat colour under
     /// Reduce Motion so nothing animates.
@@ -178,4 +233,17 @@ struct ReasoningView: View {
         if let duration, duration >= 1 { return "Thought for \(Int(duration.rounded()))s" }
         return "Thought process"
     }
+}
+
+#Preview {
+    VStack {
+        ReasoningView(
+            reasoning: "Line one\nLine two\nLine three\nLine four\nLine five\nLine six\nLine seven\nLine eight",
+            isStreaming: true,
+            duration: nil
+        )
+        Spacer()
+    }
+    .padding()
+    .background(Design.Colors.background)
 }

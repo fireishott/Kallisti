@@ -60,11 +60,23 @@ struct ToolActivityRail: View {
             .clipShape(Capsule())
 
             if let latest = latestActivity {
-                ToolCallBubbleView(
-                    name: latest.name ?? latest.label,
-                    args: latest.argsPreview,
-                    result: latest.liveOutput.isEmpty ? latest.resultPreview : latest.liveOutput
-                )
+                // Build 128.56: real terminal rendering for live stdout.
+                // Plain tool-call bubbles still cover args/preview JSON, but
+                // actual streamed output renders through TerminalOutputView.
+                if !latest.liveOutput.isEmpty {
+                    TerminalOutputView(
+                        text: latest.liveOutput,
+                        isActive: latest.isActive,
+                        maxChars: 48 * 1024
+                    )
+                    .transition(.opacity)
+                } else {
+                    ToolCallBubbleView(
+                        name: latest.name ?? latest.label,
+                        args: latest.argsPreview,
+                        result: latest.resultPreview
+                    )
+                }
             }
         }
     }
