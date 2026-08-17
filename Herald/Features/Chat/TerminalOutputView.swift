@@ -30,6 +30,8 @@ struct TerminalOutputView: View {
     @State private var pinnedToBottom: Bool = true
     @State private var lastSeenLength: Int = 0
     @State private var scrollProxy: ScrollViewProxy?
+    /// Build 128.59: minimize toggle collapses to just the title bar.
+    @State private var isMinimized = false
 
     private static let bottomAnchor = "terminal-bottom-anchor"
 
@@ -57,7 +59,7 @@ struct TerminalOutputView: View {
             titleBar
             Divider()
                 .background(Color.white.opacity(0.12))
-            scrollBacked
+            if !isMinimized { scrollBacked }
         }
         .background(terminalBackground)
         .overlay(
@@ -107,13 +109,24 @@ struct TerminalOutputView: View {
             Text("\(text.count) chars")
                 .font(.system(size: 9, weight: .regular, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.35))
+
+            // Build 128.59: minimize toggle.
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { isMinimized.toggle() }
+            } label: {
+                Image(systemName: isMinimized ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.45))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isMinimized ? "Expand" : "Minimize")
         }
         .padding(.horizontal, Design.Spacing.sm)
         .padding(.vertical, Design.Spacing.xxs)
         .background(Color.black.opacity(0.35))
     }
 
-    // MARK: - Body
+    // MARK: - Body (build 128.59: collapsible)
 
     private var scrollBacked: some View {
         ScrollViewReader { proxy in
