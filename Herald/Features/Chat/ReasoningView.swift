@@ -117,7 +117,16 @@ struct ReasoningView: View {
             }
             .transition(.opacity)
         } else {
-            content.transition(.opacity.combined(with: .move(edge: .top)))
+            // Build 128.61: completed thoughts need the same height-capped,
+            // scroll-backed viewport as live thoughts. Previously the body
+            // rendered UNBOUNDED (full height), so the resize button toggled
+            // isLarge with nothing to resize - it "stayed expanded" forever.
+            // No fade mask here: a finished thought is final, users scroll it.
+            ScrollView(.vertical, showsIndicators: true) {
+                content
+            }
+            .frame(maxHeight: viewportHeight)
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 
