@@ -557,6 +557,7 @@ struct NoteOCRThinkingBubble: View {
 
     @State private var isExpanded = false
     @State private var sizeOption: SizeOption = .standard
+    @State private var startedAt: Date = .now
 
     private var viewportHeight: CGFloat {
         switch sizeOption {
@@ -593,6 +594,7 @@ struct NoteOCRThinkingBubble: View {
         )
         .task(id: isWorking) {
             if isWorking {
+                startedAt = .now
                 withAnimation(Design.Motion.standard) { isExpanded = true }
             }
         }
@@ -615,9 +617,19 @@ struct NoteOCRThinkingBubble: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(isWorking ? Design.Brand.accent : Design.Colors.secondaryForeground)
 
-                    Text(headerLabel)
-                        .font(.system(.caption, weight: .medium))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                    if isWorking {
+                        // Chat-style live timer: "Reading handwriting… 3s"
+                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                            Text("Reading handwriting… \(Int(context.date.timeIntervalSince(startedAt)))s")
+                                .font(.system(.caption, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    } else {
+                        Text(headerLabel)
+                            .font(.system(.caption, weight: .medium))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
                 }
                 .contentShape(Rectangle())
             }
