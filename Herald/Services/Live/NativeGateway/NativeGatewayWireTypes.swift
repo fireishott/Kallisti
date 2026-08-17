@@ -197,9 +197,9 @@ struct NativeToolCompletePayload: Decodable {
         } else if let v = try? c.decode(String.self, forKey: .result) {
             output = v
         } else if let v = try? c.decode([String: NativeJSONValue].self, forKey: .result) {
-            output = v.isEmpty ? nil : String(describing: v)
+            output = v.isEmpty ? nil : v.compactJSONString
         } else if let v = try? c.decode([NativeJSONValue].self, forKey: .result) {
-            output = v.isEmpty ? nil : String(describing: v)
+            output = v.isEmpty ? nil : v.compactJSONString
         } else {
             output = nil
         }
