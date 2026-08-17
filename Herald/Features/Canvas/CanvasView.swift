@@ -189,12 +189,22 @@ struct CanvasView: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(Design.Colors.secondaryForeground)
             }
-            if let preview = activity.resultPreview, !preview.isEmpty {
+            if let preview = activity.resultPreview, !preview.isEmpty, activity.liveOutput.isEmpty {
                 Text(preview)
                     .font(.system(.caption2))
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .lineLimit(2)
                     .truncationMode(.tail)
+            }
+
+            // Build 128.56: live stdout renders through the real terminal view
+            // so the Live tab reads like a terminal monitor, not a JSON dump.
+            if !activity.liveOutput.isEmpty {
+                TerminalOutputView(
+                    text: activity.liveOutput,
+                    isActive: activity.isActive,
+                    maxChars: 48 * 1024
+                )
             }
         }
         .padding(.horizontal, Design.Spacing.md)
