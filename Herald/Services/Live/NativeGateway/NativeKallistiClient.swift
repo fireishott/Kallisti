@@ -2669,9 +2669,9 @@ private struct NativeResumeResult: Decodable {
     let status: String?
     /// When the gateway session is parked on a clarify question (the turn
     /// emitted clarify.request and is waiting for the user to answer).
-    let pendingClarify: [String: Any]?
+    let pendingClarify: [String: NativeJSONValue]?
     /// When the gateway session is parked on an approval prompt.
-    let pendingApproval: [String: Any]?
+    let pendingApproval: [String: NativeJSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"

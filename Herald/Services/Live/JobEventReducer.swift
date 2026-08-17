@@ -134,7 +134,7 @@ enum JobEventReducer {
         case .toolOutput:
             if case .toolOutput(let payload) = event.payload {
                 if let idx = projection.toolActivities.firstIndex(where: { $0.id == payload.toolCallId }) {
-                    projection.toolActivities[idx].liveOutput += payload.chunk
+                    projection.toolActivities[idx].output = (projection.toolActivities[idx].output ?? "") + payload.chunk
                     projection.toolActivities[idx].isActive = true
                 }
                 projection.phase = .tool
