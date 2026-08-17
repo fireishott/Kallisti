@@ -444,12 +444,21 @@ struct ChatInputBar: View {
     /// long-press queue.
     private var longPressToQueueGesture: some Gesture {
         LongPressGesture(minimumDuration: 0.4)
-            .sequenced(before: DragGesture(minimumDistance: 0))
+            // Build 128.55: minimumDistance 8 (was 0). A zero-distance drag
+            // activates on the tiniest finger jitter during a hold, claims the
+            // touch, and CANCELS the Button tap - send never fired. The pill
+            // arms at -46pt of travel, so an 8pt threshold is invisible to the
+            // real gesture while letting plain taps through untouched.
+            .sequenced(before: DragGesture(minimumDistance: 8))
             .onChanged { value in
                 switch value {
                 case .first(true):
                     guard settingsStore.settings.longPressToQueue else { return }
-                    suppressNextTap = true
+                    // Build 128.55: do NOT set suppressNextTap here. The user
+                    // has only held so far - they may still release to SEND.
+                    // Suppression is armed ONLY when the queue actually fires
+                    // in onEnded, so a plain hold+release can never eat the
+                    // next tap.
                     withAnimation(.snappy(duration: 0.18)) {
                         queuePillVisible = true
                     }
@@ -476,7 +485,15 @@ struct ChatInputBar: View {
                     queuePillArmed = false
                     queueDragHeight = 0
                 }
-                guard settingsStore.settings.longPressToQueue else { return }
+                // Build 128.55: ALWAYS clear the suppression flag at the end of
+                // the gesture unless a message was actually queued. Previously
+                // an interrupted/cancelled sequence (view identity swap, app
+                // backgrounding, scroll steal) could leave suppressNextTap
+                // stuck true, silently swallowing every later tap on send.
+                guard settingsStore.settings.longPressToQueue else {
+                    suppressNextTap = false
+                    return
+                }
                 if shouldQueue {
                     suppressNextTap = true
                     onQueueNext()
