@@ -20,7 +20,7 @@ struct ChatOutboxRecord: Codable, Identifiable, Sendable {
     /// Monotonically increasing FIFO order, assigned from the manifest's
     /// `nextSequence` counter at enqueue time.
     let sequence: Int
-    let cleanText: String
+    var cleanText: String
     let continuationContext: String?
     var attachmentRefs: [OutboxAttachmentRef]
     var state: OutboxItemState

@@ -104,47 +104,49 @@ struct ReasoningView: View {
         return max(0.4, 0.95 - distance * 0.11)
     }
 
-    private var showBody: Bool { isStreaming || isExpanded }
+    private var showBody: Bool { isExpanded }
 
-    // MARK: - Header
+        // MARK: - Header
 
-    private var header: some View {
-        Button {
-            guard !isStreaming else { return }
-            withAnimation(reduceMotion ? nil : Design.Motion.standard) { isExpanded.toggle() }
-        } label: {
-            HStack(spacing: Design.Spacing.xs) {
-                Image(systemName: "brain")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(isStreaming ? Design.Brand.accent : Design.Colors.secondaryForeground)
+        private var header: some View {
+            Button {
+                // Build 128.52: the thinking bubble is tappable WHILE streaming.
+                // It auto-expands when the turn starts so the live reasoning is
+                // visible immediately; tapping collapses it to the shimmering
+                // header and tapping again re-expands. Previously the header was
+                // disabled during streaming, so you could never shrink a long
+                // reasoning tail out of the way mid-turn.
+                withAnimation(reduceMotion ? nil : Design.Motion.standard) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: Design.Spacing.xs) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(isStreaming ? Design.Brand.accent : Design.Colors.secondaryForeground)
 
-                if isStreaming {
-                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                        shimmering(
-                            Text("Thinking… \(Int(context.date.timeIntervalSince(startedAt)))s")
-                        )
+                    if isStreaming {
+                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                            shimmering(
+                                Text("Thinking… \\(Int(context.date.timeIntervalSince(startedAt)))s")
+                            )
+                        }
+                    } else {
+                        Text(headerLabel)
+                            .font(.system(.caption, weight: .medium))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
                     }
-                } else {
-                    Text(headerLabel)
-                        .font(.system(.caption, weight: .medium))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                }
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                if !isStreaming {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .foregroundStyle(isStreaming ? Design.Brand.accent : Design.Colors.secondaryForeground)
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(isStreaming ? "Kallisti is thinking (tap to collapse or expand)" : headerLabel)
         }
-        .buttonStyle(.plain)
-        .disabled(isStreaming)
-        .accessibilityLabel(isStreaming ? "Kallisti is thinking" : headerLabel)
-    }
 
     /// A gradient sweep across the label.  Falls back to flat colour under
     /// Reduce Motion so nothing animates.
