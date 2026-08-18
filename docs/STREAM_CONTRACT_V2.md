@@ -29,15 +29,15 @@ Every event in a v2 stream is a JSON object with these fields:
 | `tool.completed`    | `{toolCallId, output}`                  | Tool invocation finished                      |
 | `commentary`        | `{text}`                                | System commentary                             |
 | `approval.required` | `{toolCallId, prompt}`                  | Awaiting user approval                        |
-| `run.completed`     | `{messageId, text, usage, diff}`        | **Terminal** — successful completion          |
-| `run.failed`        | `{error, retryable}`                    | **Terminal** — unrecoverable failure          |
-| `run.cancelled`     | `{reason}`                              | **Terminal** — user/system cancelled          |
+| `run.completed`     | `{messageId, text, usage, diff}`        | **Terminal** - successful completion          |
+| `run.failed`        | `{error, retryable}`                    | **Terminal** - unrecoverable failure          |
+| `run.cancelled`     | `{reason}`                              | **Terminal** - user/system cancelled          |
 | `run.requeued`      | `{fromAttempt, toAttempt}`              | Job moved to new attempt                      |
 
 ## Terminal Rules
 
 - Exactly one terminal event per job (`run.completed`, `run.failed`, or `run.cancelled`)
-- Terminal events are immutable — late nonterminal events are rejected
+- Terminal events are immutable - late nonterminal events are rejected
 - `attempt` in terminal must match the current attempt
 
 ## v1-to-v2 Compatibility Map
@@ -51,7 +51,7 @@ Every event in a v2 stream is a JSON object with these fields:
 | `tool.completed`   | `tool_activity` (end phase)            |
 | `run.completed`    | `done` with `status: completed`        |
 | `run.failed`       | `done` with `status: failed`           |
-| `run.cancelled`    | *(new — no v1 equivalent)*             |
-| `run.requeued`     | *(new — no v1 equivalent)*             |
-| `commentary`       | *(new — no v1 equivalent)*             |
-| `approval.required`| *(new — no v1 equivalent)*             |
+| `run.cancelled`    | *(new - no v1 equivalent)*             |
+| `run.requeued`     | *(new - no v1 equivalent)*             |
+| `commentary`       | *(new - no v1 equivalent)*             |
+| `approval.required`| *(new - no v1 equivalent)*             |

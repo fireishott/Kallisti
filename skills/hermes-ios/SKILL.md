@@ -1,6 +1,6 @@
 ---
 name: hermes-ios
-description: Access real-time iOS sensor data — location, health metrics, activity detection, and custom queries from the user's iPhone.
+description: Access real-time iOS sensor data - location, health metrics, activity detection, and custom queries from the user's iPhone.
 version: 1.0.0
 author: Hermes iOS
 license: MIT
@@ -100,10 +100,10 @@ Do NOT use this skill for:
 ## Freshness
 
 Every tool response includes freshness metadata:
-- `recordedAt` — when the sensor recorded the value
-- `updatedAt` — when the connector received it
-- `isFresh` — true if within the expected update window
-- `ageSeconds` — seconds since recording
+- `recordedAt` - when the sensor recorded the value
+- `updatedAt` - when the connector received it
+- `isFresh` - true if within the expected update window
+- `ageSeconds` - seconds since recording
 
 **Stale data guidelines:**
 - Location older than 10 minutes: mention it may not be current
@@ -138,5 +138,5 @@ When you have activity and location context, adapt your responses:
 
 - **No data yet**: If the user just installed the app, sensor data may be empty. Say so clearly rather than guessing.
 - **Stale location**: Always check freshness. A 2-hour-old location isn't "where they are now."
-- **Health permissions**: Some metrics require Apple Watch. Missing metrics doesn't mean an error — the user may not have the hardware.
-- **SQL injection**: `query_sensor_data` uses a read-only SQLite connection. Only SELECT statements are allowed. Don't worry about writes — they're blocked at the database level.
+- **Health permissions**: Some metrics require Apple Watch. Missing metrics doesn't mean an error - the user may not have the hardware.
+- **SQL injection**: `query_sensor_data` uses a read-only SQLite connection. Only SELECT statements are allowed. Don't worry about writes - they're blocked at the database level.

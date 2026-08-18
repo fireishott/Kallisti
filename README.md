@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.3-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.2.5-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
@@ -13,7 +13,13 @@
 
 Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects to a Hermes gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
 
-There is no hosted vendor backend. You bring your own Hermes gateway, connector, TLS endpoint, and Apple signing configuration. Conversations, credentials, and media stay on infrastructure you control.
+There is no hosted vendor backend. You bring your own Hermes gateway, connector, and TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The source is open under MIT and free to build yourself.
+
+## Status
+
+Kallisti is in **private beta**. TestFlight invites are coming soon - stay tuned.
+
+The app is usable for daily driving. Chat is working; voice mode and watchOS are in active development. Some rough edges remain, and the app is under active iteration.
 
 ## Highlights
 
@@ -23,9 +29,10 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 - Authenticated inline rendering for agent-generated images
 - Push notifications with per-device routing and an in-app inbox
 - Live Activities on the lockscreen with elapsed-time heartbeat
-- Widgets, watch, and notification-service extensions
-- Voice mode with configurable ASR/TTS providers and Apple speech fallback
+- Widgets and notification-service extensions
+- Voice mode in active development, with configurable ASR/TTS providers
 - Optional HealthKit, CoreLocation, and CoreMotion synchronization
+- Handwriting notes with Apple Pencil and OCR / AI enrichment (iPad)
 - Gateway status, logs, restart, software update checks, and truthful connection stages
 - Connection latency monitoring and searchable auxiliary model switching
 
@@ -54,10 +61,10 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 - Push notifications for background turns, scoped per device via installation ID
 - Live Activities on the lockscreen with elapsed-time heartbeat
 - In-app notification inbox with dismiss and snooze actions
-- Widgets, watch, and notification-service extensions
-- Voice mode with configurable ASR/TTS and Apple speech fallback
+- Widgets and notification-service extensions
+- Voice mode in active development, with configurable ASR/TTS and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion sync
-- Handwriting note recognition (when configured)
+- Handwriting notes with Apple Pencil, OCR, and AI enrichment (iPad only)
 
 ### Gateway control
 
@@ -82,24 +89,17 @@ Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MO
 ## Requirements
 
 - iOS 18 or newer
-- Xcode 16 or newer
 - A running [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway
 - Python 3.11 or newer for the optional connector
-- An Apple Developer account for device builds and push capabilities
+- Xcode 16 or newer and an Apple Developer account only if you build from source
 
 ## Quick start
 
-### Build the app
+### TestFlight beta
 
-```bash
-git clone https://github.com/fireishott/Kallisti.git
-cd Kallisti
-open Herald.xcodeproj
-```
+TestFlight invites are coming soon. Once the beta opens, install Kallisti, pair it with your Hermes gateway, and you are set. No Apple Developer account or Xcode setup is needed for the beta path.
 
-Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-### Run the connector
+If you want push notifications, HealthKit synchronization, Live Activities, or authenticated media delivery, run the optional connector on your Hermes host:
 
 ```bash
 cd connector
@@ -110,6 +110,18 @@ kallisti run
 ```
 
 Configure secrets and environment-specific URLs outside the repository. Do not commit credentials, private keys, device identifiers, internal hostnames, or production logs. The connector serves the HTTP facade for push registration, Live Activities, and authenticated media on the port you configure.
+
+### Build from source
+
+Kallisti is open source under MIT and free to build. For tinkerers who want their own signed builds:
+
+```bash
+git clone https://github.com/fireishott/Kallisti.git
+cd Kallisti
+open Herald.xcodeproj
+```
+
+Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### Sign in on device
 
@@ -161,7 +173,7 @@ See [SECURITY.md](SECURITY.md) for supported versions and responsible disclosure
 
 ## Release history
 
-See [CHANGELOG.md](CHANGELOG.md). GitHub releases contain source notes only; signed IPAs are distributed through authorized Apple channels or built by operators with their own signing identity.
+Kallisti is currently distributed through TestFlight for private beta testers. GitHub releases carry source notes for those building from source, and the full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

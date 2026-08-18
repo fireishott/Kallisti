@@ -1,6 +1,6 @@
 ---
 name: herald-ios
-description: Work with the Herald iOS app — deliver images and files inline in chat, and read real-time iPhone sensor data (location, health, activity).
+description: Work with the Herald iOS app - deliver images and files inline in chat, and read real-time iPhone sensor data (location, health, activity).
 version: 2.0.0
 author: Herald
 license: MIT
@@ -20,7 +20,7 @@ user's iPhone.
 Formerly `hermes-ios`. The app, the connector, and the transport are all Herald now;
 "Hermes" refers only to the agent runtime.
 
-## Delivering images and files inline — READ THIS FIRST
+## Delivering images and files inline - READ THIS FIRST
 
 **Never paste a remote URL and call it delivered.** A `https://…` link renders as dead
 blue text in Herald chat. It is not an attachment. If you generated an image, downloaded
@@ -48,7 +48,7 @@ the tag from the visible text before the user ever sees it. Enforced by
 4. **10 MB hard ceiling per file.** Larger files are skipped without an error. Downscale
    images or link to a LAN path instead, and say so.
 5. **Put the tag on its own line**, separated by a blank line from prose.
-6. **Do not describe the tag.** Never write "here is the MEDIA tag" — the tag is stripped
+6. **Do not describe the tag.** Never write "here is the MEDIA tag" - the tag is stripped
    and your sentence will read as a non sequitur.
 
 ### Supported types
@@ -59,7 +59,7 @@ the tag from the visible text before the user ever sees it. Enforced by
 | Video | `.mp4` `.mov` `.avi` `.mkv` `.webm` |
 | Audio | `.ogg` `.opus` `.mp3` `.wav` `.m4a` |
 
-Anything else is delivered as a generic file attachment. Extension drives the MIME type —
+Anything else is delivered as a generic file attachment. Extension drives the MIME type -
 a PNG named `.dat` will not be recognised as an image.
 
 ### Staging directory
@@ -70,7 +70,7 @@ Stage anything you generate or download here:
 ~/.hermes-mobile/attachment_staging/
 ```
 
-That is the real path — `state.py` resolves the connector state dir to `~/.hermes-mobile`.
+That is the real path - `state.py` resolves the connector state dir to `~/.hermes-mobile`.
 It is **not** under `~/.hermes/profiles/<profile>/`. Create the directory if it is missing.
 
 ### Pattern: an image from a remote generator
@@ -88,19 +88,19 @@ test -s "$OUT" && file "$OUT"
 Then reply:
 
 ```
-There you go — corporate doggo with the CEO energy.
+There you go - corporate doggo with the CEO energy.
 
 MEDIA: ~/.hermes-mobile/attachment_staging/1753929600-doggo.png
 ```
 
 Verify before you emit the tag: `curl` can write a 404 HTML body to the path and exit 0
 without `--fail`. Check `file "$OUT"` reports actual image data, and that the size is
-non-zero. If the download failed, say so plainly — do not fall back to pasting the URL.
+non-zero. If the download failed, say so plainly - do not fall back to pasting the URL.
 
 ### Pattern: a file you generated
 
 ```
-Report's ready — 3 regressions, all in the merge path.
+Report's ready - 3 regressions, all in the merge path.
 
 MEDIA: ~/.hermes-mobile/attachment_staging/regression-report.pdf
 ```
@@ -125,8 +125,8 @@ find ~/.hermes-mobile/attachment_staging -type f -mtime +1 -delete 2>/dev/null
 ### Receiving attachments
 
 Users attach photos and files from the chat composer. Images arrive as vision context;
-files are staged to disk and referenced by path. Acknowledge what you actually received —
-name the file — rather than assuming.
+files are staged to disk and referenced by path. Acknowledge what you actually received -
+name the file - rather than assuming.
 
 ## Sensor data
 
@@ -134,12 +134,12 @@ Real-time data from the user's iPhone via the Herald Mobile MCP server.
 
 ### When to use
 
-- **Location** — "where am I?", "how far am I from…?"
-- **Health / fitness** — "how many steps today?", "how did I sleep?", "what's my heart rate?"
-- **Activity** — "am I walking?", "what am I doing?"
-- **Location history** — "where have I been today?"
-- **Health trends** — "steps this week", "sleep over the last 7 days"
-- **Context adaptation** — shorter answers while walking, health nudges if sedentary
+- **Location** - "where am I?", "how far am I from…?"
+- **Health / fitness** - "how many steps today?", "how did I sleep?", "what's my heart rate?"
+- **Activity** - "am I walking?", "what am I doing?"
+- **Location history** - "where have I been today?"
+- **Health trends** - "steps this week", "sleep over the last 7 days"
+- **Context adaptation** - shorter answers while walking, health nudges if sedentary
 
 Do not use it for general knowledge questions, or anything that gains nothing from
 location/health context.
@@ -163,7 +163,7 @@ location/health context.
 # Current location
 → get_user_location
 
-# Today's trail — compute the ISO timestamp, never hardcode a date
+# Today's trail - compute the ISO timestamp, never hardcode a date
 → get_location_history  since=<today at 00:00:00Z>
 
 # Recent locations
@@ -208,9 +208,9 @@ location/health context.
 
 Every response carries `recordedAt`, `updatedAt`, `isFresh`, `ageSeconds`.
 
-- Location older than 10 minutes — say it may not be current.
-- Health metrics older than 1 hour — note the age.
-- Activity older than 15 minutes — note it may have changed.
+- Location older than 10 minutes - say it may not be current.
+- Health metrics older than 1 hour - note the age.
+- Activity older than 15 minutes - note it may have changed.
 
 ### Schema
 
@@ -228,17 +228,17 @@ Call `get_sensor_schema` for exact columns before writing a query.
 
 ### Context-aware responses
 
-- **Walking / running** — brief, voice-friendly.
-- **Driving** — audio-only, no links or code.
-- **Stationary at home** — full detail, full formatting.
-- **Late night + poor sleep** — consider suggesting rest.
-- **Step milestone** — acknowledge it.
+- **Walking / running** - brief, voice-friendly.
+- **Driving** - audio-only, no links or code.
+- **Stationary at home** - full detail, full formatting.
+- **Late night + poor sleep** - consider suggesting rest.
+- **Step milestone** - acknowledge it.
 
 ## Pitfalls
 
 - **A URL is not an attachment.** The single most common failure. Download, stage, tag.
 - **Tag before write.** Emitting `MEDIA:` for a file that does not exist yet delivers
-  nothing, silently, and the tag is stripped — so the user sees a confident message with
+  nothing, silently, and the tag is stripped - so the user sees a confident message with
   no image.
 - **Wrong staging root.** `~/.hermes-mobile/attachment_staging/`, not
   `~/.hermes/profiles/<profile>/…`.

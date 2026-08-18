@@ -1,11 +1,11 @@
-# Herald Notes v1 — Contract & SDK Reference
+# Herald Notes v1 - Contract & SDK Reference
 
 **Prepared:** 2026-07-20
 **Baseline:** HEAD `1147c68` (`v1.7.1 / 37`)
 
 ---
 
-## 1. SDK Availability Table (N0.2 — Xcode 26.6 / iOS SDK 26.5)
+## 1. SDK Availability Table (N0.2 - Xcode 26.6 / iOS SDK 26.5)
 
 All annotations below are from the **installed SDK headers**, not documentation inference. Deployment target is iOS 18.0 (`project.yml:18`).
 
@@ -66,9 +66,9 @@ Both paths render the `PKDrawing` to an image via `PKDrawing.imageFromRect:scale
 
 ---
 
-## 3. Physical Spike Results (N0.3 — pending hardware)
+## 3. Physical Spike Results (N0.3 - pending hardware)
 
-> **Status:** BLOCKED — requires physical iPad with Apple Pencil. Operator must run these tests:
+> **Status:** BLOCKED - requires physical iPad with Apple Pencil. Operator must run these tests:
 >
 > 1. `PKDrawing.dataRepresentation()` round-trip fidelity on a multi-page drawing
 > 2. Recognition quality on representative handwriting at Letter/A4 point scale
@@ -110,7 +110,7 @@ Both paths render the `PKDrawing` to an image via `PKDrawing.imageFromRect:scale
 **Field notes:**
 - `noteId`: UUID v4, client-generated, stable across sync
 - `clientRunId`: UUID v4, client-generated, used for idempotency (deduplication)
-- `sourceDrawingRevision` / `sourceTextRevision`: revision fence — result applies only if these still match at completion
+- `sourceDrawingRevision` / `sourceTextRevision`: revision fence - result applies only if these still match at completion
 - `recognizedText`: the `userCorrectedText` if available, else raw OCR output
 - `directives`: parser-produced directives from the recognized text (never raw OCR tags)
 - `locale` / `timezone`: for command execution context
@@ -170,12 +170,12 @@ arguments     = <rest of line after command, trimmed> ;
 ```
 
 **v1 command allowlist (read-only):**
-- `#research` — web research on a topic
-- `#search` — web search for information
-- `#talkingpoints` — generate talking points
-- `#summary` — summarize the note content
-- `#actions` — extract action items
-- `#questions` — generate questions from the content
+- `#research` - web research on a topic
+- `#search` - web search for information
+- `#talkingpoints` - generate talking points
+- `#summary` - summarize the note content
+- `#actions` - extract action items
+- `#questions` - generate questions from the content
 
 **Rules:**
 - `#` mid-sentence, in URLs, in code blocks, or in struck-through regions is text, not a directive
@@ -188,15 +188,15 @@ arguments     = <rest of line after command, trimmed> ;
 
 ## 5. Backend Decision (Gate 0.C)
 
-> **Status:** PENDING — operator must decide between:
+> **Status:** PENDING - operator must decide between:
 >
-> **Option A — SwiftData (recommended):**
+> **Option A - SwiftData (recommended):**
 > - iOS 18.0 baseline supports it
 > - No existing Core Data/SwiftData in the repo (deliberate introduction)
 > - Automatic persistence, undo support, CloudKit-ready if needed later
 > - Note: SwiftData is only for the local note index/metadata; drawing blobs are always atomic files in Application Support
 >
-> **Option B — SQLite (custom repository):**
+> **Option B - SQLite (custom repository):**
 > - More control over schema and migrations
 > - Consistent with the relay's SQLite backend
 > - Requires manual CRUD implementation
@@ -210,7 +210,7 @@ arguments     = <rest of line after command, trimmed> ;
 
 ## 6. Relay Schema (Phase 3 preview)
 
-New tables — ride `Base.metadata.create_all`; no ALTERs to existing tables.
+New tables - ride `Base.metadata.create_all`; no ALTERs to existing tables.
 
 ```sql
 -- notes: local mirror of iOS note metadata
@@ -329,21 +329,21 @@ CREATE TABLE enriched_note_revisions (
 3. **Execute:** connector dispatches to Hermes with the enrichment prompt
 4. **Complete:** result becomes the current `EnrichedNoteRevision` **only if** `(source_drawing_revision, source_text_revision)` still match the note's current revisions; otherwise `is_stale = true`
 5. **Cancel:** terminal; no further processing
-6. **Lease expiry:** requeue follows `requeue_expired_message_jobs` semantics — accepted-but-slow is not failure
+6. **Lease expiry:** requeue follows `requeue_expired_message_jobs` semantics - accepted-but-slow is not failure
 
 ---
 
 ## 9. Invariants (v1)
 
-1. Ink is canonical — OCR/enrichment can never overwrite or delete drawing data
-2. Atomic local save — crash yields prior or next complete revision, never a partial blob
-3. Revision fence — results apply only to the exact source revisions they declare
-4. Idempotent run — one `clientRunId` ⇒ at most one remote execution
-5. Transport is not execution — disconnect/timeout neither respawns nor false-fails a live run
+1. Ink is canonical - OCR/enrichment can never overwrite or delete drawing data
+2. Atomic local save - crash yields prior or next complete revision, never a partial blob
+3. Revision fence - results apply only to the exact source revisions they declare
+4. Idempotent run - one `clientRunId` ⇒ at most one remote execution
+5. Transport is not execution - disconnect/timeout neither respawns nor false-fails a live run
 6. OCR detection alone never triggers a remote tool
-7. Allowlist before prompt — enforced relay-side; unknown tags are data
+7. Allowlist before prompt - enforced relay-side; unknown tags are data
 8. v1 tools are read-only
-9. Least disclosure — remote payload is corrected OCR + directive context; rendered image only when recognition needs visual disambiguation, and opt-in
-10. Auditable provenance — every generated section retains source revisions, directive, citations, run id
-11. Private logs — no blobs, full OCR, prompts, or generated docs in logs/telemetry
-12. Graceful degradation — writing and local viewing work with no Pencil, no host, no network, unsupported language
+9. Least disclosure - remote payload is corrected OCR + directive context; rendered image only when recognition needs visual disambiguation, and opt-in
+10. Auditable provenance - every generated section retains source revisions, directive, citations, run id
+11. Private logs - no blobs, full OCR, prompts, or generated docs in logs/telemetry
+12. Graceful degradation - writing and local viewing work with no Pencil, no host, no network, unsupported language
