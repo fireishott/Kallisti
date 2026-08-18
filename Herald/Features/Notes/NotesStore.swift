@@ -285,4 +285,13 @@ final class NotesStore {
         }
         return note
     }
+
+    // MARK: - Recognition
+
+    /// Persist a recognition so the Recognized tab and the note sync prompt
+    /// have real text after a reload. Build 130.0: live OCR results used to
+    /// live only in memory, so every reopen showed "No Recognition".
+    func saveRecognition(_ recognition: NoteRecognition, noteId: UUID) async throws {
+        try await repository.saveRecognition(recognition, noteId: noteId)
+    }
 }
