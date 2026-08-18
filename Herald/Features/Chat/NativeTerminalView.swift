@@ -36,10 +36,24 @@ struct NativeTerminalView: UIViewRepresentable {
         // (the extension method guards on `scrollPanRecognizer` being nil),
         // so this is safe on every makeUIView invocation.
         view.attachTouchScrollPanIfNeeded()
+        // Build 128.98: `touchScrollEnabled` defaults to false (select
+        // mode), so start the pan recognizer in the disabled state. The
+        // recognizer is still installed so updateUIView can flip it on
+        // the moment the user toggles scroll mode - this keeps the
+        // recognizer identity stable across rebuilds (no reattach).
+        view.setScrollPanEnabled(model.touchScrollEnabled)
         return view
     }
 
     func updateUIView(_ uiView: KallistiTerminalHostView, context: Context) {
+        // Build 128.98: keep the touch-scroll pan recognizer in sync
+        // with the toolbar toggle. When `touchScrollEnabled` is false
+        // (select mode) the pan recognizer is disabled so drags go
+        // through the fork's selection / mouse-reporting codepath
+        // instead of driving scrollDown()/scrollUp(). When true (scroll
+        // mode) the pan is enabled and vertical drags row-scroll the
+        // buffer regardless of the app's mouse request state.
+        uiView.setScrollPanEnabled(model.touchScrollEnabled)
         // Build 128.88: SwiftUI representables do not reliably drive
         // TerminalView.layoutSubviews with their final size. Without this
         // push, a TerminalView created at frame .zero keeps its zero-sized
@@ -484,6 +498,18 @@ extension KallistiTerminalHostView {
     // - it does not detach the fork's long-press, taps, or the
     /// underlying UIScrollView's native pan; each retains its original
     /// ARB relationship with the others.
+    /// Build 128.98: flip the installed touch-scroll pan recognizer
+    /// on/off without re-attaching it. Called from
+    /// `NativeTerminalView/updateUIView` whenever the
+    /// `touchScrollEnabled` toggle flips, and from `makeUIView` to
+    /// seed the recognizer to the model's default (false). Cheap -
+    /// just sets `isEnabled` on the existing recognizer; SwiftUI's
+    /// representable rebuilds do not stack duplicates because the
+    /// recognizer is created once in `attachTouchScrollPanIfNeeded`.
+    func setScrollPanEnabled(_ enabled: Bool) {
+        scrollPanRecognizer?.isEnabled = enabled
+    }
+
     func attachTouchScrollPanIfNeeded() {
         guard scrollPanRecognizer == nil else { return }
         let delegate = ScrollPanDelegate()

@@ -140,16 +140,42 @@ struct TUITerminalScreen: View {
             // (taps forward to the app as mouse events when it requests
             // them). Flip to touch scroll so swipes always pan the buffer
             // even when the app wants mouse reporting.
+            //
+            // Build 128.98: visual state. When scroll mode is on, render
+            // the icon inside a subtle capsule (accent-tinted fill + thin
+            // stroke) so the active mode is unambiguous at a glance - a
+            // plain foreground/background swap is easy to miss on the
+            // dark toolbar. The off state uses a near-transparent
+            // background so the button still reads as a button, just
+            // inactive. Tapping the button still just toggles the
+            // boolean; the visual is derived from it.
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     model.touchScrollEnabled.toggle()
                 } label: {
                     Image(systemName: model.touchScrollEnabled ? "arrow.up.and.down" : "hand.tap")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(
                             model.touchScrollEnabled ? Design.Colors.accent : Design.Colors.foreground
                         )
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background {
+                            if model.touchScrollEnabled {
+                                Capsule(style: .continuous)
+                                    .fill(Design.Colors.accent.opacity(0.18))
+                                    .overlay(
+                                        Capsule(style: .continuous)
+                                            .stroke(Design.Colors.accent.opacity(0.55), lineWidth: 1)
+                                    )
+                            } else {
+                                Capsule(style: .continuous)
+                                    .fill(Color.white.opacity(0.04))
+                            }
+                        }
                 }
                 .accessibilityLabel(model.touchScrollEnabled ? "Touch scroll: on" : "Touch select: on")
+                .accessibilityValue(model.touchScrollEnabled ? "Enabled" : "Disabled")
             }
             // Build 128.90: manual keyboard dismissal. The Enter
             // auto-dismiss was removed at Curtis's request; this button
