@@ -45,6 +45,7 @@ struct SettingsScreen: View {
                         }
                         appearanceSection
                         preferencesSection
+                        agentToolsSection
                         voiceSection
                         notesSection
                         locationSection
@@ -1794,6 +1795,73 @@ struct SettingsScreen: View {
                 settingsStore.settings.chatTextColorHex = hex
             }
         )
+    }
+
+    // MARK: - Agent Tools (Build 128.77)
+
+    /// Cron + Skills moved into Settings and wired to their real views.
+    /// Previously only reachable from the iPad sidebar; now every platform
+    /// reaches them from Settings (and they actually navigate).
+    private var agentToolsSection: some View {
+        SettingsSectionView(title: "Agent Tools") {
+            VStack(spacing: 0) {
+                NavigationLink {
+                    SkillsBrowserView()
+                } label: {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "wrench.and.screwdriver")
+                            .font(.system(size: Design.Size.iconSmall))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Skills")
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Browse and manage agent skills")
+                                .font(Design.Typography.footnote)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.horizontal, Design.Spacing.lg)
+                    .padding(.vertical, Design.Spacing.md)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                sectionDivider
+
+                NavigationLink {
+                    CronManagerView()
+                } label: {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "clock.badge")
+                            .font(.system(size: Design.Size.iconSmall))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Cron Jobs")
+                                .font(Design.Typography.body)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Scheduled automations and recurring tasks")
+                                .font(Design.Typography.footnote)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .padding(.horizontal, Design.Spacing.lg)
+                    .padding(.vertical, Design.Spacing.md)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     // MARK: - Preferences
