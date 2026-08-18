@@ -303,7 +303,12 @@ struct ChatScreen: View {
                         // progress against the model context window, plus
                         // session elapsed time - the TUI bottom strip.
                         contextWindow: effectiveContextWindow,
-                        contextTokens: currentContextTokens ?? 0
+                        contextTokens: currentContextTokens ?? 0,
+                        // Build 128.76: TUI landing panels fed from the live
+                        // command catalog + skills surfaced on this device.
+                        availableCommands: chatStore.commandCatalog.map(\.name),
+                        availableSkills: skillNames,
+                        sessionLabel: chatStore.conversation?.sessionKey
                     )
                 } else {
                     messageList
@@ -358,6 +363,23 @@ struct ChatScreen: View {
                     isEnabled: chatStore.connectionStatus == .connected
                         || chatStore.connectionStatus == .degraded
                 )
+
+                // Build 128.76: clarify card. When the agent parks the turn
+                // on a clarify question, show an answerable card above the
+                // composer instead of letting the turn hang for the full
+                // clarify_timeout. Rendered in BOTH rich and terminal modes
+                // since it rides above the shared ChatInputBar.
+                if let pending = chatStore.pendingClarify {
+                    ClarifyCardView(
+                        clarify: pending,
+                        onSubmit: { answer in
+                            chatStore.submitClarifyAnswer(answer)
+                        },
+                        onDismiss: {
+                            chatStore.pendingClarify = nil
+                        }
+                    )
+                }
 
                 // Build 118: frosted chat-switch overlay. Shown while the
                 // target conversation loads from the host so switching chats
@@ -832,6 +854,14 @@ struct ChatScreen: View {
 
     private var currentContextTokens: Int? {
         chatStore.currentContextTokens
+    }
+
+    /// Build 128.76: skill names surfaced for the TUI landing Skills panel.
+    /// Pulls from ProfileStore's active profiles (the connector's /v1/profiles
+    /// path reports real skillCount); falls back to nothing when profiles
+    /// haven't loaded so the panel renders its loading hint.
+    private var skillNames: [String] {
+        profileStore.profiles.map { $0.name }
     }
 
     /// Combined content length of the streaming placeholder message.

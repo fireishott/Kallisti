@@ -127,6 +127,7 @@
 		4AFCF13D092060BF7323C14D /* ToolActivityRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */; };
 		B7E87810AEED2B2DC1359685 /* TerminalOutputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D314D55A4F48791D662A908 /* TerminalOutputView.swift */; };
 		C8F0A1B2D3E4F5A6B7C8D9E0 /* TerminalChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* TerminalChatView.swift */; };
+C9F0A1B2D3E4F5A6B7C8D9E1 /* ClarifyCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */; };
 		4B0C9B3FE7119D8A561EBC5C /* InboxItemPriority.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35B7D51CD4AD9A91B4DCA6BA /* InboxItemPriority.swift */; };
 		4B21A46040AA4F267BD7BAED /* LiveVoiceSessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 947D3C677DF7F518441E2917 /* LiveVoiceSessionService.swift */; };
 		4B25D2B42A4E3242D81298C0 /* HeraldSupportConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F8B967040CA7210E3C6EA24 /* HeraldSupportConfiguration.swift */; };
@@ -685,6 +686,7 @@
 		A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolActivityRail.swift; sourceTree = "<group>"; };
 		0D314D55A4F48791D662A908 /* TerminalOutputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5C /* TerminalChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalChatView.swift; sourceTree = "<group>"; };
+A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClarifyCardView.swift; sourceTree = "<group>"; };
 		A65EB193F422B75698743CB5 /* LiveSessionBootstrapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSessionBootstrapService.swift; sourceTree = "<group>"; };
 		A6608E31D839BA3FB64BD247 /* MockHeraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockHeraldClient.swift; sourceTree = "<group>"; };
 		A6F52B8AD15494DA0A111160 /* SessionBootstrapServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBootstrapServiceProtocol.swift; sourceTree = "<group>"; };
@@ -1192,6 +1194,7 @@
 				A62EE545B9A10F3C5BD79413 /* ToolActivityRail.swift */,
 				0D314D55A4F48791D662A908 /* TerminalOutputView.swift */,
 				A1B2C3D4E5F60718293A4B5C /* TerminalChatView.swift */,
+				A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */,
 				12390528FCB15F35578B47B0 /* TypingDotsView.swift */,
 				4B79FBB5F223624AA2EEC68C /* VideoPlayerView.swift */,
 				ECB05B2D786D77C3F902AB3A /* VoiceSessionBanner.swift */,
@@ -2142,6 +2145,7 @@
 				4AFCF13D092060BF7323C14D /* ToolActivityRail.swift in Sources */,
 				B7E87810AEED2B2DC1359685 /* TerminalOutputView.swift in Sources */,
 				C8F0A1B2D3E4F5A6B7C8D9E0 /* TerminalChatView.swift in Sources */,
+				C9F0A1B2D3E4F5A6B7C8D9E1 /* ClarifyCardView.swift in Sources */,
 				7FA808C7C6D08742BBE8DD2F /* ToolCallBubbleView.swift in Sources */,
 				38E1B623FB9394B0E776C600 /* ToolNameSanitizer.swift in Sources */,
 				8FDBBD9A387C3DCBDA92BA1B /* TranscriptIdentity.swift in Sources */,
@@ -2341,7 +2345,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2362,7 +2366,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2384,7 +2388,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -2419,7 +2423,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
@@ -2440,7 +2444,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2459,7 +2463,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2558,7 +2562,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2579,7 +2583,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2600,7 +2604,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2622,7 +2626,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -2644,7 +2648,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
 				MARKETING_VERSION = 0.2.5;
@@ -2681,7 +2685,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 128.75;
+				CURRENT_PROJECT_VERSION = 128.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;

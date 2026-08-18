@@ -260,6 +260,28 @@ struct NativeReviewSummaryPayload: Decodable {
     let text: String
 }
 
+/// `clarify.request` — the agent parked the turn on a clarify question and
+/// is waiting for the user to answer. Server emits
+/// `{"question","choices","request_id","multi_select"?}` from
+/// tui_gateway/server.py `_block("clarify.request", …)` (the `_block`
+/// injects `request_id` into the payload). The iOS client renders a choice
+/// card and answers by sending `clarify.respond` with the same request_id.
+/// Build 128.76 — before this, the event hit `default: break` and the turn
+/// hung 10min (config `clarify_timeout: 600`) with no card on screen.
+struct NativeClarifyRequestPayload: Decodable {
+    let question: String?
+    let choices: [String]?
+    let requestID: String?
+    let multiSelect: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case question
+        case choices
+        case requestID = "request_id"
+        case multiSelect = "multi_select"
+    }
+}
+
 /// `message.start` — signals a turn has begun.
 struct NativeMessageStartPayload: Decodable {
     // Empty payload confirmed from capture
@@ -493,6 +515,29 @@ enum NativeJSONValue: Codable, Sendable {
         case .bool(let v): try container.encode(v)
         case .null: try container.encodeNil()
         }
+    }
+
+    /// Convenience accessors for payload decoding (Build 128.76:
+    /// pending_clarify from session.resume). Callers use the raw enum
+    /// directly when they need error-tolerant extraction.
+    var stringValue: String? {
+        if case .string(let v) = self { return v }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let v) = self { return v }
+        return nil
+    }
+
+    var stringArrayValue: [String]? {
+        guard case .array(let values) = self else { return nil }
+        return values.compactMap { $0.stringValue }
+    }
+
+    var doubleValue: Double? {
+        if case .number(let v) = self { return v }
+        return nil
     }
 }
 

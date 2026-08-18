@@ -2647,6 +2647,63 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    /// Build 128.76: answer a clarify question the agent parked on. Sends
+    /// `clarify.respond` over the WS with the request_id from the
+    /// clarify.request event and the user's chosen answer. The gateway's
+    /// `_respond` (tui_gateway/methods_prompt.py) resolves the pending block
+    /// and the agent turn continues. Before this, the app had no respond
+    /// path - the turn sat parked until `clarify_timeout` (600s in config).
+    func respondToClarify(requestID: String, answer: String) async throws {
+        guard let client else {
+            throw NativeGatewayClientError.notConnected
+        }
+        let response = try await client.send(
+            method: "clarify.respond",
+            params: ["request_id": requestID, "answer": answer],
+            timeoutNanos: Self.probeTimeoutNanos
+        )
+        if let error = response.error {
+            throw error
+        }
+    }
+
+    /// Build 128.76: fetch the pending clarify payload from the
+    /// session.resume snapshot. The gateway includes `pending_clarify`
+    /// (the full `_block` payload with question, choices, request_id and
+    /// optional multi_select) while a clarify prompt blocks the session -
+    /// so a reconnect or refresh that missed the live `clarify.request`
+    /// event can still surface the ClarifyCard.
+    func fetchPendingClarify() async -> PendingClarify? {
+        guard let client, let currentConversation else { return nil }
+        let resumeID: String
+        if let key = await idMap.sessionKey(for: currentConversation.id), !key.isEmpty {
+            resumeID = key
+        } else if let native = await idMap.nativeId(for: currentConversation.id), !native.isEmpty {
+            resumeID = native
+        } else {
+            return nil
+        }
+        do {
+            let response = try await client.send(
+                method: "session.resume",
+                params: ["session_id": resumeID],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            guard response.error == nil, let result = response.result else { return nil }
+            let data = try JSONEncoder().encode(result)
+            let decoded = try JSONDecoder().decode(NativeResumeResult.self, from: data)
+            guard let pending = decoded.pendingClarify else { return nil }
+            return PendingClarify(
+                question: pending["question"]?.stringValue ?? "",
+                choices: pending["choices"]?.stringArrayValue,
+                requestID: pending["request_id"]?.stringValue ?? "",
+                multiSelect: pending["multi_select"]?.boolValue ?? false
+            )
+        } catch {
+            return nil
+        }
+    }
+
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
         return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
     }
@@ -2889,6 +2946,19 @@ private final class StreamEventHandler: @unchecked Sendable {
             if let notice = event.params.decodePayload(NativeReviewSummaryPayload.self),
                !notice.text.isEmpty {
                 continuation.yield(.systemNotice(notice.text))
+            }
+        case "clarify.request":
+            // Build 128.76: the turn parked on a clarify question. Surface
+            // the question + choices to the UI so the user can answer via
+            // the ClarifyCard instead of hanging for the full timeout.
+            if let clarify = event.params.decodePayload(NativeClarifyRequestPayload.self),
+               let question = clarify.question {
+                continuation.yield(.clarifyRequest(
+                    question: question,
+                    choices: clarify.choices,
+                    requestID: clarify.requestID ?? "",
+                    multiSelect: clarify.multiSelect ?? false
+                ))
             }
         default:
             break
