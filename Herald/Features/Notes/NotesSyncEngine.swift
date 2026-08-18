@@ -354,16 +354,19 @@ final class NotesSyncEngine {
         } else {
             messageText += "A drawing is attached inline as an image in this conversation. If you support vision, you can see it directly - no tool call is required or possible. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image, use the Recognized text above as the authoritative transcription of the handwriting.\n"
         }
-        // Build 128.97: SUMMARY BOARD output contract. No directive syntax,
-        // no "#research" style commands - the model produces a clean digest
-        // the app renders as an enrichment board (timestamped, ordered by
-        // what is in the note, with links/docs/attachments inline).
-        messageText += "Act on the content of the note (text plus the inline drawing if attached). Apply your handwriting analysis skills (the handwriting-recognition skill: read carefully, resolve ambiguous letterforms from context, preserve math notation, flag uncertain words rather than guessing). Produce a SUMMARY BOARD in markdown, ordered by what is in the note:\n"
-        messageText += "- A one-line summary of the note at the top.\n"
-        messageText += "- Key points and action items as a compact bullet list.\n"
-        messageText += "- Any links, docs, references, or attachments mentioned in the note, listed inline in order.\n"
-        messageText += "- A timestamped 'Updates' section: if this is an update to an existing note, show what changed since the previous enrichment with timestamps; if new, note when it was created.\n"
-        messageText += "If the note is new, create the enrichment from scratch. If it is an update, build on the prior enrichment in this session - read it first, then update. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work.\n"
+        // Build 130.0: NATURAL DIGEST output contract. Curtis's 129.0
+        // complaint: enrichment read like AI process narration ("The user
+        // sent an automatic note sync... I should load the handwriting-
+        // recognition skill...") instead of a useful summary of the
+        // handwritten note. The model must write like a sharp assistant
+        // summarizing a note for someone who hasn't seen it - lead with
+        // the actual content, add genuinely useful context, and never
+        // narrate its own instructions or the sync mechanics.
+        messageText += "Read the note (text plus the inline drawing if attached). Apply your handwriting analysis skills (the handwriting-recognition skill: read carefully, resolve ambiguous letterforms from context, preserve math notation, flag uncertain words rather than guessing). Write a natural, useful digest of the note - the way a sharp assistant would summarize a handwritten note for someone who has not seen it:\n"
+        messageText += "- Lead with what the note actually says: restate the real content (the problems, items, names, numbers) in clear language, and solve or complete what it asks where you can (answer the math, expand the shorthand, fill in context).\n"
+        messageText += "- Follow with the genuinely useful context a reader would want: key points, action items, any links/docs/references/attachments in the order they appear, and anything that makes the note more valuable.\n"
+        messageText += "- End with a short timestamped 'Updates' line: if this is an update to an existing note, say what changed since the prior enrichment; if new, note when it was created.\n"
+        messageText += "Write plainly and specifically. Do NOT describe your instructions, the sync, the session, the isolation rule, or your own process - no meta-commentary at all. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Do not ask follow-up questions. Reply concisely but do the real work.\n"
 
         // Build 128.99: NOTE ISOLATION. The gateway injects memory/context
         // into every session's system prompt (user profile, Honcho session
