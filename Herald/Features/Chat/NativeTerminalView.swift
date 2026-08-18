@@ -112,9 +112,6 @@ final class NativeTerminalModel: ObservableObject {
     /// death can reconnect without the screen having to restart it.
     private var baseURL: URL?
     private var token: String?
-    /// Build 128.92: in-flight reconnect task. One at a time, like the
-    /// native client's scheduleReconnect.
-    private var reconnectTask: Task<Void, Never>?
     /// Build 128.92: set by disconnect() so a deliberate teardown is not
     /// fought by a scheduled reconnect (mirrors NativeKallistiClient).
     private var isDeliberatelyDisconnected = false
@@ -200,27 +197,31 @@ final class NativeTerminalModel: ObservableObject {
                 // network change, server restart). Without this the terminal
                 // stays dead until the screen is restarted. Only reconnect
                 // if this wasn't a deliberate disconnect() (tab switch).
-                self.scheduleReconnect()
+                // The dead task is cleared first so start()'s socket == nil
+                // guard passes; the reconnect itself runs inline here rather
+                // than through a delayed closure, because a DispatchQueue /
+                // Task closure capturing self trips Swift 6's sending checks
+                // (NativeTerminalModel is not @MainActor).
+                self.socket = nil
+                self.maybeReconnect()
             }
         }
     }
 
-    /// Build 128.92: schedule a reconnect with backoff after an unexpected
-    /// socket death. One task at a time; cancelled by a deliberate
-    /// disconnect() or by a successful fresh start().
-    private func scheduleReconnect() {
+    /// Build 128.92: reconnect after an unexpected socket death, gated by a
+    /// timestamp so a flapping socket backs off instead of spinning. Called
+    /// from the (nonisolated) URLSession callback, so no actor hop needed.
+    private var lastReconnectAttemptAt: Date?
+    private func maybeReconnect() {
         guard !isDeliberatelyDisconnected else { return }
-        guard reconnectTask == nil else { return }
-        reconnectTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, !Task.isCancelled else { return }
-            self.reconnectTask = nil
-            guard !self.isDeliberatelyDisconnected, self.socket == nil,
-                  let baseURL = self.baseURL
-            else { return }
-            self.statusText = "reconnecting..."
-            self.start(baseURL: baseURL, token: self.token)
+        guard let baseURL else { return }
+        if let last = lastReconnectAttemptAt,
+           Date().timeIntervalSince(last) < 2.0 {
+            return
         }
+        lastReconnectAttemptAt = Date()
+        statusText = "reconnecting..."
+        start(baseURL: baseURL, token: token)
     }
 
     private func handleFrame(_ text: String) {
@@ -279,11 +280,9 @@ final class NativeTerminalModel: ObservableObject {
     }
 
     func disconnect() {
-        // Build 128.92: mark deliberate so an in-flight reconnect task
-        // doesn't fight the teardown (tab switch / screen gone).
+        // Build 128.92: mark deliberate so an in-flight reconnect doesn't
+        // fight the teardown (tab switch / screen gone).
         isDeliberatelyDisconnected = true
-        reconnectTask?.cancel()
-        reconnectTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         isConnected = false
