@@ -24,13 +24,12 @@ struct AdaptiveRootView: View {
     }
 
     var body: some View {
-        if useIPadLayout {
-            iPadLayout
-                .onAppear { installRouterBinding() }
-                .onDisappear { removeRouterBinding() }
-        } else {
-            MainTabView()
-        }
+        // Build 128.77: unified navigation. iPads get the same bottom
+        // TabView as iPhones - no separate split-view sidebar. Cron and
+        // Skills live under Settings on both platforms.
+        MainTabView()
+            .onAppear { installRouterBinding() }
+            .onDisappear { removeRouterBinding() }
     }
 
     // MARK: - iPad Layout (Two-column split + optional inspector)

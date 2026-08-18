@@ -506,91 +506,50 @@ private struct TerminalMessageRow: View {
         return "system"
     }
 
-    // MARK: - Assistant block (TUI gold-bordered agent card)
+    // MARK: - Assistant block (flat TUI text - no card chrome)
 
     private var heraldBlock: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            headerRow
+        VStack(alignment: .leading, spacing: 3) {
+            // Reasoning header + dim italic chain-of-thought.
+            if showReasoning, !message.reasoning.isEmpty {
+                reasoningSection
+            }
 
-            VStack(alignment: .leading, spacing: 4) {
-                // Reasoning header + dim italic chain-of-thought.
-                if showReasoning, !message.reasoning.isEmpty {
-                    reasoningSection
-                }
+            // Tool activities as flat command lines with live timers.
+            if !message.toolActivities.isEmpty {
+                toolSection
+            }
 
-                // Tool activities as command blocks with live timers.
-                if !message.toolActivities.isEmpty {
-                    toolSection
-                }
+            // Attachments.
+            if !message.attachments.isEmpty {
+                attachmentLine
+            }
 
-                // Attachments.
-                if !message.attachments.isEmpty {
-                    attachmentLine
-                }
-
-                // Final answer text.
-                if !displayContent.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        Text(displayContent)
-                            .font(Design.Typography.code)
-                            .foregroundStyle(TerminalPalette.foreground)
-                        if message.isStreaming {
-                            StreamingBlockCaret()
-                        }
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-                } else if message.isStreaming && message.reasoning.isEmpty && message.toolActivities.isEmpty {
-                    // Streaming but no visible content yet - show the caret alone.
-                    HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        Text("▊")
-                            .font(Design.Typography.code)
-                            .foregroundStyle(TerminalPalette.green)
+            // Final answer text.
+            if !displayContent.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(displayContent)
+                        .font(Design.Typography.code)
+                        .foregroundStyle(TerminalPalette.foreground)
+                    if message.isStreaming {
+                        StreamingBlockCaret()
                     }
                 }
-
-                // Failure state.
-                if message.status == .failed || message.status == .interrupted {
-                    failureLine
+                .fixedSize(horizontal: false, vertical: true)
+            } else if message.isStreaming && message.reasoning.isEmpty && message.toolActivities.isEmpty {
+                // Streaming but no visible content yet - show the caret alone.
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("▊")
+                        .font(Design.Typography.code)
+                        .foregroundStyle(TerminalPalette.green)
                 }
             }
-            .padding(.leading, Design.Spacing.md)
-            .padding(.top, 6)
-            .padding(.bottom, Design.Spacing.sm)
-        }
-        .padding(.leading, 6)
-        .overlay(alignment: .leading) {
-            // Gold spine - the TUI's agent border on the left edge.
-            Rectangle()
-                .fill(terminalAccent)
-                .frame(width: 2)
-        }
-    }
 
-    private var terminalAccent: Color {
-        if message.status == .failed || message.status == .interrupted {
-            return TerminalPalette.error
+            // Failure state.
+            if message.status == .failed || message.status == .interrupted {
+                failureLine
+            }
         }
-        return message.isStreaming ? TerminalPalette.gold : TerminalPalette.borderGold
-    }
-
-    private var headerRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(terminalAccent)
-            Text("Hermes")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(terminalAccent)
-            Rectangle()
-                .fill(terminalAccent.opacity(0.35))
-                .frame(height: 1)
-            Text(Self.formatter.string(from: message.timestamp))
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(TerminalPalette.faint)
-        }
-        .padding(.top, 5)
-        .padding(.leading, Design.Spacing.sm)
-        .padding(.trailing, Design.Spacing.sm)
     }
 
     // MARK: - Reasoning section
@@ -710,7 +669,7 @@ private struct TerminalToolLine: View {
     let activity: ToolActivity
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("$")
                     .font(Design.Typography.code)
@@ -731,21 +690,14 @@ private struct TerminalToolLine: View {
 
             if activity.isActive, !activity.liveOutput.isEmpty {
                 TerminalOutputView(text: activity.liveOutput, isActive: true, maxChars: 32 * 1024)
-                    .padding(.leading, Design.Spacing.xs)
             } else if !activity.isActive, let result = activity.resultPreview, !result.isEmpty {
                 Text(Self.truncateMulti(result))
                     .font(Design.Typography.codeSmall)
                     .foregroundStyle(TerminalPalette.dim)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, Design.Spacing.xs)
             }
         }
-        .padding(6)
-        .overlay(
-            RoundedRectangle(cornerRadius: 4)
-                .stroke(activity.isActive ? TerminalPalette.gold.opacity(0.5) : TerminalPalette.border, lineWidth: 1)
-        )
     }
 
     /// Live elapsed timer (TUI style: `0.0s`) while active via TimelineView;
