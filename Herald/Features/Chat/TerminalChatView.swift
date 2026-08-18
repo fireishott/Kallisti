@@ -359,35 +359,36 @@ struct TerminalChatView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.6"
     }
 
-    /// Block-letter ASCII banner, rootshell/Hermes-TUI style. Rendered in
-    /// gold on the landing screen so it reads like the real agent TUI
-    /// rather than a chat placeholder.
-    private static let bannerLines: [String] = [
-        " _  __    _    _     _    ___ _____ _____ ",
-        "| |/ /   / \\  | |   | |  / _ \\_   _|_   _|",
-        "| ' /   / _ \\ | |   | | | | | || |   | |  ",
-        "| . \\  / ___ \\| |___| |_| |_| || |   | |  ",
-        "|_|\\_\\/_/   \\_\\_____|_\\___/___||_|   |_|  ",
-    ]
+    /// Block-letter ASCII banner - the actual HERMES logo art from
+        /// ui-tui/src/banner.ts (NousResearch/hermes-agent), not a placeholder.
+        /// Rendered like the real CLI: HERMES AGENT wordmark in gold/platinum
+        /// with the caduceus, then the version line.
+        private static let bannerLines: [String] = [
+            "██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗",
+            "██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝",
+            "███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ",
+            "██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ",
+            "██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
+            "╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
+        ]
 
-    private var banner: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(Self.bannerLines.enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(TerminalPalette.gold)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .scaleEffect(x: 1.0, y: 0.9, anchor: .leading)
+        private var banner: some View {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(Self.bannerLines.enumerated()), id: \.offset) { index, line in
+                    Text(line)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(index % 2 == 0 ? TerminalPalette.gold : TerminalPalette.foreground)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Text("hermes-agent v" + Self.appVersion + "  ·  connected to kallisti")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(TerminalPalette.green)
+                    .padding(.top, 1)
             }
-            Text("kallisti / hermes agent  " + Self.appVersion)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(TerminalPalette.green)
-                .padding(.top, 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Hermes agent terminal v\(Self.appVersion)")
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Kallisti terminal. Hermes agent \(Self.appVersion).")
-    }
 
     /// Session info block (model, session id, tokens) on the landing screen.
     private var sessionInfo: some View {

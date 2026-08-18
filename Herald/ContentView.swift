@@ -4,77 +4,88 @@ struct MainTabView: View {
     @Environment(TabRouter.self) private var router
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
+    @Environment(SettingsStore.self) private var settingsStore
     @State private var isSessionDrawerOpen = false
-
-    // Build 128.78: unified bottom tab bar. TabView renders tabs at the TOP
-    // on iPadOS, which broke the "iPad nav matches iPhone" requirement. This
-    // custom bar forces the same bottom placement on every device class.
-    private let barTabs: [AppTab] = [.chat, .inbox, .talk, .settings]
 
     var body: some View {
         @Bindable var router = router
         ZStack {
-            tabContent(router.selectedTab)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    BottomTabBar(selection: $router.selectedTab, tabs: barTabs)
-                }
-
-            // Session drawer overlay (swipe from left edge)
-            iPhoneSessionDrawer(isOpen: $isSessionDrawerOpen)
-        }
-        .tint(Design.Brand.accent)
-        .sheet(item: $router.activeSheet) { destination in
-            sheetDestination(destination)
-        }
-        .fullScreenCover(isPresented: $router.isVoiceOverlayPresented) {
-            VoiceOverlayScreen()
-        }
-        .onChange(of: talkStore.lastCompletedSession != nil) { _, hasSession in
-            if hasSession, let session = talkStore.lastCompletedSession {
-                Task {
-                    await chatStore.injectVoiceTranscript(
-                        voiceSessionId: session.voiceSessionId,
-                        duration: session.duration
-                    )
-                    talkStore.clearLastCompletedSession()
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func tabContent(_ tab: AppTab) -> some View {
-        Group {
-            switch tab {
-            case .chat:
+            // Build 128.81: system tab bar restored. The iPad top nav bar
+            // size was right - it just needed Kallisti theming, not a
+            // custom replacement. Notes rides as a tab with the handwriting
+            // icon on both platforms.
+            TabView(selection: $router.selectedTab) {
+                // ── Chat Tab ──
                 NavigationStack(path: router.binding(for: .chat)) {
                     ChatScreen(isSessionDrawerOpen: $isSessionDrawerOpen)
                         .navigationDestination(for: Route.self) { route in
                             routeDestination(route)
                         }
                 }
-            case .inbox:
+                .tabItem { Label(AppTab.chat.title, systemImage: AppTab.chat.icon) }
+                .tag(AppTab.chat)
+
+                // ── Inbox Tab ──
                 NavigationStack {
                     InboxScreen()
                 }
-            case .talk:
+                .tabItem { Label(AppTab.inbox.title, systemImage: AppTab.inbox.icon) }
+                .tag(AppTab.inbox)
+
+                // ── Talk Tab ──
                 NavigationStack {
                     TalkModeScreen()
                 }
-            case .notes:
+                .tabItem { Label(AppTab.talk.title, systemImage: AppTab.talk.icon) }
+                .tag(AppTab.talk)
+
+                // ── Notes Tab (handwriting icon) ──
                 NavigationStack {
                     NotesWorkspaceView()
                 }
-            case .settings:
+                .tabItem { Label(AppTab.notes.title, systemImage: AppTab.notes.icon) }
+                .tag(AppTab.notes)
+
+                // ── Settings Tab ──
                 NavigationStack {
                     SettingsScreen()
                         .navigationDestination(for: Route.self) { route in
                             routeDestination(route)
                         }
                 }
+                .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.icon) }
+                .tag(AppTab.settings)
+            }
+            .tint(Design.Brand.accent)
+            // Kallisti theming for the system bar: obsidian material, platinum
+            // tint. On iPad this is the top nav bar; on iPhone the bottom bar.
+            .toolbarBackground(Design.Colors.background.opacity(0.92), for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
+            .toolbarColorScheme(.dark, for: .tabBar)
+            .sheet(item: $router.activeSheet) { destination in
+                sheetDestination(destination)
+            }
+            .fullScreenCover(isPresented: $router.isVoiceOverlayPresented) {
+                VoiceOverlayScreen()
+            }
+            .onChange(of: talkStore.lastCompletedSession != nil) { _, hasSession in
+                if hasSession, let session = talkStore.lastCompletedSession {
+                    Task {
+                        await chatStore.injectVoiceTranscript(
+                            voiceSessionId: session.voiceSessionId,
+                            duration: session.duration
+                        )
+                        talkStore.clearLastCompletedSession()
+                    }
+                }
+            }
+
+            // Session drawer overlay (swipe from left edge) - hidden entirely
+            // in TUI mode: the terminal owns the whole chat surface.
+            if settingsStore.settings.chatDisplayMode == .rich {
+                iPhoneSessionDrawer(isOpen: $isSessionDrawerOpen)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -106,50 +117,6 @@ struct MainTabView: View {
             EmptyView()
         case .newChat:
             EmptyView()
-        }
-    }
-}
-
-// MARK: - Custom bottom tab bar
-
-/// iPhone-style bottom tab bar, rendered identically on iPad. Replaces the
-/// system TabView because iPadOS routes TabView tabs to the top.
-private struct BottomTabBar: View {
-    @Binding var selection: AppTab
-    let tabs: [AppTab]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(tabs) { tab in
-                let isSelected = selection == tab
-                Button {
-                    selection = tab
-                } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 20, weight: .medium))
-                            .symbolVariant(isSelected ? .fill : .none)
-                        Text(tab.title)
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(
-                        isSelected ? Design.Brand.accent : Design.Colors.secondaryForeground
-                    )
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                    .padding(.top, 8)
-                    .padding(.bottom, 2)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
-        .background(.bar)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Design.Colors.divider.opacity(0.6))
-                .frame(height: 0.5)
         }
     }
 }
