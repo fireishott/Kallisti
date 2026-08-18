@@ -330,7 +330,15 @@ struct ChatScreen: View {
                     // online (connecting / reconnecting / unreachable). Kills
                     // the "keyboard still up and typing on the connecting
                     // screen" bug.
-                    isEnabled: hostStore.connectionState == .online
+                    // Build 128.73: gate on the LIVE socket status, not the
+                    // hostStore probe. hostInfo() can fail or go stale on its
+                    // own (connector restart, refresh gap) and flip
+                    // connectionState offline while the WS is genuinely up -
+                    // the loading screen dismissed but the composer stayed
+                    // locked, so the keyboard never came up. .connected /
+                    // .degraded = socket is alive; everything else read-only.
+                    isEnabled: chatStore.connectionStatus == .connected
+                        || chatStore.connectionStatus == .degraded
                 )
 
                 // Build 118: frosted chat-switch overlay. Shown while the
