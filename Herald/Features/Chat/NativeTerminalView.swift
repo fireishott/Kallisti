@@ -30,6 +30,12 @@ struct NativeTerminalView: UIViewRepresentable {
                 view?.feed(byteArray: ArraySlice(bytes))
             }
         }
+        // Build 128.93: install the explicit touch-scroll pan recognizer
+        // before returning so the very first touch the user makes on the
+        // terminal is handled by it. Idempotent across SwiftUI rebuilds
+        // (the extension method guards on `scrollPanRecognizer` being nil),
+        // so this is safe on every makeUIView invocation.
+        view.attachTouchScrollPanIfNeeded()
         return view
     }
 
@@ -41,12 +47,20 @@ struct NativeTerminalView: UIViewRepresentable {
         // 128.87. This mirrors the vendored SwiftUITerminalHostView pattern
         // (updateSizeIfNeeded() from both layoutSubviews and updateUIView).
         uiView.updateSizeIfNeeded()
-        // Build 128.91: touch mode toggle. Default (touch select) keeps
-        // SwiftTerm's allowMouseReporting = true - taps forward to the app
-        // as mouse events when it requests them. Touch scroll mode sets it
-        // false so SwiftTerm's secondary codepath always allows selection
-        // and scrolling/panning regardless of the app's mouse request.
-        uiView.allowMouseReporting = !model.touchScrollEnabled
+        // Build 128.93 TUI scroll fix: the SwiftTerm fork only installs its
+        // panMouseGesture when the PTY requests mouse reporting, and
+        // hermes --tui keeps mouseMode off (it never asks for mouse
+        // events). With panMouseGesture missing, and 128.91 wiring
+        // allowMouseReporting=false routing panSelectionHandler into
+        // sendKey(arrow) (iOSTerminalView.swift ~line 1086) instead of
+        // scrolling, the toolbar toggle sent arrow keys to the PTY on
+        // every swipe - matching Curtis's "I can highlight but not scroll
+        // via touch" report. 128.93 routes touch scroll through an
+        // explicit UIPanGestureRecognizer that lives on the host view
+        // (installed once in makeUIView) so vertical drags always drive
+        // scrollDown() / scrollUp() rows regardless of mouse-mode state.
+        // The toolbar toggle stays as a UX affordance but no longer flips
+        // allowMouseReporting - both modes now scroll identically.
     }
 
     func makeCoordinator() -> Coordinator {
@@ -92,6 +106,12 @@ struct NativeTerminalView: UIViewRepresentable {
 
 /// Shared model: owns the WebSocket, pumps bytes to the view, forwards
 /// input + resize frames back to the bridge.
+/// Build 128.93: how the PTY bridge should start this terminal session.
+enum TerminalSessionMode: Equatable {
+    case new
+    case resume
+}
+
 final class NativeTerminalModel: ObservableObject {
     @Published var isConnected = false
     @Published var statusText = "connecting to hermes..."
@@ -112,6 +132,11 @@ final class NativeTerminalModel: ObservableObject {
     /// death can reconnect without the screen having to restart it.
     private var baseURL: URL?
     private var token: String?
+    /// Build 128.93: retained session choice so auto-reconnect after an
+    /// unexpected socket death resumes the same session the user picked.
+    private var terminalSessionMode = TerminalSessionMode.new
+    /// Build 128.93: session id for resume mode (nil for new).
+    private var terminalSessionId: String?
     /// Build 128.92: set by disconnect() so a deliberate teardown is not
     /// fought by a scheduled reconnect (mirrors NativeKallistiClient).
     private var isDeliberatelyDisconnected = false
@@ -139,13 +164,24 @@ final class NativeTerminalModel: ObservableObject {
 
     /// Start the connection. `baseURL` is the app's resolved connector URL
     /// and `token` the current native access token - passed in from the
-    /// caller, never hardcoded.
-    func start(baseURL: URL, token: String?) {
+    /// caller, never hardcoded. Build 128.93: `sessionMode` carries the
+    /// user's Resume / New choice (with `sessionId` for resume); the
+    /// session handshake frame MUST be the first frame sent (before
+    /// resize) because the bridge treats the first received frame as the
+    /// handshake and defaults to `new` otherwise.
+    func start(
+        baseURL: URL,
+        token: String?,
+        sessionMode: TerminalSessionMode = .new,
+        sessionId: String? = nil
+    ) {
         guard socket == nil else { return }
         // Build 128.92: retain params for auto-reconnect, and clear the
         // deliberate-disconnect flag so a fresh start() can reconnect.
         self.baseURL = baseURL
         self.token = token
+        self.terminalSessionMode = sessionMode
+        self.terminalSessionId = sessionId
         isDeliberatelyDisconnected = false
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.scheme = baseURL.scheme == "https" ? "wss" : "ws"
@@ -171,7 +207,29 @@ final class NativeTerminalModel: ObservableObject {
         statusText = "hermes --tui"
 
         receiveLoop(task)
+        sendSessionHandshakeIfNeeded(mode: sessionMode)
         sendResize(cols: cols, rows: rows)
+    }
+
+    /// Build 128.93: send the session handshake frame FIRST (before any
+    /// resize/input) so the bridge spawns `hermes --tui --resume <id>`
+    /// when the user picked resume, or plain `hermes --tui` for new.
+    /// The bridge's `_await_session_handshake()` waits on the first text
+    /// frame with a short timeout; a missing frame defaults to new, which
+    /// is the correct fallback for older clients.
+    private func sendSessionHandshakeIfNeeded(mode: TerminalSessionMode) {
+        guard let socket else { return }
+        let payload: [String: Any]
+        switch mode {
+        case .new:
+            payload = ["type": "session", "mode": "new"]
+        case .resume:
+            payload = ["type": "session", "mode": "resume", "sessionId": terminalSessionId ?? ""]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let text = String(data: data, encoding: .utf8)
+        else { return }
+        socket.send(.string(text)) { _ in }
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) {
@@ -221,7 +279,15 @@ final class NativeTerminalModel: ObservableObject {
         }
         lastReconnectAttemptAt = Date()
         statusText = "reconnecting..."
-        start(baseURL: baseURL, token: token)
+        // Build 128.93: re-attach with the same session choice the user
+        // picked, so an unexpected socket death resumes the same TUI
+        // session instead of silently starting fresh.
+        start(
+            baseURL: baseURL,
+            token: token,
+            sessionMode: terminalSessionMode,
+            sessionId: terminalSessionId
+        )
     }
 
     private func handleFrame(_ text: String) {
@@ -308,6 +374,12 @@ final class NativeTerminalModel: ObservableObject {
 /// frame .zero never learns its real bounds and renders nothing (black screen).
 final class KallistiTerminalHostView: TerminalView {
     private var lastAppliedSize: CGSize = .zero
+    /// Build 128.93: explicit touch-scroll pan recognizer. Created in
+    /// `attachTouchScrollPanIfNeeded()` and never recreated (single install
+    /// per view lifetime) so repeated SwiftUI `updateUIView` passes do not
+    /// pile up overlapping recognizers.
+    fileprivate var scrollPanRecognizer: UIPanGestureRecognizer?
+    fileprivate var scrollPanDelegate: ScrollPanDelegate?
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -326,3 +398,108 @@ final class KallistiTerminalHostView: TerminalView {
         }
     }
 }
+
+
+// MARK: - Build 128.93: explicit touch-scroll pan recognizer
+//
+// The SwiftTerm fork only installs its `panMouseGesture` when the PTY has
+// requested mouse reporting, and only attaches `panSelectionGesture` while
+// the user is already selecting text. With `hermes --tui` keeping mouseMode
+// off, neither pan recognizer is installed - drags fall through to the
+// UIScrollView's native pan, which on device races `updateScroller()` on
+// every feed and is easily missed. Worse, 128.91's
+// `allowMouseReporting = !touchScrollEnabled` wiring flipped that flag to
+// false in scroll mode, and the fork's `panSelectionHandler` non-selection
+// branch routes the flag into `sendKey(deltaRow:)` (iOSTerminalView.swift
+// ~line 1086) - i.e. arrow keys to the PTY, not scrolls.
+//
+// 128.93 fixes both with an explicit UIPanGestureRecognizer attached to
+// the host view once on mount. It runs simultaneously with everything
+// else (delaysTouchesBegan=false, cancelsTouchesInView=false, delegate
+// yields `true` for simultaneousWith), translates vertical finger drag
+// into row-by-row scrollDown()/scrollUp() calls on the public SwiftTerm
+// API (which already drive contentOffset + userScrolling + caret follow
+// correctly). Long-press select continues to work because the fork's
+// 0.7s long-press recognizer's stationary-press activation criterion is
+// unchanged; the new pan only consumes fast vertical movement.
+
+private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
+    weak var host: KallistiTerminalHostView?
+    /// Pixels of vertical drag per row of buffer. Tuned so a normal finger
+    /// swipe drags advance a few rows over its first 200pt of motion
+    /// without overshooting.
+    private let pixelsPerRow: CGFloat = 14.0
+
+    func gestureRecognizer(
+        _ gr: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        // Coexist with UIScrollView's native pan, the 0.7s long-press, and
+        // tap/double/triple tap. Returning false would cancel taps the
+        // moment the user moves a few pixels - which is exactly what we
+        // are here to make work.
+        return true
+    }
+
+    func gestureRecognizerShouldBegin(_ gr: UIGestureRecognizer) -> Bool {
+        // Reject purely-horizontal movement and tiny vertical flicks so a
+        // quick side-swipe (which a user might mean as a selection-pivot
+        // gesture) does not trigger a zero-row scroll, and so a stray
+        // thumb graze during typing does not silently jump the buffer.
+        guard let pan = gr as? UIPanGestureRecognizer else { return false }
+        let v = pan.velocity(in: pan.view)
+        return abs(v.y) > abs(v.x) && abs(v.y) > 60
+    }
+
+    @objc func handlePan(_ gr: UIPanGestureRecognizer) {
+        guard let host else { return }
+        switch gr.state {
+        case .changed:
+            let t = gr.translation(in: host)
+            // Use translation rather than velocity so the scroll lands
+            // exactly where the finger has stopped, not wherever the OS
+            // had projected it to. Reset between events so each event is
+            // a delta from the last.
+            let dy = t.y
+            gr.setTranslation(.zero, in: host)
+            guard abs(dy) >= pixelsPerRow else { return }
+            let rows = Int(dy / pixelsPerRow)
+            if rows > 0 {
+                // Finger moved DOWN on the screen -> scroll the buffer UP
+                // (reveal earlier lines).
+                for _ in 0..<rows { host.scrollUp(lines: 1) }
+            } else if rows < 0 {
+                for _ in 0..<(-rows) { host.scrollDown(lines: 1) }
+            }
+        default:
+            break
+        }
+    }
+}
+
+extension KallistiTerminalHostView {
+    /// Attach (once) the explicit touch-scroll pan recognizer. Idempotent:
+    /// safe to call from every `makeUIView` pass because
+    /// `scrollPanRecognizer` guards the install. The recognizer is additive
+    // - it does not detach the fork's long-press, taps, or the
+    /// underlying UIScrollView's native pan; each retains its original
+    /// ARB relationship with the others.
+    func attachTouchScrollPanIfNeeded() {
+        guard scrollPanRecognizer == nil else { return }
+        let delegate = ScrollPanDelegate()
+        delegate.host = self
+        scrollPanDelegate = delegate
+        let pan = UIPanGestureRecognizer(
+            target: delegate,
+            action: #selector(ScrollPanDelegate.handlePan(_:))
+        )
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 1
+        pan.delaysTouchesBegan = false
+        pan.cancelsTouchesInView = false
+        pan.delegate = delegate
+        addGestureRecognizer(pan)
+        scrollPanRecognizer = pan
+    }
+}
+

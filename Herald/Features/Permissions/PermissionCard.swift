@@ -3,12 +3,18 @@ import SwiftUI
 struct PermissionCard: View {
     let capability: DeviceCapability
     let onRequest: () -> Void
+    @Environment(PermissionsStore.self) private var permissionsStore
     @State private var isRequesting = false
+    @State private var isTogglingBackgroundSync = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.sm) {
             headerRow
             explanationText
+            if capability.permissionType == .health,
+               capability.status == .authorized {
+                backgroundSyncToggle
+            }
             statusAndAction
         }
         .padding(Design.Spacing.md)
@@ -51,6 +57,39 @@ struct PermissionCard: View {
             .font(Design.Typography.callout)
             .foregroundStyle(Design.Colors.secondaryForeground)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - Health Background Sync
+
+    /// HealthKit background delivery is programmatic (no iOS system toggle).
+    /// This switch calls into LiveHealthService and reports the real result
+    /// through the store-owned capability state - if the signed build lacks
+    /// the HealthKit entitlement, the switch flips back off and the card
+    /// detail explains why.
+    private var backgroundSyncToggle: some View {
+        Toggle(isOn: Binding(
+            get: { permissionsStore.healthBackgroundDeliveryEnabled },
+            set: { newValue in
+                guard !isTogglingBackgroundSync else { return }
+                isTogglingBackgroundSync = true
+                Task { @MainActor in
+                    await permissionsStore.setHealthBackgroundDelivery(newValue)
+                    isTogglingBackgroundSync = false
+                }
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Background Sync")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                Text("Stream heart rate, steps and activity to Hermes while the app is in the background.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .tint(Design.Brand.accent)
+        .disabled(isTogglingBackgroundSync)
     }
 
     // MARK: - Status & Action
