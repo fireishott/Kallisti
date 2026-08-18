@@ -9,31 +9,31 @@ Audit of all Notes-related components for Herald 1.8.0 planning.
 | **Models** | | | |
 | HeraldNote.swift | HeraldNote | ✅ Complete | Custom decoder for backward compat |
 | HeraldNote.swift | NoteDrawingRevision | ⚠️ Dead | Defined but never instantiated |
-| HeraldNote.swift | NoteSyncState | ✅ Complete | — |
-| HeraldNote.swift | NotePageStyle | ✅ Complete | — |
+| HeraldNote.swift | NoteSyncState | ✅ Complete | - |
+| HeraldNote.swift | NotePageStyle | ✅ Complete | - |
 | HeraldNote.swift | NoteFolder | ⚠️ Dead | Defined but never used |
-| HeraldNote.swift | NoteAttachment | ✅ Complete | — |
-| HeraldNote.swift | NoteAttachmentType | ✅ Complete | — |
-| NoteDirective.swift | NoteDirective | ✅ Complete | — |
+| HeraldNote.swift | NoteAttachment | ✅ Complete | - |
+| HeraldNote.swift | NoteAttachmentType | ✅ Complete | - |
+| NoteDirective.swift | NoteDirective | ✅ Complete | - |
 | NoteDirective.swift | NoteCommand | ✅ Complete | v1 allowlist: 6 commands |
-| NoteDirective.swift | DirectiveStatus | ✅ Complete | — |
-| NoteDirective.swift | NoteCommandResult | ✅ Complete | — |
-| NoteRecognition.swift | NoteRecognition | ✅ Complete | — |
-| NoteRecognition.swift | RecognitionEngine | ✅ Complete | — |
+| NoteDirective.swift | DirectiveStatus | ✅ Complete | - |
+| NoteDirective.swift | NoteCommandResult | ✅ Complete | - |
+| NoteRecognition.swift | NoteRecognition | ✅ Complete | - |
+| NoteRecognition.swift | RecognitionEngine | ✅ Complete | - |
 | **Views** | | | |
 | NotesWorkspaceView.swift | NotesWorkspaceView | ✅ Complete | Wired via AdaptiveRootView |
 | NotesListView.swift | NotesListView | ✅ Complete | Search, sort, context menu |
 | NoteEditorView.swift | NoteEditorView | ✅ Complete | Canvas + attachments |
 | PencilCanvasRepresentable.swift | PencilCanvasRepresentable | ✅ Complete | KVO paper sync |
 | NotePaperBackground.swift | NotePaperBackground | ⚠️ Dead | Unused; canvas uses NotePaperUIView |
-| RecognizedTextReviewView.swift | RecognizedTextReviewView | ✅ Complete | — |
+| RecognizedTextReviewView.swift | RecognizedTextReviewView | ✅ Complete | - |
 | **Services/Stores** | | | |
 | NotesStore.swift | NotesStore | ✅ Complete | @Observable, injected via AppContainer |
 | NotesRepository.swift | NotesRepository | ✅ Complete | Atomic writes, SHA-256, monotonic rev |
 | NoteDirectiveParser.swift | NoteDirectiveParser | ✅ Complete | Versioned allowlist, fingerprints |
 | NoteRecognitionCoordinator.swift | NoteRecognitionCoordinator | ✅ Complete | Revision-tied, cancel stale |
 | LiveNotesClient.swift | LiveNotesClient | ⚠️ Partial | Missing updateNote, deleteNote |
-| — | NotesClient protocol | ❌ Missing | No protocol; concrete actor only |
+| - | NotesClient protocol | ❌ Missing | No protocol; concrete actor only |
 | **Relay** | | | |
 | relay/app/notes.py | CRUD endpoints | ⚠️ Partial | Blob upload/download are stubs |
 | relay/app/notes.py | Run endpoints | ✅ Complete | Create, get, events, cancel |
@@ -84,9 +84,9 @@ Audit of all Notes-related components for Herald 1.8.0 planning.
 
 ## 4. Dead/Unwired Code
 
-- **NoteDrawingRevision** (HeraldNote.swift:76–108): Defined with full properties but never instantiated. The repository tracks revisions via blob filenames (`rev-{n}.pkdrawing`) without creating NoteDrawingRevision instances. Either wire it into the repository or remove.
+- **NoteDrawingRevision** (HeraldNote.swift:76-108): Defined with full properties but never instantiated. The repository tracks revisions via blob filenames (`rev-{n}.pkdrawing`) without creating NoteDrawingRevision instances. Either wire it into the repository or remove.
 
-- **NoteFolder** (HeraldNote.swift:193–210): Defined but `folderId` on HeraldNote is always nil. No UI for creating/managing folders. Either implement folder support or remove.
+- **NoteFolder** (HeraldNote.swift:193-210): Defined but `folderId` on HeraldNote is always nil. No UI for creating/managing folders. Either implement folder support or remove.
 
 - **NotePaperBackground** (NotePaperBackground.swift): SwiftUI Canvas version of paper background. PencilCanvasRepresentable uses `NotePaperUIView` (UIKit) instead. Either use this for SwiftUI previews or remove.
 
@@ -103,7 +103,7 @@ Audit of all Notes-related components for Herald 1.8.0 planning.
 ## 6. Key Architectural Notes
 
 - **Repository pattern**: NotesRepository is the ONLY writer for note data (enforced by actor isolation)
-- **Atomic writes**: All file writes use `.atomic` option — crash yields prior or next complete state
+- **Atomic writes**: All file writes use `.atomic` option - crash yields prior or next complete state
 - **Revision model**: Caller-managed monotonic integers, not server-assigned
 - **Fingerprint dedup**: Directive fingerprints are SHA-256 over (noteId, revision, command, arguments, range)
 - **Environment injection**: NotesStore injected via `@Environment(NotesStore.self)`, created in AppContainer

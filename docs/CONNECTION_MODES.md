@@ -22,7 +22,7 @@ Hermes-operated relay reachable from any network. Default path for users who don
 
 ## Self-Hosted Tailscale
 
-User runs a Hermes relay on their own Mac or trusted host and reaches it over a tailnet URL (`https://my-mac.tail-scale.ts.net/v1`) or a tailnet IP. The iOS app treats the tailnet URL exactly like any other custom relay base URL — no tailnet-specific networking code on the client.
+User runs a Hermes relay on their own Mac or trusted host and reaches it over a tailnet URL (`https://my-mac.tail-scale.ts.net/v1`) or a tailnet IP. The iOS app treats the tailnet URL exactly like any other custom relay base URL - no tailnet-specific networking code on the client.
 
 **Push:** Not official. Apple-issued APNs tokens only flow to the managed push broker, never to a user-run relay. Delivery happens when the app is foregrounded or reconnected to the tailnet. Users who need real background wake must use Managed Relay.
 
@@ -34,13 +34,13 @@ User runs a Hermes relay on their own Mac or trusted host and reaches it over a 
 
 ## Self-Hosted Relay URL
 
-User operates a publicly reachable Hermes relay (e.g. on Fly, Railway, their own VPS). The iOS app treats it identically to any custom relay — base URL + the usual pairing handshake.
+User operates a publicly reachable Hermes relay (e.g. on Fly, Railway, their own VPS). The iOS app treats it identically to any custom relay - base URL + the usual pairing handshake.
 
-**Push:** Same as Tailscale — no official APNs delegation. The long-term path is Phase 4 in the 1.1 plan: eligible self-hosted relays register with the managed push broker and receive `relayHandle`/`sendGrant` pairs just like managed deployments. Until then, these deployments rely on the relay's own notification channel or foreground reconnect.
+**Push:** Same as Tailscale - no official APNs delegation. The long-term path is Phase 4 in the 1.1 plan: eligible self-hosted relays register with the managed push broker and receive `relayHandle`/`sendGrant` pairs just like managed deployments. Until then, these deployments rely on the relay's own notification channel or foreground reconnect.
 
 **Background-delivery note:** "Self-hosted relays don't receive official push credentials. Background delivery depends on your relay's own notification channel."
 
-**Unreachable banner:** "Your self-hosted relay URL is not reachable. Check the URL in Settings and try again." Banner action is a straight retry — no deep-link because the failure mode is the relay itself, not the user's network.
+**Unreachable banner:** "Your self-hosted relay URL is not reachable. Check the URL in Settings and try again." Banner action is a straight retry - no deep-link because the failure mode is the relay itself, not the user's network.
 
 ## How the app decides which mode is active
 
