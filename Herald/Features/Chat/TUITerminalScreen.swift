@@ -55,6 +55,11 @@ struct TUITerminalScreen: View {
         }
         .onDisappear {
             model.disconnect()
+            // Build 128.90: allow the next .task to restart the terminal.
+            // Without this, leaving TUI (e.g. Settings tab) disconnects the
+            // socket and the guard above skips on return, leaving the screen
+            // frozen on "terminal closed".
+            started = false
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -70,6 +75,18 @@ struct TUITerminalScreen: View {
                 } label: {
                     Image(systemName: "escape")
                 }
+            }
+            // Build 128.90: manual keyboard dismissal. The Enter
+            // auto-dismiss was removed at Curtis's request; this button
+            // resigns first responder so the terminal gets full screen
+            // after typing.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    model.dismissKeyboard()
+                } label: {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                }
+                .accessibilityLabel("Dismiss keyboard")
             }
         }
     }
