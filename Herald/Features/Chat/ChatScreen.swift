@@ -637,18 +637,22 @@ struct ChatScreen: View {
     // iPhone: hamburger on leading; bounded status chip as principal; Canvas on trailing
     @ToolbarContentBuilder
     private var iPhoneToolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                withAnimation(Design.Motion.standard) {
-                    isSessionDrawerOpen.toggle()
+        // Build 128.81: no session drawer button in TUI mode - the terminal
+        // owns the whole surface, and there is no left session bar.
+        if settingsStore.settings.chatDisplayMode == .rich {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    withAnimation(Design.Motion.standard) {
+                        isSessionDrawerOpen.toggle()
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(Design.Colors.foreground)
                 }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Design.Colors.foreground)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open session drawer")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open session drawer")
         }
         ToolbarItem(placement: .principal) {
             // Build 128.1: double-tap the top bar to jump to the top of the
