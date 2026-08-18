@@ -299,9 +299,9 @@ final class NotesSyncEngine {
         if attachments.isEmpty {
             messageText += "No drawing attached - use the recognized text above and any directives. If the note is empty, say so briefly.\n"
         } else {
-            messageText += "A drawing is attached - read the handwriting and combine it with the recognized text.\n"
+            messageText += "A drawing is attached inline as an image in this conversation. If you support vision, you can see it directly - no tool call is required or possible. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image, use the Recognized text above as the authoritative transcription of the handwriting.\n"
         }
-        messageText += "Act on what you see: summarize the note, extract key points and action items, answer any questions written in it, and execute any directives you find (e.g. #research, #talkingpoints, #summary). If the note is new, produce a useful enrichment. If it is an update, build on the prior enrichment in this session. Do not ask follow-up questions. Reply concisely but do the real work."
+        messageText += "Act on the content of the note (text plus the inline drawing if attached): summarize it, extract key points and action items, answer any questions written in it, and execute any directives you find (e.g. #research, #talkingpoints, #summary). If the note is new, produce a useful enrichment. If it is an update, build on the prior enrichment in this session. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work."
 
 
         // This call creates the session on first sync (titled with the note

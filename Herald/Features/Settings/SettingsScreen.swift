@@ -3220,7 +3220,13 @@ private struct AuxModelPickerSheet: View {
                 }
             }
         }
+        // Build 128.96: scrolls take precedence over sheet resize. Without
+        // this, dragging inside the model list can resize the sheet
+        // (medium<->large) instead of scrolling - the touch-scroll vs
+        // touch-select fight. Content interaction .scrolls hands drags to
+        // the List; the grabber still resizes/dismisses.
         .presentationDetents([.medium, .large])
+        .presentationContentInteraction(.scrolls)
     }
 }
 
@@ -3236,6 +3242,14 @@ private struct EnrichmentModelPickerSheet: View {
     let onSelectDefault: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(SettingsStore.self) private var settingsStore
+
+    private func fireSelectionHaptic() {
+        // Build 128.96: tactile confirmation when a model is picked.
+        // Gated by the user's haptic preference like chat sends.
+        guard settingsStore.settings.hapticFeedbackEnabled else { return }
+        HapticEngine.messageSent()
+    }
 
     private var filteredModels: [ModelStore.HeraldModel] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -3256,6 +3270,7 @@ private struct EnrichmentModelPickerSheet: View {
             List {
                 Section {
                     Button {
+                        fireSelectionHaptic()
                         onSelectDefault()
                     } label: {
                         HStack {
@@ -3279,6 +3294,7 @@ private struct EnrichmentModelPickerSheet: View {
                     } else {
                         ForEach(filteredModels) { m in
                             Button {
+                                fireSelectionHaptic()
                                 onSelect(m.provider, m.name)
                             } label: {
                                 HStack {
@@ -3314,6 +3330,7 @@ private struct EnrichmentModelPickerSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationContentInteraction(.scrolls)
     }
 }
 
