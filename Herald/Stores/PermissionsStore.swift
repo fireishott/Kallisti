@@ -87,6 +87,15 @@ final class PermissionsStore {
         healthService.backgroundDeliveryEnabled
     }
 
+    /// Toggles HealthKit background delivery from the Permissions screen.
+    /// iOS has no system toggle for this - the app owns it. Refreshes
+    /// capabilities so the health card reflects the resulting state
+    /// (including failures, which read as "Background Sync Off").
+    func setHealthBackgroundDelivery(_ enabled: Bool) async {
+        _ = await healthService.setBackgroundDelivery(enabled: enabled)
+        capabilities = currentCapabilities()
+    }
+
     func requestBackgroundLocationAccess() async {
         _ = await locationService.requestBackgroundAuthorization()
         capabilities = currentCapabilities()

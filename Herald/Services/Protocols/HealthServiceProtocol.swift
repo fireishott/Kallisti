@@ -6,4 +6,5 @@ protocol HealthServiceProtocol {
     var backgroundDeliveryEnabled: Bool { get }
     func requestAuthorization() async -> PermissionStatus
     func refreshAuthorizationStatus() async
+    func setBackgroundDelivery(enabled: Bool) async -> Bool
 }

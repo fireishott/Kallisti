@@ -283,6 +283,37 @@ final class LiveHealthService: HealthServiceProtocol {
         backgroundDeliveryEnabled = allSucceeded
     }
 
+    /// Toggle HealthKit background delivery for every metric this app reads.
+    /// Used by the Permissions screen toggle - iOS has no system-level switch
+    /// for HealthKit background delivery, so the app exposes one.
+    /// Returns whether the requested state was achieved for all metric types
+    /// (false = some registrations failed, usually a HealthKit entitlement
+    /// problem in the signed build).
+    func setBackgroundDelivery(enabled: Bool) async -> Bool {
+        guard let store, authorizationStatus == .authorized else {
+            backgroundDeliveryEnabled = false
+            return false
+        }
+
+        var allSucceeded = true
+        for descriptor in metricDescriptors.values {
+            do {
+                if enabled {
+                    try await store.enableBackgroundDelivery(
+                        for: descriptor.sampleType,
+                        frequency: .immediate
+                    )
+                } else {
+                    try await store.disableBackgroundDelivery(for: descriptor.sampleType)
+                }
+            } catch {
+                allSucceeded = false
+            }
+        }
+        backgroundDeliveryEnabled = allSucceeded && enabled
+        return allSucceeded
+    }
+
     // MARK: - Incremental Anchors
 
     private func resolveChangedMetrics(

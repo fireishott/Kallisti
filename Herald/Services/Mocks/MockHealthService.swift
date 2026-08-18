@@ -14,4 +14,9 @@ final class MockHealthService: HealthServiceProtocol {
     }
 
     func refreshAuthorizationStatus() async {}
+
+    func setBackgroundDelivery(enabled: Bool) async -> Bool {
+        backgroundDeliveryEnabled = enabled
+        return true
+    }
 }
