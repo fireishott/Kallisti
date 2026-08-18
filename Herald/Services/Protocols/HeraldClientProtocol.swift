@@ -24,6 +24,18 @@ protocol HeraldClientProtocol {
     /// uses) while a note syncs. Default implementation reports the capability
     /// is unavailable; the native gateway client overrides it.
     func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate>
+
+    /// Build 128.97: re-attach a note to its EXISTING gateway session by the
+    /// FULL session key pinned on the note. Called before a note sync so an
+    /// idMap wiped by a reinstall/container reset still resumes the same
+    /// gateway session instead of spawning a duplicate. Default: no-op
+    /// (legacy relay/mock clients have no durable key map).
+    func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool
+
+    /// Build 128.97: the FULL gateway session key currently mapped to a note's
+    /// conversation UUID, if any. The sync engine pins this on the note after
+    /// the first successful sync so future syncs can resume the same session.
+    func nativeSessionKey(for conversationID: UUID) async -> String?
     func loadConversation() async -> Conversation
     func clearConversation() async throws -> Conversation
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation
@@ -191,6 +203,16 @@ extension HeraldClientProtocol {
     func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
         try await createSession(title: title)
     }
+
+    /// Default: no-op for clients without a durable key map (mocks, legacy
+    /// relay path). The native gateway client overrides this with
+    /// session.resume + idMap re-registration.
+    func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool { false }
+
+    /// Default: nil for clients without a durable key map (mocks, legacy
+    /// relay path). The native gateway client overrides this to read its
+    /// idMap's FULL-key map.
+    func nativeSessionKey(for conversationID: UUID) async -> String? { nil }
 
     /// Default: no-op for clients without session.interrupt (mocks, legacy
     /// relay path). The native gateway client overrides this with the

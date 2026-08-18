@@ -19,6 +19,12 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
     /// Each note IS a session: the title becomes the session title and every
     /// subsequent edit appends a new message to the same session.
     var sessionConversationID: UUID?
+    /// Build 128.97: FULL gateway session key (e.g. 20260818_131832_e6b5f1)
+    /// pinned on the note itself. The in-app idMap (UserDefaults) is the
+    /// fast path, but a reinstall/container reset wipes it - this key on the
+    /// note survives and lets the next sync RESUME the same gateway session
+    /// instead of creating a duplicate.
+    var gatewaySessionKey: String?
     /// Drawing revision last pushed to the gateway (0 = never synced).
     var lastSyncedDrawingRevision: Int
     var lastSyncedAt: Date?
@@ -41,6 +47,7 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         pageStyle: NotePageStyle = .linesMedium,
         syncState: NoteSyncState = .local,
         sessionConversationID: UUID? = nil,
+        gatewaySessionKey: String? = nil,
         lastSyncedDrawingRevision: Int = 0,
         lastSyncedAt: Date? = nil,
         createdAt: Date = .now,
@@ -58,6 +65,7 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         self.pageStyle = pageStyle
         self.syncState = syncState
         self.sessionConversationID = sessionConversationID
+        self.gatewaySessionKey = gatewaySessionKey
         self.lastSyncedDrawingRevision = lastSyncedDrawingRevision
         self.lastSyncedAt = lastSyncedAt
         self.createdAt = createdAt
@@ -81,6 +89,7 @@ struct KallistiNote: Codable, Identifiable, Hashable, Sendable {
         pageStyle = try container.decodeIfPresent(NotePageStyle.self, forKey: .pageStyle) ?? .linesMedium
         syncState = try container.decode(NoteSyncState.self, forKey: .syncState)
         sessionConversationID = try container.decodeIfPresent(UUID.self, forKey: .sessionConversationID)
+        gatewaySessionKey = try container.decodeIfPresent(String.self, forKey: .gatewaySessionKey)
         lastSyncedDrawingRevision = try container.decodeIfPresent(Int.self, forKey: .lastSyncedDrawingRevision) ?? 0
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
         createdAt = try container.decode(Date.self, forKey: .createdAt)

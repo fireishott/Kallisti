@@ -141,6 +141,72 @@ final class NotesSyncEngine {
         await syncIfNeeded(trigger: .manual)
     }
 
+    /// Build 128.97: sync ONLY the active note (the one being viewed/edited).
+    /// The sync button in the note editor must never sweep every dirty note -
+    /// Curtis's rule: one note, one session, one task per press.
+    func syncNote(id: UUID) async {
+        guard !isSyncing else { return }
+        guard let note = notesStore.activeNotes.first(where: { $0.id == id }) else {
+            stage = .failed("Note not found.")
+            lastSyncError = "Note not found."
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if stage == .failed(lastSyncError ?? "") { stage = .idle }
+            return
+        }
+        isSyncing = true
+        stage = .preparing
+        lastSyncError = nil
+
+        // Enrichment toggle: same guard as the batch path - OFF means notes
+        // never leave the device.
+        guard settingsStore.settings.notesEnrichmentEnabled else {
+            stage = .failed("Enrichment is disabled in Settings > Notes Sync.")
+            lastSyncError = "Enrichment is disabled in Settings > Notes Sync."
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if stage == .failed(lastSyncError ?? "") { stage = .idle }
+            isSyncing = false
+            return
+        }
+
+        // Skip-when-no-update: a clean note is a true no-op even on a manual
+        // press (dirty check identical to the batch filter).
+        if !isDirty(note) {
+            stage = .done
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if stage == .done { stage = .idle }
+            lastSyncDate = .now
+            logger.info("Manual sync: note \\(note.title) has no changes - skipped")
+            isSyncing = false
+            return
+        }
+
+        guard let client = await clientProvider() else {
+            stage = .failed("Not connected. Connect to the gateway first.")
+            lastSyncError = "Not connected. Connect to the gateway first."
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if stage == .failed(lastSyncError ?? "") { stage = .idle }
+            isSyncing = false
+            return
+        }
+
+        pendingNotesCount = 1
+        currentProgress = NoteSyncProgress(noteTitle: note.title, index: 1, total: 1)
+        do {
+            try await syncSingleNote(note, client: client)
+            stage = .done
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if stage == .done { stage = .idle }
+        } catch {
+            stage = .failed(error.localizedDescription)
+            lastSyncError = error.localizedDescription
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if stage == .failed(lastSyncError ?? "") { stage = .idle }
+        }
+        currentProgress = nil
+        lastSyncDate = .now
+        isSyncing = false
+    }
+
     /// Sync every note that changed since its last sync. Respects the
     /// configured interval when called from the timer.
     func syncIfNeeded(trigger: SyncTrigger = .automatic) async {
@@ -173,20 +239,7 @@ final class NotesSyncEngine {
         // since the last sync (title/style/text), or new content that was
         // never pushed.
         let notes = notesStore.activeNotes
-        let dirty = notes.filter { note in
-            if note.lastSyncedDrawingRevision < note.currentDrawingRevision {
-                return true
-            }
-            if let lastSynced = note.lastSyncedAt, note.updatedAt > lastSynced {
-                return true
-            }
-            if note.lastSyncedAt == nil {
-                return note.currentDrawingRevision > 0
-                    || note.currentTextRevision > 0
-                    || !note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return false
-        }
+        let dirty = notes.filter(isDirty)
         pendingNotesCount = dirty.count
         // Never leave a silent no-op: a manual tap with nothing to push
         // should still report back so it doesn't look broken.
@@ -297,17 +350,39 @@ final class NotesSyncEngine {
         }
 
         if attachments.isEmpty {
-            messageText += "No drawing attached - use the recognized text above and any directives. If the note is empty, say so briefly.\n"
+            messageText += "No drawing attached - use the recognized text above. If the note is empty, say so briefly.\n"
         } else {
             messageText += "A drawing is attached inline as an image in this conversation. If you support vision, you can see it directly - no tool call is required or possible. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image, use the Recognized text above as the authoritative transcription of the handwriting.\n"
         }
-        messageText += "Act on the content of the note (text plus the inline drawing if attached): summarize it, extract key points and action items, answer any questions written in it, and execute any directives you find (e.g. #research, #talkingpoints, #summary). If the note is new, produce a useful enrichment. If it is an update, build on the prior enrichment in this session. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work."
+        // Build 128.97: SUMMARY BOARD output contract. No directive syntax,
+        // no "#research" style commands - the model produces a clean digest
+        // the app renders as an enrichment board (timestamped, ordered by
+        // what is in the note, with links/docs/attachments inline).
+        messageText += "Act on the content of the note (text plus the inline drawing if attached). Apply your handwriting analysis skills (the handwriting-recognition skill: read carefully, resolve ambiguous letterforms from context, preserve math notation, flag uncertain words rather than guessing). Produce a SUMMARY BOARD in markdown, ordered by what is in the note:\n"
+        messageText += "- A one-line summary of the note at the top.\n"
+        messageText += "- Key points and action items as a compact bullet list.\n"
+        messageText += "- Any links, docs, references, or attachments mentioned in the note, listed inline in order.\n"
+        messageText += "- A timestamped 'Updates' section: if this is an update to an existing note, show what changed since the previous enrichment with timestamps; if new, note when it was created.\n"
+        messageText += "If the note is new, create the enrichment from scratch. If it is an update, build on the prior enrichment in this session - read it first, then update. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work."
 
 
         // This call creates the session on first sync (titled with the note
         // name) and appends a new message to it on every later edit. The
         // conversationID is stable per note, so the session thread persists.
         stage = .creatingSession
+
+        // Build 128.97: if the note has a FULL gateway session key pinned from
+        // a previous sync, resume that exact session BEFORE sending so an
+        // idMap wiped by a reinstall/container reset cannot spawn a duplicate
+        // gateway session. Best-effort: if resume fails (session reaped
+        // server-side), the send path falls back to creating a fresh one and
+        // we re-pin the new key below.
+        if let pinnedKey = note.gatewaySessionKey, !pinnedKey.isEmpty {
+            let resumed = await client.resumeNoteSession(conversationID: note.id, sessionKey: pinnedKey)
+            if resumed {
+                logger.info("Resumed pinned session \\(pinnedKey) for note \\(note.title)")
+            }
+        }
 
         // Reset reasoning state so the notes UI shows the agent's live
         // reasoning stream for THIS note - the same bubble chat uses.
@@ -382,12 +457,33 @@ final class NotesSyncEngine {
         }
 
         // Persist the sync checkpoint on the note so we don't re-send the
-        // same revision next cycle.
+        // same revision next cycle. Build 128.97 also pins the FULL gateway
+        // session key on the note (survives reinstall/container reset so the
+        // same session is resumed next time, never a duplicate) and saves the
+        // model's reply as the note's enrichment result (this is what fills
+        // the Enrichment tab).
         if var stored = notesStore.notes.first(where: { $0.id == note.id }) {
             stored.lastSyncedDrawingRevision = note.currentDrawingRevision
             stored.lastSyncedAt = .now
             stored.syncState = .synced
+            if let sessionKey = await client.nativeSessionKey(for: note.id), !sessionKey.isEmpty {
+                stored.gatewaySessionKey = sessionKey
+            }
             await notesStore.updateNote(stored)
+
+            // Save the enrichment result so the Enrichment tab renders the
+            // summary board (timestamps, links, docs, attachments in order).
+            let enrichment = EnrichmentResult(
+                noteId: note.id,
+                runId: UUID(),
+                sourceDrawingRevision: note.currentDrawingRevision,
+                sourceTextRevision: note.currentTextRevision,
+                title: sessionTitle,
+                markdown: message.content,
+                createdAt: .now
+            )
+            let repo = NotesRepository()
+            try? await repo.saveEnrichmentResult(enrichment, noteId: note.id)
         }
     }
 
@@ -409,6 +505,25 @@ final class NotesSyncEngine {
               let latest = recognitions.last else { return nil }
         let text = latest.effectiveText.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+
+    /// Build 128.97: dirty filter shared by the batch auto-sync and the
+    /// active-note manual sync. A note needs pushing when its drawing
+    /// advanced past the last sync, it was touched after the last sync, or
+    /// it is a new note with any real content.
+    private func isDirty(_ note: KallistiNote) -> Bool {
+        if note.lastSyncedDrawingRevision < note.currentDrawingRevision {
+            return true
+        }
+        if let lastSynced = note.lastSyncedAt, note.updatedAt > lastSynced {
+            return true
+        }
+        if note.lastSyncedAt == nil {
+            return note.currentDrawingRevision > 0
+                || note.currentTextRevision > 0
+                || !note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return false
     }
 }
 

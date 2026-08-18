@@ -140,6 +140,14 @@ struct NoteEditorView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // Build 128.97: refresh the enrichment board after ANY sync completes
+        // (auto-sync cadence or manual press) so the Enriched tab shows the
+        // newest summary without needing to leave and reopen the note.
+        .onChange(of: syncEngine.lastSyncDate) { _, _ in
+            if viewMode == .enriched {
+                loadRecognitionAndEnrichment()
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 // Pencil-only toggle
@@ -150,9 +158,13 @@ struct NoteEditorView: View {
                 }
                 .accessibilityLabel(pencilOnly ? "Pencil only mode" : "Any input mode")
                 .accessibilityHint("Toggle between pencil-only and finger drawing")
-                // Sync button: push this note to its session
+                // Sync button: push THIS note to its session (Build 128.97 -
+                // never sweeps every dirty note; one note = one task)
                 Button {
-                    Task { await syncEngine.syncNow() }
+                    Task {
+                        await syncEngine.syncNote(id: noteId)
+                        loadRecognitionAndEnrichment()
+                    }
                 } label: {
                     if syncEngine.isSyncing {
                         ProgressView()
@@ -162,7 +174,7 @@ struct NoteEditorView: View {
                 }
                 .disabled(syncEngine.isSyncing)
                 .accessibilityLabel("Sync note")
-                .accessibilityHint("Syncs this note and all changed notes to their sessions")
+                .accessibilityHint("Syncs this note to its session")
                 // Attachment button (Phase 3)
                 Menu {
                     Button {
@@ -317,9 +329,9 @@ struct NoteEditorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView(
-                "No Enrichment",
+                "No Enrichment Yet",
                 systemImage: "doc.text",
-                description: Text("Add a #research or #summary directive and run enrichment to generate a document.")
+                description: Text("Tap the sync button to generate a summary board for this note.")
             )
         }
     }
