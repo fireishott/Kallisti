@@ -443,6 +443,13 @@ private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
     /// swipe drags advance a few rows over its first 200pt of motion
     /// without overshooting.
     private let pixelsPerRow: CGFloat = 14.0
+    /// Build 128.99: sub-row drag accumulation. Pan events fire ~every
+    /// frame; a normal drag only moves ~1-2pt per event, which was below
+    /// the per-event threshold and meant rows almost never fired (the
+    /// "touch scroll still does not work" report). Accumulate fractional
+    /// rows across events and emit whole rows when the sum crosses the
+    /// threshold - slow deliberate drags now scroll.
+    private var accumulatedRows: CGFloat = 0
 
     func gestureRecognizer(
         _ gr: UIGestureRecognizer,
@@ -460,14 +467,23 @@ private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
         // quick side-swipe (which a user might mean as a selection-pivot
         // gesture) does not trigger a zero-row scroll, and so a stray
         // thumb graze during typing does not silently jump the buffer.
+        // Build 128.99: dropped the 60 pts/s velocity gate - slow,
+        // deliberate drags (the normal way people scroll a terminal)
+        // were being rejected before the pan ever began, so the gesture
+        // fell through to the UIScrollView's native pan which fights
+        // updateScroller() on every feed. Now any clearly-vertical drag
+        // starts the pan; the translation threshold in handlePan still
+        // prevents jitter.
         guard let pan = gr as? UIPanGestureRecognizer else { return false }
         let v = pan.velocity(in: pan.view)
-        return abs(v.y) > abs(v.x) && abs(v.y) > 60
+        return abs(v.y) > abs(v.x) && abs(v.y) > 20
     }
 
     @objc func handlePan(_ gr: UIPanGestureRecognizer) {
         guard let host else { return }
         switch gr.state {
+        case .began:
+            accumulatedRows = 0
         case .changed:
             let t = gr.translation(in: host)
             // Use translation rather than velocity so the scroll lands
@@ -476,15 +492,23 @@ private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
             // a delta from the last.
             let dy = t.y
             gr.setTranslation(.zero, in: host)
-            guard abs(dy) >= pixelsPerRow else { return }
-            let rows = Int(dy / pixelsPerRow)
-            if rows > 0 {
+            // Build 128.99: accumulate fractional rows and emit whole
+            // rows only when the sum crosses the threshold. The old
+            // `guard abs(dy) >= pixelsPerRow` rejected normal-speed
+            // drags because per-frame deltas (~1-2pt) were below 14pt.
+            accumulatedRows += dy / pixelsPerRow
+            let wholeRows = Int(accumulatedRows)
+            guard wholeRows != 0 else { return }
+            accumulatedRows -= CGFloat(wholeRows)
+            if wholeRows > 0 {
                 // Finger moved DOWN on the screen -> scroll the buffer UP
                 // (reveal earlier lines).
-                for _ in 0..<rows { host.scrollUp(lines: 1) }
-            } else if rows < 0 {
-                for _ in 0..<(-rows) { host.scrollDown(lines: 1) }
+                for _ in 0..<wholeRows { host.scrollUp(lines: 1) }
+            } else {
+                for _ in 0..<(-wholeRows) { host.scrollDown(lines: 1) }
             }
+        case .ended, .cancelled, .failed:
+            accumulatedRows = 0
         default:
             break
         }
@@ -508,6 +532,18 @@ extension KallistiTerminalHostView {
     /// recognizer is created once in `attachTouchScrollPanIfNeeded`.
     func setScrollPanEnabled(_ enabled: Bool) {
         scrollPanRecognizer?.isEnabled = enabled
+        // Build 128.99: when touch-scroll is on, disable the scroll view's
+        // OWN pan gesture so the custom pan is the sole driver of vertical
+        // movement. Previously both pans ran simultaneously: the native pan
+        // moved contentOffset, while the custom pan changed yDisp via
+        // scrollTo() - and because the finger was down (isTracking == true),
+        // updateScroller() bailed before syncing contentOffset to the new
+        // yDisp, so the drawing never visibly moved. With the native pan
+        // disabled, isTracking stays false, scrollTo()'s updateScroller()
+        // runs, and the buffer scrolls exactly where the finger drags it.
+        // Re-enable the native pan in select mode so taps/long-press and
+        // the fork's selection pan work as before.
+        isScrollEnabled = !enabled
     }
 
     func attachTouchScrollPanIfNeeded() {

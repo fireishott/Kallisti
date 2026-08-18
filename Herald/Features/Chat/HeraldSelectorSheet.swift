@@ -120,6 +120,17 @@ struct HeraldSelectorSheet: View {
             .navigationTitle("Kallisti Hub")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Build 128.99: "Set as default" toggle moved from the
+                // bottom of the Models list to the top-left, opposite the
+                // Done button, per Curtis.
+                ToolbarItem(placement: .topBarLeading) {
+                    Toggle(isOn: $setAsGlobalDefault) {
+                        Text("Set as default")
+                            .font(Design.Typography.caption)
+                    }
+                    .tint(Design.Brand.accent)
+                    .accessibilityHint("Persist beyond the current session (--global)")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
@@ -207,19 +218,6 @@ struct HeraldSelectorSheet: View {
                                 modelRow(model)
                             }
                         }
-                    }
-
-                    Section {
-                        Toggle(isOn: $setAsGlobalDefault) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Set as default")
-                                    .font(Design.Typography.callout)
-                                Text("Persist beyond the current session (--global)")
-                                    .font(Design.Typography.caption)
-                                    .foregroundStyle(Design.Colors.secondaryForeground)
-                            }
-                        }
-                        .tint(Design.Brand.accent)
                     }
                 }
                 .scrollContentBackground(.hidden)

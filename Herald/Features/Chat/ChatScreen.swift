@@ -656,10 +656,19 @@ struct ChatScreen: View {
                     }
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            HStack(spacing: Design.Spacing.sm) {
-                catchUpButton
-                canvasButton
+        // Build 128.99: in TUI mode the terminal owns the whole toolbar.
+        // The trailing catchUp/canvas buttons belong to the rich chat
+        // surface, not the terminal - leaving them ungated crowded the
+        // compact iPhone bar to 5 items and pushed the TUI's own ESC /
+        // touch-toggle / keyboard-dismiss buttons into overflow (the
+        // "circle with up arrow does nothing" report). Gate them the same
+        // way leading/principal already are.
+        if settingsStore.settings.chatDisplayMode == .rich {
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: Design.Spacing.sm) {
+                    catchUpButton
+                    canvasButton
+                }
             }
         }
     }
@@ -675,45 +684,52 @@ struct ChatScreen: View {
         // sidebar toggle, which squeezed the text to zero width even with
         // layoutPriority(1). .principal (same slot iPhone uses) gives the
         // pill its own width budget - proven working on iPhone.
-        ToolbarItem(placement: .principal) {
-            // Build 128.1: double-tap the top bar to jump to the top of the
-            // thread (oldest messages) - same affordance as iPhone.
-            ViewThatFits(in: .horizontal) {
-                // Wide: profile + model + timer
-                HStack(spacing: Design.Spacing.sm) {
-                    profileChip
-                    modelStatusChip
-                    sessionTimerChip
-                }
-                // Medium: model + timer (drops profile chip)
-                HStack(spacing: Design.Spacing.sm) {
-                    modelStatusChip
-                    sessionTimerChip
-                }
-                // Compact: same bounded chip as iPhone
-                compactStatusControl
-            }
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                scrollToTop()
-            }
-            .accessibilityAction(named: "Scroll to top") {
-                scrollToTop()
-            }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            ViewThatFits(in: .horizontal) {
-                // Wide: Canvas + Settings
-                HStack(spacing: Design.Spacing.sm) {
-                    catchUpButton
-                    canvasButton
-                    GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
-                        router.switchToTab(.settings)
+        // Build 128.99: in TUI mode the terminal owns the whole toolbar -
+        // including the model picker chips. profileChip / modelStatusChip
+        // / sessionTimerChip are the hub entry points; leaving them
+        // ungated meant the model picker stayed reachable over the TUI
+        // screen. Gate them on rich mode like the iPhone principal.
+        if settingsStore.settings.chatDisplayMode == .rich {
+            ToolbarItem(placement: .principal) {
+                // Build 128.1: double-tap the top bar to jump to the top of the
+                // thread (oldest messages) - same affordance as iPhone.
+                ViewThatFits(in: .horizontal) {
+                    // Wide: profile + model + timer
+                    HStack(spacing: Design.Spacing.sm) {
+                        profileChip
+                        modelStatusChip
+                        sessionTimerChip
                     }
+                    // Medium: model + timer (drops profile chip)
+                    HStack(spacing: Design.Spacing.sm) {
+                        modelStatusChip
+                        sessionTimerChip
+                    }
+                    // Compact: same bounded chip as iPhone
+                    compactStatusControl
                 }
-                // Compact: Canvas only (Settings accessible via sidebar)
-                canvasButton
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    scrollToTop()
+                }
+                .accessibilityAction(named: "Scroll to top") {
+                    scrollToTop()
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                ViewThatFits(in: .horizontal) {
+                    // Wide: Canvas + Settings
+                    HStack(spacing: Design.Spacing.sm) {
+                        catchUpButton
+                        canvasButton
+                        GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
+                            router.switchToTab(.settings)
+                        }
+                    }
+                    // Compact: Canvas only (Settings accessible via sidebar)
+                    canvasButton
+                }
             }
         }
     }
