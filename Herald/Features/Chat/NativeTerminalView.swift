@@ -104,13 +104,14 @@ final class NativeTerminalModel: ObservableObject {
     func setViewHandler(_ handler: @escaping ([UInt8]) -> Void) {
         viewHandler = handler
         // Flush anything that arrived while the view was mounting, then
-        // clear so a reconnect can't replay stale bytes.
+        // clear so a reconnect can't replay stale bytes. The handler
+        // already hops to the main queue (makeUIView wraps feed in
+        // DispatchQueue.main.async), so call it directly - wrapping it in
+        // another async block trips Swift 6 @Sendable capture rules.
         guard !pendingBytes.isEmpty else { return }
         let bytes = pendingBytes
         pendingBytes.removeAll(keepingCapacity: true)
-        DispatchQueue.main.async {
-            handler(bytes)
-        }
+        handler(bytes)
     }
 
     /// Start the connection. `baseURL` is the app's resolved connector URL
