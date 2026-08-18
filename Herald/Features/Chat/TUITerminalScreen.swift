@@ -76,6 +76,21 @@ struct TUITerminalScreen: View {
                     Image(systemName: "escape")
                 }
             }
+            // Build 128.91: touch mode toggle. Default is touch select
+            // (taps forward to the app as mouse events when it requests
+            // them). Flip to touch scroll so swipes always pan the buffer
+            // even when the app wants mouse reporting.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    model.touchScrollEnabled.toggle()
+                } label: {
+                    Image(systemName: model.touchScrollEnabled ? "arrow.up.and.down" : "hand.tap")
+                        .foregroundStyle(
+                            model.touchScrollEnabled ? Design.Colors.accent : Design.Colors.foreground
+                        )
+                }
+                .accessibilityLabel(model.touchScrollEnabled ? "Touch scroll: on" : "Touch select: on")
+            }
             // Build 128.90: manual keyboard dismissal. The Enter
             // auto-dismiss was removed at Curtis's request; this button
             // resigns first responder so the terminal gets full screen
