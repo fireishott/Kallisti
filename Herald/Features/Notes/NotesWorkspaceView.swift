@@ -9,10 +9,16 @@ import SwiftUI
 struct NotesWorkspaceView: View {
     @Environment(NotesStore.self) private var notesStore
 
+    /// Build 128.99: auto-close the sidebar when a note is selected or a new
+    /// one is created - the editor should get the full width immediately.
+    /// Both paths funnel through `selectedNoteId` (createNote sets it), so one
+    /// onChange covers select + create.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
     var body: some View {
         @Bindable var store = notesStore
 
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             NotesListView()
         } detail: {
             if let noteId = store.selectedNoteId {
@@ -28,6 +34,12 @@ struct NotesWorkspaceView: View {
         }
         .task {
             await notesStore.loadNotes()
+        }
+        .onChange(of: store.selectedNoteId) { _, newValue in
+            guard newValue != nil else { return }
+            withAnimation(Design.Motion.standard) {
+                columnVisibility = .detailOnly
+            }
         }
     }
 }

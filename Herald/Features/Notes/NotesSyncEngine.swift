@@ -363,7 +363,15 @@ final class NotesSyncEngine {
         messageText += "- Key points and action items as a compact bullet list.\n"
         messageText += "- Any links, docs, references, or attachments mentioned in the note, listed inline in order.\n"
         messageText += "- A timestamped 'Updates' section: if this is an update to an existing note, show what changed since the previous enrichment with timestamps; if new, note when it was created.\n"
-        messageText += "If the note is new, create the enrichment from scratch. If it is an update, build on the prior enrichment in this session - read it first, then update. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work."
+        messageText += "If the note is new, create the enrichment from scratch. If it is an update, build on the prior enrichment in this session - read it first, then update. Do not ask follow-up questions. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Reply concisely but do the real work.\n"
+
+        // Build 128.99: NOTE ISOLATION. The gateway injects memory/context
+        // into every session's system prompt (user profile, Honcho session
+        // summaries, peer card) that can reference OTHER notes. That context
+        // must never leak into THIS note's enrichment. Work ONLY from this
+        // note's own content unless this note's text explicitly names
+        // another note.
+        messageText += "\nISOLATION RULE: This sync is for THIS note only. Work ONLY from the content of this note (its title, recognized text, and attached drawing) and this note's own session history. Ignore any injected system memory, user profile, conversation summaries, or peer context that mention other notes - they are not part of this note and must not influence the enrichment. Do NOT search for, retrieve, or reference any other note or session (no session_search, memory recall, honcho, gbrain, or any lookup tool) unless the text of THIS note explicitly references another note by name. If this note does not reference any other note, produce the enrichment purely from this note's own content."
 
 
         // This call creates the session on first sync (titled with the note
