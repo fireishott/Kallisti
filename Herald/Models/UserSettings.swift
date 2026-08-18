@@ -599,6 +599,10 @@ struct UserSettings: Codable, Hashable, Sendable {
     var showReasoning: Bool
     var useStreaming: Bool
     var reasoningEffort: ReasoningEffort
+    /// Build 128.74: chat rendering mode. Rich = current bubble/markdown
+    /// experience. Terminal = CLI-style transcript (monospace, prompts,
+    /// tool lines, stdout blocks, dimmed reasoning).
+    var chatDisplayMode: ChatDisplayMode
     var dashboardURL: String?
     var dashboardUsername: String?
     var dashboardPassword: String?
@@ -634,6 +638,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         showReasoning: Bool = true,
         useStreaming: Bool = true,
         reasoningEffort: ReasoningEffort = .medium,
+        chatDisplayMode: ChatDisplayMode = .rich,
         dashboardURL: String? = nil,
         dashboardUsername: String? = nil,
         dashboardPassword: String? = nil,
@@ -668,6 +673,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.showReasoning = showReasoning
         self.useStreaming = useStreaming
         self.reasoningEffort = reasoningEffort
+        self.chatDisplayMode = chatDisplayMode
         self.dashboardURL = dashboardURL
         self.dashboardUsername = dashboardUsername
         self.dashboardPassword = dashboardPassword
@@ -704,6 +710,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case showReasoning
         case useStreaming
         case reasoningEffort
+        case chatDisplayMode
         case dashboardURL
         case dashboardUsername
         case dashboardPassword
@@ -749,6 +756,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         showReasoning = try container.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? true
         useStreaming = try container.decodeIfPresent(Bool.self, forKey: .useStreaming) ?? true
         reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
+        chatDisplayMode = try container.decodeIfPresent(ChatDisplayMode.self, forKey: .chatDisplayMode) ?? .rich
         dashboardURL = try container.decodeIfPresent(String.self, forKey: .dashboardURL)
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
         dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
@@ -786,6 +794,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(showReasoning, forKey: .showReasoning)
         try container.encode(useStreaming, forKey: .useStreaming)
         try container.encode(reasoningEffort, forKey: .reasoningEffort)
+        try container.encode(chatDisplayMode, forKey: .chatDisplayMode)
         try container.encodeIfPresent(dashboardURL, forKey: .dashboardURL)
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
         try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
@@ -799,6 +808,27 @@ struct UserSettings: Codable, Hashable, Sendable {
         var sanitized = policy.sanitize(self)
         sanitized.relayConfiguration.applyBuildConfiguration(buildConfiguration)
         return sanitized
+    }
+}
+
+enum ChatDisplayMode: String, Codable, CaseIterable, Hashable, Sendable {
+    /// Current bubble/markdown experience.
+    case rich
+    /// CLI-style terminal transcript (monospace, prompts, tool lines).
+    case terminal
+
+    var displayLabel: String {
+        switch self {
+        case .rich: "Rich"
+        case .terminal: "Terminal"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .rich: "Bubbles, markdown, attachments, wallpapers"
+        case .terminal: "CLI-style transcript, like a terminal session"
+        }
     }
 }
 
