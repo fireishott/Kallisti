@@ -292,30 +292,11 @@ struct ChatScreen: View {
                     restartBanner
                 }
                 if settingsStore.settings.chatDisplayMode == .terminal {
-                    TerminalChatView(
-                        messages: chatStore.conversation?.messages ?? [],
-                        showReasoning: settingsStore.settings.showReasoning,
-                        onRetry: { failedMessage in
-                            Task { await chatStore.retryMessage(failedMessage) }
-                        },
-                        modelName: displayedModelName,
-                        // Build 128.75: status bar shows live context-token
-                        // progress against the model context window, plus
-                        // session elapsed time - the TUI bottom strip.
-                        contextWindow: effectiveContextWindow,
-                        contextTokens: currentContextTokens ?? 0,
-                        // Build 128.76: TUI landing panels fed from the live
-                        // command catalog + skills surfaced on this device.
-                        availableCommands: chatStore.commandCatalog.map(\.name),
-                        availableSkills: skillNames,
-                        sessionLabel: chatStore.conversation?.sessionKey,
-                        // Build 128.78: the TUI owns its own input line -
-                        // a real terminal prompt, not the iOS composer.
-                        inputEnabled: hostStore.connectionState == .online,
-                        onSendText: { content in
-                            sendTerminalText(content)
-                        }
-                    )
+                    // Build 128.82: REAL embedded terminal. The connector's
+                    // /v1/terminal WS bridge spawns `hermes --tui` in a PTY
+                    // on the host; SwiftTerm renders the actual CLI. Input,
+                    // resize, ESC all ride the socket. No themed skin.
+                    TUITerminalScreen()
                 } else {
                     messageList
                 }
