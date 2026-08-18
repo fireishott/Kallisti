@@ -113,6 +113,16 @@ class ToolCompletedEvent(_BaseEvent):
     type: Literal["tool.completed"] = "tool.completed"
 
 
+class ToolOutputEvent(_BaseEvent):
+    """Live stdout chunk streamed during a terminal tool invocation.
+
+    Payload mirrors the gateway's `tool.output` frame: the originating
+    tool call id plus the decoded chunk of stdout so far.
+    """
+
+    type: Literal["tool.output"] = "tool.output"
+
+
 class CommentaryEvent(_BaseEvent):
     type: Literal["commentary"] = "commentary"
 
@@ -152,6 +162,7 @@ RelayEvent = Union[
     ToolStartedEvent,
     ToolProgressEvent,
     ToolCompletedEvent,
+    ToolOutputEvent,
     CommentaryEvent,
     ApprovalRequiredEvent,
     RunCompletedEvent,
@@ -168,6 +179,7 @@ EVENT_TYPE_TO_MODEL: dict[str, type[_EnvelopeBase]] = {
     "tool.started": ToolStartedEvent,
     "tool.progress": ToolProgressEvent,
     "tool.completed": ToolCompletedEvent,
+    "tool.output": ToolOutputEvent,
     "commentary": CommentaryEvent,
     "approval.required": ApprovalRequiredEvent,
     "run.completed": RunCompletedEvent,

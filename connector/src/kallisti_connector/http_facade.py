@@ -39,7 +39,7 @@ from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 
 from .restart_operations import (
     NON_TERMINAL_PHASES,
@@ -49,6 +49,7 @@ from .restart_operations import (
 )
 from . import __version__, HERALD_PROTOCOL
 from .pairing_code_store import PairingCodeStore
+from .terminal_bridge import handle_terminal_websocket
 
 logger = logging.getLogger("herald.http_facade")
 
@@ -2463,6 +2464,133 @@ async def _verify_native_gateway_cookie(cookie: str) -> bool:
     return await _verify_native_gateway_auth({"Cookie": cookie})
 
 
+from starlette.websockets import WebSocket
+
+async def terminal_websocket_route(websocket: WebSocket) -> None:
+    """WS /v1/terminal -- real PTY bridge running ``hermes --tui``.
+
+    Auth mirrors native_watch: accepts the native-gateway bearer, a gateway
+    cookie, or the connector's paired credential. The iOS URLSession attaches
+    the same Authorization header it uses for every native endpoint.
+    """
+    auth_header = websocket.headers.get("authorization", "")
+    bearer = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
+    cookie = websocket.headers.get("cookie", "").strip()
+    if bearer and await _verify_native_gateway_bearer(bearer):
+        pass
+    elif cookie and await _verify_native_gateway_cookie(cookie):
+        pass
+    elif bearer and _default_validator.is_valid(bearer):
+        pass
+    else:
+        await websocket.close(code=4401)
+        return
+    await handle_terminal_websocket(websocket)
+
+
+async def terminal_resumable_sessions(request: Request) -> JSONResponse:
+    """GET /v1/terminal/sessions -- list recent sessions resumable via ``hermes --tui``.
+
+    The TUI mode (``hermes --tui --resume <id>``) writes to a different
+    store than the chat gateway, so ``/v1/sessions`` (which lists the
+    chat store) is the wrong source. Instead this shells out to
+    ``hermes sessions list`` (override with KALLISTI_TERMINAL_SESSIONS_CMD
+    for testing) and parses the human-readable table.
+
+    Returns at most ``limit`` non-cron sessions, newest-first. Each row
+    carries ``id``, ``title``, and the relative ``lastActive`` string
+    (e.g. ``"6m ago"``) so the iOS prompt can show "Resume [title]
+    (last active 6m ago)". Empty list means there is nothing resumable
+    and the iOS app should go straight to "Start new session" without
+    prompting.
+    """
+    await require_auth(request)
+
+    cmd_str = os.environ.get(
+        "KALLISTI_TERMINAL_SESSIONS_CMD", "hermes sessions list"
+    )
+    parts = cmd_str.split()
+    if not parts:
+        return JSONResponse({"sessions": []})
+    resolved = shutil.which(parts[0])
+    if resolved is None:
+        logger.warning("terminal_resumable_sessions: %s not on PATH", parts[0])
+        return JSONResponse({"sessions": []})
+
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "5")), 50))
+    except ValueError:
+        limit = 5
+
+    argv = [resolved, *parts[1:], "--limit", str(limit)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception:
+        logger.exception("terminal_resumable_sessions: failed to spawn %s", resolved)
+        return JSONResponse({"sessions": []})
+
+    try:
+        stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return JSONResponse({"sessions": []})
+
+    if proc.returncode != 0:
+        logger.warning(
+            "terminal_resumable_sessions: %s exited %s", resolved, proc.returncode
+        )
+        return JSONResponse({"sessions": []})
+
+    rows = _parse_sessions_list(stdout_b.decode("utf-8", "replace"), limit=limit)
+    return JSONResponse({"sessions": rows})
+
+
+_SESSION_ID_ROW_RE = re.compile(r"^(?P<id>[A-Za-z0-9_-]{1,128})\s*$")
+
+
+def _parse_sessions_list(text: str, limit: int) -> list[dict[str, str]]:
+    """Parse the tabular output of ``hermes sessions list``.
+
+    The CLI emits four columns -- Title, Workspace, Last Active, ID --
+    separated by variable-width runs of spaces. We split on runs of
+    2+ spaces, take the last column as the id (which must match the
+    safe allow-list from ``terminal_bridge._SESSION_ID_RE``) and the
+    first column as the title. Cron-sourced rows (``cron_*`` prefix on
+    the id) are skipped -- resuming a cron session makes no sense.
+    """
+    sessions: list[dict[str, str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Title"):
+            continue
+        if set(stripped) <= {"─", " "}:
+            continue
+        cols = re.split(r"\s{2,}", stripped)
+        if len(cols) < 2:
+            continue
+        # Last column is the id; first column is the title.
+        candidate = cols[-1].strip()
+        if not _SESSION_ID_ROW_RE.match(candidate):
+            continue
+        if candidate.startswith("cron_"):
+            continue
+        title = cols[0].strip()
+        if not title:
+            title = "Untitled session"
+        title = title[:80]
+        sessions.append({"id": candidate, "title": title})
+        if len(sessions) >= limit:
+            break
+    return sessions
+
+
 async def native_watch_route(request: Request) -> JSONResponse:
     """POST /v1/native/watch -- register a session for push notifications.
 
@@ -4382,6 +4510,16 @@ routes = [
     Route(
         "/v1/messages/{messageID}/attachments/{remoteIndex}",
         message_attachment_bytes,
+        methods=["GET"],
+    ),
+    WebSocketRoute("/v1/terminal", terminal_websocket_route),
+    # REST sibling of /v1/terminal: list recent hermes sessions the TUI
+    # can resume (parsed from `hermes sessions list`). Used by the iOS
+    # app to populate the "Resume last session / Start new session" prompt
+    # before opening the WS.
+    Route(
+        "/v1/terminal/sessions",
+        terminal_resumable_sessions,
         methods=["GET"],
     ),
 ]
