@@ -1711,6 +1711,41 @@ final class NativeKallistiClient: HeraldClientProtocol {
         await idMap.remove(uuid: id)
     }
 
+    /// Build 128.97: re-attach a note's local UUID to its EXISTING gateway
+    /// session using the FULL session key pinned on the note. After an app
+    /// reinstall/container reset the UserDefaults-backed idMap is empty, so a
+    /// note sync would otherwise CREATE a brand-new gateway session every
+    /// time. Resuming by the pinned key re-registers both the short live id
+    /// and the FULL key so the very next prompt.submit lands in the same
+    /// session the note already had.
+    func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool {
+        guard let client else { return false }
+        guard !sessionKey.isEmpty else { return false }
+        do {
+            let response = try await client.send(
+                method: "session.resume",
+                params: ["session_id": sessionKey],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+            guard response.error == nil, let result = response.result else { return false }
+            let data = try JSONEncoder().encode(result)
+            let decoded = try JSONDecoder().decode(NativeResumeResult.self, from: data)
+            // Resume payload carries the NEW live id (Build 64) plus the FULL
+            // key. Register both so idMap.nativeId(for:) resolves on the next
+            // send and session.resume probes keep working.
+            let liveId = decoded.sessionId ?? sessionKey
+            await idMap.register(uuid: conversationID, nativeId: liveId)
+            await idMap.registerKey(uuid: conversationID, sessionKey: decoded.sessionKey ?? sessionKey)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func nativeSessionKey(for conversationID: UUID) async -> String? {
+        await idMap.sessionKey(for: conversationID)
+    }
+
     func archiveSession(id: UUID) async throws {
         guard let client else { throw NativeGatewayClientError.notConnected }
         guard let nativeId = await idMap.nativeId(for: id) else { throw NativeGatewayClientError.unexpectedFrame }

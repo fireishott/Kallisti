@@ -10,6 +10,7 @@ struct NoteExportLayer: Identifiable, Hashable {
     let systemImage: String
 
     static let inkPDF = NoteExportLayer(id: "ink_pdf", name: "Ink PDF", systemImage: "doc.richtext")
+    static let summaryPNG = NoteExportLayer(id: "summary_png", name: "Summary PNG", systemImage: "photo")
     static let recognizedText = NoteExportLayer(id: "recognized_text", name: "Recognized Text", systemImage: "text.quote")
     static let enrichedMarkdown = NoteExportLayer(id: "enriched_markdown", name: "Enriched Markdown", systemImage: "doc.text")
     static let citations = NoteExportLayer(id: "citations", name: "Citations", systemImage: "text.quote")
@@ -21,6 +22,7 @@ struct NoteExportLayer: Identifiable, Hashable {
     ) -> [NoteExportLayer] {
         var layers: [NoteExportLayer] = []
         if hasDrawing { layers.append(.inkPDF) }
+        if hasEnrichment { layers.append(.summaryPNG) }
         if hasRecognition { layers.append(.recognizedText) }
         if hasEnrichment { layers.append(.enrichedMarkdown) }
         if hasEnrichment { layers.append(.citations) }
@@ -115,6 +117,12 @@ struct NoteExportSheet: View {
             }
         }
 
+        if selectedLayers.contains(NoteExportLayer.summaryPNG.id), let result {
+            if let pngData = exportSummaryAsPNG(result) {
+                items.append(pngData)
+            }
+        }
+
         if selectedLayers.contains(NoteExportLayer.recognizedText.id), let recognizedText {
             items.append(recognizedText)
         }
@@ -142,6 +150,19 @@ struct NoteExportSheet: View {
         }
 
         dismiss()
+    }
+
+    /// Render the enrichment summary board as a PNG so it can be shared to
+    /// Photos, Files, Messages, or any app via the native share sheet.
+    private func exportSummaryAsPNG(_ result: EnrichmentResult) -> Data? {
+        let renderer = ImageRenderer(
+            content: SummaryBoardExportView(result: result)
+                .frame(width: 390)
+        )
+        renderer.scale = 2.0
+        renderer.proposedSize = .init(width: 390, height: nil)
+        guard let uiImage = renderer.uiImage else { return nil }
+        return uiImage.pngData()
     }
 
     private func exportDrawingAsPDF(_ drawing: PKDrawing) -> Data? {
@@ -246,5 +267,35 @@ struct ShareToNotesSheet: View {
         }
 
         dismiss()
+    }
+}
+
+/// Self-contained summary board card rendered to PNG for the share sheet.
+/// Mirrors the enrichment tab's look: title, timestamp, markdown body.
+struct SummaryBoardExportView: View {
+    let result: EnrichmentResult
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(result.title.isEmpty ? "Note Summary" : result.title)
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.primary)
+
+            Text(result.createdAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text(result.markdown)
+                .font(.system(size: 14))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(UIColor.systemBackground))
     }
 }
