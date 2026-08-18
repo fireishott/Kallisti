@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.5-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.2.6-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
@@ -17,22 +17,22 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 
 ## Status
 
-Kallisti is in **private beta**. TestFlight invites are coming soon - stay tuned.
+Kallisti is in **private beta**. TestFlight invites are being distributed to our beta testers now - if you are interested in joining, reach out through the [Discussions](https://github.com/fireishott/Kallisti/discussions) tab.
 
-The app is usable for daily driving. Chat is working; voice mode and watchOS are in active development. Some rough edges remain, and the app is under active iteration.
+The app is usable for daily driving. Chat, the embedded TUI terminal, and handwriting notes are working; voice mode and watchOS are in active development. Some rough edges remain, and the app is under active iteration.
 
 ## Highlights
 
 - Native WebSocket chat with durable session and outbox recovery
 - Streaming Markdown, code blocks, tool activity, and reasoning status
+- **Embedded TUI terminal mode** - run a real Hermes TUI inside the app over a PTY bridge, with touch scroll, session resume, and live tool timers
 - One-time pairing-code sign-in with native gateway mode
 - Authenticated inline rendering for agent-generated images
 - Push notifications with per-device routing and an in-app inbox
 - Live Activities on the lockscreen with elapsed-time heartbeat
 - Widgets and notification-service extensions
-- Voice mode in active development, with configurable ASR/TTS providers
-- Optional HealthKit, CoreLocation, and CoreMotion synchronization
-- Handwriting notes with Apple Pencil and OCR / AI enrichment (iPad)
+- Handwriting notes with Apple Pencil, OCR / AI enrichment, and sync-as-session (iPad)
+- Optional HealthKit, CoreLocation, and CoreMotion synchronization with an in-app background sync toggle
 - Gateway status, logs, restart, software update checks, and truthful connection stages
 - Connection latency monitoring and searchable auxiliary model switching
 
@@ -47,6 +47,22 @@ The app is usable for daily driving. Chat is working; voice mode and watchOS are
 - Draft text persists across reconnect and view recreation
 - One live thinking placeholder per active turn
 - Opens to your last active conversation, or a fresh session on first launch
+
+### TUI terminal
+
+- Real terminal emulator (SwiftTerm) connected to the connector's `/v1/terminal` PTY bridge
+- Touch scroll mode and long-press text selection
+- Resumable sessions: pick up the same TUI session after closing or backgrounding, or start fresh
+- Live reasoning headers, tool lines with elapsed timers, and sticky status bar (model, context window, session clock)
+- Terminal restarts cleanly when you return to the chat tab
+
+### Notes (iPad)
+
+- Handwriting with Apple Pencil on ruled paper
+- OCR and AI enrichment through Hermes when you sync
+- Each note syncs as its own session; every edit appends to that session
+- Manual sync button with a live progress bar, or timed sync from 2 minutes to 24 hours
+- Live reasoning bubble during sync so you know what the agent is actually doing
 
 ### Media
 
@@ -63,7 +79,7 @@ The app is usable for daily driving. Chat is working; voice mode and watchOS are
 - In-app notification inbox with dismiss and snooze actions
 - Widgets and notification-service extensions
 - Voice mode in active development, with configurable ASR/TTS and Apple speech fallback
-- Optional HealthKit, CoreLocation, and CoreMotion sync
+- Optional HealthKit, CoreLocation, and CoreMotion sync, with HealthKit background delivery toggled in-app
 - Handwriting notes with Apple Pencil, OCR, and AI enrichment (iPad only)
 
 ### Gateway control
@@ -72,17 +88,26 @@ The app is usable for daily driving. Chat is working; voice mode and watchOS are
 - Manual reset connection
 - Gateway logs, restart, and software update checks
 - Realtime connector latency readout in Settings
+- Config editor with YAML validation, Save & Restart, and line-numbered editing
+
+## In development
+
+- **Voice mode** - ASR/TTS provider configuration with Apple speech fallback
+- **watchOS app** - companion watch experience
+- **CarPlay** - glanceable trip context and hands-free control
+- Expanding the notes pipeline and refining the TUI terminal
+- Performance passes on long-session history and large media
 
 ## Architecture
 
 ```text
 Kallisti iOS
   -> Hermes gateway WebSocket (chat, sessions, models, profiles)
-  -> Kallisti connector (push, sensors, authenticated media)
+  -> Kallisti connector (push, sensors, authenticated media, terminal bridge)
   -> optional public reverse proxy for remote access
 ```
 
-The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, and authenticated media delivery. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
+The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, authenticated media delivery, and the TUI terminal PTY bridge. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
 
 Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MODES.md), production architecture in [docs/PRODUCTION_ARCHITECTURE.md](docs/PRODUCTION_ARCHITECTURE.md), and the threat model in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
@@ -97,9 +122,9 @@ Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MO
 
 ### TestFlight beta
 
-TestFlight invites are coming soon. Once the beta opens, install Kallisti, pair it with your Hermes gateway, and you are set. No Apple Developer account or Xcode setup is needed for the beta path.
+Kallisti is in private beta. Once you have a TestFlight invite, install Kallisti, pair it with your Hermes gateway, and you are set. No Apple Developer account or Xcode setup is needed for the beta path.
 
-If you want push notifications, HealthKit synchronization, Live Activities, or authenticated media delivery, run the optional connector on your Hermes host:
+If you want push notifications, HealthKit synchronization, Live Activities, authenticated media delivery, or the TUI terminal, run the optional connector on your Hermes host:
 
 ```bash
 cd connector

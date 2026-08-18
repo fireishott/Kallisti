@@ -5,6 +5,138 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-08-18
+
+Current build release (build 128.93). This is the private beta build being
+distributed to TestFlight testers.
+
+### Added
+
+- Embedded TUI terminal mode: a real terminal emulator (SwiftTerm) wired to
+  the connector's `/v1/terminal` PTY bridge, so the chat surface can run an
+  actual Hermes TUI session with live stdout, reasoning status, and tool
+  activity. Includes keyboard resize behavior, a dismiss button, and touch
+  mode toggle (select by default, scroll option).
+- Session resume for TUI: resumable Hermes sessions are listed on terminal
+  open with a one-tap Resume / Start new / Cancel dialog. The bridge spawns
+  `hermes --tui --resume <id>` instead of a fresh session, so returning to
+  the terminal keeps the same conversation.
+- TUI reconnect on tab return: returning to the chat tab restarts the
+  terminal session instead of leaving a dead "terminal closed" screen.
+- TUI touch scroll: explicit pan gesture drives terminal scrolling so swiping
+  scrolls while long-press still selects text.
+- Notes-as-session sync: each note syncs to Hermes as its own titled session,
+  and each edit appends as a message to that session.
+- Notes sync scheduling: manual or timed sync (2m, 5m, 15m, 30m, 60m, 3h, 6h,
+  12h, 24h, off) with a live progress bar and per-note sync button.
+- Real reasoning bubble during note sync: the live chat-style OCR thinking
+  bubble (brain icon, timer, expandable text) surfaces the agent's actual
+  reasoning instead of a static status line, with a watchdog so sync can
+  never hang silently.
+- Health background sync toggle in Permissions. HealthKit background delivery
+  is programmatic (there is no iOS system switch), so the app now exposes an
+  in-app toggle backed by the signed build's
+  `com.apple.developer.healthkit.background-delivery` entitlement, with the
+  resulting On/Off state reflected on the Health permission card.
+- Gateway restart authentication: preflight and restart calls now interpolate
+  the target correctly and prefer the native bearer token when present,
+  falling back to the session cookie for pairing/basic-auth logins.
+- Live terminal stdout: tool `output` streams through the native gateway path
+  with SSE parity and awaiting-user teardown for server-turn watch.
+- Config editor: YAML validation, Save & Restart Gateway, realtime restart
+  overlay, line numbers, and YAML indent/outdent/comment tools.
+- Unified iPad navigation: bottom tab bar on both iPhone and iPad; Skills and
+  Cron moved under Settings > Agent Tools and wired to real connector
+  endpoints (19 real skills, full cron CRUD).
+- Clarify answers from within chat via the ClarifyCard instead of leaving the
+  turn stuck.
+- Authenticated connector endpoints for skills/cron management and config
+  read/write, available to paired devices.
+
+### Fixed
+
+- TUI black screen on first mount: terminal output is buffered until the view
+  mounts, and SwiftTerm size is pushed on appearance.
+- TUI freeze after Settings round-trip: the terminal restarts on tab return
+  instead of showing a dead "terminal closed" state.
+- Send button dead touch: the queue gesture no longer swallows button taps
+  (drag minimum distance raised to a real threshold; suppression only arms
+  when the queue actually fires and always resets on gesture end).
+- Blank live-thought expansion: replaced the nil mask path that blanked the
+  whole reasoning view on expand, and fixed resize for processed (non
+  streaming) bubbles.
+- Tool results routing: `tool.complete` resultPreview now renders in the
+  terminal view instead of falling back to raw JSON debug dumps
+  (`String(describing:)` on NativeJSONValue replaced with real JSON).
+- YAML editor gutter: line numbers stay in sync when scrolling.
+- Notes: selectable previous-note rows on iPad, canvas resizes with the
+  sidebar, sync dirty-filter covers pre-sync notes, wider ruled paper lines
+  and margins, live OCR readout banner, sync error interpolation fixed.
+- Composer enablement gates on live socket status instead of a stale host
+  probe, so the keyboard comes up even when the host info probe is degraded.
+- Notes sync only pushes real activity: blank, untouched, or legacy notes are
+  skipped; the sync turn carries an explicit instruction prompt so the agent
+  knows it's an automatic background sync.
+- Push registration storms and cookie-aware context window (b94 fixes).
+- Session-not-found after resume: the app re-points to the live resumed
+  session ID.
+- History decode handles both `text` and `content` wire shapes.
+
+### Security
+
+- Gateway restart, push registration, and live activity calls no longer leak
+  stale stored tokens; every request refreshes the native bearer or rides the
+  session cookie.
+
+## [0.2.5] - 2026-08-13
+
+### Added
+
+- Live stdout streaming (`tool.output`) through the connector with
+  subagent-ordering guard and attachment directive stripping.
+- Auxiliary model task slots raised to the canonical count (7 -> 11,
+  matching the gateway), with a searchable auxiliary model picker: filter by
+  model name, provider ID, or provider display name, server default pinned.
+- Real-time model filter search and reset credential purge on onboarding.
+- Cookie-auth support for sensor uploads and Live Activity registration.
+- Chat text color field in Appearance settings.
+
+### Fixed
+
+- Marquee model pill: open pill scrolls, closed pill stays static; pretty
+  model names in the hub; two-row hub names.
+- Turn-complete dedup so a reply is not rendered twice.
+- Upload request timeouts for large attachments (`file.attach` now sends
+  `data_url`, not `content_base64`).
+- Push registration storm killed; cookie-aware context window.
+- Native watch no longer sends spurious "Turn complete" pushes: unwatch on
+  stream completion.
+- Messages ordered by monotonic id, not wall-clock timestamp.
+- Launch-to-usable latency and connection stability; green-dot status
+  restored through the native status funnel.
+- iPad model pill text no longer collapses to zero width.
+
+## [0.2.4] - 2026-08-12
+
+### Added
+
+- Keepalive armor and live tool rail visibility.
+- Realtime model filter search field.
+- Onboarding reset that also purges stored credentials.
+
+### Fixed
+
+- Fresh-install onboarding no longer loops; relay state resets cleanly.
+- Inbox notification attachments render.
+- Photo library: missing plist key added, save-to-photos crash fixed, video
+  file upload and file attachment RPC fixed.
+- Settings exclusivity crash and zoom/save auth paths.
+- Launch onboarding flash eliminated; delivery status restored.
+- Native connection status authority: status funnel updates the container
+  handler, fixing latency readouts and the green dot.
+- Connect probe timeout widened (5s -> 12s) for slower gateways.
+- Onboarding permission requests include speech recognition.
+
 ## [0.2.3] - 2026-08-11
 
 ### Added
