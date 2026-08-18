@@ -14,6 +14,16 @@ enum StreamingPhase: Sendable {
     case restarting         // Build 33: a Hermes gateway restart is in flight
 }
 
+/// Build 128.76: a clarify question the agent parked the turn on, waiting
+/// for the user to answer. Rendered as the ClarifyCard; answering sends
+/// `clarify.respond` with `requestID` and unblocks the parked turn.
+struct PendingClarify: Equatable, Sendable {
+    let question: String
+    let choices: [String]?
+    let requestID: String
+    let multiSelect: Bool
+}
+
 @MainActor
 @Observable
 final class ChatStore {
@@ -97,6 +107,12 @@ final class ChatStore {
     /// Streaming phase for UI indicators (e.g. "Sending…", "Waiting…", "Streaming…").
     /// Updated by `runStreamingAttemptLegacy` as the job progresses through the SSE pipeline.
     var streamingPhase: StreamingPhase = .idle
+    /// Build 128.76: pending clarify question the agent parked the turn on.
+    /// When non-nil the chat shows the ClarifyCard (question + tappable
+    /// choices + free-text row) above the composer. The card answers via
+    /// `heraldClient.respondToClarify`, which unblocks the parked gateway
+    /// turn. Cleared on .finished/.failed or conversation switch.
+    var pendingClarify: PendingClarify? = nil
     private var isPollingEnabled = false
     private var pollingTask: Task<Void, Never>?
     /// Build 117: separate task watching a turn that is running SERVER-side
@@ -1361,6 +1377,27 @@ final class ChatStore {
         onConversationChanged?()
     }
 
+    /// Build 128.76: submit the user's answer to a pending clarify question.
+    /// Sends `clarify.respond` over the gateway WS; the parked agent turn
+    /// unblocks and streams its continuation normally. Optimistically clears
+    /// the card; restores it if the RPC fails so the answer is not lost.
+    func submitClarifyAnswer(_ answer: String) {
+        guard let pending = pendingClarify else { return }
+        let requestID = pending.requestID
+        pendingClarify = nil
+        appendLog(level: .info, "Clarify answer submitted for request \(requestID.prefix(8))")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.heraldClient.respondToClarify(requestID: requestID, answer: answer)
+                self.appendLog(level: .info, "Clarify respond accepted, turn unblocked")
+            } catch {
+                self.pendingClarify = pending
+                self.appendLog(level: .error, "Clarify respond failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Outbox state → .terminal with canonical identity, persisted.
     private func terminalizeOutboxItem(
         _ item: ChatOutboxRecord,
@@ -2171,6 +2208,28 @@ final class ChatStore {
                     // self-improvement / memory reviews.
                     self.appendSystemNotice(text)
 
+                case .clarifyRequest(let question, let choices, let requestID, let multiSelect):
+                    // Build 128.76: the turn parked on a clarify question.
+                    // Stop pretending the model is working - the USER is up.
+                    // Show the ClarifyCard above the composer so the question
+                    // is answerable instead of hanging for the full timeout.
+                    self.noteStreamingProgress()
+                    self.clearStall()
+                    self.recordStreamingActivity(label: "awaiting your answer")
+                    self.pendingClarify = PendingClarify(
+                        question: question,
+                        choices: choices,
+                        requestID: requestID,
+                        multiSelect: multiSelect
+                    )
+                    // Update the placeholder row's tool activity so the
+                    // spinner reads "awaiting your answer" instead of the
+                    // stale tool label.
+                    if var conv = self.conversation, let idx = conv.messages.firstIndex(where: { $0.id == placeholderID }) {
+                        conv.messages[idx].toolActivity = "awaiting your answer"
+                        self.conversation = conv
+                    }
+
                 case .keepalive:
                     // Transport keepalives prove the connection is alive but do
                     // NOT prove the model is making progress. Do not reset the
@@ -2182,6 +2241,12 @@ final class ChatStore {
                     // Build 64: turn terminated, clear any pending stall
                     // snapshot so the banner hides.
                     self.clearStall()
+                    // Build 128.76: the turn moved on - no clarify pending
+                    // anymore (answered, skipped, or timed out server-side).
+                    if self.pendingClarify != nil {
+                        self.pendingClarify = nil
+                        self.appendLog(level: .info, "Clarify resolved (turn finished)")
+                    }
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     progressContinuation?.yield(())
                     self.updateConnectionStatus(.connected)
@@ -2553,6 +2618,12 @@ final class ChatStore {
                     // Build 64: turn failed, clear any pending stall
                     // snapshot so the banner hides.
                     self.clearStall()
+                    // Build 128.76: the turn died - the clarify card has
+                    // nothing to answer anymore.
+                    if self.pendingClarify != nil {
+                        self.pendingClarify = nil
+                        self.appendLog(level: .info, "Clarify cleared (turn failed)")
+                    }
                     self.pendingStreamPlaceholders.remove(placeholderID)
                     // An explicit failure is a real signal, not silence — let it
                     // resolve the watchdog race immediately rather than waiting
@@ -4188,12 +4259,20 @@ final class ChatStore {
                 // Build 128.65: if the server-side turn is parked waiting on
                 // the USER (clarify question / approval prompt), the model is
                 // not working - the spinner is a lie. Tear down the synthetic
-                // Thinking bubble and stop the watch; the user's answer comes
-                // back through the normal send path.
+                // Thinking bubble; Build 128.76 additionally fetches the
+                // pending clarify payload so the ClarifyCard re-appears even
+                // when the live clarify.request event was missed (reconnect,
+                // refresh, app relaunch mid-park).
                 let awaitingUser = await self.heraldClient.isServerTurnAwaitingUserInput()
                 if awaitingUser {
                     Self.logger.info("Server turn watch: session awaiting user input, stopping")
                     self.removeServerTurnPlaceholder()
+                    if self.pendingClarify == nil,
+                       let pending = await self.heraldClient.fetchPendingClarify(),
+                       !pending.question.isEmpty {
+                        self.pendingClarify = pending
+                        self.appendLog(level: .info, "Clarify card re-shown from server snapshot")
+                    }
                     break
                 }
             }

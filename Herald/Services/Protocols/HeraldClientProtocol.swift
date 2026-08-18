@@ -102,6 +102,18 @@ protocol HeraldClientProtocol {
     /// when control has passed to the user, a spinner is a lie.
     func isServerTurnAwaitingUserInput() async -> Bool
 
+    /// Build 128.76: fetch the full pending clarify payload (question +
+    /// choices + request_id) for the current session, if the gateway parked
+    /// the turn on one. Used on reconnect/refresh so the ClarifyCard can be
+    /// re-shown after a missed live `clarify.request` event. Returns nil
+    /// when no clarify is pending or the transport cannot probe.
+    func fetchPendingClarify() async -> PendingClarify?
+
+    /// Build 128.76: answer a clarify question the agent parked on. Sends
+    /// `clarify.respond` with the request_id from the clarify.request event
+    /// and the user's chosen answer so the gateway unblocks the turn.
+    func respondToClarify(requestID: String, answer: String) async throws
+
     /// Build 84 Option C-A (probe-through-phantom): force a real liveness
     /// probe on the transport even when `connectionStatus == .connected`.
     /// A zombie socket (iOS suspended the WS in background, receive() never
@@ -156,6 +168,16 @@ extension HeraldClientProtocol {
     /// connection (mocks, legacy relay path). The native gateway client
     /// overrides this with a session.active_list probe.
     func activeSessionKeys() async -> Set<String> { [] }
+
+    /// Default: no-op for clients without a clarify respond path (mocks,
+    /// legacy relay path). The native gateway client overrides this to
+    /// send clarify.respond over the WS.
+    func respondToClarify(requestID: String, answer: String) async throws {}
+
+    /// Default: no pending clarify for clients without a probeable transport
+    /// (mocks, legacy relay path). The native gateway client overrides this
+    /// to decode pending_clarify from the session.resume payload.
+    func fetchPendingClarify() async -> PendingClarify? { nil }
 
     /// Default: no-op for clients without a backing idMap (mocks, legacy
     /// relay path). The native gateway client overrides this to re-point

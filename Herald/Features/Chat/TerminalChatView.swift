@@ -28,6 +28,14 @@ struct TerminalChatView: View {
     var contextWindow: Int?
     /// Current context tokens consumed this session (0 when unknown).
     var contextTokens: Int = 0
+    /// Build 128.76: available slash commands/tools for the TUI landing
+    /// panel (chatStore.commandCatalog names). Empty hides the panel.
+    var availableCommands: [String] = []
+    /// Build 128.76: available skills/profile names for the TUI landing
+    /// panel. Empty hides the panel.
+    var availableSkills: [String] = []
+    /// Build 128.76: session id shown in the TUI header info block.
+    var sessionLabel: String? = nil
 
     @State private var scrollProxy: ScrollViewProxy?
     @State private var isUserScrolling = false
@@ -209,26 +217,181 @@ struct TerminalChatView: View {
         return String(format: "%ds", sec)
     }
 
-    // MARK: - Empty state
+    // MARK: - Empty state (TUI landing, Build 128.76)
 
     private static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.6"
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-            Text("kallisti - hermes agent \(Self.appVersion)")
-                .font(Design.Typography.code)
+    /// Block-letter ASCII banner, rootshell/Hermes-TUI style. Rendered in
+    /// gold on the landing screen so it reads like the real agent TUI
+    /// rather than a chat placeholder.
+    private static let bannerLines: [String] = [
+        " _  __    _    _     _    ___ _____ _____ ",
+        "| |/ /   / \\  | |   | |  / _ \\_   _|_   _|",
+        "| ' /   / _ \\ | |   | | | | | || |   | |  ",
+        "| . \\  / ___ \\| |___| |_| |_| || |   | |  ",
+        "|_|\\_\\/_/   \\_\\_____|_\\___/___||_|   |_|  ",
+    ]
+
+    private var banner: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(Self.bannerLines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(TerminalPalette.gold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .scaleEffect(x: 1.0, y: 0.9, anchor: .leading)
+            }
+            Text("kallisti / hermes agent  " + Self.appVersion)
+                .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(TerminalPalette.green)
-            Text("connected. type a message below to start a session.")
+                .padding(.top, 2)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Kallisti terminal. Hermes agent \(Self.appVersion).")
+    }
+
+    /// Session info block (model, session id, tokens) on the landing screen.
+    private var sessionInfo: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Session ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            Text("model    \(modelName ?? "hermes")")
+                .font(Design.Typography.codeSmall)
+                .foregroundStyle(TerminalPalette.foreground)
+            if let sessionLabel {
+                Text("session  \(sessionLabel)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.dim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text("context  \(Self.compactTokens(contextTokens)) / \(contextWindow.map(Self.compactTokens) ?? "?")")
                 .font(Design.Typography.codeSmall)
                 .foregroundStyle(TerminalPalette.dim)
-            Text("cli chat mode: settings > preferences > chat display")
+            Text("status   connected")
+                .font(Design.Typography.codeSmall)
+                .foregroundStyle(TerminalPalette.green)
+        }
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
+    }
+
+    /// Panel listing available slash commands (from the live command catalog).
+    private var toolsPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Available Commands ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            let shown = Array(availableCommands.prefix(12))
+            if shown.isEmpty {
+                Text("(catalog loading…)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.faint)
+            } else {
+                Text(shown.joined(separator: "  "))
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.cyan)
+                    .fixedSize(horizontal: false, vertical: true)
+                if availableCommands.count > 12 {
+                    Text("…and \(availableCommands.count - 12) more")
+                        .font(Design.Typography.codeSmall)
+                        .foregroundStyle(TerminalPalette.faint)
+                }
+            }
+        }
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
+    }
+
+    /// Panel listing available profiles (the closest runtime skill surface this
+    /// device reports). Renamed deliberately - showing profile names under a
+    /// "Skills" header would be a lie; the Hub skills bug (b85-b96) is
+    /// documented and the profile list is the honest available data.
+    private var skillsPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Profiles ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            let shown = Array(availableSkills.prefix(10))
+            if shown.isEmpty {
+                Text("(no profiles loaded)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.faint)
+            } else {
+                Text(shown.joined(separator: "  "))
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                if availableSkills.count > 10 {
+                    Text("…and \(availableSkills.count - 10) more")
+                        .font(Design.Typography.codeSmall)
+                        .foregroundStyle(TerminalPalette.faint)
+                }
+            }
+        }
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
+    }
+
+    /// Blinking block caret used by the prompt line and streaming rows.
+    /// Shared so the landing prompt and live streaming share one visual
+    /// language (pure SwiftUI, 0.6s cycle, static under Reduce Motion).
+    private struct BlockCaret: View {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var visible = true
+
+        var body: some View {
+            Text("█")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(TerminalPalette.green)
+                .opacity(reduceMotion ? 1 : (visible ? 1 : 0.15))
+                .onAppear {
+                    guard !reduceMotion else { return }
+                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                        visible = false
+                    }
+                }
+                .onDisappear { visible = true }
+        }
+    }
+
+    /// Prompt line for the landing screen (`> ` + caret).
+    private var promptLine: some View {
+        HStack(spacing: 0) {
+            Text("> ")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            BlockCaret()
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.md) {
+            banner
+            sessionInfo
+            toolsPanel
+            skillsPanel
+            promptLine
+            Text("type a message below to start a session. rich chat: settings > preferences > chat display")
                 .font(Design.Typography.codeSmall)
                 .foregroundStyle(TerminalPalette.faint)
         }
         .padding(.horizontal, Design.Spacing.md)
         .padding(.top, Design.Spacing.lg)
+        .padding(.bottom, Design.Spacing.md)
         .textSelection(.enabled)
     }
 

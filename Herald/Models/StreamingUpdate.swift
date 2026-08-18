@@ -20,6 +20,10 @@ enum StreamingUpdate: Sendable {
     /// Build 104: out-of-band Hermes system notice (self-improvement review
     /// summaries, memory updates). Rendered as a faint in-transcript line.
     case systemNotice(String)
+    /// Build 128.76: the agent parked the turn on a clarify question. The
+    /// payload carries the question, the choice list (nil for open-ended),
+    /// and the request_id the answer must ride back on via clarify.respond.
+    case clarifyRequest(question: String, choices: [String]?, requestID: String, multiSelect: Bool)
     case started(phase: String)
     case heartbeat(phase: String)
     case reconnecting
