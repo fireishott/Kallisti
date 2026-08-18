@@ -41,6 +41,12 @@ struct NativeTerminalView: UIViewRepresentable {
         // 128.87. This mirrors the vendored SwiftUITerminalHostView pattern
         // (updateSizeIfNeeded() from both layoutSubviews and updateUIView).
         uiView.updateSizeIfNeeded()
+        // Build 128.91: touch mode toggle. Default (touch select) keeps
+        // SwiftTerm's allowMouseReporting = true - taps forward to the app
+        // as mouse events when it requests them. Touch scroll mode sets it
+        // false so SwiftTerm's secondary codepath always allows selection
+        // and scrolling/panning regardless of the app's mouse request.
+        uiView.allowMouseReporting = !model.touchScrollEnabled
     }
 
     func makeCoordinator() -> Coordinator {
@@ -89,6 +95,12 @@ struct NativeTerminalView: UIViewRepresentable {
 final class NativeTerminalModel: ObservableObject {
     @Published var isConnected = false
     @Published var statusText = "connecting to hermes..."
+    /// Build 128.91: touch mode toggle. Default false = touch select
+    /// (allowMouseReporting true: taps forward to the app as mouse events
+    /// when the app requests them). When true = touch scroll, the terminal
+    /// forces the selection/panning codepath so swipes always scroll the
+    /// buffer regardless of the app's mouse request.
+    @Published var touchScrollEnabled = false
 
     private var socket: URLSessionWebSocketTask?
     private var session: URLSession?
