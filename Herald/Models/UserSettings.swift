@@ -607,6 +607,16 @@ struct UserSettings: Codable, Hashable, Sendable {
     var dashboardUsername: String?
     var dashboardPassword: String?
     var notesSyncInterval: NotesSyncInterval
+    /// Build 128.94: AI enrichment toggle. When OFF, notes stay local - no
+    /// sync, no sessions, no model turns. Users who just want a scratchpad
+    /// never touch the gateway.
+    var notesEnrichmentEnabled: Bool
+    /// Build 128.94: enrichment model override (nil = use the session/chat
+    /// default). The note's gateway session is created with this model so
+    /// enrichment runs on the user's chosen provider instead of whatever the
+    /// chat default happens to be.
+    var notesEnrichmentModelName: String?
+    var notesEnrichmentProvider: String?
 
     init(
         userName: String = "User",
@@ -642,7 +652,10 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardURL: String? = nil,
         dashboardUsername: String? = nil,
         dashboardPassword: String? = nil,
-        notesSyncInterval: NotesSyncInterval = .manual
+        notesSyncInterval: NotesSyncInterval = .manual,
+        notesEnrichmentEnabled: Bool = true,
+        notesEnrichmentModelName: String? = nil,
+        notesEnrichmentProvider: String? = nil
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -678,6 +691,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.dashboardUsername = dashboardUsername
         self.dashboardPassword = dashboardPassword
         self.notesSyncInterval = notesSyncInterval
+        self.notesEnrichmentEnabled = notesEnrichmentEnabled
+        self.notesEnrichmentModelName = notesEnrichmentModelName
+        self.notesEnrichmentProvider = notesEnrichmentProvider
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -715,6 +731,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         case dashboardUsername
         case dashboardPassword
         case notesSyncInterval
+        case notesEnrichmentEnabled
+        case notesEnrichmentModelName
+        case notesEnrichmentProvider
     }
 
     init(from decoder: Decoder) throws {
@@ -761,6 +780,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
         dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
         notesSyncInterval = try container.decodeIfPresent(NotesSyncInterval.self, forKey: .notesSyncInterval) ?? .manual
+        notesEnrichmentEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesEnrichmentEnabled) ?? true
+        notesEnrichmentModelName = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentModelName)
+        notesEnrichmentProvider = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentProvider)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -799,6 +821,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
         try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
         try container.encode(notesSyncInterval, forKey: .notesSyncInterval)
+        try container.encode(notesEnrichmentEnabled, forKey: .notesEnrichmentEnabled)
+        try container.encodeIfPresent(notesEnrichmentModelName, forKey: .notesEnrichmentModelName)
+        try container.encodeIfPresent(notesEnrichmentProvider, forKey: .notesEnrichmentProvider)
     }
 
     func applyingEnvironmentPolicy(

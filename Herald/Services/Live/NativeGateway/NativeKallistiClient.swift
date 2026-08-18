@@ -1655,7 +1655,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         try await createSession(title: title, conversationID: nil)
     }
 
-    func createSession(title: String, conversationID: UUID? = nil) async throws -> SessionSummary {
+    func createSession(title: String, conversationID: UUID? = nil, modelName: String? = nil, provider: String? = nil) async throws -> SessionSummary {
         guard let client else { throw NativeGatewayClientError.notConnected }
         // LATENCY (build 36): session.create is part of the reconnect-path
         // chain (ensureConversation/ensureSessionForSwitch/_sendStreaming all
@@ -1669,7 +1669,18 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // Build 53: tag app-created sessions with source "ios" so the
         // client-side All Devices filter can distinguish this device's
         // sessions from CLI/desktop/cron sessions on the shared gateway DB.
-        let response = try await client.send(method: "session.create", params: ["title": title, "source": "ios"], timeoutNanos: 8_000_000_000)
+        // Build 128.94: pass the enrichment model/provider when provided so
+        // note sessions run on the user's chosen provider (the gateway treats
+        // model/provider as a PER-SESSION override, exactly like the desktop
+        // composer pick).
+        var params: [String: String] = ["title": title, "source": "ios"]
+        if let modelName, !modelName.isEmpty {
+            params["model"] = modelName
+            if let provider, !provider.isEmpty {
+                params["provider"] = provider
+            }
+        }
+        let response = try await client.send(method: "session.create", params: params, timeoutNanos: 8_000_000_000)
         if let error = response.error { throw error }
         guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
         let data = try JSONEncoder().encode(result)
@@ -2092,6 +2103,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         clientMessageID: UUID,
         conversationID: UUID? = nil,
         sessionTitle: String? = nil,
+        enrichmentModelName: String? = nil,
+        enrichmentProvider: String? = nil,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
         // Build 26 (latency fix): verify the socket is genuinely alive BEFORE
@@ -2116,7 +2129,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         if nativeSessionId == nil {
             do {
-                let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID)
+                let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
                 nativeSessionId = await idMap.nativeId(for: summary.id)
             } catch {
                 continuation.yield(.failed("Failed to create session: \(error)"))
@@ -2192,144 +2205,130 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // gateway consumes session-attached image paths on prompt.submit;
         // sending an unrecognized attachments field drops the image before
         // vision routing.
-        do {
-            for attachment in attachments where attachment.kind == .image {
-                let upload = try await client.send(
-                    method: "image.attach_bytes",
-                    params: NativeImageAttachParams(
-                        sessionId: sid,
-                        contentBase64: attachment.base64Data,
-                        filename: attachment.fileName
-                    ),
-                    timeoutNanos: Self.attachmentUploadTimeoutNanos
+        //
+        // Build 128.94 (stale-session hardening): the retry below covers the
+        // ATTACH steps too, not just prompt.submit. A stale idMap entry
+        // (persisted from a previous run, reaped server-side) previously
+        // surfaced as 4001 "session not found" from image.attach_bytes /
+        // file.attach BEFORE prompt.submit ran, so the old retry (which only
+        // guarded prompt.submit) never fired and the note sync died with
+        // "Submit failed: ... session not found". Now ANY step in the
+        // attach+submit pipeline that returns 4001 triggers one fresh-session
+        // retry.
+        var attemptSid = sid
+        var staleSessionRetried = false
+        while true {
+            do {
+                try await performAttachAndSubmit(
+                    client: client,
+                    sessionId: attemptSid,
+                    message: message,
+                    attachments: attachments
                 )
-                if let error = upload.error {
-                    throw error
-                }
-            }
-
-            // Build 78.7: stage file attachments via file.attach RPC.
-            var fileRefTexts: [String] = []
-            for attachment in attachments where attachment.kind == .file {
-                let upload = try await client.send(
-                    method: "file.attach",
-                    params: NativeFileAttachParams(
-                        sessionId: sid,
-                        dataUrl: "data:\(attachment.mimeType);base64,\(attachment.base64Data)",
-                        name: attachment.fileName
-                    ),
-                    timeoutNanos: Self.attachmentUploadTimeoutNanos
-                )
-                if let error = upload.error {
-                    throw error
-                }
-                fileRefTexts.append("@file:\(attachment.fileName)")
-            }
-
-            // Append file references to the message text so the agent
-            // knows about attached files.
-            var finalMessage = message
-            if !fileRefTexts.isEmpty {
-                finalMessage += "\n\n" + fileRefTexts.joined(separator: "\n")
-            }
-
-            // prompt.submit returns a quick "streaming" acknowledgement;
-            // the actual model turn arrives through gateway events. Never give
-            // this acknowledgement the client's 60-second default timeout,
-            // because a dropped frame otherwise holds the composer even though
-            // no work has reached the host.
-            let response = try await client.send(
-                method: "prompt.submit",
-                params: PromptSubmitParams(sessionId: sid, text: finalMessage),
-                timeoutNanos: Self.submitAckTimeoutNanos
-            )
-            if let error = response.error {
-                // A stale idMap entry (persisted from a previous run, reaped
-                // server-side) surfaces as 4001 "session not found". Unregister
-                // the dead mapping, create a fresh session, register a NEW
-                // handler for it, and retry ONCE so the user's message still
-                // lands instead of failing.
-                if error.message.localizedCaseInsensitiveContains("session not found") {
-                    await idMap.remove(uuid: sessionUUID)
-                    do {
-                        let summary = try await createSession(title: "New Chat", conversationID: sessionUUID)
-                        guard let freshSid = await idMap.nativeId(for: summary.id) else {
-                            continuation.yield(.failed("No session ID"))
-                            continuation.finish()
-                            return
-                        }
-                        let freshMediaBaseURL = gatewayBaseURL
-                        let freshHandler = StreamEventHandler(
-                            sessionId: freshSid,
-                            continuation: continuation,
-                            mediaURLProvider: { path in
-                                NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: freshMediaBaseURL)
-                            }
-                        )
-                        await client.onEvent { event in
-                            freshHandler.handle(event)
-                        }
-                        var retryFileRefs: [String] = []
-                        for attachment in attachments where attachment.kind == .image {
-                            let upload = try await client.send(
-                                method: "image.attach_bytes",
-                                params: NativeImageAttachParams(
-                                    sessionId: freshSid,
-                                    contentBase64: attachment.base64Data,
-                                    filename: attachment.fileName
-                                ),
-                                timeoutNanos: Self.attachmentUploadTimeoutNanos
-                            )
-                            if let uploadError = upload.error {
-                                throw uploadError
-                            }
-                        }
-                        for attachment in attachments where attachment.kind == .file {
-                            let upload = try await client.send(
-                                method: "file.attach",
-                                params: NativeFileAttachParams(
-                                    sessionId: freshSid,
-                                    dataUrl: "data:\(attachment.mimeType);base64,\(attachment.base64Data)",
-                                    name: attachment.fileName
-                                ),
-                                timeoutNanos: Self.attachmentUploadTimeoutNanos
-                            )
-                            if let uploadError = upload.error {
-                                throw uploadError
-                            }
-                            retryFileRefs.append("@file:\(attachment.fileName)")
-                        }
-                        var retryMessage = message
-                        if !retryFileRefs.isEmpty {
-                            retryMessage += "\n\n" + retryFileRefs.joined(separator: "\n")
-                        }
-                        let retry = try await client.send(
-                            method: "prompt.submit",
-                            params: PromptSubmitParams(sessionId: freshSid, text: retryMessage),
-                            timeoutNanos: Self.submitAckTimeoutNanos
-                        )
-                        if let retryError = retry.error {
-                            continuation.yield(.failed(retryError.message))
-                            continuation.finish()
-                            return
-                        }
-                        // No finish() here - the fresh handler's stream events
-                        // drive the continuation to completion.
-                        return
-                    } catch {
-                        continuation.yield(.failed("Submit failed: \(error)"))
+                break
+            } catch let gatewayError as NativeGatewayError
+                where gatewayError.message.localizedCaseInsensitiveContains("session not found") && !staleSessionRetried {
+                // Stale idMap entry (persisted from a previous run, reaped
+                // server-side). Unregister the dead mapping, create a fresh
+                // session, register a NEW handler for it, and retry ONCE so
+                // the user's note still lands instead of failing.
+                staleSessionRetried = true
+                await idMap.remove(uuid: sessionUUID)
+                do {
+                    let summary = try await createSession(title: "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
+                    guard let freshSid = await idMap.nativeId(for: summary.id) else {
+                        continuation.yield(.failed("No session ID"))
                         continuation.finish()
                         return
                     }
+                    let freshMediaBaseURL = gatewayBaseURL
+                    let freshHandler = StreamEventHandler(
+                        sessionId: freshSid,
+                        continuation: continuation,
+                        mediaURLProvider: { path in
+                            NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: freshMediaBaseURL)
+                        }
+                    )
+                    await client.onEvent { event in
+                        freshHandler.handle(event)
+                    }
+                    attemptSid = freshSid
+                    // Loop retries attach+submit against the fresh session.
+                    continue
+                } catch {
+                    continuation.yield(.failed("Submit failed: \(error)"))
+                    continuation.finish()
+                    return
                 }
-                continuation.yield(.failed(error.message))
+            } catch {
+                continuation.yield(.failed("Submit failed: \(error)"))
                 continuation.finish()
                 return
             }
-        } catch {
-            continuation.yield(.failed("Submit failed: \(error)"))
-            continuation.finish()
-            return
+        }
+    }
+
+    /// Attach images/files to the given session and submit the prompt. Throws
+    /// `NativeGatewayError` on the first RPC rejection (including 4001
+    /// "session not found") so the caller can retry with a fresh session.
+    private func performAttachAndSubmit(
+        client: NativeGatewayClient,
+        sessionId: String,
+        message: String,
+        attachments: [PendingAttachment]
+    ) async throws {
+        for attachment in attachments where attachment.kind == .image {
+            let upload = try await client.send(
+                method: "image.attach_bytes",
+                params: NativeImageAttachParams(
+                    sessionId: sessionId,
+                    contentBase64: attachment.base64Data,
+                    filename: attachment.fileName
+                ),
+                timeoutNanos: Self.attachmentUploadTimeoutNanos
+            )
+            if let error = upload.error {
+                throw error
+            }
+        }
+
+        // Build 78.7: stage file attachments via file.attach RPC.
+        var fileRefTexts: [String] = []
+        for attachment in attachments where attachment.kind == .file {
+            let upload = try await client.send(
+                method: "file.attach",
+                params: NativeFileAttachParams(
+                    sessionId: sessionId,
+                    dataUrl: "data:\(attachment.mimeType);base64,\(attachment.base64Data)",
+                    name: attachment.fileName
+                ),
+                timeoutNanos: Self.attachmentUploadTimeoutNanos
+            )
+            if let error = upload.error {
+                throw error
+            }
+            fileRefTexts.append("@file:\(attachment.fileName)")
+        }
+
+        // Append file references to the message text so the agent
+        // knows about attached files.
+        var finalMessage = message
+        if !fileRefTexts.isEmpty {
+            finalMessage += "\n\n" + fileRefTexts.joined(separator: "\n")
+        }
+
+        // prompt.submit returns a quick "streaming" acknowledgement;
+        // the actual model turn arrives through gateway events. Never give
+        // this acknowledgement the client's 60-second default timeout,
+        // because a dropped frame otherwise holds the composer even though
+        // no work has reached the host.
+        let response = try await client.send(
+            method: "prompt.submit",
+            params: PromptSubmitParams(sessionId: sessionId, text: finalMessage),
+            timeoutNanos: Self.submitAckTimeoutNanos
+        )
+        if let error = response.error {
+            throw error
         }
     }
 
@@ -2760,13 +2759,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Streaming variant of sendNoteMessage. Yields the gateway's live
     /// reasoning deltas so the notes UI can render the agent's actual reasoning
     /// stream (same component chat uses), not a local OCR readout.
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) -> AsyncStream<StreamingUpdate> {
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil) -> AsyncStream<StreamingUpdate> {
         sendStreamingToConversation(
             message: text,
             attachments: attachments,
             clientMessageID: clientMessageID,
             conversationID: conversationID,
-            title: title
+            title: title,
+            enrichmentModelName: enrichmentModelName,
+            enrichmentProvider: enrichmentProvider
         )
     }
 
@@ -2778,7 +2779,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
         attachments: [PendingAttachment],
         clientMessageID: UUID,
         conversationID: UUID,
-        title: String
+        title: String,
+        enrichmentModelName: String? = nil,
+        enrichmentProvider: String? = nil
     ) -> AsyncStream<StreamingUpdate> {
         return AsyncStream { continuation in
             Task { [weak self] in
@@ -2789,6 +2792,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     clientMessageID: clientMessageID,
                     conversationID: conversationID,
                     sessionTitle: title,
+                    enrichmentModelName: enrichmentModelName,
+                    enrichmentProvider: enrichmentProvider,
                     continuation: continuation
                 )
             }

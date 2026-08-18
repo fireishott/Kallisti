@@ -149,6 +149,24 @@ final class NotesSyncEngine {
         stage = .preparing
         lastSyncError = nil
 
+        // Build 128.94: enrichment toggle. When OFF, notes never leave the
+        // device - no sessions, no model turns. A manual tap reports why it
+        // did nothing so the UI doesn't look broken; the timer just idles.
+        guard settingsStore.settings.notesEnrichmentEnabled else {
+            if trigger == .manual {
+                stage = .failed("Enrichment is disabled in Settings > Notes Sync.")
+                lastSyncError = "Enrichment is disabled in Settings > Notes Sync."
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if stage == .failed(lastSyncError ?? "") { stage = .idle }
+            } else {
+                stage = .idle
+            }
+            lastSyncDate = .now
+            logger.info("Sync run skipped: note enrichment is disabled")
+            isSyncing = false
+            return
+        }
+
         // Gather dirty notes (Build 128.73): only REAL activity syncs.
         // A blank or untouched note is skipped so a run with zero changes is
         // a true no-op: drawing changed since the last push, note touched
@@ -242,19 +260,48 @@ final class NotesSyncEngine {
         // Build the session title from the note's current title.
         let sessionTitle = note.title.isEmpty ? "Untitled Note" : note.title
 
-        // Build 128.73: the sync turn carries an explicit instruction so
-        // Hermes knows this is an automatic background note sync from the
-        // Kallisti app, NOT a chat message - read the handwriting, summarize,
-        // execute directives, reply briefly. Without this the gateway treats
-        // it as a random user message and the reply is unhelpful.
+        // Build 128.94: SMART enrichment prompt. No more handcuffing - the old
+        // prompt told the model "No drawing attached - this note has no
+        // drawable content. Reply briefly." and forced a narrow OCR+summarize
+        // task. The app already runs local OCR; the model should ACT on what
+        // it sees: if the note is new, create a full enrichment; if it is an
+        // update, treat this as an additional message to the note's session
+        // and update the enrichment accordingly. The drawing image is attached
+        // when present so vision-capable models can read handwriting directly.
+        // The enrichment model/provider is named in the prompt so the model
+        // knows what is handling the note.
+        let isNewNote = note.lastSyncedAt == nil
         var messageText = "[Note sync from Kallisti - automatic, not a chat message]\n"
         messageText += "Note title: \(sessionTitle)\n"
-        if attachments.isEmpty {
-            messageText += "No drawing attached - this note has no drawable content. Reply briefly.\n"
+        if isNewNote {
+            messageText += "This is a NEW note - create the enrichment for it.\n"
         } else {
-            messageText += "A handwritten drawing is attached - read it (OCR the handwriting) and summarize the note's content.\n"
+            messageText += "This is an UPDATE to an existing note - treat this as an additional message to this note's session and update the enrichment accordingly.\n"
         }
-        messageText += "Execute any directives you find in the note (e.g. #research, #talkingpoints, #summary) without asking follow-up questions. Keep your reply concise."
+
+        // Include the locally-recognized text when it exists so the model
+        // works from the real content (the app OCRs on-device with Vision).
+        if let recognitionText = await loadLatestRecognitionText(for: note) {
+            messageText += "Recognized text: \"\(recognitionText)\"\n"
+        }
+
+        // Enrichment provider context - the model knows who it is.
+        let settings = settingsStore.settings
+        if let modelName = settings.notesEnrichmentModelName, !modelName.isEmpty {
+            let provider = settings.notesEnrichmentProvider ?? ""
+            if provider.isEmpty {
+                messageText += "Enrichment provider: \(modelName)\n"
+            } else {
+                messageText += "Enrichment provider: \(provider)/\(modelName)\n"
+            }
+        }
+
+        if attachments.isEmpty {
+            messageText += "No drawing attached - use the recognized text above and any directives. If the note is empty, say so briefly.\n"
+        } else {
+            messageText += "A drawing is attached - read the handwriting and combine it with the recognized text.\n"
+        }
+        messageText += "Act on what you see: summarize the note, extract key points and action items, answer any questions written in it, and execute any directives you find (e.g. #research, #talkingpoints, #summary). If the note is new, produce a useful enrichment. If it is an update, build on the prior enrichment in this session. Do not ask follow-up questions. Reply concisely but do the real work."
 
 
         // This call creates the session on first sync (titled with the note
@@ -282,7 +329,9 @@ final class NotesSyncEngine {
                 attachments: attachments,
                 clientMessageID: UUID(),
                 conversationID: note.id,
-                title: sessionTitle
+                title: sessionTitle,
+                enrichmentModelName: settingsStore.settings.notesEnrichmentModelName,
+                enrichmentProvider: settingsStore.settings.notesEnrichmentProvider
             ) {
                 if Task.isCancelled { streamError = "Sync cancelled."; break }
                 switch update {
@@ -349,6 +398,17 @@ final class NotesSyncEngine {
         guard !bounds.isEmpty, bounds.width > 0, bounds.height > 0 else { return nil }
         let image = drawing.image(from: bounds, scale: 2.0)
         return image
+    }
+
+    /// Load the latest locally-OCR'd text for a note (Vision runs on-device).
+    /// The sync prompt includes this so the model works from real content even
+    /// when no drawing attachment is present, and can cross-check handwriting.
+    private func loadLatestRecognitionText(for note: KallistiNote) async -> String? {
+        let repo = NotesRepository()
+        guard let recognitions = try? await repo.loadRecognitions(noteId: note.id),
+              let latest = recognitions.last else { return nil }
+        let text = latest.effectiveText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 }
 

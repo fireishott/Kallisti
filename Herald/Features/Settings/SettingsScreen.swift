@@ -2298,6 +2298,84 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // Build 128.94: AI enrichment toggle + model picker.
+                Toggle(isOn: Binding(
+                    get: { settingsStore.settings.notesEnrichmentEnabled },
+                    set: { settingsStore.settings.notesEnrichmentEnabled = $0 }
+                )) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Enrich with AI")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("Sync notes to their session so the agent can read, summarize, and enrich them.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .tint(Design.Brand.accent)
+
+                if settingsStore.settings.notesEnrichmentEnabled {
+                    Menu {
+                        Button {
+                            settingsStore.settings.notesEnrichmentModelName = nil
+                            settingsStore.settings.notesEnrichmentProvider = nil
+                        } label: {
+                            if settingsStore.settings.notesEnrichmentModelName == nil {
+                                Label("Default (chat model)", systemImage: "checkmark")
+                            } else {
+                                Text("Default (chat model)")
+                            }
+                        }
+                        ForEach(modelStore.modelsByProvider, id: \.provider) { group in
+                            Section(group.provider) {
+                                ForEach(group.models) { model in
+                                    Button {
+                                        settingsStore.settings.notesEnrichmentModelName = model.name
+                                        settingsStore.settings.notesEnrichmentProvider = model.provider
+                                    } label: {
+                                        if settingsStore.settings.notesEnrichmentModelName == model.name
+                                            && settingsStore.settings.notesEnrichmentProvider == model.provider {
+                                            Label(model.name, systemImage: "checkmark")
+                                        } else {
+                                            Text(model.name)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: Design.Spacing.sm) {
+                            Image(systemName: "cpu")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Design.Brand.primary)
+                                .frame(width: 20, alignment: .center)
+                            Text("Enrichment model")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Spacer()
+                            Text(enrichmentModelLabel)
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                        .frame(minHeight: Design.Size.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .task {
+                        if modelStore.models.isEmpty {
+                            await modelStore.loadModels()
+                        }
+                    }
+                }
+
+                sectionDivider
+
                 HStack(spacing: Design.Spacing.sm) {
                     Image(systemName: "doc.text.fill")
                         .font(.system(size: 14))
@@ -2318,6 +2396,16 @@ struct SettingsScreen: View {
                     .foregroundStyle(Design.Colors.secondaryForeground)
             }
         }
+    }
+
+    private var enrichmentModelLabel: String {
+        guard let name = settingsStore.settings.notesEnrichmentModelName, !name.isEmpty else {
+            return "Default"
+        }
+        if let provider = settingsStore.settings.notesEnrichmentProvider, !provider.isEmpty {
+            return "\(provider)/\(name)"
+        }
+        return name
     }
 
     private var lastSyncLabel: String {
