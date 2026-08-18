@@ -24,6 +24,11 @@ struct SettingsScreen: View {
     // Build 70: searchable aux model picker state.
     @State private var auxPickerTask: AuxTask?
     @State private var auxPickerSearchText = ""
+    // Build 128.95: enrichment model picker is a sheet (stable List scroll),
+    // NOT a live-bound Menu whose content rebuilt on every parent re-render
+    // and snapped scroll back to top.
+    @State private var isEnrichmentPickerPresented = false
+    @State private var enrichmentPickerSearchText = ""
     private let mimoKeychain = KeychainSecureStore(serviceName: "net.fihonline.kallisti.session")
     @Environment(ThemeManager.self) private var themeManager
     @Environment(GatewayControlService.self) private var gatewayControl
@@ -91,6 +96,26 @@ struct SettingsScreen: View {
                 onSelect: { provider, model in
                     Task { await auxService?.set(task: task.task, provider: provider, model: model) }
                     auxPickerTask = nil
+                }
+            )
+        }
+        // Build 128.95: enrichment model picker sheet. Takes a snapshot of
+        // modelStore.models so its List stays stable while open.
+        .sheet(isPresented: $isEnrichmentPickerPresented) {
+            EnrichmentModelPickerSheet(
+                models: modelStore.models,
+                searchText: $enrichmentPickerSearchText,
+                selectedModelName: settingsStore.settings.notesEnrichmentModelName,
+                selectedProvider: settingsStore.settings.notesEnrichmentProvider,
+                onSelect: { provider, model in
+                    settingsStore.settings.notesEnrichmentModelName = model
+                    settingsStore.settings.notesEnrichmentProvider = provider
+                    isEnrichmentPickerPresented = false
+                },
+                onSelectDefault: {
+                    settingsStore.settings.notesEnrichmentModelName = nil
+                    settingsStore.settings.notesEnrichmentProvider = nil
+                    isEnrichmentPickerPresented = false
                 }
             )
         }
@@ -2322,34 +2347,12 @@ struct SettingsScreen: View {
                 .tint(Design.Brand.accent)
 
                 if settingsStore.settings.notesEnrichmentEnabled {
-                    Menu {
-                        Button {
-                            settingsStore.settings.notesEnrichmentModelName = nil
-                            settingsStore.settings.notesEnrichmentProvider = nil
-                        } label: {
-                            if settingsStore.settings.notesEnrichmentModelName == nil {
-                                Label("Default (chat model)", systemImage: "checkmark")
-                            } else {
-                                Text("Default (chat model)")
-                            }
-                        }
-                        ForEach(modelStore.modelsByProvider, id: \.provider) { group in
-                            Section(group.provider) {
-                                ForEach(group.models) { model in
-                                    Button {
-                                        settingsStore.settings.notesEnrichmentModelName = model.name
-                                        settingsStore.settings.notesEnrichmentProvider = model.provider
-                                    } label: {
-                                        if settingsStore.settings.notesEnrichmentModelName == model.name
-                                            && settingsStore.settings.notesEnrichmentProvider == model.provider {
-                                            Label(model.name, systemImage: "checkmark")
-                                        } else {
-                                            Text(model.name)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    // Build 128.95: plain row -> sheet picker. The old Menu was
+                    // live-bound to modelStore.modelsByProvider; any parent
+                    // re-render (lastSyncDate tick, model refresh) rebuilt the
+                    // UIMenu and reset its scroll to the top mid-interaction.
+                    Button {
+                        isEnrichmentPickerPresented = true
                     } label: {
                         HStack(spacing: Design.Spacing.sm) {
                             Image(systemName: "cpu")
@@ -2363,10 +2366,14 @@ struct SettingsScreen: View {
                             Text(enrichmentModelLabel)
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Design.Colors.secondaryForeground)
                         }
                         .frame(minHeight: Design.Size.minTapTarget)
                         .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .task {
                         if modelStore.models.isEmpty {
                             await modelStore.loadModels()
@@ -3204,6 +3211,99 @@ private struct AuxModelPickerSheet: View {
                 }
             }
             .navigationTitle("Model for \(task.task)")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter models")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(Design.Brand.accent)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+// Build 128.95: searchable enrichment model picker. Sheet-based (stable List,
+// scroll position survives state changes) - the previous Menu rebuilt its
+// UIMenu on every parent re-render and snapped back to the top.
+private struct EnrichmentModelPickerSheet: View {
+    let models: [ModelStore.HeraldModel]
+    @Binding var searchText: String
+    let selectedModelName: String?
+    let selectedProvider: String?
+    let onSelect: (String, String) -> Void
+    let onSelectDefault: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var filteredModels: [ModelStore.HeraldModel] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return models }
+        return models.filter {
+            $0.name.lowercased().contains(q)
+                || $0.provider.lowercased().contains(q)
+                || $0.displayProviderName.lowercased().contains(q)
+        }
+    }
+
+    private var isDefaultSelected: Bool {
+        selectedModelName == nil || selectedModelName?.isEmpty == true
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        onSelectDefault()
+                    } label: {
+                        HStack {
+                            Text("Default (chat model)")
+                                .foregroundStyle(Design.Colors.foreground)
+                            Spacer()
+                            if isDefaultSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                        }
+                    }
+                }
+
+                Section("Models") {
+                    if filteredModels.isEmpty {
+                        Text("No models match \"\(searchText)\"")
+                            .font(Design.Typography.caption)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    } else {
+                        ForEach(filteredModels) { m in
+                            Button {
+                                onSelect(m.provider, m.name)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(m.name)
+                                            .font(Design.Typography.callout)
+                                            .foregroundStyle(Design.Colors.foreground)
+                                        Text(m.displayProviderName)
+                                            .font(Design.Typography.caption)
+                                            .foregroundStyle(Design.Colors.secondaryForeground)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if selectedModelName == m.name
+                                        && selectedProvider == m.provider {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(Design.Brand.accent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Enrichment model")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter models")
             .toolbar {
