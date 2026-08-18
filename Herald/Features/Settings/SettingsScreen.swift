@@ -1866,9 +1866,42 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                chatDisplayModePicker
+
+                sectionDivider
+
                 reasoningEffortPicker
             }
         }
+    }
+
+    // MARK: - Chat Display Mode (Build 128.74)
+
+    private var chatDisplayModePicker: some View {
+        HStack {
+            Label("Chat Display", systemImage: "terminal.fill")
+                .font(Design.Typography.body)
+                .foregroundStyle(Design.Colors.foreground)
+
+            Spacer()
+
+            Picker("", selection: chatDisplayModeBinding) {
+                ForEach(ChatDisplayMode.allCases, id: \.self) { mode in
+                    Text(mode.displayLabel).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(Design.Colors.secondaryForeground)
+        }
+        .padding(.horizontal, Design.Spacing.lg)
+        .padding(.vertical, Design.Spacing.md)
+    }
+
+    private var chatDisplayModeBinding: Binding<ChatDisplayMode> {
+        Binding(
+            get: { settingsStore.settings.chatDisplayMode },
+            set: { settingsStore.settings.chatDisplayMode = $0 }
+        )
     }
 
     private var reasoningEffortPicker: some View {

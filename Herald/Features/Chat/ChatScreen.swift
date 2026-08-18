@@ -247,21 +247,23 @@ struct ChatScreen: View {
     var body: some View {
         scrollAnchored {
             ZStack {
-            ChatWallpaperBackground(
-                wallpaper: settingsStore.settings.chatWallpaper,
-                tint: themeManager.preset.accent
-            )
-            .ignoresSafeArea()
+            if settingsStore.settings.chatDisplayMode == .rich {
+                ChatWallpaperBackground(
+                    wallpaper: settingsStore.settings.chatWallpaper,
+                    tint: themeManager.preset.accent
+                )
+                .ignoresSafeArea()
 
-            // Scrim: Herald messages render as plain text with no bubble background,
-            // and user bubbles use a near-transparent surface tint (Design.Colors.surface),
-            // so busy wallpapers (gradients/textures/photos) need dimming here to keep
-            // text legible. `.default` is already a near-flat system background, so it's
-            // left unscrimmed.
-            if wallpaperScrimOpacity > 0 {
-                Design.Colors.background
-                    .opacity(wallpaperScrimOpacity)
-                    .ignoresSafeArea()
+                // Scrim: Herald messages render as plain text with no bubble background,
+                // and user bubbles use a near-transparent surface tint (Design.Colors.surface),
+                // so busy wallpapers (gradients/textures/photos) need dimming here to keep
+                // text legible. `.default` is already a near-flat system background, so it's
+                // left unscrimmed.
+                if wallpaperScrimOpacity > 0 {
+                    Design.Colors.background
+                        .opacity(wallpaperScrimOpacity)
+                        .ignoresSafeArea()
+                }
             }
 
             VStack(spacing: 0) {
@@ -289,7 +291,23 @@ struct ChatScreen: View {
                 if chatStore.restartInProgress {
                     restartBanner
                 }
-                messageList
+                if settingsStore.settings.chatDisplayMode == .terminal {
+                    TerminalChatView(
+                        messages: chatStore.conversation?.messages ?? [],
+                        showReasoning: settingsStore.settings.showReasoning,
+                        onRetry: { failedMessage in
+                            Task { await chatStore.retryMessage(failedMessage) }
+                        },
+                        modelName: displayedModelName,
+                        // Build 128.75: status bar shows live context-token
+                        // progress against the model context window, plus
+                        // session elapsed time - the TUI bottom strip.
+                        contextWindow: effectiveContextWindow,
+                        contextTokens: currentContextTokens ?? 0
+                    )
+                } else {
+                    messageList
+                }
                 // Build 128.50: queue status bar - shows held/queued state and
                 // a Hold/Release toggle so queued messages don't silently fire
                 // after the active turn (Electron parity).
