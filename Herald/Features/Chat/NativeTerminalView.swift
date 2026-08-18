@@ -236,9 +236,15 @@ final class NativeTerminalModel: ObservableObject {
 
     /// Build 128.90: resign first responder on the terminal view so the
     /// software keyboard drops (manual dismiss - the Enter auto-dismiss was
-    /// removed at Curtis's request).
+    /// removed at Curtis's request). Called from the toolbar button, which
+    /// runs on MainActor; resignFirstResponder is MainActor-isolated so
+    /// assumeIsolated is safe here (and avoids a @Sendable async hop).
     func dismissKeyboard() {
-        terminalView?.resignFirstResponder()
+        if let terminalView {
+            MainActor.assumeIsolated {
+                terminalView.resignFirstResponder()
+            }
+        }
     }
 }
 
