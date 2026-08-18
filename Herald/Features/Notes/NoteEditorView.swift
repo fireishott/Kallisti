@@ -435,6 +435,12 @@ struct NoteEditorView: View {
             if let rec, !rec.rawText.isEmpty {
                 liveOCRText = rec.rawText
                 currentRecognition = rec
+                // Build 130.0: persist the recognition so the Recognized tab
+                // and the note sync prompt keep working after reload. Before
+                // this, live OCR results lived only in memory - every reopen
+                // showed "No Recognition" and the sync engine never got the
+                // recognized text (which also starved enrichment).
+                try? await notesStore.saveRecognition(rec, noteId: noteId)
                 // Re-parse directives from the live read so recognized view,
                 // enrichment, and the banner all agree on the same text.
                 let parser = NoteDirectiveParser()

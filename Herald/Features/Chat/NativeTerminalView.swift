@@ -500,12 +500,32 @@ private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
             let wholeRows = Int(accumulatedRows)
             guard wholeRows != 0 else { return }
             accumulatedRows -= CGFloat(wholeRows)
-            if wholeRows > 0 {
-                // Finger moved DOWN on the screen -> scroll the buffer UP
-                // (reveal earlier lines).
-                for _ in 0..<wholeRows { host.scrollUp(lines: 1) }
+            // Build 130.0: hermes --tui runs in the ALTERNATE screen buffer
+            // (probed: emits ESC[?1049h on launch). SwiftTerm gives alt
+            // buffers ZERO scrollback, so scrollUp()/scrollDown() clamp to
+            // row 0 and do nothing - that was the "touch scroll still does
+            // nothing" report through 129.0: the pan fired, the target was
+            // a no-op. When the alt buffer is active the TUI app owns its
+            // viewport (Textual), so drive it by sending arrow keys to the
+            // PTY - the same pattern the fork's own panSelectionHandler
+            // uses when mouse reporting is off. Normal buffers keep the
+            // local row scroll (real scrollback exists there).
+            if host.terminal.isDisplayBufferAlternate {
+                if wholeRows > 0 {
+                    // Finger moved DOWN -> reveal earlier TUI content.
+                    for _ in 0..<wholeRows { host.send(EscapeSequences.moveUpNormal) }
+                } else {
+                    // Finger moved UP -> reveal later TUI content.
+                    for _ in 0..<(-wholeRows) { host.send(EscapeSequences.moveDownNormal) }
+                }
             } else {
-                for _ in 0..<(-wholeRows) { host.scrollDown(lines: 1) }
+                if wholeRows > 0 {
+                    // Finger moved DOWN on the screen -> scroll the buffer UP
+                    // (reveal earlier lines).
+                    for _ in 0..<wholeRows { host.scrollUp(lines: 1) }
+                } else {
+                    for _ in 0..<(-wholeRows) { host.scrollDown(lines: 1) }
+                }
             }
         case .ended, .cancelled, .failed:
             accumulatedRows = 0
