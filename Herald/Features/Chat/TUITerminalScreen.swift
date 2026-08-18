@@ -131,10 +131,12 @@ struct TUITerminalScreen: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     model.send([27])  // ESC - interrupts the running screen
                 } label: {
                     Image(systemName: "escape")
                 }
+                .accessibilityLabel("Send ESC to interrupt the running screen")
             }
             // Build 128.91: touch mode toggle. Default is touch select
             // (taps forward to the app as mouse events when it requests
@@ -151,23 +153,25 @@ struct TUITerminalScreen: View {
             // boolean; the visual is derived from it.
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     model.touchScrollEnabled.toggle()
                 } label: {
                     Image(systemName: model.touchScrollEnabled ? "arrow.up.and.down" : "hand.tap")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(
-                            model.touchScrollEnabled ? Design.Colors.accent : Design.Colors.foreground
+                            model.touchScrollEnabled ? Color.black : Design.Colors.foreground
                         )
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background {
+                            // Build 128.99: strengthen the ON state so the
+                            // mode is unmistakable - solid accent capsule
+                            // with dark icon instead of the subtle 18%
+                            // tint, which Curtis reported as invisible on
+                            // the dark toolbar. OFF stays muted.
                             if model.touchScrollEnabled {
                                 Capsule(style: .continuous)
-                                    .fill(Design.Colors.accent.opacity(0.18))
-                                    .overlay(
-                                        Capsule(style: .continuous)
-                                            .stroke(Design.Colors.accent.opacity(0.55), lineWidth: 1)
-                                    )
+                                    .fill(Design.Colors.accent)
                             } else {
                                 Capsule(style: .continuous)
                                     .fill(Color.white.opacity(0.04))
