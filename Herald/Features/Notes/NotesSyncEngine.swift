@@ -65,7 +65,7 @@ final class NotesSyncEngine {
             return "Uploading drawing..."
         case .sending:
             if let currentProgress {
-                return "Sending \"\\(currentProgress.noteTitle)\" (\\(currentProgress.index)/\\(currentProgress.total))..."
+                return "Sending \"\(currentProgress.noteTitle)\" (\(currentProgress.index)/\(currentProgress.total))..."
             }
             return "Sending..."
         case .done:
@@ -149,14 +149,25 @@ final class NotesSyncEngine {
         stage = .preparing
         lastSyncError = nil
 
-        // Gather dirty notes: changed drawing since last sync, never synced,
-        // or touched after the last sync (covers notes created before the
-        // sync feature landed whose revision counters stayed at 0 while the
-        // drawing blob on disk has content).
+        // Gather dirty notes (Build 128.73): only REAL activity syncs.
+        // A blank or untouched note is skipped so a run with zero changes is
+        // a true no-op: drawing changed since the last push, note touched
+        // since the last sync (title/style/text), or new content that was
+        // never pushed.
         let notes = notesStore.activeNotes
         let dirty = notes.filter { note in
-            note.lastSyncedDrawingRevision < note.currentDrawingRevision
-                || note.lastSyncedAt == nil
+            if note.lastSyncedDrawingRevision < note.currentDrawingRevision {
+                return true
+            }
+            if let lastSynced = note.lastSyncedAt, note.updatedAt > lastSynced {
+                return true
+            }
+            if note.lastSyncedAt == nil {
+                return note.currentDrawingRevision > 0
+                    || note.currentTextRevision > 0
+                    || !note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return false
         }
         pendingNotesCount = dirty.count
         // Never leave a silent no-op: a manual tap with nothing to push
@@ -222,7 +233,7 @@ final class NotesSyncEngine {
         if let drawing = await notesStore.loadDrawing(noteId: note.id, revision: note.currentDrawingRevision) {
             if let image = renderDrawingImage(drawing) {
                 stage = .uploading
-                if let attachment = PendingAttachment.image(image, fileName: "note-\\(note.id.uuidString.prefix(8)).jpg") {
+                if let attachment = PendingAttachment.image(image, fileName: "note-\(note.id.uuidString.prefix(8)).jpg") {
                     attachments.append(attachment)
                 }
             }
@@ -231,14 +242,20 @@ final class NotesSyncEngine {
         // Build the session title from the note's current title.
         let sessionTitle = note.title.isEmpty ? "Untitled Note" : note.title
 
-        // Text is optional for drawings; include the title as context and
-        // attachment count so the agent knows what arrived.
-        var messageText = "Note sync: \\(sessionTitle)"
-        if !attachments.isEmpty {
-            messageText += " (handwritten drawing attached)"
+        // Build 128.73: the sync turn carries an explicit instruction so
+        // Hermes knows this is an automatic background note sync from the
+        // Kallisti app, NOT a chat message - read the handwriting, summarize,
+        // execute directives, reply briefly. Without this the gateway treats
+        // it as a random user message and the reply is unhelpful.
+        var messageText = "[Note sync from Kallisti - automatic, not a chat message]\n"
+        messageText += "Note title: \(sessionTitle)\n"
+        if attachments.isEmpty {
+            messageText += "No drawing attached - this note has no drawable content. Reply briefly.\n"
         } else {
-            messageText += " - note has no drawable content."
+            messageText += "A handwritten drawing is attached - read it (OCR the handwriting) and summarize the note's content.\n"
         }
+        messageText += "Execute any directives you find in the note (e.g. #research, #talkingpoints, #summary) without asking follow-up questions. Keep your reply concise."
+
 
         // This call creates the session on first sync (titled with the note
         // name) and appends a new message to it on every later edit. The
