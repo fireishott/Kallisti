@@ -36,6 +36,14 @@ final class KallistiHostStore {
         currentHost?.isOnline == true
     }
 
+    /// Build 128.88 (connection bounce): count consecutive refresh failures.
+    /// A single transient hostInfo() miss (socket mid-reconnect, slow
+    /// round-trip right after device sleep) must NOT flip the host offline
+    /// and strobe the connection banner on the next 10s tick. The host only
+    /// goes offline after this many failures in a row.
+    private var consecutiveFailures = 0
+    private let offlineAfterFailures = 2
+
     var connectionState: HeraldHostConnectionState {
         if currentHost?.isOnline == true {
             return .online
@@ -67,6 +75,7 @@ final class KallistiHostStore {
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 let info = try await featureClient.hostInfo()
+                consecutiveFailures = 0
                 // NATIVE mode: pull real versions from the gateway + connector
                 // facade instead of leaving the Settings rows at "—".
                 let connectorVersion = await featureClient.connectorVersion()
@@ -90,7 +99,12 @@ final class KallistiHostStore {
                 onHostChanged?()
                 return
             } catch {
-                if let ch = currentHost {
+                // Build 128.88 (connection bounce): hysteresis. One transient
+                // failure keeps the last good online state; only N consecutive
+                // failures flip the host offline, so the 10s poll can't strobe
+                // the banner after a sleep/wake reconnect.
+                consecutiveFailures += 1
+                if let ch = currentHost, consecutiveFailures >= offlineAfterFailures {
                     currentHost = HeraldHostStatus(
                         id: ch.id,
                         displayName: ch.displayName,

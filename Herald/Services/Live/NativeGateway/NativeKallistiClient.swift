@@ -1073,6 +1073,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
             Self.logger.info("connect() skipped - another connect is already in flight")
             return
         }
+        // Build 128.88 (connection bounce): if we're ALREADY connected with a
+        // live client, a redundant connect() (e.g. the launch trigger firing
+        // again after a reconnect already landed, or a reconnect race after
+        // device sleep) must NOT flip the status back to .connecting. That
+        // flip is what makes the dot strobe connected -> connecting ->
+        // connected on relaunch. The reconnect paths that genuinely need a
+        // fresh socket (handleUnexpectedDisconnect, reconnectIfNeeded probe
+        // failure) set client = nil / status = .reconnecting first, so they
+        // still fall through here.
+        if connectionStatus == .connected, let client {
+            Self.logger.info("connect() skipped - already connected with a live client")
+            return
+        }
         isConnecting = true
         defer { isConnecting = false }
         connectionStatus = .connecting
@@ -1124,7 +1137,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
             _ = try await client.send(method: "session.most_recent", params: [String: String](), timeoutNanos: Self.probeTimeoutNanos)
 
             await client.onDisconnect { [weak self] in
-                Task { @MainActor in await self?.handleUnexpectedDisconnect() }
+                Task { @MainActor in
+                    // Build 128.88 (connection bounce): capture THIS client.
+                    // If a newer connect() already swapped in a fresh client
+                    // (e.g. a reconnect landed while the old socket was still
+                    // draining), a stale onDisconnect must not tear down the
+                    // new connection - that was one source of the launch
+                    // connected/disconnected strobe after device sleep.
+                    guard let self, self.client === client else { return }
+                    await self.handleUnexpectedDisconnect()
+                }
             }
             // Close any previous transport so a reconnect does not leave an
             // orphaned WS open server-side (each connect() mints a fresh

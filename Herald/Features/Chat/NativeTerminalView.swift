@@ -13,12 +13,12 @@ import Foundation
 /// connector/session configuration and auth rides the app's current
 /// native access token, both passed in at start().
 struct NativeTerminalView: UIViewRepresentable {
-    typealias UIViewType = TerminalView
+    typealias UIViewType = KallistiTerminalHostView
 
     @ObservedObject var model: NativeTerminalModel
 
-    func makeUIView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
+    func makeUIView(context: Context) -> KallistiTerminalHostView {
+        let view = KallistiTerminalHostView(frame: .zero)
         view.terminalDelegate = context.coordinator
         context.coordinator.view = view
         view.terminal.backgroundColor = TerminalColor(
@@ -32,7 +32,15 @@ struct NativeTerminalView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: TerminalView, context: Context) {}
+    func updateUIView(_ uiView: KallistiTerminalHostView, context: Context) {
+        // Build 128.88: SwiftUI representables do not reliably drive
+        // TerminalView.layoutSubviews with their final size. Without this
+        // push, a TerminalView created at frame .zero keeps its zero-sized
+        // terminal buffer and renders nothing - the black screen seen on
+        // 128.87. This mirrors the vendored SwiftUITerminalHostView pattern
+        // (updateSizeIfNeeded() from both layoutSubviews and updateUIView).
+        uiView.updateSizeIfNeeded()
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(model: model)
@@ -209,5 +217,30 @@ final class NativeTerminalModel: ObservableObject {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         isConnected = false
+    }
+}
+
+/// TerminalView subclass that actively pushes size changes into the terminal
+/// on every layout pass - the same pattern SwiftTerm's own SwiftUI wrapper
+/// (SwiftUITerminalHostView) uses. Without it, a TerminalView created at
+/// frame .zero never learns its real bounds and renders nothing (black screen).
+final class KallistiTerminalHostView: TerminalView {
+    private var lastAppliedSize: CGSize = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateSizeIfNeeded()
+    }
+
+    func updateSizeIfNeeded() {
+        let newSize = bounds.size
+        guard newSize.width.isFinite, newSize.width > 0,
+              newSize.height.isFinite, newSize.height > 0 else {
+            return
+        }
+        if newSize != lastAppliedSize {
+            lastAppliedSize = newSize
+            processSizeChange(newSize: newSize)
+        }
     }
 }

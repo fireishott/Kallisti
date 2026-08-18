@@ -635,19 +635,26 @@ struct ChatScreen: View {
                 .accessibilityLabel("Open session drawer")
             }
         }
-        ToolbarItem(placement: .principal) {
-            // Build 128.1: double-tap the top bar to jump to the top of the
-            // thread (oldest messages). Single tap still opens the context
-            // popover inside compactStatusControl.
-            compactStatusControl
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    scrollToTop()
-                }
-                .accessibilityAction(named: "Scroll to top") {
-                    scrollToTop()
-                }
+        // Build 128.88: in TUI mode the terminal owns the whole surface -
+        // including the toolbar center. TUITerminalScreen supplies its own
+        // .principal (statusText), so adding compactStatusControl here too
+        // would put two principals on one compact toolbar and squeeze the
+        // terminal. Keep the chip for rich mode only.
+        if settingsStore.settings.chatDisplayMode == .rich {
+            ToolbarItem(placement: .principal) {
+                // Build 128.1: double-tap the top bar to jump to the top of the
+                // thread (oldest messages). Single tap still opens the context
+                // popover inside compactStatusControl.
+                compactStatusControl
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        scrollToTop()
+                    }
+                    .accessibilityAction(named: "Scroll to top") {
+                        scrollToTop()
+                    }
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: Design.Spacing.sm) {

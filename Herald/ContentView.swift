@@ -40,11 +40,16 @@ struct MainTabView: View {
                 .tag(AppTab.talk)
 
                 // ── Notes Tab (handwriting icon) ──
-                NavigationStack {
-                    NotesWorkspaceView()
+                // Build 128.88: iPad only. Notes is a full handwriting /
+                // sketch workspace that makes no sense on the phone's tab
+                // bar; it was crowding the iPhone tabs down to 5.
+                if !DeviceClass.isPhone {
+                    NavigationStack {
+                        NotesWorkspaceView()
+                    }
+                    .tabItem { Label(AppTab.notes.title, systemImage: AppTab.notes.icon) }
+                    .tag(AppTab.notes)
                 }
-                .tabItem { Label(AppTab.notes.title, systemImage: AppTab.notes.icon) }
-                .tag(AppTab.notes)
 
                 // ── Settings Tab ──
                 NavigationStack {
