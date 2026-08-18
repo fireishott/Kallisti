@@ -21,6 +21,7 @@ struct NativeTerminalView: UIViewRepresentable {
         let view = KallistiTerminalHostView(frame: .zero)
         view.terminalDelegate = context.coordinator
         context.coordinator.view = view
+        model.terminalView = view
         view.terminal.backgroundColor = TerminalColor(
             red: UInt16(0.047 * 65535), green: UInt16(0.047 * 65535), blue: UInt16(0.063 * 65535)
         )
@@ -92,6 +93,9 @@ final class NativeTerminalModel: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var viewHandler: (([UInt8]) -> Void)?
+    /// Build 128.90: weak reference to the mounted terminal view so the
+    /// model can resign first responder (keyboard dismissal button).
+    weak var terminalView: TerminalView?
     private var cols = 80
     private var rows = 24
     /// Build 128.89 (first-mount black screen): output frames that arrive
@@ -228,6 +232,13 @@ final class NativeTerminalModel: ObservableObject {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         isConnected = false
+    }
+
+    /// Build 128.90: resign first responder on the terminal view so the
+    /// software keyboard drops (manual dismiss - the Enter auto-dismiss was
+    /// removed at Curtis's request).
+    func dismissKeyboard() {
+        terminalView?.resignFirstResponder()
     }
 }
 
