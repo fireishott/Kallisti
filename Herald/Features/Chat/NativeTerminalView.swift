@@ -60,25 +60,15 @@ struct NativeTerminalView: UIViewRepresentable {
 
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
             model.send(Array(data))
-            // Auto-dismiss the keyboard once a command is submitted: the
-            // hermes TUI sends on Enter (CR/LF). After the newline goes to
-            // the PTY, release first responder so the terminal gets full
-            // screen while the response streams in. Tap to bring the
-            // keyboard back for the next line.
-            if data.contains(0x0D) || data.contains(0x0A) {
-                DispatchQueue.main.async {
-                    source.resignFirstResponder()
-                }
-            }
+            // Build 128.89: keyboard auto-dismiss on Enter removed at
+            // Curtis's request - he wants the keyboard to stay up for
+            // consecutive commands.
         }
 
         func send(source: TerminalView, key: String) {
             model.send(Array(key.utf8))
-            if key == "\r" || key == "\n" {
-                DispatchQueue.main.async {
-                    source.resignFirstResponder()
-                }
-            }
+            // Build 128.89: keyboard auto-dismiss on Enter removed at
+            // Curtis's request - keyboard stays up for consecutive commands.
         }
 
         func scrolled(source: TerminalView, position: Double) {}
@@ -104,9 +94,23 @@ final class NativeTerminalModel: ObservableObject {
     private var viewHandler: (([UInt8]) -> Void)?
     private var cols = 80
     private var rows = 24
+    /// Build 128.89 (first-mount black screen): output frames that arrive
+    /// before the SwiftUI representable has mounted (viewHandler still nil).
+    /// On a settings toggle the WS can connect and stream the entire initial
+    /// TUI render before makeUIView runs, so without this buffer those bytes
+    /// are dropped and the terminal sits at a prompt on an empty screen.
+    private var pendingBytes: [UInt8] = []
 
     func setViewHandler(_ handler: @escaping ([UInt8]) -> Void) {
         viewHandler = handler
+        // Flush anything that arrived while the view was mounting, then
+        // clear so a reconnect can't replay stale bytes.
+        guard !pendingBytes.isEmpty else { return }
+        let bytes = pendingBytes
+        pendingBytes.removeAll(keepingCapacity: true)
+        DispatchQueue.main.async {
+            handler(bytes)
+        }
     }
 
     /// Start the connection. `baseURL` is the app's resolved connector URL
@@ -173,7 +177,13 @@ final class NativeTerminalModel: ObservableObject {
         case "output":
             if let dataStr = frame["data"] as? String {
                 let bytes = Array(dataStr.utf8)
-                viewHandler?(bytes)
+                if let viewHandler {
+                    viewHandler(bytes)
+                } else {
+                    // View not mounted yet - buffer so the initial render
+                    // isn't dropped (Build 128.89).
+                    pendingBytes.append(contentsOf: bytes)
+                }
             }
         case "exit":
             isConnected = false

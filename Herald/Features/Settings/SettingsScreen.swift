@@ -150,6 +150,16 @@ struct SettingsScreen: View {
         if relayStatus == .connecting && hostStore.isHostOnline {
             return .connected
         }
+        // Build 128.89 (settings "Error" flash): sessionStore.state.
+        // connectionStatus is legacy bootstrap state. In native mode
+        // bootstrap never runs, so a stale .error persisted from a prior
+        // session's failed bootstrap would flash "Error" in Settings for a
+        // second on every launch until hostStore.refresh() confirms online.
+        // The native client's live status (relayStatus) is authoritative -
+        // it never reports .error, only connecting/connected/reconnecting.
+        if container.nativeGatewayClient != nil {
+            return relayStatus
+        }
         return sessionStore.state.connectionStatus
     }
 
