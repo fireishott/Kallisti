@@ -563,37 +563,8 @@ struct iPadSidebarView: View {
                 )
             }
 
-            // ── Skills browser ──
-            NavigationLink {
-                SkillsBrowserView()
-            } label: {
-                HStack(spacing: Design.Spacing.sm) {
-                    Image(systemName: "wrench.and.screwdriver")
-                        .font(.system(size: Design.Size.iconSmall))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                        .frame(width: 24)
-                    Text("Skills")
-                        .font(Design.Typography.body)
-                        .foregroundStyle(Design.Colors.foreground)
-                }
-                .padding(.vertical, Design.Spacing.xs)
-            }
-
-            // ── Cron jobs ──
-            NavigationLink {
-                CronManagerView()
-            } label: {
-                HStack(spacing: Design.Spacing.sm) {
-                    Image(systemName: "clock.badge")
-                        .font(.system(size: Design.Size.iconSmall))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                        .frame(width: 24)
-                    Text("Cron Jobs")
-                        .font(Design.Typography.body)
-                        .foregroundStyle(Design.Colors.foreground)
-                }
-                .padding(.vertical, Design.Spacing.xs)
-            }
+            // 128.78: Skills and Cron Jobs moved to Settings > Agent Tools.
+            // Sidebar keeps only primary navigation sections.
         }
     }
 }

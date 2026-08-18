@@ -34,6 +34,14 @@ struct MainTabView: View {
                 .tabItem { Label(AppTab.talk.title, systemImage: AppTab.talk.icon) }
                 .tag(AppTab.talk)
 
+                // ── Notes Tab (128.78: restored to the unified tab bar so
+                // iPad keeps Notes after the split-view sidebar was removed) ──
+                NavigationStack {
+                    NotesWorkspaceView()
+                }
+                .tabItem { Label(AppTab.notes.title, systemImage: AppTab.notes.icon) }
+                .tag(AppTab.notes)
+
                 // ── Settings Tab ──
                 NavigationStack {
                     SettingsScreen()
