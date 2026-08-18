@@ -231,6 +231,13 @@ class TuiGatewayExecutor:
                     yield StreamEvent(type="tool_started", label=str(data.get("tool") or data.get("name") or "tool"), data=json.dumps({"toolCallId": data.get("tool_call_id") or data.get("toolCallId") or "", "argsPreview": data.get("preview") or data.get("args") or "", "emoji": data.get("emoji") or ""}))
                 elif event == "tool.completed":
                     yield StreamEvent(type="tool_completed", data=json.dumps({"toolCallId": data.get("tool_call_id") or data.get("toolCallId") or "", "resultPreview": data.get("result_preview") or data.get("resultPreview") or "", "isError": bool(data.get("error")), "durationMs": data.get("duration_ms") or data.get("durationMs")}))
+                elif event == "tool.output":
+                    # Live stdout chunk streamed during a terminal invocation.
+                    # Forward verbatim so relay clients get near-real-time output.
+                    yield StreamEvent(type="tool_output", data=json.dumps({
+                        "toolCallId": data.get("tool_id") or data.get("tool_call_id") or data.get("toolCallId") or "",
+                        "chunk": data.get("chunk") or data.get("output") or "",
+                    }))
                 elif event == "message.complete":
                     yield StreamEvent(type="finish", session_id=active_session, usage=data.get("usage"))
                     return
