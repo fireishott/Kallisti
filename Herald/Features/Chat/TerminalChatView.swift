@@ -1,18 +1,18 @@
 import SwiftUI
 
-/// Terminal chat transcript - the TRUE Hermes TUI experience (Build 128.77).
+/// Terminal chat transcript - the real TUI experience (Build 128.75).
 ///
-/// When Chat Display is "Terminal", the message list renders like an actual
-/// terminal session:
-///   - Plain monospace text stream, flush left, no cards, no borders.
-///   - User messages print as `> prompt` lines (green `>`).
-///   - Assistant output streams as plain text with a blinking block caret.
-///   - Tool calls print as `$ command` lines with a live elapsed timer while
-///     active and a duration when finished; stdout streams in a plain window.
-///   - Reasoning renders as dim italic lines under a `── thinking ──` rule.
-///   - System notices print dim in brackets.
-///   - A sticky status rule at the bottom shows model, token usage vs the
-///     context window with a progress bar, and session elapsed time.
+/// When Chat Display is "Terminal", the message list renders like a native
+/// terminal agent session instead of rich bubbles:
+///   - Assistant turns are gold-bordered agent blocks with a `Hermes` label
+///     and wall-clock timestamp (same visual DNA as the Hermes TUI).
+///   - Reasoning renders under a `Reasoning` header with a rule, dim italic
+///     text, and a `[thought for Xs]` footer when done.
+///   - Tool calls render as `$` command lines with a live elapsed timer while
+///     active and a duration when finished; stdout streams inside the block.
+///   - A sticky status bar at the bottom shows model, token usage vs context
+///     window with a progress bar, and session elapsed time.
+///   - User messages render as green `user@hermes:~$` prompt lines.
 ///
 /// The composer, banners, and queue bar remain untouched - this view only
 /// replaces the transcript renderer. Data stays identical to rich mode:
@@ -28,17 +28,32 @@ struct TerminalChatView: View {
     var contextWindow: Int?
     /// Current context tokens consumed this session (0 when unknown).
     var contextTokens: Int = 0
-    /// Build 128.76: available slash commands for the TUI landing line.
+    /// Build 128.76: available slash commands/tools for the TUI landing
+    /// panel (chatStore.commandCatalog names). Empty hides the panel.
     var availableCommands: [String] = []
-    /// Build 128.76: available skills/profile names for the TUI landing line.
+    /// Build 128.76: available skills/profile names for the TUI landing
+    /// panel. Empty hides the panel.
     var availableSkills: [String] = []
-    /// Build 128.76: session id shown in the TUI header info line.
+    /// Build 128.76: session id shown in the TUI header info block.
     var sessionLabel: String? = nil
+    /// Build 128.78: whether the terminal prompt can accept input. Mirrors
+    /// the rich composer's connection gate (online/degraded = enabled).
+    var inputEnabled: Bool = true
+    /// Build 128.78: sends a line typed at the terminal prompt. ChatScreen
+    /// routes this through the same enqueue + slash-command path as the
+    /// rich composer - this IS the real input for the TUI, not a skin.
+    var onSendText: (String) -> Void = { _ in }
 
     @State private var scrollProxy: ScrollViewProxy?
     @State private var isUserScrolling = false
     @State private var autoScrollTask: Task<Void, Never>?
     @State private var sessionStart = Date.now
+    // Build 128.78: terminal prompt state - the TUI owns its own input.
+    @State private var promptText = ""
+    @State private var promptHistory: [String] = []
+    @State private var historyIndex: Int? = nil
+    @State private var promptFocused = false
+    @FocusState private var promptFocusedField: Bool
     private static let scrollDebounceInterval: Duration = .milliseconds(100)
 
     private var rows: [Message] {
@@ -49,7 +64,7 @@ struct TerminalChatView: View {
         rows.first?.timestamp
     }
 
-    /// Session elapsed time shown on the status rule. Anchored to the first
+    /// Session elapsed time shown on the status bar. Anchored to the first
     /// message's timestamp so the clock survives view recreation (switching
     /// chats, scrolling, tab changes) instead of resetting to .now.
     private var sessionEpoch: Date {
@@ -116,11 +131,134 @@ struct TerminalChatView: View {
             }
 
             statusBar
+            terminalInputBar
         }
         .background(TerminalPalette.background)
     }
 
-    // MARK: - Status rule (TUI bottom strip)
+    // MARK: - Terminal input (Build 128.78)
+
+    /// The real TUI prompt - a focused text field with a `> ` prompt prefix,
+    /// slash-command autocomplete from the live command catalog, and up/down
+    /// arrow history. Submitting routes through onSendText (ChatScreen's
+    /// enqueue + slash dispatcher), so typing here behaves exactly like the
+    /// CLI: plain text sends a message, /commands execute locally or pass
+    /// through to the agent.
+    private var terminalInputBar: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(TerminalPalette.border)
+                .frame(height: 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                // Autocomplete strip for /commands
+                if promptText.hasPrefix("/"), !promptText.hasSuffix(" "), let suggestions = commandSuggestions, !suggestions.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(suggestions, id: \.self) { suggestion in
+                                Button {
+                                    promptText = "/" + suggestion + " "
+                                    promptFocusedField = true
+                                } label: {
+                                    Text("/" + suggestion)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundStyle(TerminalPalette.cyan)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(TerminalPalette.cyan.opacity(0.12))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .frame(height: 26)
+                }
+
+                HStack(spacing: 0) {
+                    Text("> ")
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(TerminalPalette.gold)
+
+                    TextField("type a message or /command", text: $promptText)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(
+                            inputEnabled ? TerminalPalette.foreground : TerminalPalette.faint
+                        )
+                        .focused($promptFocusedField)
+                        .disabled(!inputEnabled)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.send)
+                        .onSubmit { submitPrompt() }
+                        .onChange(of: promptText) { _, newValue in
+                            if newValue.contains("\n") {
+                                promptText = newValue.replacingOccurrences(of: "\n", with: "")
+                            }
+                            historyIndex = nil
+                        }
+                        .onKeyPress(.upArrow) {
+                            navigateHistory(-1)
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            navigateHistory(1)
+                            return .handled
+                        }
+
+                    if !promptText.isEmpty {
+                        Text("▊")
+                            .font(.system(size: 14, design: .monospaced))
+                            .foregroundStyle(TerminalPalette.green)
+                    } else {
+                        Text("▊")
+                            .font(.system(size: 14, design: .monospaced))
+                            .foregroundStyle(TerminalPalette.gold)
+                            .opacity(0.9)
+                    }
+                }
+            }
+            .padding(.horizontal, Design.Spacing.md)
+            .padding(.vertical, 8)
+            .background(TerminalPalette.statusBar)
+        }
+    }
+
+    /// Prefix-matched command suggestions for the TUI autocomplete strip.
+    private var commandSuggestions: [String]? {
+        let typed = String(promptText.dropFirst())
+        guard !typed.isEmpty else { return availableCommands.prefix(8).map { $0 } }
+        return availableCommands
+            .filter { $0.lowercased().hasPrefix(typed.lowercased()) }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private func submitPrompt() {
+        let line = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return }
+        promptHistory.append(line)
+        historyIndex = nil
+        promptText = ""
+        onSendText(line)
+    }
+
+    private func navigateHistory(_ direction: Int) {
+        guard !promptHistory.isEmpty else { return }
+        let newIndex: Int
+        if let idx = historyIndex {
+            newIndex = min(max(idx + direction, 0), promptHistory.count - 1)
+        } else {
+            newIndex = direction < 0 ? promptHistory.count - 1 : 0
+        }
+        historyIndex = newIndex
+        promptText = promptHistory[newIndex]
+    }
+
+    // MARK: - Status bar (TUI bottom strip)
 
     private var statusBar: some View {
         VStack(spacing: 0) {
@@ -215,75 +353,133 @@ struct TerminalChatView: View {
         return String(format: "%ds", sec)
     }
 
-    // MARK: - Empty state (minimal TUI landing, Build 128.77)
+    // MARK: - Empty state (TUI landing, Build 128.76)
 
     private static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.6"
     }
 
-    private var sessionInfoLine: String {
-        var parts: [String] = []
-        if let sessionLabel {
-            parts.append("session " + sessionLabel)
-        }
-        if let modelName {
-            parts.append("model " + modelName)
-        }
-        parts.append("context "
-            + Self.compactTokens(contextTokens)
-            + " / " + (contextWindow.map(Self.compactTokens) ?? "?"))
-        return parts.joined(separator: "  ·  ")
-    }
+    /// Block-letter ASCII banner, rootshell/Hermes-TUI style. Rendered in
+    /// gold on the landing screen so it reads like the real agent TUI
+    /// rather than a chat placeholder.
+    private static let bannerLines: [String] = [
+        " _  __    _    _     _    ___ _____ _____ ",
+        "| |/ /   / \\  | |   | |  / _ \\_   _|_   _|",
+        "| ' /   / _ \\ | |   | | | | | || |   | |  ",
+        "| . \\  / ___ \\| |___| |_| |_| || |   | |  ",
+        "|_|\\_\\/_/   \\_\\_____|_\\___/___||_|   |_|  ",
+    ]
 
-    private var commandLine: String {
-        let shown = Array(availableCommands.prefix(12))
-        if shown.isEmpty { return "commands: (catalog loading…)" }
-        var line = "/" + shown.joined(separator: "  /")
-        if availableCommands.count > 12 {
-            line += "  …and \(availableCommands.count - 12) more"
-        }
-        return "commands " + line
-    }
-
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-            Text("kallisti \(Self.appVersion)  —  hermes agent")
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+    private var banner: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(Self.bannerLines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(TerminalPalette.gold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .scaleEffect(x: 1.0, y: 0.9, anchor: .leading)
+            }
+            Text("kallisti / hermes agent  " + Self.appVersion)
+                .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(TerminalPalette.green)
+                .padding(.top, 2)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Kallisti terminal. Hermes agent \(Self.appVersion).")
+    }
 
-            Text(sessionInfoLine)
+    /// Session info block (model, session id, tokens) on the landing screen.
+    private var sessionInfo: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Session ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            Text("model    \(modelName ?? "hermes")")
+                .font(Design.Typography.codeSmall)
+                .foregroundStyle(TerminalPalette.foreground)
+            if let sessionLabel {
+                Text("session  \(sessionLabel)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.dim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text("context  \(Self.compactTokens(contextTokens)) / \(contextWindow.map(Self.compactTokens) ?? "?")")
                 .font(Design.Typography.codeSmall)
                 .foregroundStyle(TerminalPalette.dim)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Rectangle()
-                .fill(TerminalPalette.border)
-                .frame(height: 1)
-
-            Text(commandLine)
+            Text("status   connected")
                 .font(Design.Typography.codeSmall)
-                .foregroundStyle(TerminalPalette.cyan)
-                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(TerminalPalette.green)
+        }
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
+    }
 
-            if !availableSkills.isEmpty {
-                Text("skills " + availableSkills.prefix(8).joined(separator: "  ")
-                    + (availableSkills.count > 8 ? "  …" : ""))
+    /// Panel listing available slash commands (from the live command catalog).
+    private var toolsPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Available Commands ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            let shown = Array(availableCommands.prefix(12))
+            if shown.isEmpty {
+                Text("(catalog loading…)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.faint)
+            } else {
+                Text(shown.joined(separator: "  "))
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.cyan)
+                    .fixedSize(horizontal: false, vertical: true)
+                if availableCommands.count > 12 {
+                    Text("…and \(availableCommands.count - 12) more")
+                        .font(Design.Typography.codeSmall)
+                        .foregroundStyle(TerminalPalette.faint)
+                }
+            }
+        }
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
+    }
+
+    /// Panel listing available profiles (the closest runtime skill surface this
+    /// device reports). Renamed deliberately - showing profile names under a
+    /// "Skills" header would be a lie; the Hub skills bug (b85-b96) is
+    /// documented and the profile list is the honest available data.
+    private var skillsPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("─ Profiles ─")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(TerminalPalette.gold)
+            let shown = Array(availableSkills.prefix(10))
+            if shown.isEmpty {
+                Text("(no profiles loaded)")
+                    .font(Design.Typography.codeSmall)
+                    .foregroundStyle(TerminalPalette.faint)
+            } else {
+                Text(shown.joined(separator: "  "))
                     .font(Design.Typography.codeSmall)
                     .foregroundStyle(TerminalPalette.dim)
                     .fixedSize(horizontal: false, vertical: true)
+                if availableSkills.count > 10 {
+                    Text("…and \(availableSkills.count - 10) more")
+                        .font(Design.Typography.codeSmall)
+                        .foregroundStyle(TerminalPalette.faint)
+                }
             }
-
-            promptLine
-
-            Text("type a message below to start a session. rich chat: settings > preferences > chat display")
-                .font(Design.Typography.codeSmall)
-                .foregroundStyle(TerminalPalette.faint)
         }
-        .padding(.horizontal, Design.Spacing.md)
-        .padding(.top, Design.Spacing.lg)
-        .padding(.bottom, Design.Spacing.md)
-        .textSelection(.enabled)
+        .padding(Design.Spacing.sm)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TerminalPalette.border, lineWidth: 1)
+        )
     }
 
     /// Blinking block caret used by the prompt line and streaming rows.
@@ -313,9 +509,26 @@ struct TerminalChatView: View {
         HStack(spacing: 0) {
             Text("> ")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundStyle(TerminalPalette.green)
+                .foregroundStyle(TerminalPalette.gold)
             BlockCaret()
         }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.md) {
+            banner
+            sessionInfo
+            toolsPanel
+            skillsPanel
+            promptLine
+            Text("type at the > prompt below, or /help for commands. switch back to rich chat: settings > preferences > chat display")
+                .font(Design.Typography.codeSmall)
+                .foregroundStyle(TerminalPalette.faint)
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.top, Design.Spacing.lg)
+        .padding(.bottom, Design.Spacing.md)
+        .textSelection(.enabled)
     }
 
     // MARK: - Auto-scroll
@@ -347,13 +560,17 @@ struct TerminalChatView: View {
     }
 }
 
-/// One message rendered as plain terminal lines (Build 128.77 TRUE TUI).
-/// No cards, no gold borders, no per-message headers or timestamps - just
-/// the text stream the way the Hermes TUI prints it.
+/// One message rendered as terminal lines (Build 128.75 TUI restyle).
 private struct TerminalMessageRow: View {
     let message: Message
     let showReasoning: Bool
     let onRetry: (Message) -> Void
+
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -374,7 +591,7 @@ private struct TerminalMessageRow: View {
 
     private var userLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text("> ")
+            Text("user@hermes:~$ ")
                 .font(Design.Typography.code)
                 .foregroundStyle(TerminalPalette.green)
             Text(cleanedUserContent)
@@ -425,16 +642,16 @@ private struct TerminalMessageRow: View {
         return "system"
     }
 
-    // MARK: - Assistant block (plain text stream)
+    // MARK: - Assistant block (flat TUI text - no card chrome)
 
     private var heraldBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // Thinking section - dim italic, no borders.
+        VStack(alignment: .leading, spacing: 3) {
+            // Reasoning header + dim italic chain-of-thought.
             if showReasoning, !message.reasoning.isEmpty {
                 reasoningSection
             }
 
-            // Tool activities as `$ command` lines with live timers.
+            // Tool activities as flat command lines with live timers.
             if !message.toolActivities.isEmpty {
                 toolSection
             }
@@ -471,19 +688,22 @@ private struct TerminalMessageRow: View {
         }
     }
 
-    // MARK: - Thinking section
+    // MARK: - Reasoning section
 
     private var reasoningSection: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text("── thinking ──")
+                Text("Reasoning")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(TerminalPalette.dim)
+                    .foregroundStyle(TerminalPalette.reasoningHeader)
+                Rectangle()
+                    .fill(TerminalPalette.border)
+                    .frame(height: 1)
             }
 
             ForEach(reasoningParsedLines, id: \.self) { line in
                 Text(line)
-                    .font(Design.Typography.codeSmall)
+                    .font(.system(size: 11, design: .monospaced))
                     .italic()
                     .foregroundStyle(TerminalPalette.reasoning)
                     .lineLimit(nil)
@@ -578,14 +798,14 @@ private struct TerminalMessageRow: View {
     }
 }
 
-/// One tool activity as a plain `$ command` line with a live elapsed timer
-/// while active, duration when finished, stdout streaming in a plain
-/// window, and a one-line result note when done.
+/// One tool activity as a TUI command block: `$` prompt line with a live
+/// elapsed timer while active, duration when finished, stdout streaming
+/// inside a bordered window, and a one-line result note when done.
 private struct TerminalToolLine: View {
     let activity: ToolActivity
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("$")
                     .font(Design.Typography.code)
@@ -606,17 +826,14 @@ private struct TerminalToolLine: View {
 
             if activity.isActive, !activity.liveOutput.isEmpty {
                 TerminalOutputView(text: activity.liveOutput, isActive: true, maxChars: 32 * 1024)
-                    .padding(.leading, Design.Spacing.xs)
             } else if !activity.isActive, let result = activity.resultPreview, !result.isEmpty {
                 Text(Self.truncateMulti(result))
                     .font(Design.Typography.codeSmall)
                     .foregroundStyle(TerminalPalette.dim)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, Design.Spacing.xs)
             }
         }
-        .padding(.vertical, 2)
     }
 
     /// Live elapsed timer (TUI style: `0.0s`) while active via TimelineView;
@@ -677,8 +894,8 @@ struct StreamingBlockCaret: View {
 }
 
 /// Shared terminal palette for the TUI experience - near-black navy ground,
-/// green + cyan accents, gold timers, amber reasoning, dim/faint secondary
-/// levels. Matches the Hermes TUI visual DNA.
+/// green + cyan accents, gold agent borders, amber reasoning, dim/faint
+/// secondary levels. Matches the Hermes TUI visual DNA.
 enum TerminalPalette {
     static let background = Color(hex: 0x0B0E14)
     static let statusBar = Color(hex: 0x0D1117)

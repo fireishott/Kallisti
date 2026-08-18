@@ -308,7 +308,13 @@ struct ChatScreen: View {
                         // command catalog + skills surfaced on this device.
                         availableCommands: chatStore.commandCatalog.map(\.name),
                         availableSkills: skillNames,
-                        sessionLabel: chatStore.conversation?.sessionKey
+                        sessionLabel: chatStore.conversation?.sessionKey,
+                        // Build 128.78: the TUI owns its own input line -
+                        // a real terminal prompt, not the iOS composer.
+                        inputEnabled: hostStore.connectionState == .online,
+                        onSendText: { content in
+                            sendTerminalText(content)
+                        }
                     )
                 } else {
                     messageList
@@ -319,7 +325,10 @@ struct ChatScreen: View {
                 if chatStore.queuedCountForCurrentConversation > 0 || chatStore.isQueueHeld {
                     queueStatusBar
                 }
-                ChatInputBar(
+                // Build 128.78: in TUI mode the terminal view owns input - the iOS
+                // composer is hidden entirely.
+                if settingsStore.settings.chatDisplayMode == .rich {
+                    ChatInputBar(
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
                     isStreaming: chatStore.isStreaming || chatStore.isServerTurnActive,
@@ -363,12 +372,12 @@ struct ChatScreen: View {
                     isEnabled: chatStore.connectionStatus == .connected
                         || chatStore.connectionStatus == .degraded
                 )
+                } // end rich-mode ChatInputBar gate (Build 128.78)
 
                 // Build 128.76: clarify card. When the agent parks the turn
                 // on a clarify question, show an answerable card above the
                 // composer instead of letting the turn hang for the full
-                // clarify_timeout. Rendered in BOTH rich and terminal modes
-                // since it rides above the shared ChatInputBar.
+                // clarify_timeout. Rendered in BOTH rich and terminal modes.
                 if let pending = chatStore.pendingClarify {
                     ClarifyCardView(
                         clarify: pending,
@@ -1751,6 +1760,30 @@ struct ChatScreen: View {
 
             // Phase 2: submit (async; may queue behind an active job and
             // chain through the FIFO outbox).
+            await chatStore.submitNextEligible(for: conversationID)
+        }
+    }
+
+    // MARK: - TUI input (Build 128.78)
+
+    /// Send path for the terminal prompt line. Mirrors sendMessage() but takes
+    /// the text directly instead of reading the composer draft - the TUI owns
+    /// its own input field. Slash commands route through the same dispatcher
+    /// so /new, /clear, /title etc work identically in both modes.
+    private func sendTerminalText(_ raw: String) {
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return }
+        if refuseSendIfUnreachable() {
+            return
+        }
+        let conversationID = chatStore.conversation?.id
+        Task {
+            if content.hasPrefix("/") {
+                await dispatchTypedSlashCommand(content)
+                return
+            }
+            let record = await chatStore.enqueueMessage(content, attachments: [])
+            guard record != nil else { return }
             await chatStore.submitNextEligible(for: conversationID)
         }
     }

@@ -820,7 +820,9 @@ enum ChatDisplayMode: String, Codable, CaseIterable, Hashable, Sendable {
     var displayLabel: String {
         switch self {
         case .rich: "Rich"
-        case .terminal: "Terminal"
+        // Build 128.78: user-facing label is TUI - matches the real
+        // terminal experience, not a skin.
+        case .terminal: "TUI"
         }
     }
 
