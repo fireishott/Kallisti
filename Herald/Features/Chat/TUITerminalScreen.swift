@@ -53,6 +53,20 @@ struct TUITerminalScreen: View {
             guard !started else { return }
             await startTerminal()
         }
+        // Build 128.92: .task does NOT reliably re-fire when the Chat tab
+        // is re-selected in a TabView - the tab content stays alive and
+        // SwiftUI only re-runs .task for the top-level tab view, not this
+        // nested screen. Server evidence: terminal WS closed on tab-away
+        // (08:59:31), no new /v1/terminal connection after return even
+        // though the app kept polling. onAppear fires on EVERY tab return,
+        // so drive the restart from here. Idempotent: startTerminal()
+        // guards on `started` (set true immediately, so concurrent .task
+        // + onAppear can't double-connect) and model.start() guards on
+        // socket == nil.
+        .onAppear {
+            guard !started else { return }
+            Task { await startTerminal() }
+        }
         .onDisappear {
             model.disconnect()
             // Build 128.90: allow the next .task to restart the terminal.

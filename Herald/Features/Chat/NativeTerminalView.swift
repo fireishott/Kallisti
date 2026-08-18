@@ -108,6 +108,16 @@ final class NativeTerminalModel: ObservableObject {
     /// Build 128.90: weak reference to the mounted terminal view so the
     /// model can resign first responder (keyboard dismissal button).
     weak var terminalView: TerminalView?
+    /// Build 128.92: retained connection params so an unexpected socket
+    /// death can reconnect without the screen having to restart it.
+    private var baseURL: URL?
+    private var token: String?
+    /// Build 128.92: in-flight reconnect task. One at a time, like the
+    /// native client's scheduleReconnect.
+    private var reconnectTask: Task<Void, Never>?
+    /// Build 128.92: set by disconnect() so a deliberate teardown is not
+    /// fought by a scheduled reconnect (mirrors NativeKallistiClient).
+    private var isDeliberatelyDisconnected = false
     private var cols = 80
     private var rows = 24
     /// Build 128.89 (first-mount black screen): output frames that arrive
@@ -135,6 +145,11 @@ final class NativeTerminalModel: ObservableObject {
     /// caller, never hardcoded.
     func start(baseURL: URL, token: String?) {
         guard socket == nil else { return }
+        // Build 128.92: retain params for auto-reconnect, and clear the
+        // deliberate-disconnect flag so a fresh start() can reconnect.
+        self.baseURL = baseURL
+        self.token = token
+        isDeliberatelyDisconnected = false
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.scheme = baseURL.scheme == "https" ? "wss" : "ws"
         components?.path = "/v1/terminal"
@@ -181,7 +196,30 @@ final class NativeTerminalModel: ObservableObject {
             case .failure:
                 self.isConnected = false
                 self.statusText = "terminal closed"
+                // Build 128.92: the socket died on its own (proxy idle reap,
+                // network change, server restart). Without this the terminal
+                // stays dead until the screen is restarted. Only reconnect
+                // if this wasn't a deliberate disconnect() (tab switch).
+                self.scheduleReconnect()
             }
+        }
+    }
+
+    /// Build 128.92: schedule a reconnect with backoff after an unexpected
+    /// socket death. One task at a time; cancelled by a deliberate
+    /// disconnect() or by a successful fresh start().
+    private func scheduleReconnect() {
+        guard !isDeliberatelyDisconnected else { return }
+        guard reconnectTask == nil else { return }
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            guard !self.isDeliberatelyDisconnected, self.socket == nil,
+                  let baseURL = self.baseURL
+            else { return }
+            self.statusText = "reconnecting..."
+            self.start(baseURL: baseURL, token: self.token)
         }
     }
 
@@ -241,6 +279,11 @@ final class NativeTerminalModel: ObservableObject {
     }
 
     func disconnect() {
+        // Build 128.92: mark deliberate so an in-flight reconnect task
+        // doesn't fight the teardown (tab switch / screen gone).
+        isDeliberatelyDisconnected = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         isConnected = false
