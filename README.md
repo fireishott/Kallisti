@@ -94,7 +94,6 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 - **Talk (voice mode)** - push-to-talk with configurable ASR/TTS providers and Apple speech fallback. Barge-in, audio session management, and live transcript display. Not functional yet - known work in progress.
 - **watchOS app** - native companion watch experience, coming soon
-- **CarPlay** - glanceable trip context and hands-free control
 - Expanding the notes pipeline and refining the TUI terminal
 - Performance passes on long-session history and large media
 
