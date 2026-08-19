@@ -676,6 +676,22 @@ final class ChatStore {
     }
 
     func loadConversation() async {
+        // Build 130.3 (new-chat ghost session): scope the no-id load to the
+        // persisted session when one exists. The legacy path called
+        // heraldClient.loadConversation() (no-id), which returns a
+        // RANDOM-UUID "New Chat" placeholder conversation and re-points the
+        // native client's currentConversation at it. On a push wake
+        // (handleRemoteNotificationWake, messageReady) or background refresh
+        // after clicking New Chat, that clobbered the freshly adopted
+        // conversation with a random empty one; the next send then minted
+        // yet another brand-new server session (idMap had no entry for the
+        // random UUID), so the thinking bubble + response landed in a
+        // session that was not the user's new chat. Loading by the persisted
+        // id keeps the wake path attached to the real active conversation.
+        if let selectedID = persistence.currentSessionId {
+            await loadConversation(id: selectedID)
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         // Build 31: capture generation before the await.  If a terminal row is
