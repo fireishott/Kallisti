@@ -2294,6 +2294,21 @@ final class NativeKallistiClient: HeraldClientProtocol {
             do {
                 let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
                 nativeSessionId = await idMap.nativeId(for: summary.id)
+            } catch NativeGatewayClientError.transportClosed {
+                // The socket dropped mid-create (gateway restart, idle reap,
+                // reconnect race). Re-establish the transport, then retry
+                // once before surfacing the error - notes sync and chat
+                // sends hit this right after a gateway WS drop.
+                Self.logger.warning("session.create failed with transportClosed - reconnecting and retrying once")
+                await reconnectIfNeeded()
+                do {
+                    let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
+                    nativeSessionId = await idMap.nativeId(for: summary.id)
+                } catch {
+                    continuation.yield(.failed("Failed to create session: \(error)"))
+                    continuation.finish()
+                    return
+                }
             } catch {
                 continuation.yield(.failed("Failed to create session: \(error)"))
                 continuation.finish()
