@@ -122,13 +122,6 @@ struct TUITerminalScreen: View {
             started = false
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(model.statusText)
-                    .font(Design.Typography.codeSmall)
-                    .foregroundStyle(
-                        model.isConnected ? Design.Colors.accent : Design.Colors.secondaryForeground
-                    )
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
