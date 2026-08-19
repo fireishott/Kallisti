@@ -3,10 +3,10 @@ import PhotosUI
 import SwiftUI
 import VisionKit
 
-/// View mode for the note editor — shows ink, recognized text, or enriched document.
+/// View mode for the note editor — ink+text are one surface; recognized and
+/// enriched are read-only derived views.
 enum NoteViewMode: String, CaseIterable, Identifiable {
     case ink
-    case text
     case recognized
     case enriched
 
@@ -15,7 +15,6 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .ink: "Ink"
-        case .text: "Text"
         case .recognized: "Recognized"
         case .enriched: "Enriched"
         }
@@ -24,7 +23,6 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .ink: "pencil.tip"
-        case .text: "keyboard"
         case .recognized: "text.viewfinder"
         case .enriched: "doc.text"
         }
@@ -39,6 +37,7 @@ struct NoteEditorView: View {
     @Environment(SettingsStore.self) private var settingsStore
     @State private var title: String = ""
     @State private var typedText: String = ""
+    @State private var isTypingActive: Bool = false
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
     @State private var attachments: [NoteAttachment] = []
@@ -129,8 +128,6 @@ struct NoteEditorView: View {
             switch viewMode {
             case .ink:
                 inkView
-            case .text:
-                textView
             case .recognized:
                 recognizedView
             case .enriched:
@@ -167,6 +164,15 @@ struct NoteEditorView: View {
                 }
                 .accessibilityLabel(pencilOnly ? "Pencil only mode" : "Any input mode")
                 .accessibilityHint("Toggle between pencil-only and finger drawing")
+                // Keyboard text toggle (Build 131.1): typed text and ink are
+                // one surface - this reveals/collapses the typing field.
+                Button {
+                    isTypingActive.toggle()
+                } label: {
+                    Image(systemName: isTypingActive ? "keyboard.chevron.compact.down" : "keyboard")
+                }
+                .accessibilityLabel(isTypingActive ? "Hide text field" : "Show text field")
+                .accessibilityHint("Toggle the keyboard text field above the canvas")
                 // Sync button: push THIS note to its session (Build 128.97 -
                 // never sweeps every dirty note; one note = one task)
                 Button {
@@ -312,42 +318,49 @@ struct NoteEditorView: View {
 
     @ViewBuilder
     private var inkView: some View {
-        GeometryReader { proxy in
-            PencilCanvasRepresentable(
-                drawing: $drawing,
-                pageStyle: pageStyle,
-                pencilOnly: pencilOnly,
-                // Build 130.1: honor the user's canvas width scale. 1.0 =
-                // full column (the old behavior); <1 narrows the writing
-                // column, >1 widens it.
-                canvasWidth: proxy.size.width * CGFloat(settingsStore.settings.notesCanvasWidthScale),
-                // Build 130.2: user line-height override. 0 = follow the
-                // paper style default; >0 forces the actual line spacing.
-                lineSpacing: settingsStore.settings.notesLineSpacing,
-                onDrawingChanged: { newDrawing in
-                    schedulePersist(newDrawing)
-                },
-                onToolUseBegan: {},
-                onToolUseEnded: {
-                    // Immediate persist on pencil-up
-                    persistDrawing(drawing)
-                }
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var textView: some View {
-        TextEditor(text: $typedText)
-            .font(.body)
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .accessibilityLabel("Note text")
-            .accessibilityHint("Type the note body with the keyboard")
-            .onChange(of: typedText) { _, newValue in
-                scheduleTypedTextPersist(newValue)
+        VStack(spacing: 0) {
+            // Typed text + ink are ONE surface (Build 131.1). The keyboard
+            // text lives above the canvas; empty text collapses to a toggle
+            // (keyboard toolbar button) so a fresh note is pure canvas until
+            // you choose to type.
+            if isTypingActive || !typedText.isEmpty {
+                TextEditor(text: $typedText)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 44, maxHeight: 140)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                    .accessibilityLabel("Note text")
+                    .accessibilityHint("Type the note body with the keyboard")
+                    .onChange(of: typedText) { _, newValue in
+                        scheduleTypedTextPersist(newValue)
+                    }
+                Divider()
             }
+
+            GeometryReader { proxy in
+                PencilCanvasRepresentable(
+                    drawing: $drawing,
+                    pageStyle: pageStyle,
+                    pencilOnly: pencilOnly,
+                    // Build 130.1: honor the user's canvas width scale. 1.0 =
+                    // full column (the old behavior); <1 narrows the writing
+                    // column, >1 widens it.
+                    canvasWidth: proxy.size.width * CGFloat(settingsStore.settings.notesCanvasWidthScale),
+                    // Build 130.2: user line-height override. 0 = follow the
+                    // paper style default; >0 forces the actual line spacing.
+                    lineSpacing: settingsStore.settings.notesLineSpacing,
+                    onDrawingChanged: { newDrawing in
+                        schedulePersist(newDrawing)
+                    },
+                    onToolUseBegan: {},
+                    onToolUseEnded: {
+                        // Immediate persist on pencil-up
+                        persistDrawing(drawing)
+                    }
+                )
+            }
+        }
     }
 
     @ViewBuilder
@@ -428,6 +441,8 @@ struct NoteEditorView: View {
         liveOCRText = ""
         isOCRWorking = false
         pendingOCRRRevision = nil
+        // Reset the typing-field toggle so a fresh note starts as pure canvas.
+        isTypingActive = false
 
         // Load the latest drawing revision
         Task {
