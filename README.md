@@ -207,3 +207,8 @@ MIT. See [LICENSE](LICENSE).
 ## Acknowledgments
 
 Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/hermes-agent) and incorporates earlier work from the Herald mobile client under the repository's MIT license history.
+
+## Development team
+
+- **Curtis Freeman** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer. Architecture, iOS app, connector, and gateway integration.
+- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPad development. Tablet UX, handwriting and OCR, and iPad-specific polish.
