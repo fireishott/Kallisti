@@ -124,7 +124,7 @@ targets:
         NSCameraUsageDescription: "Kallisti uses the camera to capture photos and documents for analysis."
         NSPhotoLibraryUsageDescription: "Kallisti accesses your photo library to help organize and search your photos."
         NSMicrophoneUsageDescription: "Kallisti uses the microphone for voice conversations in Talk Mode."
-        NSSiriUsageDescription: "Kallisti uses Siri to send and read messages on CarPlay and with voice commands."
+        NSSiriUsageDescription: "Kallisti uses Siri to send and read messages with voice commands."
         INIntentsSupported:
           - INSendMessageIntent
           - INSearchForMessagesIntent
@@ -158,11 +158,7 @@ targets:
           - net.fihonline.kallisti.viewNote
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
-          UISceneConfigurations:
-            CPTemplateApplicationSceneSessionRoleApplication:
-              - UISceneClassName: CPTemplateApplicationScene
-                UISceneConfigurationName: CarPlay
-                UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate"
+          UISceneConfigurations: {}
 
   KallistiWidgets:
     type: app-extension
