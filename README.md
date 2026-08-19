@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.7-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.3.1-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
@@ -19,7 +19,7 @@ There is no hosted vendor backend. You bring your own Hermes gateway, connector,
 
 Kallisti is in **private beta**. TestFlight invites are being distributed to our beta testers now - if you are interested in joining, reach out through the [Discussions](https://github.com/fireishott/Kallisti/discussions) tab.
 
-The app is usable for daily driving. Chat, the embedded TUI terminal, and handwriting notes are working; voice mode and watchOS are in active development. Some rough edges remain, and the app is under active iteration.
+The app is usable for daily driving. Chat, the embedded TUI terminal, and handwriting notes are working; **Talk** (voice mode) and **watchOS** are coming soon and in active development. Some rough edges remain, and the app is under active iteration.
 
 ## Highlights
 
@@ -78,7 +78,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - Live Activities on the lockscreen with elapsed-time heartbeat
 - In-app notification inbox with dismiss and snooze actions
 - Widgets and notification-service extensions
-- Voice mode in active development, with configurable ASR/TTS and Apple speech fallback
+- **Talk (voice mode)** coming soon - push-to-talk with configurable ASR/TTS and Apple speech fallback
 - Optional HealthKit, CoreLocation, and CoreMotion sync, with HealthKit background delivery toggled in-app
 - Handwriting notes with Apple Pencil, OCR, and AI enrichment (iPad only)
 
@@ -92,8 +92,8 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 ## In development
 
-- **Voice mode** - ASR/TTS provider configuration with Apple speech fallback
-- **watchOS app** - companion watch experience
+- **Talk (voice mode)** - push-to-talk with configurable ASR/TTS providers and Apple speech fallback. Barge-in, audio session management, and live transcript display. Not functional yet - known work in progress.
+- **watchOS app** - native companion watch experience, coming soon
 - **CarPlay** - glanceable trip context and hands-free control
 - Expanding the notes pipeline and refining the TUI terminal
 - Performance passes on long-session history and large media
@@ -211,4 +211,4 @@ Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/he
 ## Development team
 
 - **Curtis Freeman** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer. Architecture, iOS app, connector, and gateway integration.
-- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPad development. Tablet UX, handwriting and OCR, and iPad-specific polish.
+- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPad and watchOS development. Tablet UX, handwriting and OCR, Watch companion, and platform-specific polish.
