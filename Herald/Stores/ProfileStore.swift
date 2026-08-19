@@ -77,7 +77,7 @@ final class ProfileStore {
 
     nonisolated static func resolveDisplayName(activeProfileName: String?, profileCount: Int) -> String {
         let name = activeProfileName ?? "default"
-        return name == "default" && profileCount <= 1 ? "Ignyte" : name
+        return name == "default" && profileCount <= 1 ? "Kallisti" : name
     }
 
     func loadProfiles(force: Bool = false) async {

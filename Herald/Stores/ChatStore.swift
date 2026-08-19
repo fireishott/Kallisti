@@ -2985,7 +2985,7 @@ final class ChatStore {
     /// The user-facing failure copy, using the active profile name when
     /// available and falling back to "Kallisti".
     func failureMessage(for category: String? = nil) -> String {
-        let name = profileStore?.displayProfileName ?? "Ignyte"
+        let name = profileStore?.displayProfileName ?? "Kallisti"
         switch category {
         case "context_exceeded":
             return "Session too long. Start a new chat."

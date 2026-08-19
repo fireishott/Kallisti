@@ -169,7 +169,7 @@ final class ModelStore {
                 // Build 41: DO NOT fall through to the legacy relay path.
                 // GET /v1/models over the relay is dead for native clients
                 // (native bearer tokens are rejected on /v1/*) and returns
-                // only the API-server's two placeholder rows (Ignyte,
+                // only the API-server's two placeholder rows (Kallisti,
                 // hermes-agent) - no real catalog, and definitely no 9router.
                 // Falling back made retry hit the same dead path forever and
                 // hid the actual native error. Surface the real error so the
