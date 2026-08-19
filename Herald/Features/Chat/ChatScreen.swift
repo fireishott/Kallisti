@@ -306,7 +306,9 @@ struct ChatScreen: View {
                 // Build 128.50: queue status bar - shows held/queued state and
                 // a Hold/Release toggle so queued messages don't silently fire
                 // after the active turn (Electron parity).
-                if chatStore.queuedCountForCurrentConversation > 0 || chatStore.isQueueHeld {
+                // Build 130.6: only render when there are actually queued
+                // messages - a bare "held" with nothing queued is noise.
+                if chatStore.queuedCountForCurrentConversation > 0 {
                     queueStatusBar
                 }
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
@@ -1612,24 +1614,34 @@ struct ChatScreen: View {
     // (won't auto-fire) or will drain automatically when the turn ends.
     private var queueStatusBar: some View {
         HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
+                .font(.system(size: 13))
+                .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
+            Text(queueStatusText)
+                .font(Design.Typography.caption)
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .lineLimit(1)
+            Spacer()
             Button {
                 showQueueManager = true
             } label: {
-                HStack(spacing: Design.Spacing.sm) {
-                    Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
-                        .font(.system(size: 13))
-                        .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
-                    Text(queueStatusText)
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
+                Text("View")
+                    .font(Design.Typography.caption.weight(.semibold))
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Design.Colors.surface)
+                            .overlay(
+                                Capsule()
+                                    .stroke(Design.Colors.border, lineWidth: 1)
+                            )
+                    )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open queue manager")
+            .accessibilityLabel("View queued messages")
             .accessibilityHint("View, edit, or delete queued messages")
-            Spacer()
             Button {
                 chatStore.setQueueHeld(!chatStore.isQueueHeld)
             } label: {
@@ -1648,6 +1660,7 @@ struct ChatScreen: View {
                     )
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(chatStore.isQueueHeld ? "Release held messages" : "Hold queued messages")
         }
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, 5)
@@ -1657,9 +1670,9 @@ struct ChatScreen: View {
     private var queueStatusText: String {
         let count = chatStore.queuedCountForCurrentConversation
         if chatStore.isQueueHeld {
-            return count > 0 ? "\(count) queued message\(count == 1 ? "" : "s") held" : "Queue held"
+            return "\(count) queued - paused"
         }
-        return count > 0 ? "\(count) queued message\(count == 1 ? "" : "s") - will send after this turn" : "Queue ready"
+        return "\(count) queued - sends after this turn"
     }
 
     // D4: contextWarningBanner removed — was driven by fabricated percentage.
