@@ -12,7 +12,6 @@ struct AttachmentPickerSheet: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(PermissionsStore.self) private var permissionsStore
 
-    @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var showVideoPicker = false
     @State private var showFilePicker = false
@@ -38,7 +37,12 @@ struct AttachmentPickerSheet: View {
                         color: .gray,
                         title: "Camera",
                         description: "Take a photo",
-                        action: { showCamera = true }
+                        action: {
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                onAttachmentPicked?(.requestCamera)
+                            }
+                        }
                     )
                 }
 
@@ -90,16 +94,6 @@ struct AttachmentPickerSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraPickerView { image in
-                if let image {
-                    prepareAndDeliver(.image(image))
-                } else {
-                    dismiss()
-                }
-            }
-            .ignoresSafeArea()
-        }
         .photosPicker(
             isPresented: $showPhotoPicker,
             selection: $selectedPhotoItems,
@@ -243,6 +237,9 @@ struct AttachmentPickerSheet: View {
                     guard fileSize > 0 else {
                         throw PreparationError.emptyFile
                     }
+                case .requestCamera:
+                    // Handled at ChatScreen root - nothing to prepare here.
+                    break
                 }
                 onAttachmentPicked?(result)
                 dismiss()
@@ -352,6 +349,7 @@ struct AttachmentPickerSheet: View {
 enum AttachmentResult {
     case image(UIImage)
     case file(URL)
+    case requestCamera
 }
 
 // MARK: - Camera Picker

@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -226,6 +227,8 @@ struct ChatScreen: View {
     private static let scrollDebounceInterval: Duration = .milliseconds(100)
 
     @State private var showAttachmentPicker = false
+    @State private var showCamera = false
+    @State private var showCameraPermissionDenied = false
     @State private var showCanvas = false
     /// Build 128.52: queue manager sheet - view/edit/delete queued messages.
     @State private var showQueueManager = false
@@ -403,6 +406,24 @@ struct ChatScreen: View {
             AttachmentPickerSheet { result in
                 handleAttachmentResult(result)
             }
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPickerView { image in
+                if let image {
+                    handleAttachmentResult(.image(image))
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .alert("Camera Access Required", isPresented: $showCameraPermissionDenied) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Kallisti needs camera access to take photos. Enable it in Settings to attach camera images.")
         }
         .sheet(isPresented: $showHeraldHub) {
             HeraldSelectorSheet(initialTab: heraldHubInitialTab)
@@ -1805,15 +1826,32 @@ struct ChatScreen: View {
     }
 
     func handleAttachmentResult(_ result: AttachmentResult) {
-        guard pendingAttachments.count < PendingAttachment.maxAttachmentsPerMessage else { return }
         switch result {
         case .image(let image):
+            guard pendingAttachments.count < PendingAttachment.maxAttachmentsPerMessage else { return }
             if let attachment = PendingAttachment.image(image) {
                 pendingAttachments.append(attachment)
             }
         case .file(let url):
+            guard pendingAttachments.count < PendingAttachment.maxAttachmentsPerMessage else { return }
             if let attachment = PendingAttachment.file(at: url) {
                 pendingAttachments.append(attachment)
+            }
+        case .requestCamera:
+            Task {
+                // Request camera permission before presenting. Without this,
+                // a first-run or denied iPad shows a black camera UI.
+                let status = AVCaptureDevice.authorizationStatus(for: .video)
+                switch status {
+                case .notDetermined:
+                    _ = await AVCaptureDevice.requestAccess(for: .video)
+                case .denied, .restricted:
+                    showCameraPermissionDenied = true
+                    return
+                default:
+                    break
+                }
+                showCamera = true
             }
         }
     }
