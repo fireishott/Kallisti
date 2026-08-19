@@ -1621,7 +1621,8 @@ struct ChatScreen: View {
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .lineLimit(1)
-            Spacer()
+                .layoutPriority(1)
+            Spacer(minLength: Design.Spacing.sm)
             Button {
                 showQueueManager = true
             } label: {
@@ -1638,8 +1639,10 @@ struct ChatScreen: View {
                                     .stroke(Design.Colors.border, lineWidth: 1)
                             )
                     )
+                    .fixedSize()
             }
             .buttonStyle(.plain)
+            .layoutPriority(2)
             .accessibilityLabel("View queued messages")
             .accessibilityHint("View, edit, or delete queued messages")
             Button {
@@ -1658,12 +1661,15 @@ struct ChatScreen: View {
                                     .stroke(Design.Colors.border, lineWidth: 1)
                             )
                     )
+                    .fixedSize()
             }
             .buttonStyle(.plain)
+            .layoutPriority(2)
             .accessibilityLabel(chatStore.isQueueHeld ? "Release held messages" : "Hold queued messages")
         }
+        .frame(height: 34)
         .padding(.horizontal, Design.Spacing.md)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(chatStore.isQueueHeld ? Design.Colors.warning.opacity(0.10) : Design.Brand.accent.opacity(0.06))
     }
 
