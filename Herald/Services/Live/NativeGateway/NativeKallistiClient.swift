@@ -1894,6 +1894,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     // MARK: - Conversation
 
     func loadConversation() async -> Conversation {
+        // Build 130.3 (new-chat ghost session): never clobber an adopted
+        // conversation with a random "New Chat" placeholder on push wake /
+        // background refresh. The no-id load is only a fallback when
+        // nothing is active; if a conversation is already current (e.g. a
+        // freshly created New Chat), keep it so the next send resolves to
+        // the real session instead of minting a random one (idMap has no
+        // entry for the random UUID).
+        if let currentConversation {
+            return currentConversation
+        }
         // Build 128.45: this is the "most recent" catch-all load. The native
         // session is resolved by the caller's ensureConversation flow and the
         // idMap; this placeholder conversation carries no sessionKey yet (the
