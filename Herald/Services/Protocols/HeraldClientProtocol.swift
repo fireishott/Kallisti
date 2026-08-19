@@ -69,6 +69,14 @@ protocol HeraldClientProtocol {
     /// Delete a session by ID.
     func deleteSession(id: UUID) async throws
 
+    /// Build 130.1: delete the gateway session backing a NOTE. The gateway's
+    /// `session.delete` refuses ACTIVE sessions and matches DB rows by the
+    /// FULL session key, so this closes the live session first (by its short
+    /// native id) then deletes by the pinned FULL key. Best-effort: failures
+    /// are logged by the caller, never fatal to the local note delete.
+    /// Default: no-op for clients without a native gateway backing.
+    func deleteNoteSession(conversationID: UUID, gatewaySessionKey: String?) async throws
+
     /// Archive a session by ID.
     func archiveSession(id: UUID) async throws
 
@@ -208,6 +216,11 @@ extension HeraldClientProtocol {
     /// relay path). The native gateway client overrides this with
     /// session.resume + idMap re-registration.
     func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool { false }
+
+    /// Default: no-op for clients without a native gateway backing (mocks,
+    /// legacy relay path). The native gateway client overrides this with the
+    /// close-then-delete sequence.
+    func deleteNoteSession(conversationID: UUID, gatewaySessionKey: String?) async throws {}
 
     /// Default: nil for clients without a durable key map (mocks, legacy
     /// relay path). The native gateway client overrides this to read its

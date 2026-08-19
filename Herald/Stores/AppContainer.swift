@@ -202,8 +202,13 @@ final class AppContainer {
             accessTokenProvider: { await sessionStore.currentAccessToken() }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
-        self.notesStore = notesStore ?? NotesStore()
         let chatStoreRef = self.chatStore
+        let settingsRef = self.settingsStore
+        self.notesStore = notesStore ?? NotesStore(
+            repository: NotesRepository(),
+            clientProvider: { await chatStoreRef.heraldClient },
+            settingsProvider: { settingsRef.settings }
+        )
         self.notesSyncEngine = NotesSyncEngine(
             notesStore: self.notesStore,
             settingsStore: self.settingsStore,

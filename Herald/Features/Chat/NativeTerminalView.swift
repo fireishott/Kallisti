@@ -506,17 +506,22 @@ private final class ScrollPanDelegate: NSObject, UIGestureRecognizerDelegate {
             // row 0 and do nothing - that was the "touch scroll still does
             // nothing" report through 129.0: the pan fired, the target was
             // a no-op. When the alt buffer is active the TUI app owns its
-            // viewport (Textual), so drive it by sending arrow keys to the
-            // PTY - the same pattern the fork's own panSelectionHandler
-            // uses when mouse reporting is off. Normal buffers keep the
-            // local row scroll (real scrollback exists there).
+            // viewport, so drive it by sending keys to the PTY.
+            // Build 130.1: the Hermes TUI is Ink/React, and Ink's useInput
+            // scrolls on PageUp/PageDown (ESC[5~ / ESC[6~) - ARROW KEYS
+            // were the 130.0 mistake (they just move the cursor). Send the
+            // VT100 page keys so the TUI actually scrolls. Normal buffers
+            // keep the local row scroll (real scrollback exists there).
             if host.terminal.isDisplayBufferAlternate {
+                // ESC [ 5 ~ = PageUp, ESC [ 6 ~ = PageDown
+                let pageUp: [UInt8] = [0x1b, 0x5b, 0x35, 0x7e]
+                let pageDown: [UInt8] = [0x1b, 0x5b, 0x36, 0x7e]
                 if wholeRows > 0 {
-                    // Finger moved DOWN -> reveal earlier TUI content.
-                    for _ in 0..<wholeRows { host.send(EscapeSequences.moveUpNormal) }
+                    // Finger moved DOWN -> reveal earlier TUI content (PageUp).
+                    for _ in 0..<wholeRows { host.send(pageUp) }
                 } else {
-                    // Finger moved UP -> reveal later TUI content.
-                    for _ in 0..<(-wholeRows) { host.send(EscapeSequences.moveDownNormal) }
+                    // Finger moved UP -> reveal later TUI content (PageDown).
+                    for _ in 0..<(-wholeRows) { host.send(pageDown) }
                 }
             } else {
                 if wholeRows > 0 {

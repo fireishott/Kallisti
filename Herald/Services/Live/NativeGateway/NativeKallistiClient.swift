@@ -1711,6 +1711,49 @@ final class NativeKallistiClient: HeraldClientProtocol {
         await idMap.remove(uuid: id)
     }
 
+    /// Build 130.1: delete the gateway session backing a NOTE.
+    ///
+    /// Gateway semantics that make this non-trivial:
+    /// - `session.delete` REFUSES to delete ACTIVE sessions (4023) and the
+    ///   note's session is live in the registry until closed.
+    /// - `session.delete` matches DB rows by the FULL session key (the
+    ///   sessions.id column stores e.g. `20260818_173221_b5bc1e`), NOT the
+    ///   short live id - so sending the short id either misses the row
+    ///   (4007) or deletes nothing.
+    ///
+    /// Correct sequence: close the live session by its SHORT native id
+    /// (pops it from the registry; safe no-op if already reaped), THEN
+    /// delete by the FULL pinned key (removes the DB row + transcript
+    /// files). Best-effort by design - a gateway miss must never block the
+    /// local note delete.
+    func deleteNoteSession(conversationID: UUID, gatewaySessionKey: String?) async throws {
+        guard let client else { throw NativeGatewayClientError.notConnected }
+        // 1) Close the live session if we know its short native id.
+        if let nativeId = await idMap.nativeId(for: conversationID) {
+            _ = try? await client.send(
+                method: "session.close",
+                params: ["session_id": nativeId],
+                timeoutNanos: Self.probeTimeoutNanos
+            )
+        }
+        // 2) Delete by FULL key. Prefer the pinned key (survives reinstall);
+        // fall back to the idMap's key map.
+        var fullKey = gatewaySessionKey
+        if fullKey == nil || fullKey?.isEmpty == true {
+            fullKey = await idMap.sessionKey(for: conversationID)
+        }
+        if let fullKey, !fullKey.isEmpty {
+            let response = try await client.send(method: "session.delete", params: ["session_id": fullKey])
+            if let error = response.error {
+                // 4007 = row already gone (session never created or already
+                // deleted server-side). Treat as success for the cascade.
+                if error.code != 4007 { throw error }
+            }
+        }
+        await idMap.remove(uuid: conversationID)
+        await idMap.removeKey(uuid: conversationID)
+    }
+
     /// Build 128.97: re-attach a note's local UUID to its EXISTING gateway
     /// session using the FULL session key pinned on the note. After an app
     /// reinstall/container reset the UserDefaults-backed idMap is empty, so a
@@ -1770,7 +1813,82 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
-        return ""
+        // Build 130.1: real implementation. Previously a stub returning "".
+        // Calls the gateway's llm.oneshot with task=title_generation - the
+        // SAME native path Hermes uses for chat sessions (agent/oneshot.py
+        // defaults task to title_generation; agent/title_generator.py holds
+        // the prompt). Passing session_id inherits that session's model so
+        // untitled synced notes get titled by the enrichment provider the
+        // user picked, not a random default.
+        guard let client else { throw NativeGatewayClientError.notConnected }
+        guard let nativeId = await idMap.nativeId(for: sessionId) else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        // Mirrors agent/title_generator.py _TITLE_PROMPT_TEMPLATE exactly.
+        // Do not invent a new prompt - the goal is native parity.
+        let instructions = """
+        You name chat sessions. Given the user's opening message, write a title that lets them find this conversation again in a list.
+
+        Rules:
+        - 3 to 7 words, sentence case (capitalize only the first word and proper nouns).
+        - Name what the user wants DONE, not that they asked a question.
+        - Keep technical terms, filenames, numbers, and error codes exact.
+        - Drop filler words: the, this, my, a, an.
+        - No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.
+        - Never answer the message. Name it.
+        - Always produce something, even for a bare greeting.
+        - Write the title in the same language as the user's message.
+        Good: {"title": "Fix login button on mobile"}
+        Good: {"title": "Postgres connection pool exhaustion"}
+        Good: {"title": "Friendly greeting"}
+        Too vague: {"title": "Code changes"}
+        Too long: {"title": "Investigate and fix the issue where the login button does not respond on mobile devices"}
+
+        Reply with JSON only: {"title": "..."}
+        """
+        // Cap the input so a long note sync message cannot blow the
+        // one-shot token budget - titling only needs the opening content.
+        let input = String(userMessage.prefix(2000))
+        let response = try await client.send(
+            method: "llm.oneshot",
+            params: [
+                "session_id": nativeId,
+                "task": "title_generation",
+                "instructions": instructions,
+                "input": input,
+                "max_tokens": "64",
+                "temperature": "0.3"
+            ],
+            timeoutNanos: 30_000_000_000
+        )
+        if let error = response.error { throw error }
+        guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
+        // llm.oneshot returns {"text": "..."} where text is the model's JSON
+        // reply {"title": "..."} (title_generator.py drives strict JSON).
+        let data = try JSONEncoder().encode(result)
+        struct OneshotEnvelope: Decodable {
+            let text: String?
+        }
+        let envelope = try JSONDecoder().decode(OneshotEnvelope.self, from: data)
+        guard let rawText = envelope.text else { throw NativeGatewayClientError.unexpectedFrame }
+        return Self.extractTitle(from: rawText)
+    }
+
+    /// Pull the title out of the model's JSON reply. Handles the strict
+    /// {"title": "..."} shape and tolerates stray whitespace / code fences
+    /// that some providers leak around the JSON.
+    private static func extractTitle(from rawText: String) -> String {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = cleaned.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let title = object["title"] as? String else {
+            return ""
+        }
+        return title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Conversation

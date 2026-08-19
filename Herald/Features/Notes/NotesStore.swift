@@ -32,9 +32,22 @@ final class NotesStore {
     private let repository: NotesRepositoryProtocol
     private let logger = Logger(subsystem: "net.fihonline.herald", category: "notes-store")
     private let foldersKey = "com.kallisti.notes.folders"
+    /// Build 130.1: resolves the active chat client at call time so deleting
+    /// a note can cascade-delete its gateway session (session.delete RPC).
+    /// Mirrors NotesSyncEngine's clientProvider pattern.
+    private let clientProvider: () async -> (any HeraldClientProtocol)?
+    /// Build 130.1: reads the current settings so createNote can honor the
+    /// "default lines" toggle (new notes start ruled vs blank).
+    private let settingsProvider: () -> UserSettings
 
-    init(repository: NotesRepositoryProtocol = NotesRepository()) {
+    init(
+        repository: NotesRepositoryProtocol = NotesRepository(),
+        clientProvider: @escaping () async -> (any HeraldClientProtocol)? = { nil },
+        settingsProvider: @escaping () -> UserSettings = { UserSettings() }
+    ) {
         self.repository = repository
+        self.clientProvider = clientProvider
+        self.settingsProvider = settingsProvider
         loadFolders()
     }
     
@@ -121,9 +134,17 @@ final class NotesStore {
     func createNote(title: String = "") async -> KallistiNote? {
         do {
             let note = try await repository.createNote(title: title, folderId: nil)
-            notes.append(note)
-            selectedNoteId = note.id
-            return note
+            // Build 130.1: honor the "default lines" setting. New notes
+            // start ruled when the toggle is on (default), blank when off.
+            let settings = settingsProvider()
+            var created = note
+            if !settings.notesDefaultLinesEnabled, created.pageStyle != .blank {
+                created.pageStyle = .blank
+                try await repository.updateNote(created)
+            }
+            notes.append(created)
+            selectedNoteId = created.id
+            return created
         } catch {
             logger.error("Failed to create note: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
@@ -144,6 +165,9 @@ final class NotesStore {
     }
 
     func deleteNote(id: UUID) async {
+        // Build 130.1: capture the note BEFORE the local soft delete so we
+        // can cascade-delete its gateway session with the pinned FULL key.
+        let noteToDelete = notes.first { $0.id == id }
         do {
             try await repository.softDeleteNote(id: id)
             if let index = notes.firstIndex(where: { $0.id == id }) {
@@ -151,6 +175,23 @@ final class NotesStore {
             }
             if selectedNoteId == id {
                 selectedNoteId = nil
+            }
+
+            // Build 130.1: cascade delete the note's gateway session. The
+            // note IS a session - leaving it behind orphans the transcript
+            // and pollutes the session list after the note is gone.
+            // Best-effort by design: an RPC failure must never roll back
+            // the local delete (the note is already soft-deleted above).
+            if let noteToDelete,
+               let client = await clientProvider() {
+                do {
+                    try await client.deleteNoteSession(
+                        conversationID: noteToDelete.id,
+                        gatewaySessionKey: noteToDelete.gatewaySessionKey
+                    )
+                } catch {
+                    logger.error("Cascade session delete failed for note \(noteToDelete.id): \(error.localizedDescription)")
+                }
             }
         } catch {
             logger.error("Failed to delete note: \(error.localizedDescription)")
