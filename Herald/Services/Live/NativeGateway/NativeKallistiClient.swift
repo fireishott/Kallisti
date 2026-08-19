@@ -2485,7 +2485,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
             if let error = upload.error {
                 throw error
             }
-            fileRefTexts.append("@file:\(attachment.fileName)")
+            // Build 130.8: use the gateway's returned ref_text (e.g.
+            // `@file:attachments/<name>` or a workspace-relative path) so the
+            // directive actually resolves on the host. The bare filename did
+            // not - the connector could not map `@file:<name>` back to the
+            // staged file in ~/.hermes/attachments/.
+            let refText: String? = {
+                guard case .object(let fields)? = upload.result else { return nil }
+                return fields["ref_text"]?.stringValue
+            }()
+            if let refText, !refText.isEmpty {
+                fileRefTexts.append(refText)
+            } else {
+                fileRefTexts.append("@file:\(attachment.fileName)")
+            }
         }
 
         // Append file references to the message text so the agent
