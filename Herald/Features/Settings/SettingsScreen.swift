@@ -52,6 +52,7 @@ struct SettingsScreen: View {
                         preferencesSection
                         agentToolsSection
                         voiceSection
+                        notesDefaultsSection
                         notesSection
                         locationSection
                         privacySection
@@ -2283,6 +2284,74 @@ struct SettingsScreen: View {
             // Build 70: AUX model configuration is loaded on the container
             // at connection time (Infrastructure stays warm). Nothing to
             // create here - container.auxService is already wired.
+        }
+    }
+
+    // MARK: - Notes Defaults
+
+    /// Build 130.1: notes editing defaults - the "default lines" toggle and
+    /// the canvas width slider. Kept separate from Notes Sync so the
+    /// creation/editing experience is not buried under sync cadence.
+    private var notesDefaultsSection: some View {
+        SettingsSectionView(title: "Notes") {
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                Toggle(isOn: Binding(
+                    get: { settingsStore.settings.notesDefaultLinesEnabled },
+                    set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }
+                )) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "ruler")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Default lines")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                            Text("New notes start with ruled lines.")
+                                .font(Design.Typography.caption)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .tint(Design.Brand.accent)
+
+                sectionDivider
+
+                // Build 130.1: note canvas width scale. Multiplies the
+                // editor's available width so the writing column can be
+                // narrower or wider than the screen. The trailing label
+                // shows the live scale.
+                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "arrow.left.and.right")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Note width")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text("\(Int(settingsStore.settings.notesCanvasWidthScale * 100))%")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .monospacedDigit()
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    Slider(
+                        value: Binding(
+                            get: { settingsStore.settings.notesCanvasWidthScale },
+                            set: { settingsStore.settings.notesCanvasWidthScale = $0 }
+                        ),
+                        in: 0.5...1.5,
+                        step: 0.05
+                    )
+                    .tint(Design.Brand.accent)
+                    .accessibilityLabel("Note width scale")
+                }
+            }
         }
     }
 

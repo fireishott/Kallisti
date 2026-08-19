@@ -480,6 +480,37 @@ final class NotesSyncEngine {
             if let sessionKey = await client.nativeSessionKey(for: note.id), !sessionKey.isEmpty {
                 stored.gatewaySessionKey = sessionKey
             }
+
+            // Build 130.1: SMART TITLE for untitled notes. If the note has
+            // no real title after a successful sync (manual or auto), name
+            // it using Hermes' NATIVE title generation - the same
+            // llm.oneshot task=title_generation path the gateway uses for
+            // chat sessions - then rename the gateway session and persist
+            // the new title. The recognized text is the best stand-in for
+            // the user's "opening message" of the note.
+            let trimmedTitle = stored.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedTitle.isEmpty || trimmedTitle == "Untitled Note" {
+                if let recognitionText = await loadLatestRecognitionText(for: note) {
+                    let sourceText = recognitionText.isEmpty ? message.content : recognitionText
+                    do {
+                        let generated = try await client.generateSessionTitle(
+                            sessionId: note.id,
+                            userMessage: sourceText,
+                            assistantMessage: message.content
+                        )
+                        let clean = generated.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !clean.isEmpty {
+                            stored.title = clean
+                            // Rename the gateway session so the session list
+                            // reflects the note's new name too. Best-effort.
+                            _ = try? await client.renameSession(id: note.id, title: clean)
+                        }
+                    } catch {
+                        logger.warning("Smart title generation failed for note \\(note.id): \\(error.localizedDescription)")
+                    }
+                }
+            }
+
             await notesStore.updateNote(stored)
 
             // Save the enrichment result so the Enrichment tab renders the

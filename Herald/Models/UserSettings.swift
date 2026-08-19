@@ -617,6 +617,13 @@ struct UserSettings: Codable, Hashable, Sendable {
     /// chat default happens to be.
     var notesEnrichmentModelName: String?
     var notesEnrichmentProvider: String?
+    /// Build 130.1: new notes start with ruled lines when true (default),
+    /// blank when false. Applied at create time in NotesStore.
+    var notesDefaultLinesEnabled: Bool
+    /// Build 130.1: note canvas width scale (0.5x - 1.5x). Multiplies the
+    /// editor's available width so users can shrink or widen the writing
+    /// column beyond the default full-width.
+    var notesCanvasWidthScale: Double
 
     init(
         userName: String = "User",
@@ -655,7 +662,9 @@ struct UserSettings: Codable, Hashable, Sendable {
         notesSyncInterval: NotesSyncInterval = .manual,
         notesEnrichmentEnabled: Bool = true,
         notesEnrichmentModelName: String? = nil,
-        notesEnrichmentProvider: String? = nil
+        notesEnrichmentProvider: String? = nil,
+        notesDefaultLinesEnabled: Bool = true,
+        notesCanvasWidthScale: Double = 1.0
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -694,6 +703,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.notesEnrichmentEnabled = notesEnrichmentEnabled
         self.notesEnrichmentModelName = notesEnrichmentModelName
         self.notesEnrichmentProvider = notesEnrichmentProvider
+        self.notesDefaultLinesEnabled = notesDefaultLinesEnabled
+        self.notesCanvasWidthScale = notesCanvasWidthScale
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -734,6 +745,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         case notesEnrichmentEnabled
         case notesEnrichmentModelName
         case notesEnrichmentProvider
+        case notesDefaultLinesEnabled
+        case notesCanvasWidthScale
     }
 
     init(from decoder: Decoder) throws {
@@ -783,6 +796,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         notesEnrichmentEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesEnrichmentEnabled) ?? true
         notesEnrichmentModelName = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentModelName)
         notesEnrichmentProvider = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentProvider)
+        notesDefaultLinesEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesDefaultLinesEnabled) ?? true
+        notesCanvasWidthScale = try container.decodeIfPresent(Double.self, forKey: .notesCanvasWidthScale) ?? 1.0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -824,6 +839,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(notesEnrichmentEnabled, forKey: .notesEnrichmentEnabled)
         try container.encodeIfPresent(notesEnrichmentModelName, forKey: .notesEnrichmentModelName)
         try container.encodeIfPresent(notesEnrichmentProvider, forKey: .notesEnrichmentProvider)
+        try container.encode(notesDefaultLinesEnabled, forKey: .notesDefaultLinesEnabled)
+        try container.encode(notesCanvasWidthScale, forKey: .notesCanvasWidthScale)
     }
 
     func applyingEnvironmentPolicy(

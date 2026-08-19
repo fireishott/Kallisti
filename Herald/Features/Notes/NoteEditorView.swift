@@ -33,6 +33,7 @@ struct NoteEditorView: View {
     @Binding var noteId: UUID
     @Environment(NotesStore.self) private var notesStore
     @Environment(NotesSyncEngine.self) private var syncEngine
+    @Environment(SettingsStore.self) private var settingsStore
     @State private var title: String = ""
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
@@ -256,7 +257,10 @@ struct NoteEditorView: View {
                 drawing: $drawing,
                 pageStyle: pageStyle,
                 pencilOnly: pencilOnly,
-                canvasWidth: proxy.size.width,
+                // Build 130.1: honor the user's canvas width scale. 1.0 =
+                // full column (the old behavior); <1 narrows the writing
+                // column, >1 widens it.
+                canvasWidth: proxy.size.width * CGFloat(settingsStore.settings.notesCanvasWidthScale),
                 onDrawingChanged: { newDrawing in
                     schedulePersist(newDrawing)
                 },
