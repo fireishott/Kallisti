@@ -134,13 +134,22 @@ final class NotesStore {
     func createNote(title: String = "") async -> KallistiNote? {
         do {
             let note = try await repository.createNote(title: title, folderId: nil)
-            // Build 130.1: honor the "default lines" setting. New notes
-            // start ruled when the toggle is on (default), blank when off.
+            // Build 130.1/130.2: honor the "default lines" setting
+            // EXPLICITLY in both directions. Toggle ON = new notes start
+            // ruled (.linesMedium); OFF = new notes start blank. Setting it
+            // both ways removes any dependence on the repository default.
             let settings = settingsProvider()
             var created = note
-            if !settings.notesDefaultLinesEnabled, created.pageStyle != .blank {
-                created.pageStyle = .blank
-                try await repository.updateNote(created)
+            if settings.notesDefaultLinesEnabled {
+                if created.pageStyle == .blank {
+                    created.pageStyle = .linesMedium
+                    try await repository.updateNote(created)
+                }
+            } else {
+                if created.pageStyle != .blank {
+                    created.pageStyle = .blank
+                    try await repository.updateNote(created)
+                }
             }
             notes.append(created)
             selectedNoteId = created.id

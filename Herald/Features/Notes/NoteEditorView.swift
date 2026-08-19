@@ -261,6 +261,9 @@ struct NoteEditorView: View {
                 // full column (the old behavior); <1 narrows the writing
                 // column, >1 widens it.
                 canvasWidth: proxy.size.width * CGFloat(settingsStore.settings.notesCanvasWidthScale),
+                // Build 130.2: user line-height override. 0 = follow the
+                // paper style default; >0 forces the actual line spacing.
+                lineSpacing: settingsStore.settings.notesLineSpacing,
                 onDrawingChanged: { newDrawing in
                     schedulePersist(newDrawing)
                 },
