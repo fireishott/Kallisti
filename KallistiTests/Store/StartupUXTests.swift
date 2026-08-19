@@ -143,12 +143,12 @@ final class StartupUXTests: XCTestCase {
 }
 
 final class ProfileDisplayNameTests: XCTestCase {
-    func testSoleDefaultProfileUsesIgnyte() {
-        XCTAssertEqual(ProfileStore.resolveDisplayName(activeProfileName: "default", profileCount: 1), "Ignyte")
+    func testSoleDefaultProfileUsesKallisti() {
+        XCTAssertEqual(ProfileStore.resolveDisplayName(activeProfileName: "default", profileCount: 1), "Kallisti")
     }
 
-    func testCachedDefaultBeforeCatalogLoadUsesIgnyte() {
-        XCTAssertEqual(ProfileStore.resolveDisplayName(activeProfileName: "default", profileCount: 0), "Ignyte")
+    func testCachedDefaultBeforeCatalogLoadUsesKallisti() {
+        XCTAssertEqual(ProfileStore.resolveDisplayName(activeProfileName: "default", profileCount: 0), "Kallisti")
     }
 
     func testMultipleProfilesKeepRoutingSlugVisible() {

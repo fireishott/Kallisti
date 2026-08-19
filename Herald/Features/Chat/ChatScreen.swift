@@ -1208,7 +1208,7 @@ struct ChatScreen: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(width: 230, alignment: .leading)
+        .frame(maxWidth: 300, alignment: .leading)
         .padding(.horizontal, Design.Spacing.lg)
         .padding(.vertical, Design.Spacing.lg)
     }
