@@ -3,6 +3,7 @@ import Foundation
 
 /// Mock notes repository for testing.
 actor MockNotesRepository: NotesRepositoryProtocol {
+    var mockTypedText: String? = nil
     var notes: [KallistiNote] = []
     var recognitions: [UUID: [NoteRecognition]] = [:]
     var error: Error?
@@ -56,6 +57,16 @@ actor MockNotesRepository: NotesRepositoryProtocol {
     func loadDrawingBlob(noteId: UUID, revision: Int) async throws -> Data {
         if let error { throw error }
         return Data()
+    }
+    
+    func saveTypedTextBlob(noteId: UUID, text: String) async throws {
+        if let error { throw error }
+        mockTypedText = text
+    }
+    
+    func loadTypedTextBlob(noteId: UUID) async throws -> String? {
+        if let error { throw error }
+        return mockTypedText
     }
     
     func loadAttachments(noteId: UUID) async throws -> [NoteAttachment] {

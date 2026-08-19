@@ -1176,6 +1176,8 @@ struct ChatScreen: View {
                         Text("Total window available now. Usage appears after the first Kallisti response.")
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             } else {
@@ -1210,7 +1212,8 @@ struct ChatScreen: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(maxWidth: 300, alignment: .leading)
+        .frame(width: 300, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, Design.Spacing.lg)
         .padding(.vertical, Design.Spacing.lg)
     }
@@ -1251,11 +1254,19 @@ struct ChatScreen: View {
             modelsReady: !modelStore.isLoading && modelStore.activeModel != nil,
             streamStalled: chatStore.stallSnapshot != nil
                 || chatStore.streamingPhase == .stalled
-                || chatStore.streamingPhase == .reconnecting
+                || chatStore.streamingPhase == .reconnecting,
+            hasConnectedOnce: container.nativeGatewayClient?.hasConnectedOnce ?? false
         )
     }
 
     private var connectionStatusLabel: String {
+        // Build 131: during the initial cold-start window (before the first
+        // verified connect), never claim "Disconnected" - the app is still
+        // trying to establish the first socket. Show a stable "Connecting..."
+        // so the pill does not strobe red -> yellow across backoff retries.
+        if !(container.nativeGatewayClient?.hasConnectedOnce ?? false) {
+            return "Connecting..."
+        }
         if chatStore.connectionStatus == .connected,
            modelStore.isLoading || modelStore.activeModel == nil {
             return "Loading models"
@@ -1275,8 +1286,15 @@ struct ChatScreen: View {
     nonisolated static func connectionIndicatorColor(
         status: ConnectionStatus,
         modelsReady: Bool,
-        streamStalled: Bool = false
+        streamStalled: Bool = false,
+        hasConnectedOnce: Bool = true
     ) -> Color {
+        // Build 131: before the first verified connect, the pill shows a
+        // steady yellow "Connecting..." regardless of transient
+        // .disconnected writes from the backoff loop - no red strobe.
+        if !hasConnectedOnce {
+            return .yellow
+        }
         if status == .connected, !modelsReady {
             return .yellow
         }
