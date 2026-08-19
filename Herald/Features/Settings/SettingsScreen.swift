@@ -52,8 +52,13 @@ struct SettingsScreen: View {
                         preferencesSection
                         agentToolsSection
                         voiceSection
-                        notesDefaultsSection
-                        notesSection
+                        // Build 130.4: notes settings live in the note editor's
+                        // own toolbar/context menu on iPhone; the Settings rows
+                        // stay visible on iPad where there is room for them.
+                        if DeviceClass.isPad {
+                            notesDefaultsSection
+                            notesSection
+                        }
                         locationSection
                         privacySection
                         aboutSection
