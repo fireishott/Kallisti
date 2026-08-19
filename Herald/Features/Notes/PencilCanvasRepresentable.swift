@@ -14,6 +14,10 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
     /// its old width. Passing the width as a tracked property forces the
     /// update pass and the canvas follows the sidebar.
     var canvasWidth: CGFloat? = nil
+    /// Build 130.2: user line-height override in points. 0 = follow the
+    /// paper style's default spacing; >0 forces the actual distance
+    /// between ruled lines.
+    var lineSpacing: Double = 0
     var onDrawingChanged: ((PKDrawing) -> Void)?
     var onToolUseBegan: (() -> Void)?
     var onToolUseEnded: (() -> Void)?
@@ -88,6 +92,14 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             context.coordinator.updatePaper(style: pageStyle)
         }
 
+        // Build 130.2: update paper if the user's line-height override
+        // changed. A separate tracked value so moving the slider repaints
+        // the ruled lines immediately, even when the style is unchanged.
+        if context.coordinator.currentLineSpacing != lineSpacing {
+            context.coordinator.currentLineSpacing = lineSpacing
+            context.coordinator.updatePaper(style: context.coordinator.currentStyle)
+        }
+
         // Keep canvas width in sync with the view frame so lines span the
         // full column width (matches iOS Notes behavior).  Only height
         // auto-grows; width is driven by the SwiftUI layout. When an explicit
@@ -138,6 +150,9 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         weak var canvasView: PKCanvasView?
         var isDrawingActive = false
         var currentStyle: NotePageStyle
+        /// Build 130.2: last-applied user line-height override (points).
+        /// Tracks changes so the paper layer repaints on slider moves.
+        var currentLineSpacing: Double = 0
         private weak var paperView: NotePaperUIView?
         private var contentObserver: NSKeyValueObservation?
         private var scrollObserver: NSKeyValueObservation?
@@ -145,6 +160,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         init(_ parent: PencilCanvasRepresentable) {
             self.parent = parent
             self.currentStyle = parent.pageStyle
+            self.currentLineSpacing = parent.lineSpacing
         }
 
         func installAutoGrow(canvas: PKCanvasView) {
@@ -164,7 +180,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         }
 
         func installPaper(in canvas: PKCanvasView, style: NotePageStyle) {
-            let paper = NotePaperUIView(style: style, frame: canvas.bounds)
+            let paper = NotePaperUIView(style: style, lineSpacing: parent.lineSpacing, frame: canvas.bounds)
             paper.backgroundColor = .clear
             paper.isUserInteractionEnabled = false
             paper.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -191,6 +207,7 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 
         func updatePaper(style: NotePageStyle) {
             paperView?.style = style
+            paperView?.lineSpacing = parent.lineSpacing
             paperView?.setNeedsDisplay()
         }
 
@@ -292,9 +309,14 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
 /// Used inside PKCanvasView (UIKit) so paper scrolls and zooms with ink.
 final class NotePaperUIView: UIView {
     var style: NotePageStyle
+    /// Build 130.2: user line-height override in points. 0 = follow the
+    /// style's default spacing (fine 20 / medium 24 / wide 32); >0 forces
+    /// the actual distance between ruled lines.
+    var lineSpacing: Double
 
-    init(style: NotePageStyle, frame: CGRect) {
+    init(style: NotePageStyle, lineSpacing: Double = 0, frame: CGRect) {
         self.style = style
+        self.lineSpacing = lineSpacing
         super.init(frame: frame)
         isOpaque = false
         backgroundColor = .clear
@@ -309,7 +331,11 @@ final class NotePaperUIView: UIView {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
 
         let size = bounds.size
-        let spacing = style.lineSpacing
+        // Build 130.2: user override wins when set; otherwise fall back to
+        // the paper style's default spacing. This is the actual pixel
+        // distance between ruled lines - the thing the Line height slider
+        // must visibly change.
+        let spacing = lineSpacing > 0 ? CGFloat(lineSpacing) : style.lineSpacing
         guard spacing > 0 else { return }
 
         let trait = traitCollection.userInterfaceStyle

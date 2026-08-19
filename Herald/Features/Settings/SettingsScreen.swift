@@ -2351,8 +2351,48 @@ struct SettingsScreen: View {
                     .tint(Design.Brand.accent)
                     .accessibilityLabel("Note width scale")
                 }
+
+                sectionDivider
+
+                // Build 130.2: note paper line spacing. 0 = follow the paper
+                // style default (fine 20 / medium 24 / wide 32); any other
+                // value forces the actual distance between ruled lines.
+                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "lines.measurement.horizontal")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Line height")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text(lineSpacingLabel)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                            .monospacedDigit()
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+
+                    Slider(
+                        value: Binding(
+                            get: { settingsStore.settings.notesLineSpacing },
+                            set: { settingsStore.settings.notesLineSpacing = $0 }
+                        ),
+                        in: 12...48,
+                        step: 2
+                    )
+                    .tint(Design.Brand.accent)
+                    .accessibilityLabel("Note line height")
+                }
             }
         }
+    }
+
+    private var lineSpacingLabel: String {
+        let value = settingsStore.settings.notesLineSpacing
+        if value <= 0 { return "Auto" }
+        return "\(Int(value)) pt"
     }
 
     // MARK: - Notes Sync
