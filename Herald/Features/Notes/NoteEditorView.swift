@@ -196,12 +196,51 @@ struct NoteEditorView: View {
                 }
                 .accessibilityLabel("Add attachment")
 
-                // Paper style menu (Phase 1)
+                // Paper style menu (Phase 1). On iPhone the Settings Notes
+                // rows are hidden (Build 130.4), so this menu also carries
+                // the paper defaults: Default lines toggle, Note width, and
+                // Line height. iPad keeps the full Settings sections.
                 Menu {
                     Picker("Paper Style", selection: $pageStyle) {
                         ForEach(NotePageStyle.pickerCases, id: \.self) { style in
                             Text(style.displayName).tag(style)
                         }
+                    }
+
+                    if DeviceClass.isPhone {
+                        Divider()
+                        Toggle("Default Lines", isOn: Binding(
+                            get: { settingsStore.settings.notesDefaultLinesEnabled },
+                            set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }
+                        ))
+                        Divider()
+                        // Note width scale (0.5x - 1.5x)
+                        LabeledContent("Note Width") {
+                            Text("\(Int(settingsStore.settings.notesCanvasWidthScale * 100))%")
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { settingsStore.settings.notesCanvasWidthScale },
+                                set: { settingsStore.settings.notesCanvasWidthScale = $0 }
+                            ),
+                            in: 0.5...1.5,
+                            step: 0.05
+                        )
+                        Divider()
+                        // Line height (0 = Auto, follows paper style default)
+                        LabeledContent("Line Height") {
+                            Text(lineSpacingLabel)
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { settingsStore.settings.notesLineSpacing },
+                                set: { settingsStore.settings.notesLineSpacing = $0 }
+                            ),
+                            in: 12...48,
+                            step: 2
+                        )
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -249,6 +288,15 @@ struct NoteEditorView: View {
     }
 
     // MARK: - View Modes
+
+    /// Line-height readout for the iPhone paper-options menu (Build 130.4).
+    /// Mirrors SettingsScreen.lineSpacingLabel: 0 = Auto (follow paper style
+    /// default), otherwise the forced spacing in points.
+    private var lineSpacingLabel: String {
+        let value = settingsStore.settings.notesLineSpacing
+        if value <= 0 { return "Auto" }
+        return "\(Int(value)) pt"
+    }
 
     @ViewBuilder
     private var inkView: some View {
