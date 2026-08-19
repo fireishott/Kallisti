@@ -1090,9 +1090,19 @@ final class NativeKallistiClient: HeraldClientProtocol {
         defer { isConnecting = false }
         connectionStatus = .connecting
         connectionStage = .preparing
-        // Torn down in the catch block if the verification round-trip
-        // below fails, so a socket that "opened" but never proved itself
-        // doesn't linger open in the background on every backoff retry.
+        // Build 131.2: close any previous transport BEFORE minting/opening a
+        // new socket, not after the new one verifies. Closing only after
+        // verification left a window where BOTH sockets were open (gateway
+        // saw peer pairs accepted seconds apart - one dying with 1006, the
+        // other with send_failed_after_response on config.get). The old
+        // socket's receive loop also kept firing during that overlap,
+        // fighting the new client over session state. The iPad reconnects
+        // rarely so it never hit the race; the iPhone's backgrounding-driven
+        // reconnect storm did, every time.
+        if let old = self.transport {
+            await old.close()
+            self.transport = nil
+        }
         var provisionalClient: NativeGatewayClient?
         do {
             // Tickets are single-use with a 30s TTL, so every connect --
@@ -1148,13 +1158,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     await self.handleUnexpectedDisconnect()
                 }
             }
-            // Close any previous transport so a reconnect does not leave an
-            // orphaned WS open server-side (each connect() mints a fresh
-            // ticket + socket; replacing self.client without closing the old
-            // transport leaks the old connection and its sessions).
-            if let old = self.transport {
-                await old.close()
-            }
+            // Publish the fresh client/transport (Build 131.2: the old
+            // transport was already closed at the top of connect(), so no
+            // orphan socket remains).
             self.transport = transport
             self.client = client
             // Build 97: a successful connect cancels any pending

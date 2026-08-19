@@ -41,6 +41,18 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
     }
 
     func connect(url: URL) async throws {
+        // Build 131.2: tear down any previous socket BEFORE installing the
+        // new one. URLSessionWebSocketTask has no automatic replacement
+        // semantics - overwriting self.task without cancel() left the old
+        // socket alive server-side, so a reconnect opened a SECOND parallel
+        // connection. The two sockets fought over the session (gateway saw
+        // peer pairs accepted seconds apart, one dying with 1006, the other
+        // with send_failed_after_response) - the iPhone flapping-connection
+        // storm. The iPad reconnects rarely, so it never hit the race.
+        if let previous = task {
+            previous.cancel(with: .goingAway, reason: nil)
+            task = nil
+        }
         let task = session.webSocketTask(with: url)
         // Build 57 (root cause): URLSessionWebSocketTask.maximumMessageSize
         // defaults to 1MB. The gateway's tool.complete frame carries the
