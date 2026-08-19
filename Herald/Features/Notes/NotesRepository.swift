@@ -182,6 +182,23 @@ actor NotesRepository: NotesRepositoryProtocol {
         return (result.revisionId, result.blobPath, result.contentHash, true)
     }
 
+    /// Save the typed-text body for a note (UTF-8 markdown file in the note dir).
+    /// Atomic write. Text is revisionless; the note model's currentTextRevision
+    /// tracks change counts for sync dirty-checking.
+    func saveTypedTextBlob(noteId: UUID, text: String) async throws {
+        let noteDir = noteDirectory(for: noteId)
+        try fileManager.createDirectory(at: noteDir, withIntermediateDirectories: true, attributes: nil)
+        let blobURL = noteDir.appendingPathComponent("text.md")
+        try Data(text.utf8).write(to: blobURL, options: .atomic)
+    }
+
+    /// Load the typed-text body for a note. Returns nil when no text has been typed.
+    func loadTypedTextBlob(noteId: UUID) async throws -> String? {
+        let blobURL = noteDirectory(for: noteId).appendingPathComponent("text.md")
+        guard fileManager.fileExists(atPath: blobURL.path) else { return nil }
+        return try String(contentsOf: blobURL, encoding: .utf8)
+    }
+
     /// Load a PKDrawing blob from disk.
     func loadDrawingBlob(noteId: UUID, revision: Int) async throws -> Data {
         let blobURL = noteDirectory(for: noteId).appendingPathComponent("rev-\(revision).pkdrawing")

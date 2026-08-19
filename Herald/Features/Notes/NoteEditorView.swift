@@ -6,6 +6,7 @@ import VisionKit
 /// View mode for the note editor — shows ink, recognized text, or enriched document.
 enum NoteViewMode: String, CaseIterable, Identifiable {
     case ink
+    case text
     case recognized
     case enriched
 
@@ -14,6 +15,7 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .ink: "Ink"
+        case .text: "Text"
         case .recognized: "Recognized"
         case .enriched: "Enriched"
         }
@@ -22,6 +24,7 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .ink: "pencil.tip"
+        case .text: "keyboard"
         case .recognized: "text.viewfinder"
         case .enriched: "doc.text"
         }
@@ -35,6 +38,7 @@ struct NoteEditorView: View {
     @Environment(NotesSyncEngine.self) private var syncEngine
     @Environment(SettingsStore.self) private var settingsStore
     @State private var title: String = ""
+    @State private var typedText: String = ""
     @State private var drawing = PKDrawing()
     @State private var pageStyle: NotePageStyle = .linesMedium
     @State private var attachments: [NoteAttachment] = []
@@ -43,6 +47,8 @@ struct NoteEditorView: View {
 
     /// Debounce timer for persisting drawings.
     @State private var persistTask: Task<Void, Never>?
+    /// Debounce timer for persisting typed text.
+    @State private var typedTextPersistTask: Task<Void, Never>?
 
     // Attachment picker state
     @State private var showPhotoPicker = false
@@ -123,6 +129,8 @@ struct NoteEditorView: View {
             switch viewMode {
             case .ink:
                 inkView
+            case .text:
+                textView
             case .recognized:
                 recognizedView
             case .enriched:
@@ -257,11 +265,15 @@ struct NoteEditorView: View {
         .onChange(of: noteId) { _, _ in
             persistTask?.cancel()
             persistDrawing(drawing)
+            typedTextPersistTask?.cancel()
+            Task { await notesStore.saveTypedText(noteId: noteId, text: typedText) }
             loadNote()
         }
         .onDisappear {
             persistTask?.cancel()
             persistDrawing(drawing)
+            typedTextPersistTask?.cancel()
+            Task { await notesStore.saveTypedText(noteId: noteId, text: typedText) }
         }
         .userActivity(QuickNoteConstants.activityType) { activity in
             let displayTitle = title.isEmpty ? "Untitled Note" : title
@@ -322,6 +334,20 @@ struct NoteEditorView: View {
                 }
             )
         }
+    }
+
+    @ViewBuilder
+    private var textView: some View {
+        TextEditor(text: $typedText)
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Note text")
+            .accessibilityHint("Type the note body with the keyboard")
+            .onChange(of: typedText) { _, newValue in
+                scheduleTypedTextPersist(newValue)
+            }
     }
 
     @ViewBuilder
@@ -410,6 +436,8 @@ struct NoteEditorView: View {
                     drawing = loaded
                 }
             }
+            // Load typed text body
+            typedText = await notesStore.loadTypedText(noteId: noteId) ?? ""
             // Load attachments
             attachments = await notesStore.loadAttachments(noteId: noteId)
             // Load recognition and enrichment data
@@ -446,6 +474,16 @@ struct NoteEditorView: View {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             persistDrawing(newDrawing)
+        }
+    }
+
+    /// Debounced persist for typed text (500ms settle after typing pauses).
+    private func scheduleTypedTextPersist(_ newText: String) {
+        typedTextPersistTask?.cancel()
+        typedTextPersistTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await notesStore.saveTypedText(noteId: noteId, text: newText)
         }
     }
 

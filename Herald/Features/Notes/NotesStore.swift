@@ -12,6 +12,8 @@ protocol NotesRepositoryProtocol: Sendable {
     func restoreNote(id: UUID) async throws
     func saveDrawingBlob(noteId: UUID, data: Data, revision: Int, pageStyle: NotePageStyle) async throws -> (revisionId: UUID, blobPath: String, contentHash: String)
     func loadDrawingBlob(noteId: UUID, revision: Int) async throws -> Data
+    func saveTypedTextBlob(noteId: UUID, text: String) async throws
+    func loadTypedTextBlob(noteId: UUID) async throws -> String?
     func loadAttachments(noteId: UUID) async throws -> [NoteAttachment]
     func saveAttachmentBlob(noteId: UUID, data: Data, type: NoteAttachmentType, fileName: String, mimeType: String) async throws -> NoteAttachment
     func deleteAttachment(_ attachment: NoteAttachment) async throws
@@ -253,6 +255,31 @@ final class NotesStore {
             return try await repository.loadDrawingBlob(noteId: noteId, revision: revision)
         } catch {
             logger.error("Failed to load drawing: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    // MARK: - Typed Text
+
+    func saveTypedText(noteId: UUID, text: String) async {
+        do {
+            try await repository.saveTypedTextBlob(noteId: noteId, text: text)
+            if let index = notes.firstIndex(where: { $0.id == noteId }) {
+                notes[index].currentTextRevision += 1
+                notes[index].updatedAt = .now
+                try await repository.updateNote(notes[index])
+            }
+        } catch {
+            logger.error("Failed to save typed text: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadTypedText(noteId: UUID) async -> String? {
+        do {
+            return try await repository.loadTypedTextBlob(noteId: noteId)
+        } catch {
+            logger.error("Failed to load typed text: \(error.localizedDescription)")
             return nil
         }
     }

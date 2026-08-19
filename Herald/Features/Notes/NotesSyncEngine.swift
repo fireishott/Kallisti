@@ -338,6 +338,13 @@ final class NotesSyncEngine {
             messageText += "Recognized text: \"\(recognitionText)\"\n"
         }
 
+        // Include the typed-text body when it exists (Build 131: notes can
+        // now carry keyboard-typed text alongside ink).
+        if let typedText = await notesStore.loadTypedText(noteId: note.id),
+           !typedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            messageText += "Typed text: \"\(typedText)\"\n"
+        }
+
         // Enrichment provider context - the model knows who it is.
         let settings = settingsStore.settings
         if let modelName = settings.notesEnrichmentModelName, !modelName.isEmpty {
