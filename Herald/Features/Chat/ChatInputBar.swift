@@ -703,6 +703,13 @@ struct PasteAwareComposerTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PasteInterceptingTextView, context: Context) {
+        // Build 130.6: refresh the coordinator's parent on every update.
+        // The delegate (textView(_:shouldChangeTextIn:replacementText:))
+        // reads parent.enterToSend; without this refresh it stays frozen at
+        // the first-render value, so toggling "Enter to Send" in Settings
+        // had no effect on Return-key behavior until the composer was
+        // recreated from scratch.
+        context.coordinator.parent = self
         if uiView.text != text {
             uiView.text = text
         }
