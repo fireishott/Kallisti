@@ -1,7 +1,7 @@
 # Kallisti
 
 <p align="center">
-  <img src="docs/assets/rebrand/github/readme-banner-1600x480.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
+  <img src="docs/assets/rebrand/github/banner-dark.png" alt="Kallisti - To the Most Beautiful." width="100%"/>
 </p>
 
 <p align="center">
