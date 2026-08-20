@@ -3551,6 +3551,17 @@ final class ChatStore {
         }.count
     }
 
+    /// Build 131.18: true when the last queued item for the current
+    /// conversation has been leased and is actively sending. The queue status
+    /// bar should hide the moment the send starts — "N queued" is only
+    /// meaningful while items are still WAITING behind the active turn.
+    var isSendingQueuedMessageForCurrentConversation: Bool {
+        guard let conversationID = conversation?.id else { return false }
+        return outboxItems.contains {
+            $0.conversationID == conversationID && $0.isInFlight
+        }
+    }
+
     /// Build 128.52: full list of queued-but-not-yet-submitted items for the
     /// current conversation, oldest first (FIFO by sequence). Drives the queue
     /// manager sheet so the user can view, edit, and delete what is waiting
