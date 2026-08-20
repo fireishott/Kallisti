@@ -270,6 +270,19 @@ struct MessageBubble: View, Equatable {
                     .background(Capsule().fill(Design.Colors.warning.opacity(0.12)))
             }
             .buttonStyle(.plain)
+        case "session_busy":
+            // Build 132: this conversation is mid-turn on another device.
+            // Retrying into the same busy session just re-fails - offer the
+            // user a fresh session instead.
+            Button { onStartNewSession?() } label: {
+                Label("Start New Session", systemImage: "plus.message")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Brand.accent)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, Design.Spacing.xxs)
+                    .background(Capsule().fill(Design.Brand.accent.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
         default:
             Button { onRetry?(message) } label: {
                 Label("Retry", systemImage: "arrow.clockwise")
