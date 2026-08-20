@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-08-20
 
-Current build release (build 131.17). Private beta TestFlight build.
+Current build release (build 131.21). Private beta TestFlight build.
 
 ### Fixed
 
+- **New-chat bleed (131.21).** A stream that outlived a New Chat / session
+  switch kept writing its events into the CURRENT conversation because the
+  consumer loop only guarded on attempt identity, not conversation identity. A
+  mid-event, reconnecting, or relay-owned stream could deliver after the
+  conversation swapped, bleeding the old turn's content and queued counts into
+  the fresh chat. The stream now captures its conversation ID at start and
+  drops every remaining event when the active conversation no longer matches.
+- **Inbox showing "All Caught Up" with rows present.** The connector emitted
+  inbox attachments in the chat-message schema (`type`/`filename`/`data`)
+  while the app decodes inbox items with the `MessageAttachment` schema
+  (`id`/`kind`/`fileName`/`mimeType`). One malformed attachment failed the
+  entire items decode, so the inbox appeared empty. The connector now
+  normalizes attachments to the app's schema (server-side fix; no app change
+  needed).
+- **Notification storm / phantom "Turn complete" pushes (connector).** The
+  connector's native watch re-created its per-session terminal-dedupe state on
+  every WebSocket reconnect, so a finished-but-idle session re-fired a
+  "Response ready" push to every device on each reconnect cycle. The dedupe
+  state now survives reconnects and only clears when a genuinely new turn
+  starts (server-side fix; no app change needed).
 - **WebSocket keepalive hardening (the reconnect flap).** Three-part fix so the
   socket survives silent reaping instead of flapping between Connected and
   Offline:
@@ -23,6 +43,21 @@ Current build release (build 131.17). Private beta TestFlight build.
   - `reconnectIfNeeded()` liveness probe is 2-strike with a scheduled 3s retry,
     and the probe timeout widened 8s -> 15s. Brief NAT/carrier stalls no longer
     trigger the reconnect storm while genuinely dead sockets still recover.
+- **Queue status bar button overlap (131.19).** View / Hold buttons no longer
+  compress or overlap on narrow screens; status text truncates first.
+- **Queue status bar hide-while-sending (131.19).** The bar hides the moment
+  the last queued item is leased and actively sending - it is a WAITING
+  indicator, not a send-status indicator.
+- **Queue manager Send Now + trash (131.20).** Queue rows get a Send Now
+  action that force-submits that message immediately; the status bar gets a
+  trash button that clears all queued messages for the current conversation in
+  one tap.
+- **Left-edge swipe-back outside rich chat (131.18).** Swipe from the left
+  edge pops the tab navigation stack or switches tabs at root; skipped in rich
+  chat mode where the session drawer owns the left edge.
+- **Skills and Cron empty lists (131.18, connector).** `/v1/skills` now
+  returns the real command catalog (248 skills) and `/v1/cron` returns real
+  jobs from the cron store (30 jobs).
 - **Reset Connection lands in onboarding (131.10).** Reset now wipes to the
   pairing flow instead of returning to chat.
 - **Reset Connection clears cookies (131.11).** The session cookie survived a
