@@ -235,9 +235,15 @@ struct AppRootView: View {
                     // freezes or the socket connects. The connection banner
                     // owns the not-yet-connected window. This kills the
                     // cold-launch onboarding flash for configured devices.
-                    if nativeClient.connectionStatus == .connected
-                        || (relayConfiguredAtLaunch ?? false)
-                        || nativeClient.hasStoredLogin {
+                    // Build 131.10: a wiped device (Reset Connection cleared
+                    // pairing + stored login) must land in onboarding, even
+                    // when a relay URL is still configured in settings. The
+                    // relay-configured check alone used to send it back to
+                    // chat with no pairing flow.
+                    let hasLiveConnection = nativeClient.connectionStatus == .connected
+                    let returningUser = nativeClient.hasStoredLogin
+                        || (container.pairingStore.isPaired && (relayConfiguredAtLaunch ?? false))
+                    if hasLiveConnection || returningUser {
                         AdaptiveRootView()
                     } else {
                         OnboardingFlowView(initialStep: .welcome, nativeGatewayClient: container.nativeGatewayClient, installationID: container.sessionStore.state.installationID)
