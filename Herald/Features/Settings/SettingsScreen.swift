@@ -164,6 +164,14 @@ struct SettingsScreen: View {
     /// online (gateway confirms connectivity), a transient WS "connecting"
     /// state is suppressed so the UI doesn't contradict the gateway dashboard.
     private var effectiveConnectionStatus: ConnectionStatus {
+        // Build 131.6: while a manual reset is in flight, force the row to
+        // .connecting so the user SEES the reset happen. Previously the host
+        // online check short-circuited to .connected, so a reset that tore
+        // down + reconnected in the background showed zero visible change
+        // (row stayed green "Connected") and read as "button does nothing".
+        if isResettingConnection {
+            return .connecting
+        }
         let relayStatus = chatStore.connectionStatus
         // The host row is fed by hostInfo() over the live gateway socket.
         // When that succeeded, the gateway IS reachable - even if the chat
@@ -282,6 +290,10 @@ struct SettingsScreen: View {
                         Task { @MainActor in
                             isResettingConnection = true
                             await client?.resetConnection()
+                            // Build 131.6: hold the "Resetting..." state for a
+                            // minimum beat so the feedback is perceptible even
+                            // when the reconnect completes instantly.
+                            try? await Task.sleep(for: .milliseconds(600))
                             isResettingConnection = false
                         }
                     } label: {
