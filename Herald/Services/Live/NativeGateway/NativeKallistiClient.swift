@@ -1405,16 +1405,17 @@ final class NativeKallistiClient: HeraldClientProtocol {
         transport = nil
         connectedAt = nil
 
-        // Build 83: Reset always purges local credentials and auth state,
-        // regardless of the stored-login flag. The old gate (only clear when
-        // !hasStoredLogin) was backwards: a device that LOOKS logged in via a
-        // stale keychain marker never cleared anything, so Reset appeared to
-        // do nothing. Every Reset is a deliberate wipe back to onboarding.
-        await authCoordinator.clearLocalCredentials()
-        hasConnectedOnce = false
-        hasStoredLogin = false
+        // NOTE (Build 131.3): resetConnection is a RECONNECT, not a logout.
+        // The Build 83 behavior wiped local credentials here, which made the
+        // Settings "Reset Connection" button appear dead: it tore down the
+        // socket, deleted the login, then connect() -> mintTicket() found no
+        // credentials and threw notLoggedIn, so nothing ever reconnected and
+        // the user stayed on a broken connection with no feedback. The
+        // button's contract is "force a fresh authenticated connection with
+        // the SAME login". Users who want to actually sign out use the
+        // logout path, which is a separate action.
 
-        // Start a fresh authenticated connection.
+        // Start a fresh authenticated connection with the existing login.
         connectionStatus = .connecting
         if !hasConnectedOnce {
             connectionStage = .preparing
