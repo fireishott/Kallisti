@@ -124,8 +124,6 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        let notificationConversationId =
-            notification.request.content.userInfo["conversationId"] as? String
         let category = notification.request.content.categoryIdentifier
         let complete = UncheckedSendableBox(value: completionHandler)
 
@@ -144,11 +142,18 @@ final class HeraldAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
                 return
             }
 
-            // Nav-aware suppression: if the user is viewing the same conversation
-            // the notification is for, suppress to avoid self-notification.
-            if let notificationConversationId,
-               let currentId = container.chatStore.conversation?.id,
-               notificationConversationId == currentId.uuidString.lowercased() {
+            // Build 132.3: suppress ALL in-app banners. The user only wants
+            // completion notifications when they are NOT in the app - if the
+            // app is foregrounded (any screen), the response is visible in the
+            // UI or will land in the Inbox, so a banner is noise. The
+            // background/killed push (delivered via APNs, not willPresent)
+            // still arrives normally.
+            //
+            // Note: willPresent only fires when the app IS foregrounded, so
+            // this is an app-wide "don't self-notify" gate. The old code only
+            // suppressed for the same conversation; the user was still getting
+            // banners on Inbox/Notes/Settings and other chats.
+            if UIApplication.shared.applicationState == .active {
                 complete.value([])
                 return
             }
