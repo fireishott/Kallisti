@@ -308,7 +308,11 @@ struct ChatScreen: View {
                 // after the active turn (Electron parity).
                 // Build 130.6: only render when there are actually queued
                 // messages - a bare "held" with nothing queued is noise.
-                if chatStore.queuedCountForCurrentConversation > 0 {
+                // Build 131.18: also hide while the last queued item is
+                // actively sending — the bar is a WAITING indicator, not a
+                // send-status indicator.
+                if chatStore.queuedCountForCurrentConversation > 0 &&
+                    !chatStore.isSendingQueuedMessageForCurrentConversation {
                     queueStatusBar
                 }
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
@@ -1635,12 +1639,15 @@ struct ChatScreen: View {
             Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
                 .font(.system(size: 13))
                 .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
+                .layoutPriority(3)
             Text(queueStatusText)
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
                 .lineLimit(1)
-                .layoutPriority(1)
-            Spacer(minLength: Design.Spacing.sm)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.tail)
+                .layoutPriority(0)
+            Spacer(minLength: 0)
             Button {
                 showQueueManager = true
             } label: {
@@ -1658,7 +1665,7 @@ struct ChatScreen: View {
                             )
                     )
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .fixedSize()
             }
             .buttonStyle(.plain)
             .layoutPriority(2)
@@ -1681,7 +1688,7 @@ struct ChatScreen: View {
                             )
                     )
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .fixedSize()
             }
             .buttonStyle(.plain)
             .layoutPriority(2)
