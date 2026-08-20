@@ -5,6 +5,42 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-20
+
+Current build release (build 131.17). Private beta TestFlight build.
+
+### Fixed
+
+- **WebSocket keepalive hardening (the reconnect flap).** Three-part fix so the
+  socket survives silent reaping instead of flapping between Connected and
+  Offline:
+  - `GatewayClient` sends a heartbeat ping every 25 seconds on the live socket.
+    A socket silently killed by NAT/cellular reaping or iOS suspension is
+    detected within one interval instead of on the next user request.
+  - Keepalive ping teardown now requires 3 CONSECUTIVE failed pings before
+    killing the socket. A single slow pong on cellular no longer murders a
+    healthy socket (the old 60s death pattern).
+  - `reconnectIfNeeded()` liveness probe is 2-strike with a scheduled 3s retry,
+    and the probe timeout widened 8s -> 15s. Brief NAT/carrier stalls no longer
+    trigger the reconnect storm while genuinely dead sockets still recover.
+- **Reset Connection lands in onboarding (131.10).** Reset now wipes to the
+  pairing flow instead of returning to chat.
+- **Reset Connection clears cookies (131.11).** The session cookie survived a
+  wipe and reconnected the app behind the onboarding screen; credentials,
+  cookies, and cache are now purged together.
+- **Connect respects deliberate disconnect (131.12).** Background triggers no
+  longer reconnect a deliberately-disconnected app, killing the onboarding/chat
+  flap.
+- **installationID survives Reset Connection (131.13).** Reset minted a fresh
+  installation ID, so the old pairing code (bound to the old ID) was rejected
+  with 401. The device's permanent identity now survives reset; only
+  credentials and pairing are wiped.
+
+### Security
+
+- Dashboard login no longer exposes the Kallisti pairing-code form. Pairing
+  still works via the authenticated password-login path.
+
 ## [0.2.6] - 2026-08-18
 
 Current build release (build 128.93). This is the private beta build being
