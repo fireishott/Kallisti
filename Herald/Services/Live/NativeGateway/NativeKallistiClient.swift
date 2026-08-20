@@ -1074,6 +1074,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func connect() async {
+        // Build 131.12: a deliberately-disconnected client (Reset Connection
+        // wiped credentials) must NOT reconnect until the user completes a
+        // fresh pairing/login. Without this, AppContainer's init connect()
+        // (fired whenever a relay URL is configured) and reconnectIfNeeded()
+        // keep flipping connectionStatus after a wipe, which bounced
+        // AppRootView's gate between onboarding and chat - the flap.
+        guard !isDeliberatelyDisconnected else {
+            Self.logger.info("connect() skipped - deliberately disconnected (post-reset)")
+            return
+        }
         // Build 131.4: resetConnection() bumps connectGeneration so an
         // in-flight connect that predates the reset aborts itself instead of
         // publishing a stale socket. Capture the generation we started under;
@@ -1541,6 +1551,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// the normal cookie-backed WebSocket ticket flow.
     func startPairingLogin(code: String, installationID: UUID) async throws {
         try await authCoordinator.loginWithPairingCode(code, installationID: installationID)
+        // Build 131.12: a reset wiped the client into deliberate disconnect;
+        // a fresh login is the user re-arming the connection. Clear the flag
+        // so this connect() is allowed.
+        isDeliberatelyDisconnected = false
         await connect()
         guard connectionStatus == .connected else {
             throw NativeAuthError.connectFailedAfterLogin
@@ -1549,6 +1563,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func startBasicLogin(username: String, password: String) async throws {
         try await authCoordinator.loginWithBasic(username: username, password: password)
+        // Build 131.12: a reset wiped the client into deliberate disconnect;
+        // a fresh login is the user re-arming the connection. Clear the flag
+        // so this connect() is allowed.
+        isDeliberatelyDisconnected = false
         await connect()
         guard connectionStatus == .connected else {
             throw NativeAuthError.connectFailedAfterLogin
@@ -1557,6 +1575,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
     func startInteractiveLogin(presentingFrom viewController: UIViewController) async throws {
         try await authCoordinator.startLogin(presentingFrom: viewController)
+        // Build 131.12: fresh login re-arms a wiped client.
+        isDeliberatelyDisconnected = false
         await connect()
         // connect() never throws -- by design, its other callers (the
         // silent launch-time connect, the background reconnect loop) want
