@@ -91,6 +91,34 @@ struct MainTabView: View {
                 iPhoneSessionDrawer(isOpen: $isSessionDrawerOpen)
             }
         }
+        // Build 131.18: left-edge swipe-back when NOT in rich chat. In rich
+        // mode the left edge is owned by the session drawer, so this only
+        // fires in terminal/TUI mode and on non-chat tabs. Pops the current
+        // tab's navigation stack first; if at root, switches to the previous
+        // tab (chat <- inbox <- talk <- notes <- settings).
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 24, coordinateSpace: .global)
+                .onEnded { value in
+                    // Only treat as back-swipe when the drag STARTS at the
+                    // left edge and moves right (natural back direction).
+                    guard value.startLocation.x < 32,
+                          value.translation.width > 60,
+                          abs(value.translation.height) < 80 else { return }
+                    // Skip in rich chat: drawer owns the edge.
+                    if router.selectedTab == .chat,
+                       settingsStore.settings.chatDisplayMode == .rich {
+                        return
+                    }
+                    if !router.path().isEmpty {
+                        router.popToRoot()
+                    } else {
+                        let all: [AppTab] = [.chat, .inbox, .talk, .notes, .settings]
+                        guard let idx = all.firstIndex(of: router.selectedTab),
+                              idx > 0 else { return }
+                        router.switchToTab(all[idx - 1])
+                    }
+                }
+        )
     }
 
     @ViewBuilder
