@@ -375,6 +375,19 @@ final class NativeAuthCoordinator: NSObject, SFSafariViewControllerDelegate, ASW
         // device as a returning user. Purge it so Reset truly returns the
         // app to onboarding.
         await secureStore.delete(key: "nativeGatewayAuthMode")
+        // Build 131.11: cookie-auth sessions (kallisti-pairing / basic) ride
+        // the session cookie in HTTPCookieStorage.shared - NOT the keychain.
+        // Without this, wipeCredentials() left the cookie behind, mintTicket()
+        // still succeeded, and the app reconnected straight back to chat
+        // instead of landing in onboarding. Purge ALL cookies + cached
+        // responses so the wipe is genuinely unauthenticated.
+        let cookieStorage = HTTPCookieStorage.shared
+        if let cookies = cookieStorage.cookies {
+            for cookie in cookies {
+                cookieStorage.deleteCookie(cookie)
+            }
+        }
+        URLCache.shared.removeAllCachedResponses()
     }
 
     func forceRefreshAccessToken() async throws -> String {
