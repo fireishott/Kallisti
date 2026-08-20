@@ -158,7 +158,16 @@ final class AppSessionStore {
             installationID: retainedInstallationID,
             backendEndpoint: retainedEndpoint
         )
-        persistence.clearSessionState()
+        // Build 131.13: persist the cleared state instead of deleting the row.
+        // The installationID is the device's PERMANENT identity - it must
+        // survive Reset Connection. Deleting the row meant the next cold
+        // launch fell back to AppSessionState() and minted a FRESH UUID, so
+        // re-pairing with the same code was rejected (the connector binds the
+        // pairing code to the installation that first redeemed it) - the
+        // "Pairing failed: Signed in, but could not reach the gateway" loop.
+        // Keep installationID stable across reset; only credentials/pairing
+        // are wiped.
+        persistence.saveSessionState(state)
     }
 
     private func persist(tokens: AuthTokens) async throws {
