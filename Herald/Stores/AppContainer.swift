@@ -1286,6 +1286,29 @@ final class AppContainer {
         }
     }
 
+    /// Build 131.24: cookie-aware credential check for paths that gate on a
+    /// stored gateway session. Native cookie-auth modes (kallisti-pairing /
+    /// basic) delete the keychain bearer on login and ride the session cookie,
+    /// so sessionStore.currentAccessToken() is nil even though the device is
+    /// fully authenticated. Gate on EITHER a legacy relay bearer OR native
+    /// cookie/bearer auth so sensor uploads and background refreshes run in
+    /// native mode too.
+    private func hasValidGatewayCredentials() async -> Bool {
+        if await sessionStore.currentAccessToken() != nil {
+            return true
+        }
+        if let nativeGatewayClient {
+            if await nativeGatewayClient.usesCookieAuth() {
+                return true
+            }
+            if let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+               !nativeToken.isEmpty {
+                return true
+            }
+        }
+        return false
+    }
+
     func handleAppDidBecomeActive() async {
         // Native gateway first: it bypasses pairing entirely (AppRootView
         // checks nativeGatewayClient before pairingStore), so the pairing
@@ -1307,7 +1330,7 @@ final class AppContainer {
         }
 
         guard pairingStore.isPaired else { return }
-        guard await sessionStore.currentAccessToken() != nil else { return }
+        guard await hasValidGatewayCredentials() else { return }
 
         await permissionsStore.reloadCapabilities()
         await hostStore.refresh()
@@ -1366,7 +1389,7 @@ final class AppContainer {
 
     func handleRemoteNotificationWake(pushCategory: String? = nil) async {
         guard pairingStore.isPaired else { return }
-        guard await sessionStore.currentAccessToken() != nil else { return }
+        guard await hasValidGatewayCredentials() else { return }
 
         await permissionsStore.reloadCapabilities()
         await hostStore.refresh()
@@ -1483,7 +1506,7 @@ final class AppContainer {
 
     func handleSystemLaunch() async {
         guard pairingStore.isPaired else { return }
-        guard await sessionStore.currentAccessToken() != nil else { return }
+        guard await hasValidGatewayCredentials() else { return }
 
         sensorUploadService?.start()
         await sensorUploadService?.handleSystemLaunch()
@@ -1526,7 +1549,12 @@ final class AppContainer {
         // connector facade URL, bypassing legacy pairing/apiClient entirely.
         if let nativeGatewayClient {
             guard settingsStore.settings.notificationsEnabled else {
+                // Build 132: Notifications off must actually kill the server-side
+                // registration, not just skip registering. The old code returned
+                // here leaving the connector's APNs token active, so "Response
+                // ready" pushes kept arriving after the user disabled them.
                 sessionStore.state.pushTokenRegistered = false
+                await nativeGatewayClient.deactivatePushToken()
                 return
             }
             let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
