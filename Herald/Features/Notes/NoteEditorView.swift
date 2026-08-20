@@ -443,6 +443,11 @@ struct NoteEditorView: View {
         pendingOCRRRevision = nil
         // Reset the typing-field toggle so a fresh note starts as pure canvas.
         isTypingActive = false
+        // Clear any reasoning bubble left over from the previous note. The
+        // engine is a singleton, so we must explicitly wipe its stream state
+        // on every editor load - otherwise the 'Thought for Xs' header from
+        // the previous turn lingers over the new note.
+        syncEngine.resetReasoningState()
 
         // Load the latest drawing revision
         Task {

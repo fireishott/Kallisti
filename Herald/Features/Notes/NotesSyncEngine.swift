@@ -312,14 +312,35 @@ final class NotesSyncEngine {
         // Build 132: also attach the note's photo/scan attachments (Phase 3)
         // so the enrichment model sees the FULL source - not just the drawing.
         // Each becomes an inline image the model can read directly.
+        //
+        // Build 132.x: do NOT silently drop non-image attachments (PDFs, text
+        // files, CSV, etc.). UIImage(data:) only succeeds for image formats, so
+        // anything else would fall through the old `if let image = ...` guard
+        // and never reach the model. For each attachment:
+        //   - if UIImage(data:) succeeds, attach via the image path
+        //   - otherwise, attach via PendingAttachment.file(at:), which routes
+        //     images to the image path and non-images to the file path
+        // (so PDFs / txt / csv ride the file.attach path).
+        // We also build a parallel descriptor list (kind + fileName) so the
+        // prompt can tell the model exactly what is attached and in what order.
         let noteAttachments = await notesStore.loadAttachments(noteId: note.id)
+        var attachedDescriptors: [String] = []
         for noteAttachment in noteAttachments {
             guard attachments.count < PendingAttachment.maxAttachmentsPerMessage else { break }
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: noteAttachment.blobPath)) else { continue }
+            let blobURL = URL(fileURLWithPath: noteAttachment.blobPath)
+            guard let data = try? Data(contentsOf: blobURL) else { continue }
+            let descriptor: String
             if let image = UIImage(data: data),
                let attachment = PendingAttachment.image(image, fileName: noteAttachment.fileName) {
                 attachments.append(attachment)
+                descriptor = "photo: \(noteAttachment.fileName)"
+            } else if let attachment = PendingAttachment.file(at: blobURL) {
+                attachments.append(attachment)
+                descriptor = "scan: \(noteAttachment.fileName)"
+            } else {
+                continue
             }
+            attachedDescriptors.append(descriptor)
         }
 
         // Build the session title from the note's current title.
@@ -371,7 +392,16 @@ final class NotesSyncEngine {
         if attachments.isEmpty {
             messageText += "No drawing attached - use the recognized text above. If the note is empty, say so briefly.\n"
         } else {
-            messageText += "The drawing is attached inline as an image in this conversation - it is the SOURCE OF TRUTH. Read the handwriting from the image itself. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the drawing. If the image also contains photo/scan attachments, read those too. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
+            // Build 132.x: list every attachment that was actually sent (in
+            // the order they ride the message: drawing first, then the note's
+            // photo/scan files) so the model knows EXACTLY what inline images
+            // and files are present. Without this, the prompt only said "the
+            // drawing" and the model had no way to know there were additional
+            // photo/scan images to read.
+            var attachedList: [String] = ["drawing: note-\(note.id.uuidString.prefix(8)).jpg"]
+            attachedList.append(contentsOf: attachedDescriptors)
+            messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
+            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see any of the attached images at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
         }
         // Build 130.0: NATURAL DIGEST output contract. Curtis's 129.0
         // complaint: enrichment read like AI process narration ("The user
@@ -585,6 +615,19 @@ final class NotesSyncEngine {
                 || !note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return false
+    }
+
+    // MARK: - Reasoning bubble reset
+
+    /// Clear the live reasoning stream so the notes page does not render a
+    /// 'Thought for Xs' bubble left over from a previous note. Mirrors the
+    /// reset performed at the start of syncSingleNote so callers that load
+    /// an editor without immediately syncing still get a clean bubble.
+    func resetReasoningState() {
+        liveReasoning = ""
+        isReasoningActive = false
+        reasoningStartedAt = nil
+        reasoningDuration = nil
     }
 }
 

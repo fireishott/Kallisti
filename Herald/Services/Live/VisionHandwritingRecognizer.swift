@@ -17,6 +17,13 @@ import UIKit
 ///   3. usesLanguageCorrection stays ON for the raw pass and is toggled OFF
 ///      for the second pass so short/abbreviated handwriting isn't
 ///      "corrected" into the wrong word.
+///
+/// Build 133 (layout sort + per-stroke groundwork): each recognized
+/// `VNRecognizedTextObservation` now carries its `boundingBox` through to
+/// `RecognizedTextCandidate.boundingBox`. After the two passes are merged,
+/// candidates are sorted top-to-bottom (Vision y descending) then
+/// left-to-right (x ascending) so reading order matches the handwriting
+/// instead of being scrambled.
 struct VisionHandwritingRecognizer: HandwritingRecognizing {
     let level: RecognitionLevel
     let engineVersion: String? = nil
@@ -82,9 +89,27 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
             )
         }
 
-        // Merge: for each line from the RAW pass, if the threshold pass has a
-        // higher-confidence line with the same vertical position, prefer it.
-        return Self.mergeByConfidence(raw: rawCandidates, threshold: thresholdCandidates)
+        // Merge by confidence, then sort by reading order (top-to-bottom
+        // then left-to-right) using each candidate's bounding box.
+        let merged = Self.mergeByConfidence(raw: rawCandidates, threshold: thresholdCandidates)
+        return Self.sortForReadingOrder(merged)
+    }
+
+    /// Per-stroke groundwork: today this reuses `recognizeText` and returns
+    /// the sorted candidates. The full per-stroke render loop — rendering
+    /// each `strokeBounds` rect individually and stitching results back
+    /// together — is the next step (follow-up). For now, callers that have
+    /// stroke bounds available get the same layout-aware output as
+    /// `recognizeText`, and the `strokeBounds` parameter is intentionally
+    /// unused to keep the API stable.
+    func recognizePerStroke(
+        from imageData: Data,
+        languages: [String],
+        strokeBounds: [CGRect]
+    ) async throws -> [RecognizedTextCandidate]? {
+        let candidates = try await recognizeText(from: imageData, languages: languages)
+        _ = strokeBounds  // intentionally unused in this groundwork pass
+        return candidates
     }
 
     /// Run a single VNRecognizeTextRequest pass over the given image data.
@@ -115,7 +140,9 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
                         }
                         return RecognizedTextCandidate(
                             text: topCandidate.string,
-                            confidence: topCandidate.confidence
+                            confidence: topCandidate.confidence,
+                            boundingBox: observation.boundingBox,
+                            lineIndex: nil
                         )
                     }
                     continuation.resume(returning: candidates)
@@ -143,6 +170,35 @@ struct VisionHandwritingRecognizer: HandwritingRecognizing {
             result.append(better ?? rawCandidate)
         }
         return result
+    }
+
+    /// Sort candidates into reading order: top-to-bottom then left-to-right.
+    /// Vision's `boundingBox` is normalized with origin at the bottom-left
+    /// and y increasing upward, so the TOP of the page has the LARGEST y.
+    /// Candidates without a bounding box are pushed to the end, preserving
+    /// their original relative order.
+    static func sortForReadingOrder(_ candidates: [RecognizedTextCandidate]) -> [RecognizedTextCandidate] {
+        return candidates.enumerated()
+            .sorted { lhs, rhs in
+                let lBox = lhs.element.boundingBox
+                let rBox = rhs.element.boundingBox
+                switch (lBox, rBox) {
+                case let (l?, r?):
+                    if l.origin.y != r.origin.y {
+                        // descending y so top-of-page comes first
+                        return l.origin.y > r.origin.y
+                    }
+                    // ascending x so left-of-line comes first
+                    return l.origin.x < r.origin.x
+                case (nil, _?):
+                    return false   // no-box sorts after boxed
+                case (_?, nil):
+                    return true
+                case (nil, nil):
+                    return lhs.offset < rhs.offset
+                }
+            }
+            .map { $0.element }
     }
 
     /// Produce a contrast-boosted, adaptive-thresholded grayscale version of
