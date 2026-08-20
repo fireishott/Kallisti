@@ -2674,7 +2674,19 @@ final class ChatStore {
                     self.flushPendingDeltas(placeholderID: placeholderID)
 
                     // Store error context for the UI
-                    self.lastErrorCategory = category
+                    // Build 132: a "session busy" rejection means the server
+                    // is running a turn in THIS conversation (usually started
+                    // on another device). Surface it as a distinct category so
+                    // the UI can offer "Start New Session" instead of stranding
+                    // the user with a raw server error.
+                    let effectiveCategory: String? = {
+                        if category == nil,
+                           errorMessage.localizedCaseInsensitiveContains("session busy") {
+                            return "session_busy"
+                        }
+                        return category
+                    }()
+                    self.lastErrorCategory = effectiveCategory
                     self.lastErrorAction = action
 
                     // Build 64: push the Live Activity to needsAttention BEFORE
@@ -2687,7 +2699,7 @@ final class ChatStore {
 
                     // Show actionable guidance based on error category
                     let guidance: String
-                    switch category {
+                    switch effectiveCategory {
                     case "context_exceeded":
                         guidance = "This session is too long for the current model. Start a new session or switch models."
                     case "rate_limited":
@@ -2698,6 +2710,8 @@ final class ChatStore {
                         guidance = "Kallisti returned an empty response. Try again or start a new session."
                     case "upstream_interrupted":
                         guidance = "The model was interrupted upstream. Please retry."
+                    case "session_busy":
+                        guidance = "This conversation is active on another device. Start a new chat to keep going here."
                     default:
                         guidance = errorMessage
                     }
@@ -2718,7 +2732,7 @@ final class ChatStore {
                                 sender: .system,
                                 content: guidance,
                                 status: .failed,
-                                errorCategory: category
+                                errorCategory: effectiveCategory
                             )
                         }
                     }

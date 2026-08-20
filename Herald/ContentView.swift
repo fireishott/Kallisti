@@ -86,8 +86,15 @@ struct MainTabView: View {
             }
 
             // Session drawer overlay (swipe from left edge) - hidden entirely
-            // in TUI mode: the terminal owns the whole chat surface.
-            if settingsStore.settings.chatDisplayMode == .rich {
+            // in TUI mode: the terminal owns the whole chat surface. It is
+            // ALSO gated to the Chat tab only: the drawer carries an
+            // invisible 24pt left-edge catcher + drag gesture that was
+            // active on EVERY tab in rich mode, so a left-edge swipe on
+            // Settings/Cron/Inbox/Talk opened the session drawer where it
+            // does not belong. Now the drawer (and its edge gesture) only
+            // exists on the Chat tab.
+            if settingsStore.settings.chatDisplayMode == .rich,
+               router.selectedTab == .chat {
                 iPhoneSessionDrawer(isOpen: $isSessionDrawerOpen)
             }
         }
