@@ -24,10 +24,21 @@ from .sensor_store import (
 )
 from .state import ConnectorStateStore
 
+# Build 121 leak fix: stateless_http=True disables per-session transport
+# tracking in the underlying StreamableHTTPSessionManager. The library
+# stores every session in a dict with no idle-expiry, so each Hermes
+# chat reconnect adds a new entry that lives until the process dies.
+# Over an hour that climbs to 700MB+ and the connector OOMs.
+# Stateless mode creates a fresh transport per request — our tools are
+# all read-only fetches (location/health) plus one write (push register)
+# that are safe to invoke without session affinity. Hermes only ever
+# uses remote MCP HTTP mode here, never stdio, so stateful sessions
+# aren't required by the protocol.
 mcp = FastMCP(
     "herald",
     instructions="Provides real-time location and health data from the user's phone.",
     host="0.0.0.0",
+    stateless_http=True,
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
     ),

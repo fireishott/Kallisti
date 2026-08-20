@@ -175,6 +175,34 @@ def all_push_devices() -> dict[str, dict]:
     return {k: dict(v) for k, v in entries.items() if isinstance(v, dict)} if isinstance(entries, dict) else {}
 
 
+def clear_push_token(installation_id: str, *, token_kind: str = "device") -> bool:
+    """Remove the push token for one installation (per-device alert or live activity).
+
+    Returns True when a token was actually cleared, False when the installation
+    had nothing registered (idempotent no-op). Used by /v1/push/deactivate so
+    toggling Notifications off in the app stops server-side pushes immediately.
+    """
+    if not installation_id:
+        return False
+    registry = _load_device_registry()
+    entries = registry.get("pushTokens", {})
+    entry = entries.get(installation_id)
+    if not isinstance(entry, dict):
+        return False
+    if token_kind == "liveactivity":
+        key = "liveActivityToken"
+        env_key = "liveActivityTokenEnvironment"
+    else:
+        key = "deviceToken"
+        env_key = "deviceTokenEnvironment"
+    had_token = bool(entry.get(key))
+    entry[key] = None
+    entry[env_key] = None
+    entry["lastRegisteredAt"] = None
+    _save_device_registry(registry)
+    return had_token
+
+
 def device_id_for_session(session_id: str) -> str | None:
     """Return the installation_id that owns *session_id*, if recorded."""
     registry = _load_device_registry()
@@ -793,6 +821,12 @@ def _resolve_directive_path(raw_path: str) -> Path | None:
         candidates.append(hermes_home.parent / cleaned)
         candidates.append(hermes_home / cleaned)
         candidates.append(home / cleaned)
+        # Bare filename: the iOS app's file.attach stages files into
+        # HERMES_HOME/attachments/ and (before Build 130.8) wrote the bare
+        # basename back into the directive. Resolve it against the canonical
+        # staging root so old messages and fallback paths still render.
+        candidates.append(hermes_home / "attachments" / cleaned)
+        candidates.append(home / "attachments" / cleaned)
 
     # Only serve files that live under a root the user already exposes.
     allowed_roots = [hermes_home.resolve()]

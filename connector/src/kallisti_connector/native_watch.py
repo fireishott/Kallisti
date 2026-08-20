@@ -188,6 +188,13 @@ WATCH_FIRST_IDLE_GRACE_S = float(
 )
 _POLL_AGENT_RUNNING_RE = re.compile(r"Agent Running:\s*(Yes|No)", re.IGNORECASE)
 
+# Build smart-completion: the assistant's last reply text is the source of
+# truth for the push / inbox body.  Push bodies cap at ~300 chars (see
+# _send_push_for_job body[:300] truncation), so we don't need to ship the
+# full reply — a leading slice is enough to surface the response on the
+# lock screen without overflowing APNs payload limits.
+_PUSH_BODY_MAX_CHARS = 300
+
 
 def _session_status_is_running(output: str) -> bool | None:
     """Parse session.status text output. True=still running, False=idle,
@@ -196,6 +203,60 @@ def _session_status_is_running(output: str) -> bool | None:
     if not m:
         return None
     return m.group(1).strip().lower() == "yes"
+
+
+def _fetch_last_assistant_reply(session_id: str) -> str | None:
+    """Return the last assistant (role 'herald' / 'assistant') reply text
+    for *session_id*, trimmed to ~300 chars, or None if no usable reply.
+
+    The watcher runs sync DB queries inside the asyncio loop; session_messages
+    is itself a sync SQLite helper, so calling it directly here is fine and
+    doesn't need a thread offload.  We deliberately fall back to ``None``
+    rather than fabricating a placeholder — the caller will then use the
+    legacy ``"Turn complete"`` body, preserving today's behavior on error.
+    """
+    try:
+        from .session_store import session_messages
+    except Exception:
+        logger.debug(
+            "smart-completion: session_store import failed (non-fatal)",
+            exc_info=True,
+        )
+        return None
+    try:
+        msgs = session_messages(session_id, limit=50, include_reasoning=False)
+    except Exception:
+        logger.debug(
+            "smart-completion: session_messages(%s) failed (non-fatal)",
+            session_id,
+            exc_info=True,
+        )
+        return None
+    # Walk in reverse — we want the most recent assistant/herald turn, which
+    # is the one that just finished.  session_messages remaps assistant →
+    # herald for the iOS MessageSender decoder, but check both keys so the
+    # helper keeps working if a future schema change reverts the remap.
+    #
+    # NB: session_messages returns the message body under the "text" key,
+    # NOT "content" (that's the raw SQLite column name).  Earlier code
+    # keyed off "content" and silently got "" — the helper then fell back
+    # to the "Turn complete" placeholder for every push, defeating the
+    # whole point of this change.  Accept both keys as a defensive guard.
+    for msg in reversed(msgs):
+        role = msg.get("role")
+        if role not in ("assistant", "herald"):
+            continue
+        content = (msg.get("text") or msg.get("content") or "").strip()
+        if not content:
+            continue
+        # Collapse internal newlines so the push banner reads cleanly; APNs
+        # renders single newlines as spaces, but multiple consecutive ones
+        # can still look ragged on the lock screen.
+        compact = " ".join(content.split())
+        if len(compact) > _PUSH_BODY_MAX_CHARS:
+            return compact[: _PUSH_BODY_MAX_CHARS].rstrip() + "…"
+        return compact
+    return None
 
 
 async def run_watcher(
@@ -225,6 +286,16 @@ async def run_watcher(
 
     backoff = 1.0
     warned_unconfigured = False
+    # Build 132: durable per-session terminal dedupe. This dict lives OUTSIDE
+    # the reconnect loop so a WS drop (send_failed_after_response, idle reap,
+    # gateway restart) does not reset it. Previously it was re-created on every
+    # reconnect, so a finished-but-quiet session read as idle with no history
+    # (prev=None) and re-fired a phantom 'Turn complete' push to every device
+    # on each reconnect cycle - a notification storm (16 pushes for one
+    # conversation in one morning). It is only cleared when a session shows a
+    # NEW running=True (new turn started), which correctly allows that turn's
+    # own terminal to fire once.
+    last_observed_running: dict[str, bool | None] = {}
     while True:
         if not tokens.is_configured:
             # Expected state until the one-time login has been run. Say so
@@ -270,7 +341,21 @@ async def run_watcher(
 
                 async def fire_terminal(session_id: str) -> None:
                     """Shared terminal handling: push each watcher + remote-end
-                    the Live Activity unconditionally (Build 34 behaviour)."""
+                    the Live Activity unconditionally (Build 34 behaviour).
+
+                    Build smart-completion: fetch the session's last assistant
+                    reply text once and reuse it for every watcher so the push
+                    body and inbox body carry the actual response instead of
+                    a fabricated 'Turn complete' string.  Falls back to the
+                    legacy body on any DB / parse error.
+                    """
+                    reply_text = _fetch_last_assistant_reply(session_id)
+                    if reply_text:
+                        logger.info(
+                            "Native watch smart-completion: session=%s body=%d chars",
+                            session_id,
+                            len(reply_text),
+                        )
                     watchers = registry.watchers_for(session_id)
                     if watchers:
                         logger.info(
@@ -288,6 +373,7 @@ async def run_watcher(
                                 await send_completion_push(
                                     device_token,
                                     session_id=session_id,
+                                    reply_text=reply_text,
                                 )
                         except Exception:
                             logger.exception(
@@ -334,20 +420,15 @@ async def run_watcher(
                 # Per-session consecutive-unanswered counter; sessions that stop
                 # answering get remote-ended and dropped so they don't pile up.
                 unanswered: dict[str, int] = {}
-                # Per-session last observed `Agent Running` value (True/False).
-                # Used to dedupe terminal fires: a push is sent only on the
-                # first True→False transition (or the first False observation
-                # when we never saw True) so iOS re-registering the watch for
-                # a follow-up turn in the same session doesn't spam a duplicate
-                # 'Turn complete' notification. Cleared on WS reconnect so a
-                # fresh watcher doesn't inherit stale state from before the
-                # drop.
-                last_observed_running: dict[str, bool | None] = {}
                 # Build 97: monotonic timestamp of the first poll sent for a
                 # session.  Used to hold first-idle observations for
                 # WATCH_FIRST_IDLE_GRACE_S so a watch registered at prompt
                 # submission can't fire a phantom "Turn complete" push before
                 # the gateway flips running=True.  Cleared with the session.
+                # NOTE: `last_observed_running` is intentionally NOT declared
+                # here - it lives in run_watcher scope (Build 132) so terminal
+                # dedupe survives WS reconnects. A reconnect must not reset the
+                # True→False history; that was the notification-storm bug.
                 first_poll_at: dict[str, float] = {}
 
                 async def poll_loop() -> None:
