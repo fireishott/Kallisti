@@ -1,4 +1,5 @@
 import UserNotifications
+import UIKit
 import KallistiSupport
 
 class NotificationService: UNNotificationServiceExtension {
@@ -69,6 +70,9 @@ class NotificationService: UNNotificationServiceExtension {
         // Build 83: the connector media route requires native auth, so a bare
         // URLSession download gets 401. Read the shared Keychain token via
         // KallistiSupport and attach an Authorization header.
+        // Build 131.24: PDF attachments get rendered to a PNG thumbnail first.
+        // iOS renders PDF notification thumbnails 180-degrees rotated (portrait
+        // page quirk); image thumbnails are always oriented correctly.
         if let mediaUrlString = userInfo["mediaUrl"] as? String ?? userInfo["imageUrl"] as? String,
            let mediaUrl = URL(string: mediaUrlString) {
             let semaphore = DispatchSemaphore(value: 0)
@@ -79,8 +83,44 @@ class NotificationService: UNNotificationServiceExtension {
             let task = URLSession.shared.downloadTask(with: request) { location, response, error in
                 defer { semaphore.signal() }
                 guard let location = location, error == nil else { return }
+
                 let tmpDir = FileManager.default.temporaryDirectory
-                let tmpFile = tmpDir.appendingPathComponent(UUID().uuidString + "." + (mediaUrl.pathExtension.isEmpty ? "jpg" : mediaUrl.pathExtension))
+                let ext = mediaUrl.pathExtension.lowercased()
+
+                // PDF: render first page to a PNG so the notification thumbnail
+                // is oriented correctly.
+                if ext == "pdf" {
+                    guard let pdfDoc = CGPDFDocument(location as CFURL) else { return }
+                    guard let page = pdfDoc.page(at: 1) else { return }
+
+                    let pageRect = page.getBoxRect(.mediaBox)
+                    // Cap thumbnail dimension so the push attachment stays small.
+                    let maxDim: CGFloat = 1024
+                    let scale = min(1.0, maxDim / max(pageRect.width, pageRect.height))
+                    let size = CGSize(width: pageRect.width * scale,
+                                      height: pageRect.height * scale)
+
+                    let renderer = UIGraphicsImageRenderer(size: size)
+                    let image = renderer.image { ctx in
+                        UIColor.black.setFill()
+                        ctx.fill(CGRect(origin: .zero, size: size))
+                        ctx.cgContext.saveGState()
+                        ctx.cgContext.scaleBy(x: scale, y: scale)
+                        ctx.cgContext.translateBy(x: -pageRect.origin.x, y: -pageRect.origin.y)
+                        ctx.cgContext.drawPDFPage(page)
+                        ctx.cgContext.restoreGState()
+                    }
+                    guard let pngData = image.pngData() else { return }
+                    let tmpFile = tmpDir.appendingPathComponent(UUID().uuidString + ".png")
+                    do {
+                        try pngData.write(to: tmpFile)
+                        let attachment = try UNNotificationAttachment(identifier: "media", url: tmpFile, options: nil)
+                        bestAttemptContent.attachments = [attachment]
+                    } catch {}
+                    return
+                }
+
+                let tmpFile = tmpDir.appendingPathComponent(UUID().uuidString + "." + (ext.isEmpty ? "jpg" : ext))
                 do {
                     try FileManager.default.moveItem(at: location, to: tmpFile)
                     let attachment = try UNNotificationAttachment(identifier: "media", url: tmpFile, options: nil)
