@@ -74,7 +74,11 @@ actor NoteRecognitionCoordinator {
                 return nil
             }
 
-            let image = drawing.image(from: drawing.bounds, scale: 2.0)
+            // Build 132: 4x render (was 2x) so Vision sees finer stroke
+            // detail. Handwriting recognition is dramatically better at
+            // higher resolutions; the old 2x upscale lost the stroke
+            // boundaries that distinguish "Qwen" from "Quen".
+            let image = drawing.image(from: drawing.bounds, scale: 4.0)
             guard let imageData = image.pngData() else {
                 logger.error("Failed to render drawing to PNG")
                 return nil

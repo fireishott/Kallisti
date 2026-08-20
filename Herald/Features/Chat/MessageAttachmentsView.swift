@@ -696,23 +696,43 @@ private extension View {
 
 private struct QuickLookPreview: UIViewControllerRepresentable {
     let url: URL
+    @Environment(\.dismiss) private var dismiss
 
-    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+    func makeCoordinator() -> Coordinator { Coordinator(url: url, dismiss: dismiss) }
 
     func makeUIViewController(context: Context) -> UINavigationController {
         let controller = QLPreviewController()
         controller.dataSource = context.coordinator
-        return UINavigationController(rootViewController: controller)
+        // Build 132: give the full-screen QuickLook (PDFs/files from Inbox
+        // attachments or chat) a visible Close button. QLPreviewController has
+        // no system chrome for a sheet - without this the user could open a
+        // PDF from the Inbox and get stuck with no way back.
+        let nav = UINavigationController(rootViewController: controller)
+        let closeButton = UIBarButtonItem(
+            title: "Done",
+            style: .done,
+            target: context.coordinator,
+            action: #selector(Coordinator.closeTapped)
+        )
+        controller.navigationItem.rightBarButtonItem = closeButton
+        return nav
     }
 
     func updateUIViewController(_ controller: UINavigationController, context: Context) {}
 
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
         let url: URL
-        init(url: URL) { self.url = url }
+        let dismiss: DismissAction
+        init(url: URL, dismiss: DismissAction) {
+            self.url = url
+            self.dismiss = dismiss
+        }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
             url as NSURL
+        }
+        @objc func closeTapped() {
+            dismiss()
         }
     }
 }

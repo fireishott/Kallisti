@@ -309,6 +309,18 @@ final class NotesSyncEngine {
                 }
             }
         }
+        // Build 132: also attach the note's photo/scan attachments (Phase 3)
+        // so the enrichment model sees the FULL source - not just the drawing.
+        // Each becomes an inline image the model can read directly.
+        let noteAttachments = await notesStore.loadAttachments(noteId: note.id)
+        for noteAttachment in noteAttachments {
+            guard attachments.count < PendingAttachment.maxAttachmentsPerMessage else { break }
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: noteAttachment.blobPath)) else { continue }
+            if let image = UIImage(data: data),
+               let attachment = PendingAttachment.image(image, fileName: noteAttachment.fileName) {
+                attachments.append(attachment)
+            }
+        }
 
         // Build the session title from the note's current title.
         let sessionTitle = note.title.isEmpty ? "Untitled Note" : note.title
@@ -359,7 +371,7 @@ final class NotesSyncEngine {
         if attachments.isEmpty {
             messageText += "No drawing attached - use the recognized text above. If the note is empty, say so briefly.\n"
         } else {
-            messageText += "A drawing is attached inline as an image in this conversation. If you support vision, you can see it directly - no tool call is required or possible. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image, use the Recognized text above as the authoritative transcription of the handwriting.\n"
+            messageText += "The drawing is attached inline as an image in this conversation - it is the SOURCE OF TRUTH. Read the handwriting from the image itself. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the drawing. If the image also contains photo/scan attachments, read those too. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see the attached image at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
         }
         // Build 130.0: NATURAL DIGEST output contract. Curtis's 129.0
         // complaint: enrichment read like AI process narration ("The user

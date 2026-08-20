@@ -1549,7 +1549,12 @@ final class AppContainer {
         // connector facade URL, bypassing legacy pairing/apiClient entirely.
         if let nativeGatewayClient {
             guard settingsStore.settings.notificationsEnabled else {
+                // Build 132: Notifications off must actually kill the server-side
+                // registration, not just skip registering. The old code returned
+                // here leaving the connector's APNs token active, so "Response
+                // ready" pushes kept arriving after the user disabled them.
                 sessionStore.state.pushTokenRegistered = false
+                await nativeGatewayClient.deactivatePushToken()
                 return
             }
             let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
