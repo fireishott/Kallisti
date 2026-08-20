@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-08-20
 
-Current build release (build 131.22). Private beta build.
+Current build release (build 131.23). Private beta build.
+
+### Fixed
+
+- **Session drawer only opens on the Chat tab (131.23).** The drawer carried
+  an invisible 24pt left-edge catcher + drag gesture that was active on EVERY
+  tab in rich mode, so a left-edge swipe on Settings / Cron / Inbox / Talk
+  opened the session list where it does not belong. The drawer now renders
+  only on the Chat tab.
+- **"session busy" is now actionable (131.23).** When the server rejects a
+  send because the conversation is mid-turn on another device, the app
+  surfaces clear copy ("This conversation is active on another device") with
+  a Start New Session action chip instead of a raw error + dead-end Retry.
 
 ### Fixed
 
