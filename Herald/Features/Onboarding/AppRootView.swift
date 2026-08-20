@@ -379,6 +379,10 @@ struct LoadingSurface: View {
     let latencyMs: Int?
 
     @State private var showResetButton = false
+    /// Build 131.5: true while a reset is in flight; shows the spinner and
+    /// disables the button. Cleared when the stage changes (reset completes
+    /// or fails) via the .task(id: stage) below.
+    @State private var isResetting = false
     @State private var contentOpacity: Double = 0
     /// Breathing coin phase. `.symbolEffect(.pulse)` is an SF Symbol effect
     /// and does nothing on a PNG asset, so the coin was static - this drives
@@ -488,15 +492,25 @@ struct LoadingSurface: View {
                 Spacer()
 
                 // Reset connection button, shown after a short honest delay.
+                // Build 131.5: stays visible during the reset with a spinner
+                // (the old code hid it instantly on tap, so a multi-second
+                // reset read as "button did nothing").
                 if let onResetConnection, showResetButton {
                     Button {
+                        isResetting = true
                         onResetConnection()
-                        showResetButton = false
                     } label: {
-                        Text("Reset Connection")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
+                        HStack(spacing: Design.Spacing.xs) {
+                            if isResetting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isResetting ? "Resetting..." : "Reset Connection")
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.secondaryForeground)
+                        }
                     }
+                    .disabled(isResetting)
                     .padding(.bottom, Design.Spacing.xl)
                     .transition(.opacity)
                 }
@@ -513,6 +527,7 @@ struct LoadingSurface: View {
             // recoverable state -- including .preparing during repeated
             // failures where the stage never advances.
             showResetButton = false
+            isResetting = false
             guard stage != .connected else { return }
             try? await Task.sleep(for: .seconds(8))
             if stage != .connected {
