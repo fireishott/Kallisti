@@ -1964,6 +1964,17 @@ final class ChatStore {
         // and cancel bump activeAttemptID, instantly invalidating all in-flight
         // events from the old stream coordinator.
         let attemptID = activeAttemptID
+        // Build 132: capture the conversation this stream belongs to. Every
+        // event handler below writes into `conversation` (the CURRENT
+        // conversation); without this identity guard a stream that outlives a
+        // New Chat / session switch keeps mutating the new conversation with
+        // the OLD turn's content (the new-chat bleed Curtis hit: old session
+        // build messages + queued counts appearing in a fresh chat). The
+        // activeAttemptID guard alone is not enough - cancelStreaming bumps it
+        // synchronously on installLocalConversation, but a stream that was
+        // already mid-event, reconnecting, or owned by the relay can deliver
+        // after the swap.
+        let streamConversationID = conversation?.id
 
         // Build 64: reset streamingTokenCount on every fresh attempt so
         // the streaming bubble's "N tokens" counter never carries over
@@ -1991,6 +2002,20 @@ final class ChatStore {
             self.appendLog(level: .info, "Streaming started")
             for await update in stream {
                 if Task.isCancelled { break }
+                // Build 132: conversation-identity guard. If the user hit
+                // New Chat or switched sessions while this stream was in
+                // flight, this stream belongs to a conversation the UI is no
+                // longer showing - drop every remaining event so the old
+                // turn's content cannot bleed into the new conversation.
+                // (The activeAttemptID guard below is attempt-scoped, not
+                // conversation-scoped; a stream can survive a conversation
+                // swap when cancelStreaming runs before the coordinator's
+                // next event lands.)
+                if let streamConversationID,
+                   self.conversation?.id != streamConversationID {
+                    Self.logger.info("Stream dropped - conversation changed (\(streamConversationID.uuidString.prefix(8)) -> \(self.conversation?.id.uuidString.prefix(8) ?? "nil"))")
+                    break
+                }
                 switch update {
                 case .messageSent(let jobID):
                     // Build N+: guard against stale .messageSent from a
