@@ -258,19 +258,35 @@ struct SettingsScreen: View {
 
                 // Manual reset connection: tears down stale transport and
                 // starts a fresh authenticated connection. Idempotent.
+                // Build 131.5: the button now shows a spinner + disables while
+                // resetting so the user sees it actually do something. The
+                // prior versions fired a fire-and-forget Task with no visual
+                // state, so a reset that succeeded in the background read as
+                // "button does nothing" when the status row didn't change fast
+                // enough (or at all, if the relay status was already stale).
                 if container.nativeGatewayClient != nil {
                     sectionDivider
 
                     Button {
-                        Task { await container.nativeGatewayClient?.resetConnection() }
+                        isResettingConnection = true
+                        Task {
+                            await container.nativeGatewayClient?.resetConnection()
+                            isResettingConnection = false
+                        }
                     } label: {
                         HStack(spacing: Design.Spacing.sm) {
-                            Image(systemName: "arrow.clockwise.circle.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.orange)
-                                .frame(width: 20, alignment: .center)
+                            if isResettingConnection {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 20, alignment: .center)
+                            } else {
+                                Image(systemName: "arrow.clockwise.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 20, alignment: .center)
+                            }
 
-                            Text("Reset Connection")
+                            Text(isResettingConnection ? "Resetting..." : "Reset Connection")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
 
@@ -279,6 +295,7 @@ struct SettingsScreen: View {
                         .frame(minHeight: Design.Size.minTapTarget)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isResettingConnection)
                     .accessibilityIdentifier("settings.resetConnection")
                 }
             }
@@ -289,6 +306,9 @@ struct SettingsScreen: View {
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
     @State private var updateCheckResult: String?
+    /// Build 131.5: true while Reset Connection is tearing down + reconnecting,
+    /// drives the button's spinner/disabled state so the action is visible.
+    @State private var isResettingConnection = false
     // Build 70: latency is polled on the AppContainer (starts at connection
     // time), so Settings just reads the live value - no local poller.
     private var latencyMs: Int? { container.connectorLatencyMs }
