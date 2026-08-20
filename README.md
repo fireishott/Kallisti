@@ -210,4 +210,4 @@ Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/he
 ## Development team
 
 - **Curtis Freeman** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer. Architecture, iOS app, connector, and gateway integration.
-- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPhone and iPad development. iOS and tablet UX, platform-specific polish.
+- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPhone and iPad development and the plugin engine. iOS and tablet UX, platform-specific polish.
