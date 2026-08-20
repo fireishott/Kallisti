@@ -1087,6 +1087,31 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return false
     }
 
+    /// Deactivate this device's push registration on the connector facade.
+    /// The Notifications toggle calls this when switched off so the connector
+    /// stops sending "Response ready" pushes. Mirrors registerPushToken's
+    /// auth (postFacadeJSON handles cookie-auth and bearer rotation).
+    func deactivatePushToken() async {
+        guard let facadeBase = await facadeBaseURLString() else {
+            Self.logger.warning("deactivatePushToken: invalid facade URL")
+            return
+        }
+        let body: [String: Any] = [
+            "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
+            "tokenKind": "device"
+        ]
+        let status = await postFacadeJSON(
+            path: "/v1/push/deactivate",
+            body: body,
+            logTag: "deactivatePushToken"
+        )
+        if status == 200 {
+            Self.logger.info("deactivatePushToken: accepted")
+        } else {
+            Self.logger.warning("deactivatePushToken: HTTP \(status)")
+        }
+    }
+
     func connect() async {
         // Build 131.12: a deliberately-disconnected client (Reset Connection
         // wiped credentials) must NOT reconnect until the user completes a
@@ -2014,7 +2039,52 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
         let envelope = try JSONDecoder().decode(OneshotEnvelope.self, from: data)
         guard let rawText = envelope.text else { throw NativeGatewayClientError.unexpectedFrame }
-        return Self.extractTitle(from: rawText)
+        let generated = Self.extractTitle(from: rawText)
+        if !generated.isEmpty {
+            return generated
+        }
+        // Build 132: the one-shot returned nothing usable (empty reply,
+        // malformed JSON, model hiccup). Fall back to a client-side title
+        // from the message content so an untitled note never stays
+        // "Untitled Note" - the old code just logged a warning and kept the
+        // blank title. Mirrors the native title rules: 3-7 words, sentence
+        // case, no trailing punctuation.
+        let fallback = Self.fallbackTitle(from: userMessage)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return ""
+    }
+
+    /// Derive a short title from the note's recognized/enriched text when the
+    /// model one-shot fails. Picks the first 3-6 meaningful words, sentence
+    /// case, strips the "[Note sync from Kallisti" prefix and OCR noise.
+    private static func fallbackTitle(from userMessage: String) -> String {
+        // Drop the sync envelope prefix and any leading markers.
+        var text = userMessage
+        if let range = text.range(of: "Note title: ") {
+            text = String(text[range.upperBound...])
+        }
+        text = text.replacingOccurrences(of: "\"", with: "")
+        text = text.replacingOccurrences(of: "Recognized text:", with: "")
+        text = text.replacingOccurrences(of: "Typed text:", with: "")
+        // Take the first line of actual content.
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        // Pull out 3-6 words, drop common fillers.
+        let stopwords: Set<String> = ["the", "this", "my", "a", "an", "and", "to", "for", "of", "with", "on", "in", "is", "are"]
+        let words = firstLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var picked: [String] = []
+        for word in words {
+            let lower = word.lowercased()
+            if stopwords.contains(lower) { continue }
+            picked.append(word)
+            if picked.count >= 6 { break }
+        }
+        guard !picked.isEmpty else { return "" }
+        let joined = picked.joined(separator: " ")
+        // Sentence case: capitalize first letter only, keep the rest as-is.
+        let capitalized = joined.prefix(1).uppercased() + joined.dropFirst()
+        return String(capitalized)
     }
 
     /// Pull the title out of the model's JSON reply. Handles the strict
