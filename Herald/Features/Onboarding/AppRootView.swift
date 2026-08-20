@@ -164,12 +164,15 @@ struct AppRootView: View {
         return true
     }
 
-    /// Green-dot readiness: socket connected AND model catalog loaded.
-    /// The model picker's green dot only shows once both are true, so the
-    /// launch surface holds until that exact state.
+    /// Green-dot readiness: socket connected AND an active model known.
+    /// Build 132.3 (refine): do NOT require the model catalog refresh to be
+    /// idle. A refresh in flight (modelLoading true) with an already-known
+    /// activeModel means the app is fully usable - the picker refreshes in
+    /// the background. Requiring isLoading to finish made cold start hold on
+    /// "Connected, <model>" for seconds after connect, reading as stuck.
     private var isAppReady: Bool {
         let connected = container.nativeGatewayClient?.connectionStatus == .connected
-        let modelsReady = !modelStore.isLoading && modelStore.activeModel != nil
+        let modelsReady = modelStore.activeModel != nil
         return connected && modelsReady
     }
 
