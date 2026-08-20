@@ -90,6 +90,19 @@ struct AppRootView: View {
             hasUsableConversation: !(container.chatStore.conversation?.messages.isEmpty ?? true)
         )
         if base {
+            // Build 132.3: ONCE the app has shown the connected UI, the
+            // opaque launch surface must NEVER come back for recoverable
+            // connecting/reconnecting states. Before this guard, any status
+            // churn (foreground reconnect, watchdog reconnect, refresh) re-ran
+            // this branch: isRecovering = (status == .connecting || .reconnecting)
+            // was true, so the surface re-mounted over the main chat UI -
+            // the user saw the app, then the loading screen again with
+            // "Connected, <model>" (the model that was already loaded).
+            // Reconnect churn is owned by the chat connection banner, per the
+            // Build 69 r1 comment on hasShownConnectedApp.
+            if hasShownConnectedApp {
+                return false
+            }
             // Connecting window (or unresolved init): record when the
             // launch surface first appeared and keep it mounted.
             if launchSurfaceFirstAppearedAt == nil {
@@ -113,6 +126,13 @@ struct AppRootView: View {
         // callback's conversation reload to finish before exposing chat. This
         // prevents a returning user from landing on stale cached history.
         if hasShownConnectedApp {
+            // Build 132.3: also bound this by the launch max-hold. A hung
+            // conversation refresh after the app already showed must not
+            // re-cover the chat with the opaque splash indefinitely.
+            let elapsed = surfaceHeartbeat.timeIntervalSince(launchSurfaceFirstAppearedAt ?? .now)
+            if elapsed > Self.launchSurfaceMaxHold {
+                return false
+            }
             return container.chatStore.isLoading
                 && (container.chatStore.conversation?.messages.isEmpty ?? true)
         }
