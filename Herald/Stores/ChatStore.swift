@@ -3542,6 +3542,31 @@ final class ChatStore {
         }
     }
 
+    /// Build 131.20: force-submit a specific queued item NOW instead of
+    /// waiting behind the queue hold or the FIFO chain. If the item is still
+    /// `.queued`, temporarily release the hold so it can be leased, then
+    /// submit the next eligible item. Safe to call from the queue manager's
+    /// "Send Now" action — the per-conversation lease still guards against
+    /// double-submit.
+    func sendNow(_ id: UUID) {
+        guard let idx = outboxItems.firstIndex(where: { $0.clientMessageID == id }) else { return }
+        let item = outboxItems[idx]
+        guard item.state == .queued || item.state == .retryableFailure else { return }
+        if item.state == .retryableFailure {
+            outboxItems[idx].state = .queued
+            outboxItems[idx].nextAttemptAt = nil
+            persistOutbox()
+        }
+        let wasHeld = isQueueHeld
+        if wasHeld {
+            isQueueHeld = false
+        }
+        onConversationChanged?()
+        Task { @MainActor [weak self] in
+            await self?.submitNextEligible(for: item.conversationID)
+        }
+    }
+
     /// Count of queued-but-not-yet-submitted items for the current
     /// conversation — drives the "N queued" composer hint.
     var queuedCountForCurrentConversation: Int {

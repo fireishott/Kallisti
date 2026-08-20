@@ -444,7 +444,8 @@ struct ChatScreen: View {
             QueueManagerSheet(
                 queued: chatStore.queuedMessagesForCurrentConversation,
                 onEdit: { id, newText in chatStore.editQueuedMessage(id, newText: newText) },
-                onDelete: { id in chatStore.removeQueuedItem(id) }
+                onDelete: { id in chatStore.removeQueuedItem(id) },
+                onSendNow: { id in chatStore.sendNow(id) }
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -1693,6 +1694,31 @@ struct ChatScreen: View {
             .buttonStyle(.plain)
             .layoutPriority(2)
             .accessibilityLabel(chatStore.isQueueHeld ? "Release held messages" : "Hold queued messages")
+            Button {
+                let ids = chatStore.queuedMessagesForCurrentConversation.map(\.clientMessageID)
+                for id in ids {
+                    chatStore.removeQueuedItem(id)
+                }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Design.Colors.warning)
+                    .padding(.horizontal, Design.Spacing.sm)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Design.Colors.surface)
+                            .overlay(
+                                Capsule()
+                                    .stroke(Design.Colors.border, lineWidth: 1)
+                            )
+                    )
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .layoutPriority(2)
+            .accessibilityLabel("Delete all queued messages")
+            .accessibilityHint("Removes every queued message for this conversation")
         }
         .frame(height: 34)
         .frame(maxWidth: .infinity)
@@ -2262,6 +2288,7 @@ struct QueueManagerSheet: View {
     let queued: [ChatOutboxRecord]
     let onEdit: (UUID, String) -> Void
     let onDelete: (UUID) -> Void
+    let onSendNow: (UUID) -> Void
 
     @Environment(\.dismiss) private var dismiss
     /// clientMessageID of the item currently being edited (nil = none).
@@ -2365,6 +2392,17 @@ struct QueueManagerSheet: View {
                 }
                 .buttonStyle(.plain)
             } else {
+                Button {
+                    onSendNow(item.clientMessageID)
+                    editingID = nil
+                    confirmDeleteID = nil
+                } label: {
+                    Image(systemName: "paperplane.circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Design.Brand.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Send queued message now")
                 Button {
                     editingID = item.clientMessageID
                     editText = item.cleanText
