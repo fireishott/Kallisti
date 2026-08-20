@@ -229,6 +229,11 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// listening on the CURRENT client.
     private var activeStreamHandlers: [String: StreamEventHandler] = [:]
     private var reconnectTask: Task<Void, Never>?
+    /// Build 131.4: the Task wrapping the in-flight connect(), if any.
+    /// resetConnection() awaits it (bounded) so the reset's own connect()
+    /// can claim isConnecting after the stale attempt aborts, instead of
+    /// bouncing off the guard forever.
+    private var connectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     /// Build 97: delays the yellow-flash to .reconnecting after an unexpected
     /// transport close so a single transient 1006 (proxy reap, brief cell
@@ -254,6 +259,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// duplicate callers return immediately; the in-flight attempt's result
     /// is the one that stands.
     private var isConnecting = false
+    /// Build 131.4: monotonically increasing generation counter. Each
+    /// resetConnection() bumps it; an in-flight connect() that started under
+    /// an older generation aborts before publishing its socket. This makes
+    /// reset interrupt a connect already in progress instead of being a no-op
+    /// behind the isConnecting guard.
+    private var connectGeneration = 0
     /// prompt.submit is only an acknowledgement that the gateway accepted the
     /// turn. Model output arrives via stream events, so bound the ack rather
     /// than inheriting NativeGatewayClient's 60-second request default.
@@ -1063,13 +1074,24 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func connect() async {
+        // Build 131.4: resetConnection() bumps connectGeneration so an
+        // in-flight connect that predates the reset aborts itself instead of
+        // publishing a stale socket. Capture the generation we started under;
+        // if a reset lands while we're mid-flight, the guard below stops us
+        // from installing a socket the user explicitly asked to replace.
+        let startedGeneration = connectGeneration
         // Build 64: collapse concurrent connect() calls. Each connect() mints
         // a fresh ticket + socket, so racing callers (launch trigger,
         // scheduleReconnect backoff, manual reset) opened parallel sockets
         // that killed each other mid-verification. A duplicate caller
         // returns immediately - the in-flight attempt sets connectionStatus
         // when it settles, so the UI converges on that single result.
-        guard !isConnecting else {
+        // Build 131.4: when resetConnection() is running, the reset's own
+        // connect() bypasses the isConnecting guard entirely - the stale
+        // in-flight connect has already been invalidated by the generation
+        // bump and will abort at its own guard. Only non-reset callers
+        // (reconnect loop, launch trigger) collapse onto the in-flight one.
+        if !isResetting && isConnecting && startedGeneration == connectGeneration {
             Self.logger.info("connect() skipped - another connect is already in flight")
             return
         }
@@ -1087,7 +1109,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
             return
         }
         isConnecting = true
-        defer { isConnecting = false }
+        defer {
+            // Build 131.4: only clear the in-flight flag if no newer connect
+            // (from a reset) has taken over. A stale connect that aborted at
+            // the generation guard must NOT clear the flag the reset's
+            // connect is actively using.
+            if startedGeneration == connectGeneration {
+                isConnecting = false
+            }
+        }
         connectionStatus = .connecting
         connectionStage = .preparing
         // Build 131.2: close any previous transport BEFORE minting/opening a
@@ -1161,6 +1191,15 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // Publish the fresh client/transport (Build 131.2: the old
             // transport was already closed at the top of connect(), so no
             // orphan socket remains).
+            // Build 131.4: if a resetConnection() landed while we were
+            // verifying, abort before publishing - the reset's own connect()
+            // is about to install a fresh socket and publishing ours would
+            // resurrect exactly the parallel-socket race we're eliminating.
+            guard startedGeneration == connectGeneration else {
+                await client.close()
+                Self.logger.info("connect() aborted - superseded by resetConnection()")
+                return
+            }
             self.transport = transport
             self.client = client
             // Build 97: a successful connect cancels any pending
@@ -1392,6 +1431,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
         guard !isResetting else { return }
         isResetting = true
         defer { isResetting = false }
+
+        // Build 131.4: invalidate any in-flight connect() so it aborts before
+        // publishing a socket. Without this, a background reconnect that
+        // grabbed isConnecting first made resetConnection()'s connect() bail
+        // on the guard and the reset appeared to do nothing.
+        connectGeneration += 1
 
         // Cancel any queued reconnect.
         reconnectTask?.cancel()
