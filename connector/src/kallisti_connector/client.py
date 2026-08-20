@@ -960,6 +960,7 @@ class HeraldConnector:
                     device_token: str,
                     *,
                     session_id: str,
+                    reply_text: str | None = None,
                 ) -> None:
                     """Bridge native_watch calling convention to _send_push_for_job.
 
@@ -968,14 +969,19 @@ class HeraldConnector:
                     acceptable -- single-device deployment.  A future build should
                     thread the device_token through to APNs directly.
 
-                    body_text is fabricated here because the WS terminal event
-                    carries no reply text -- the native world delivers the full
-                    response via a separate channel.  The push just needs to
-                    nudge the user to open the app.
+                    Build smart-completion: when *reply_text* is supplied by the
+                    watcher (the session's last assistant message from
+                    state.db), use it as the push / inbox body so the
+                    notification carries the actual response.  Otherwise
+                    fall back to the legacy ``"Turn complete"`` nudge — the
+                    WS terminal event alone carries no reply text, and
+                    ``reply_text`` may also be ``None`` if the DB lookup
+                    failed or the session has no assistant messages yet.
                     """
+                    body_text = (reply_text or "").strip() or "Turn complete"
                     await self._send_push_for_job(
                         job_id=f"native:{session_id}",
-                        body_text="Turn complete",
+                        body_text=body_text,
                         conversation_id=session_id,
                     )
 
@@ -1578,6 +1584,13 @@ class HeraldConnector:
                 category="HERALD_JOB_ACTIVE",
                 conversation_id=job.get("conversationId"),
             )
+        finally:
+            # Build 121 leak fix: CancelledError (and any other exit path
+            # not explicitly handled above) must still cancel the heartbeat
+            # task or its `_job_heartbeat_tasks[job_id]` entry leaks until
+            # process restart. The explicit calls in the success /
+            # TimeoutError / Exception arms above are idempotent.
+            self._stop_job_heartbeat(job_id)
 
     async def _handle_job_complete(
         self, websocket, job: dict, runtime, *, workdir: str | None = None,
@@ -1816,6 +1829,12 @@ class HeraldConnector:
                 category="HERALD_JOB_ACTIVE",
                 conversation_id=job.get("conversationId"),
             )
+        finally:
+            # Build 121 leak fix (same as _handle_job_streaming): any exit
+            # path not explicitly covered above must still cancel the
+            # heartbeat task or its `_job_heartbeat_tasks[job_id]` entry
+            # leaks until process restart.
+            self._stop_job_heartbeat(job_id)
 
     async def _handle_job_cli(self, websocket, job: dict, runtime) -> None:
         """Process a job using the CLI subprocess (original path)."""
@@ -1889,9 +1908,12 @@ class HeraldConnector:
                     self._stop_job_heartbeat(job_id)
                     await websocket.send(json.dumps(task.result()))
                     return
-        except Exception:
+        finally:
+            # Build 121 leak fix (same as the other job handlers):
+            # CancelledError and every other exit path must cancel the
+            # heartbeat task or `_job_heartbeat_tasks[job_id]` leaks.
+            # Idempotent with the explicit stops above.
             self._stop_job_heartbeat(job_id)
-            raise
 
     def _build_cli_attachment_context(self, *, job_id: str, attachments: list[dict]) -> str:
         attachment_root = self.state_store.state_dir / "attachment_staging" / job_id
