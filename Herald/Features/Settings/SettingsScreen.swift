@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import os
 import UIKit
 
 struct SettingsScreen: View {
@@ -268,9 +269,19 @@ struct SettingsScreen: View {
                     sectionDivider
 
                     Button {
-                        isResettingConnection = true
-                        Task {
-                            await container.nativeGatewayClient?.resetConnection()
+                        // Build 131.5: log immediately so a dead tap is
+                        // distinguishable from a failed reset. The state flip
+                        // happens AFTER the Task is created so the label swap
+                        // (Image -> ProgressView) cannot cancel the action.
+                        // Haptic gives immediate physical feedback even if the
+                        // connection status row doesn't visibly change.
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        let log = Logger(subsystem: "net.fihonline.kallisti", category: "Settings")
+                        log.info("Reset Connection tapped")
+                        let client = container.nativeGatewayClient
+                        Task { @MainActor in
+                            isResettingConnection = true
+                            await client?.resetConnection()
                             isResettingConnection = false
                         }
                     } label: {
