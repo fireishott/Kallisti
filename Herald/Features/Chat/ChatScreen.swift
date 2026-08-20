@@ -1657,7 +1657,8 @@ struct ChatScreen: View {
                                     .stroke(Design.Colors.border, lineWidth: 1)
                             )
                     )
-                    .fixedSize()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .buttonStyle(.plain)
             .layoutPriority(2)
@@ -1679,13 +1680,16 @@ struct ChatScreen: View {
                                     .stroke(Design.Colors.border, lineWidth: 1)
                             )
                     )
-                    .fixedSize()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .buttonStyle(.plain)
             .layoutPriority(2)
             .accessibilityLabel(chatStore.isQueueHeld ? "Release held messages" : "Hold queued messages")
         }
         .frame(height: 34)
+        .frame(maxWidth: .infinity)
+        .clipped()
         .padding(.horizontal, Design.Spacing.md)
         .padding(.vertical, 4)
         .background(chatStore.isQueueHeld ? Design.Colors.warning.opacity(0.10) : Design.Brand.accent.opacity(0.06))
