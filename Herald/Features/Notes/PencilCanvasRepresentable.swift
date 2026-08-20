@@ -156,6 +156,10 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         private weak var paperView: NotePaperUIView?
         private var contentObserver: NSKeyValueObservation?
         private var scrollObserver: NSKeyValueObservation?
+        /// Build 132.2: observes the canvas's own bounds so the paper width
+        /// self-heals on rotation/sidebar/split-view layout changes that
+        /// SwiftUI's updateUIView cycle misses.
+        private var boundsObserver: NSKeyValueObservation?
 
         init(_ parent: PencilCanvasRepresentable) {
             self.parent = parent
@@ -201,6 +205,47 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                         height: contentSize.height / max(zoom, 0.01)
                     )
                     paper.frame = CGRect(origin: .zero, size: paperSize)
+                }
+            }
+
+            // Build 132.2: self-heal the paper width on ANY layout change
+            // (rotation, sidebar close, split-view resize). SwiftUI's
+            // updateUIView only re-fires when the representable's inputs
+            // change - the GeometryReader proxy width alone doesn't always
+            // trigger it, so the canvas keeps a stale narrow width and the
+            // ruled lines stop partway across the screen in portrait. Rotation
+            // happened to force a relayout, which is why lines "fixed"
+            // themselves after rotating to landscape. Observing the canvas's
+            // own bounds closes the loop: whenever the visible frame changes,
+            // sync contentSize.width + the paper frame so lines span edge to
+            // edge without waiting on SwiftUI's update cycle.
+            boundsObserver = canvas.observe(\.bounds, options: [.new, .initial]) { [weak self] scrollView, _ in
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self else { return }
+                    let width = scrollView.bounds.width
+                    guard width > 0 else { return }
+                    // Don't fight the explicit canvasWidth when present - the
+                    // width-scale feature intentionally narrows the column.
+                    if let explicit = self.parent.canvasWidth, explicit > 0 {
+                        if scrollView.contentSize.width != explicit {
+                            scrollView.contentSize.width = explicit
+                        }
+                    } else if scrollView.contentSize.width != width {
+                        scrollView.contentSize.width = width
+                    }
+                    // Force the paper to match the canvas content width so the
+                    // ruled lines draw edge to edge. The contentSize KVO above
+                    // normally handles this, but only fires on CHANGE - if the
+                    // width didn't actually change (stale contentSize equals
+                    // new width by coincidence) the paper never repaints.
+                    if let paper = self.paperView {
+                        let zoom = scrollView.zoomScale
+                        let paperWidth = scrollView.contentSize.width / max(zoom, 0.01)
+                        if paper.bounds.width != paperWidth {
+                            paper.frame = CGRect(origin: .zero, size: CGSize(width: paperWidth, height: paper.bounds.height))
+                        }
+                        paper.setNeedsDisplay()
+                    }
                 }
             }
         }

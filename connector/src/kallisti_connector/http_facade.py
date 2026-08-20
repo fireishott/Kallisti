@@ -1989,6 +1989,50 @@ async def get_inbox(request: Request) -> JSONResponse:
             payload["conversationId"] = item["conversationId"]
         return payload
 
+    def _normalize_attachment(raw: dict) -> dict:
+        """Normalize an inbox attachment to the iOS MessageAttachment schema.
+
+        The connector persists attachments in the relay attachments_data shape
+        ({type, filename, mimeType, data, mediaKey}), but LiveInboxService
+        decodes inbox items with a synthesized Decodable that requires the
+        MessageAttachment keys: id (UUID), kind, fileName, mimeType. One
+        mismatched attachment previously failed the decode of the ENTIRE
+        items array, so the Inbox tab showed "All Caught Up" even when rows
+        existed. Map leniently and keep the embedded base64 as
+        thumbnailBase64 so the bubble renders immediately; mediaURL lets
+        AttachmentService fetch full bytes via /v1/native/media.
+        """
+        import uuid as _uuid
+        raw = dict(raw or {})
+        kind = str(raw.get("kind") or raw.get("type") or "file")
+        file_name = str(raw.get("fileName") or raw.get("filename") or "attachment")
+        mime = str(raw.get("mimeType") or "application/octet-stream")
+        data_b64 = raw.get("data") or raw.get("thumbnailBase64") or raw.get("thumbnailData") or ""
+        media_key = str(raw.get("mediaKey") or "")
+        normalized: dict = {
+            # Swift's UUID(uuidString:) requires the dashed 8-4-4-4-12 form;
+            # .hex (32 chars, no dashes) fails MessageAttachment's decode and
+            # nukes the ENTIRE inbox items array. Use str(uuid4()).
+            "id": str(_uuid.uuid4()),
+            "kind": kind,
+            "fileName": file_name,
+            "mimeType": mime,
+            "thumbnailBase64": str(data_b64) if data_b64 else None,
+            "localStoragePath": raw.get("localStoragePath"),
+            "messageID": raw.get("messageID"),
+            "remoteIndex": raw.get("remoteIndex"),
+        }
+        if media_key:
+            # Full absolute URL - AttachmentService.fetchNativeMedia does
+            # URLRequest(url:), so a bare path would fail. Mirror the push
+            # path's synthesized URL (client.py line ~2197).
+            normalized["mediaURL"] = f"https://hermes-relay.fihonline.net/v1/native/media?path={media_key}"
+        elif data_b64:
+            # No mediaKey but we have embedded bytes; keep them available
+            # through the thumbnail field so PDFs/images still render.
+            normalized["mediaURL"] = None
+        return {k: v for k, v in normalized.items() if v is not None}
+
     return JSONResponse({
         "items": [
             {
@@ -1999,7 +2043,7 @@ async def get_inbox(request: Request) -> JSONResponse:
                 "priority": item["priority"],
                 "status": item["status"],
                 "payload": _payload_for(item),
-                "attachments": item.get("attachments") or [],
+                "attachments": [_normalize_attachment(a) for a in (item.get("attachments") or [])],
                 "createdAt": item["createdAt"],
                 "primaryActionTitle": "Open",
                 "secondaryActionTitle": "Dismiss",
@@ -3542,15 +3586,76 @@ async def session_search_handler(request: Request) -> JSONResponse:
 
 
 async def stub_skills(request: Request) -> JSONResponse:
-    """GET /v1/skills — return empty skill list."""
+    """GET /v1/skills — real installed skill catalog.
+
+    Uses the same commands_catalog provider as /v1/commands (Build 94) so the
+    iOS Skills browser shows the actual installed skills instead of an empty
+    list. Falls back to an empty list if the provider is unavailable.
+    """
     await require_auth(request)
+    ctx = get_context()
+    if ctx.commands_catalog is not None:
+        try:
+            result = ctx.commands_catalog()
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, dict):
+                skills = result.get("skills") or []
+                # iOS HeraldSkill decodes a required `path` field. The
+                # commands_catalog skills carry name+description only, so
+                # synthesize a stable path from the skill name.
+                normalized = []
+                for s in skills:
+                    if not isinstance(s, dict):
+                        continue
+                    name = s.get("name", "")
+                    normalized.append({
+                        "name": name,
+                        "description": s.get("description", ""),
+                        "path": s.get("path") or f"/skills/{name}",
+                    })
+                return JSONResponse({"skills": normalized})
+        except Exception as e:  # pragma: no cover - defensive
+            logging.getLogger("herald.http_facade").warning(
+                "skills catalog provider failed: %s", e
+            )
     return JSONResponse({"skills": []})
 
 
 async def stub_cron_list(request: Request) -> JSONResponse:
-    """GET /v1/cron — return empty job list."""
+    """GET /v1/cron — real scheduled jobs from the Hermes cron store.
+
+    Reads ~/.hermes/cron/jobs.json (the same store `hermes cron list` renders)
+    and maps each job to the shape the iOS CronStore decodes:
+    {id, name, schedule, prompt, enabled, lastRun, nextRun, lastResult}.
+    """
     await require_auth(request)
-    return JSONResponse({"jobs": []})
+    hermes_home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+
+    jobs_path = hermes_home / "cron" / "jobs.json"
+    jobs: list[dict] = []
+    try:
+        if jobs_path.is_file():
+            data = json.loads(jobs_path.read_text(encoding="utf-8"))
+            raw_jobs = data.get("jobs", []) if isinstance(data, dict) else []
+            for j in raw_jobs:
+                if not isinstance(j, dict):
+                    continue
+                jobs.append({
+                    "id": j.get("id", ""),
+                    "name": j.get("name", "Untitled job"),
+                    "schedule": j.get("schedule_display") or (j.get("schedule") or {}).get("display", ""),
+                    "prompt": j.get("prompt", ""),
+                    "enabled": bool(j.get("enabled", True)),
+                    "lastRun": j.get("last_run_at"),
+                    "nextRun": j.get("next_run_at"),
+                    "lastResult": j.get("last_status") or j.get("last_error"),
+                })
+    except Exception as e:  # pragma: no cover - defensive
+        logging.getLogger("herald.http_facade").warning(
+            "cron store read failed: %s", e
+        )
+    return JSONResponse({"jobs": jobs})
 
 
 async def stub_cron_detail(request: Request) -> JSONResponse:
@@ -4173,10 +4278,47 @@ async def hermes_logs_proxy(request: Request) -> JSONResponse:
         }, status_code=502)
 
 
-async def stub_push_deactivate(request: Request) -> JSONResponse:
-    """POST /v1/push/deactivate — not implemented."""
+async def push_deactivate(request: Request) -> JSONResponse:
+    """POST /v1/push/deactivate — remove this device's push registration.
+
+    The iOS Notifications toggle calls this when switched off. Without a real
+    implementation the connector kept the APNs token registered and kept
+    sending "Response ready" pushes even with notifications disabled. We
+    clear the per-installation device token (and optionally the live activity
+    token) from the device registry so _send_push_for_job finds no target.
+    Idempotent: clearing an already-clear installation returns deactivated=true.
+    """
     await require_auth(request)
-    return JSONResponse({"deactivated": False, "status": "not_implemented"}, status_code=501)
+    installation_id = ""
+    token_kind = "device"
+    try:
+        data = await request.json()
+        if isinstance(data, dict):
+            installation_id = str(data.get("installationId") or "").strip()[:255]
+            token_kind = str(data.get("tokenKind") or "device").strip().lower()
+    except Exception:
+        pass
+
+    if not installation_id:
+        # Fall back to the auth token → installation mapping so a client that
+        # only sends its bearer (legacy path) still hits the right device.
+        try:
+            auth_header = request.headers.get("authorization", "")
+            token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+            if token:
+                from .session_store import device_id_for_token
+                installation_id = device_id_for_token(token) or ""
+        except Exception:
+            installation_id = ""
+
+    cleared = False
+    if installation_id:
+        from .session_store import clear_push_token
+        cleared = clear_push_token(installation_id, token_kind=token_kind)
+
+    logger = logging.getLogger("herald.http_facade")
+    logger.info("push deactivate: installation=%s kind=%s cleared=%s", installation_id[:12] or "?", token_kind, cleared)
+    return JSONResponse({"deactivated": True, "cleared": cleared})
 
 
 async def stub_push_broker_challenge(request: Request) -> JSONResponse:
@@ -4451,7 +4593,7 @@ routes = [
     Route("/v1/inbox/{id}/action", inbox_action, methods=["POST"]),
     Route("/v1/push/register", push_register, methods=["POST"]),
     Route("/v1/push/test", push_test, methods=["POST"]),
-    Route("/v1/push/deactivate", stub_push_deactivate, methods=["POST"]),
+    Route("/v1/push/deactivate", push_deactivate, methods=["POST"]),
     Route("/v1/push-broker/challenge", stub_push_broker_challenge, methods=["POST"]),
     Route("/v1/push-broker/register", stub_push_broker_register, methods=["POST"]),
     Route("/v1/hosts/current", host_current, methods=["GET"]),
