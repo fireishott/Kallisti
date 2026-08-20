@@ -94,6 +94,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 - **Talk (voice mode)** - push-to-talk with configurable ASR/TTS providers and Apple speech fallback. Barge-in, audio session management, and live transcript display. Not functional yet - known work in progress.
 - **watchOS app** - native companion watch experience, coming soon
+- **Plugin engine** - third-party plugin registration, lifecycle, and plugin API for community extensions. In development.
 - Expanding the notes pipeline and refining the TUI terminal
 - Performance passes on long-session history and large media
 
@@ -210,4 +211,4 @@ Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/he
 ## Development team
 
 - **Curtis Freeman** ([@fireishott](https://github.com/fireishott)) - Creator and lead developer. Architecture, iOS app, connector, and gateway integration.
-- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPhone and iPad development. iOS and tablet UX, platform-specific polish.
+- **Mark Davis** ([@doc-holliday-1](https://github.com/doc-holliday-1)) - iPhone and iPad development and the plugin engine. iOS and tablet UX, platform-specific polish.
