@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Raw byte-frame transport, abstracted so NativeGatewayClient is testable
 /// without a real socket. One implementation talks to a live WebSocket;
@@ -83,10 +84,21 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
                 guard let task = self?.task else { return }
                 let pingOK = await Self.oneShotSendPing(task)
                 if !pingOK {
-                    // Socket is gone but receive() may never surface the error
-                    // (iOS suspends WS tasks silently). Tear it down so the
-                    // client's receive loop errors and the reconnect loop
-                    // kicks in instead of leaving a phantom connection.
+                    // One failed ping is NOT proof the socket is dead - on
+                    // cellular a slow pong (radio stall, proxy hiccup) can
+                    // exceed the ping timeout while the socket recovers.
+                    // Only after three CONSECUTIVE failed pings do we tear
+                    // the socket down; anything less would kill a healthy
+                    // socket every ~60s (3 keepalive ticks).
+                    self?.consecutivePingFailures += 1
+                    if (self?.consecutivePingFailures ?? 0) < Self.maxPingFailures {
+                        Self.logger.info("keepalive ping failed (\(self?.consecutivePingFailures ?? 0)), keeping socket")
+                        continue
+                    }
+                    // Three failures in a row: socket is genuinely gone.
+                    // Tear it down so the client's receive loop errors and
+                    // the reconnect loop kicks in instead of leaving a
+                    // phantom connection.
                     //
                     // Only clear self.task if it's STILL the same task that
                     // failed the ping - a concurrent reconnect may have already
@@ -98,6 +110,7 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
                     }
                     return
                 }
+                self?.consecutivePingFailures = 0
             }
         }
     }
@@ -138,6 +151,15 @@ final class URLSessionWebSocketTransport: NativeGatewayTransport, @unchecked Sen
     /// client must be strictly MORE tolerant: 45s gives stalled loops room
     /// to breathe while still tearing down genuinely dead sockets.
     private static let pingTimeout: Duration = .seconds(45)
+    private static let logger = Logger(subsystem: "net.fihonline.kallisti", category: "WSKeepalive")
+    /// Build 131.16: consecutive failed pings before the keepalive tears down
+    /// the socket. A SINGLE slow pong on cellular (radio stall, proxy hiccup)
+    /// must not kill a healthy socket - that was the 60s death pattern (socket
+    /// cancelled on the 3rd keepalive tick). Three consecutive failures means
+    /// the socket is genuinely gone; the receive loop will surface the error
+    /// and the reconnect path takes over.
+    private var consecutivePingFailures = 0
+    private static let maxPingFailures = 3
 
     private static func oneShotSendPing(_ task: URLSessionWebSocketTask) async -> Bool {
         await withCheckedContinuation { continuation in

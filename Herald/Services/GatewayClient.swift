@@ -93,6 +93,18 @@ actor GatewayClient {
     private var reconnectAttempt: Int = 0
     private var isCancelled: Bool = false
 
+    // MARK: - Heartbeat
+
+    /// Periodic WebSocket ping interval to keep NAT/cellular paths alive.
+    /// Kept short so iOS suspension and middlebox reaping do not silently kill
+    /// the socket between app-driven traffic.
+    private static let heartbeatInterval: TimeInterval = 25
+
+    /// Long-running ping heartbeat. Cancelled whenever the socket is replaced
+    /// or the client is cancelled. On ping failure it triggers the same
+    /// disconnect/reconnect path as a receive error.
+    private var heartbeatTask: Task<Void, Never>?
+
     // MARK: - Event stream
 
     /// Async stream of gateway events. Events are session-keyed and must be
@@ -125,6 +137,8 @@ actor GatewayClient {
     /// Disconnect from the gateway. Cancels all pending requests.
     func disconnect() {
         isCancelled = true
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         connectionState = .disconnected
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
@@ -251,6 +265,11 @@ actor GatewayClient {
         self.webSocketTask = task
         task.resume()
 
+        // Cancel any prior heartbeat before replacing the socket so the old
+        // pinger does not race against a fresh connection.
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+
         // Verify connection with a ping
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             task.sendPing { error in
@@ -268,10 +287,17 @@ actor GatewayClient {
 
         // Start receive loop in background
         Task { await startReceiveLoop() }
+
+        // Start periodic heartbeat to detect silently-reaped sockets.
+        startHeartbeat()
     }
 
     private func handleDisconnect() async {
         guard !isCancelled else { return }
+
+        // Stop the heartbeat first so it cannot fire on a torn-down socket.
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
 
         connectionState = .disconnected
         rejectAllPending(GatewayError.connectionClosed)
@@ -294,6 +320,58 @@ actor GatewayClient {
             try await establishConnection()
         } catch {
             Self.logger.error("Reconnect failed: \(error.localizedDescription)")
+            await handleDisconnect()
+        }
+    }
+
+    // MARK: - Heartbeat
+
+    /// Launch the periodic ping loop. Only callable once `connectionState ==
+    /// .connected` (i.e. from inside `establishConnection` after the initial
+    /// verification ping succeeds).
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        let interval = Self.heartbeatInterval
+        heartbeatTask = Task { [weak self] in
+            // Loop on a wall-clock interval. Actor isolation means every
+            // call into self awaits -- matching the existing startReceiveLoop
+            // pattern. The Task is cancelled on disconnect, on isCancelled,
+            // and on socket replacement.
+            while !Task.isCancelled {
+                let nanos = UInt64(interval * 1_000_000_000)
+                do {
+                    try await Task.sleep(nanoseconds: nanos)
+                } catch {
+                    return // cancelled
+                }
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                await self.sendHeartbeatPing()
+            }
+        }
+    }
+
+    /// Send a single ping using the live socket. If it fails, treat it the
+    /// same as a receive error: log + delegate to handleDisconnect() so the
+    /// existing reconnect/backoff loop is the single source of truth.
+    private func sendHeartbeatPing() async {
+        guard let task = webSocketTask else { return }
+        // Defence-in-depth: if a stale heartbeat somehow runs while we are no
+        // longer connected, bail out without touching the socket.
+        guard connectionState == .connected else { return }
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                task.sendPing { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        } catch {
+            guard !isCancelled else { return }
+            Self.logger.error("Heartbeat ping failed: \(error.localizedDescription)")
             await handleDisconnect()
         }
     }

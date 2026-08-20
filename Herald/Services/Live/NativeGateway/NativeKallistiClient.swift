@@ -235,6 +235,20 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// bouncing off the guard forever.
     private var connectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// Build 131.15: consecutive failed liveness probes in reconnectIfNeeded().
+    /// A SINGLE probe failure on cellular (brief handoff, NAT stall) must not
+    /// murder a healthy socket by forcing a fresh connect - that one-try
+    /// trigger was the reconnect storm (server saw WebSocketDisconnect on
+    /// config.get every 2-18s). Only a socket that fails 2 probes in a row
+    /// is genuinely dead.
+    private var consecutiveProbeFailures = 0
+    /// Build 131.16: retry task for the FIRST failed liveness probe. The
+    /// 131.15 2-strike guard stopped the reconnect storm but could strand a
+    /// genuinely dead socket: first probe failure returned without scheduling
+    /// anything, so nothing re-checked until an unrelated trigger fired. This
+    /// task re-probes after a short delay so a dead socket gets a second
+    /// chance AND a forced reconnect if still dead.
+    private var probeRetryTask: Task<Void, Never>?
     /// Build 97: delays the yellow-flash to .reconnecting after an unexpected
     /// transport close so a single transient 1006 (proxy reap, brief cell
     /// handoff) does not visibly toggle the status dot. Cancelled by a
@@ -1526,9 +1540,28 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     params: [String: String](),
                     timeoutNanos: Self.probeTimeoutNanos
                 )
+                // Probe succeeded: the socket is genuinely alive. Reset the
+                // failure counter so a single later blip doesn't compound.
+                consecutiveProbeFailures = 0
                 return
             } catch {
-                // Fall through to a fresh connect below.
+                // One probe failure is NOT proof the socket is dead - on
+                // cellular a brief stall can exceed the probe timeout while
+                // the socket recovers. Only after TWO consecutive failures do
+                // we force a fresh connect; anything less would kill a
+                // healthy socket and start the reconnect storm.
+                consecutiveProbeFailures += 1
+                if consecutiveProbeFailures < 2 {
+                    // Don't just return and strand the socket: schedule a
+                    // retry probe in 3s. If the retry also fails, reconnect.
+                    // This keeps the storm protection while guaranteeing a
+                    // genuinely dead socket is recovered.
+                    Self.logger.info("reconnectIfNeeded: probe failed (1), scheduling retry probe")
+                    scheduleProbeRetry()
+                    return
+                }
+                // Two failures in a row: genuinely dead. Fall through.
+                Self.logger.info("reconnectIfNeeded: probe failed twice, forcing fresh connect")
             }
         }
         Self.logger.info("reconnectIfNeeded: forcing fresh connect")
@@ -1538,10 +1571,28 @@ final class NativeKallistiClient: HeraldClientProtocol {
         await connect()
     }
 
+    /// Schedule a single retry probe 3s after the first probe failure. On
+    /// success the retry clears the failure counter; on failure it runs the
+    /// full reconnectIfNeeded path again (which will hit the 2nd strike and
+    /// force a fresh connect). Cancelled by a successful connect().
+    private func scheduleProbeRetry() {
+        probeRetryTask?.cancel()
+        probeRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, !Task.isCancelled else { return }
+            guard self.connectionStatus == .connected, self.client != nil else { return }
+            await self.reconnectIfNeeded()
+        }
+    }
+
     /// Liveness probe timeout: 8 seconds. Short enough that a phantom dead
     /// socket is detected before the user notices, long enough that a
     /// genuinely slow gateway doesn't cause spurious reconnects.
-    private static let probeTimeoutNanos: UInt64 = 8_000_000_000
+    // Build 131.15: 8s was too tight for cellular - a brief NAT/carrier
+    // stall can exceed it and the old code forced a fresh connect (murdering
+    // a recoverable socket). 15s gives the radio room to breathe while still
+    // detecting genuinely dead sockets quickly.
+    private static let probeTimeoutNanos: UInt64 = 15_000_000_000
 
     /// Drives the interactive Nous OAuth/PKCE login (browser handoff) and
     /// then retries `connect()`. Called from onboarding's "Open app" step -
