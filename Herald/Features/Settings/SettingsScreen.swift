@@ -73,6 +73,30 @@ struct SettingsScreen: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        // Build 131.9: Reset Connection confirmation. Confirming wipes local
+        // credentials + pairing so the app returns to the onboarding flow.
+        .alert("Reset Connection?", isPresented: $isShowingResetConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) {
+                let log = Logger(subsystem: "net.fihonline.kallisti", category: "Settings")
+                log.info("Reset Connection confirmed - wiping to onboarding")
+                let client = container.nativeGatewayClient
+                Task { @MainActor in
+                    isResettingConnection = true
+                    // 1. Tear down transport + clear stored credentials so
+                    //    hasStoredLogin = false and the app lands in onboarding.
+                    await client?.wipeCredentials()
+                    // 2. Clear the pairing record (revokes session, fires
+                    //    onPairingChanged(false) -> handlePairingRemoved ->
+                    //    all stores reset -> AppRootView shows onboarding).
+                    await pairingStore.clearLocalPairing(notify: true)
+                    try? await Task.sleep(for: .milliseconds(400))
+                    isResettingConnection = false
+                }
+            }
+        } message: {
+            Text("This clears your saved connection and returns Kallisti to the pairing screen. You will need to pair again to reconnect.")
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if router.activeSheet != nil {
@@ -277,25 +301,13 @@ struct SettingsScreen: View {
                     sectionDivider
 
                     Button {
-                        // Build 131.5: log immediately so a dead tap is
-                        // distinguishable from a failed reset. The state flip
-                        // happens AFTER the Task is created so the label swap
-                        // (Image -> ProgressView) cannot cancel the action.
-                        // Haptic gives immediate physical feedback even if the
-                        // connection status row doesn't visibly change.
+                        // Build 131.9: reset = wipe to pairing. Show a
+                        // confirmation popup first - this is destructive
+                        // (clears credentials, returns to onboarding).
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         let log = Logger(subsystem: "net.fihonline.kallisti", category: "Settings")
-                        log.info("Reset Connection tapped")
-                        let client = container.nativeGatewayClient
-                        Task { @MainActor in
-                            isResettingConnection = true
-                            await client?.resetConnection()
-                            // Build 131.6: hold the "Resetting..." state for a
-                            // minimum beat so the feedback is perceptible even
-                            // when the reconnect completes instantly.
-                            try? await Task.sleep(for: .milliseconds(600))
-                            isResettingConnection = false
-                        }
+                        log.info("Reset Connection tapped - showing confirmation")
+                        isShowingResetConfirmation = true
                     } label: {
                         HStack(spacing: Design.Spacing.sm) {
                             if isResettingConnection {
@@ -332,6 +344,8 @@ struct SettingsScreen: View {
     /// Build 131.5: true while Reset Connection is tearing down + reconnecting,
     /// drives the button's spinner/disabled state so the action is visible.
     @State private var isResettingConnection = false
+    /// Build 131.9: true while the Reset Connection confirmation popup is up.
+    @State private var isShowingResetConfirmation = false
     // Build 70: latency is polled on the AppContainer (starts at connection
     // time), so Settings just reads the live value - no local poller.
     private var latencyMs: Int? { container.connectorLatencyMs }

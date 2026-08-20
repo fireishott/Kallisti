@@ -1423,6 +1423,26 @@ final class NativeKallistiClient: HeraldClientProtocol {
         connectionStatus = .disconnected
     }
 
+    /// Full wipe: tear down transport AND delete stored credentials so the
+    /// app falls back to onboarding/pairing. Used by Settings > Reset
+    /// Connection (Build 131.9 contract change: reset = back to pairing,
+    /// not just a reconnect). Does NOT touch server-side session revocation -
+    /// pairingStore.disconnect() handles that via revokeCurrentSession.
+    func wipeCredentials() async {
+        isDeliberatelyDisconnected = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        await client?.close()
+        client = nil
+        transport = nil
+        connectedAt = nil
+        connectionStatus = .disconnected
+        connectionStage = .preparing
+        hasStoredLogin = false
+        hasConnectedOnce = false
+        await authCoordinator.clearLocalCredentials()
+    }
+
     /// Cancel in-flight reconnect work, tear down stale transport/client
     /// state, and immediately begin a fresh authenticated connection.
     /// Idempotent: concurrent calls are no-ops. Does not delete stored
