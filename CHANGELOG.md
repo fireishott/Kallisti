@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-08-20
 
-Current build release (build 131.21). Private beta TestFlight build.
+Current build release (build 131.22). Private beta build.
+
+### Fixed
+
+- **Rich-chat left-edge swipe no longer fires back navigation (131.22).**
+  In rich chat the session drawer owns the left edge on EVERY tab - it
+  renders over the whole TabView - so a left-edge swipe must only open the
+  drawer and never pop the nav stack or switch tabs underneath it. The
+  131.18 guard only exempted the chat tab, so on other tabs a swipe opened
+  the session list AND navigated back behind it. The back gesture now never
+  runs in rich mode.
 
 ### Fixed
 
