@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-08-20
 
+Current build release (build 132.0). Private beta build.
+
+### Added
+
+- **Handwriting OCR quality pass (132.0).** On-device recognition now renders
+  the ink at 4x (was 2x), runs TWO Vision passes - the raw drawing plus an
+  adaptive-threshold contrast-boosted version - and merges per line by
+  confidence. Short/abbreviated tokens are no longer "corrected" into the
+  wrong dictionary word. Handwriting that read as "Quen Movels" now reads
+  "Qwen Models".
+- **Note photo/scan attachments now reach enrichment (132.0).** When a note
+  has attached photos or scans, they are sent alongside the drawing as inline
+  images so the enrichment model sees the FULL source, not just the ink.
+- **Smart title fallback (132.0).** When the model one-shot for a title comes
+  back empty, the app now derives a client-side title from the note's content
+  (first 3-6 meaningful words, sentence case). Untitled notes no longer stay
+  "Untitled Note".
+- **QuickLook attachments get a Done button (132.0).** PDFs and files opened
+  from the Inbox or chat now have a visible close control - previously a
+  full-screen QuickLook had no way back.
+
+### Changed
+
+- **Enrichment authority flip (132.0).** The drawing is now the source of
+  truth. The on-device OCR text is treated as a noisy draft, used only to
+  disambiguate letterforms - never as the final reading. The enrichment model
+  is told explicitly to read the handwriting from the image and flag
+  uncertain words instead of guessing.
+
+### Fixed
+
+- **Notifications off now actually stops pushes (132.0).** The connector's
+  `push/deactivate` endpoint was a 501 stub - toggling Notifications off in
+  Settings left the APNs token registered and "Response ready" pushes kept
+  arriving. The endpoint now removes the device's token from the registry,
+  and the native-gateway path calls it when the toggle is switched off.
+
+## [0.3.1] - 2026-08-20
+
 Current build release (build 131.23). Private beta build.
 
 ### Fixed
