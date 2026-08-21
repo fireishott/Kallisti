@@ -505,6 +505,14 @@ final class ChatStore {
     /// the /new bug where a stale cached conversation survives the clear.
     private var needsServerRefresh = false
 
+    /// Build 128.5x: true after `clearConversation()` installs a fresh
+    /// local new chat. Guards the no-id `loadConversation()` path from
+    /// clobbering the freshly adopted conversation with a random-UUID
+    /// placeholder returned by the relay's `conversations/current` probe
+    /// (the Build 130.3 new-chat ghost). Cleared when a real conversation
+    /// is loaded by id or when the server-side session is adopted.
+    private var isLocalNewChat = false
+
     /// Build 26: true after a terminal completion when the active-chat
     /// projection was persisted but the server's conversation snapshot has
     /// not yet been proven to contain this terminal turn.  The next explicit
@@ -692,6 +700,19 @@ final class ChatStore {
             await loadConversation(id: selectedID)
             return
         }
+        // Build 128.5x: defense-in-depth guard for the new-chat ghost.
+        // When the persisted-id branch above does not fire (persistence
+        // reset, race during clearConversation), the local conversation
+        // still carries the fresh id minted by
+        // NativeKallistiClient.clearConversation(). If we let the no-id
+        // relay probe run here, it returns a random-UUID placeholder and
+        // re-points currentConversation at it. The placeholder id is NOT
+        // the local id, so the next send lands in a session the user did
+        // not select. Keep the fresh local conversation in place.
+        if isLocalNewChat, conversation?.id != nil {
+            Logger.app.info("loadConversation: skipping no-id probe — isLocalNewChat guard set")
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         // Build 31: capture generation before the await.  If a terminal row is
@@ -719,6 +740,10 @@ final class ChatStore {
             from: cachedConversation,
             into: refreshed
         )
+        // Build 128.5x: a successful no-id probe replaces whatever was
+        // local with the server's view, so the new-chat guard is no
+        // longer needed. The next clearConversation() will set it again.
+        isLocalNewChat = false
         if sendPhase == .idle {
             streamingPhase = .idle
         }
@@ -754,6 +779,10 @@ final class ChatStore {
                 streamingPhase = .idle
             }
             persistence.currentSessionId = conversation?.id
+            // Build 128.5x: a real (by-id) load resolves the new-chat ghost
+            // — the conversation is now backed by the relay, so the
+            // isLocalNewChat guard is no longer needed.
+            isLocalNewChat = false
             if let conversation {
                 var cacheCopy = conversation
                 cacheCopy.contextPercent = nil
@@ -3176,6 +3205,16 @@ final class ChatStore {
         lastTokenUsage = fresh.latestUsage
         lastContextInfo = nil
         pendingMessageSentAt = nil
+        // Build 128.5x: persist the new chat's id so the next
+        // loadConversationIfNeeded() routes through loadConversation(id:)
+        // instead of the no-id path. The Build 130.3 guard already
+        // short-circuits the no-id path when persistence.currentSessionId
+        // is set, so this is the primary fix for the new-chat ghost.
+        // The flag below is a defense-in-depth guard for the very narrow
+        // window where persistence has been cleared but the local
+        // conversation still carries the fresh id.
+        persistence.currentSessionId = fresh.id
+        isLocalNewChat = true
         persistence.saveConversationCache(fresh)
         needsServerRefresh = true  // Force next loadConversationIfNeeded() to bypass cache
         onConversationChanged?()
