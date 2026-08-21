@@ -4385,9 +4385,24 @@ final class ChatStore {
         serverTurnPollTask = Task { [weak self] in
             guard let self else { return }
 
+            // Build 128.5x: cap the watch window. The gateway's pin
+            // clear bound is ~90s; if the watch runs past that, the
+            // gateway has already cleared its pin but the local loop
+            // still believes a remote turn is running — a phantom
+            // "Thinking..." bubble with no real backing job. We give
+            // up at 75s (under the gateway bound) so the next
+            // foreground/refresh can re-probe fresh state instead of
+            // latching onto a stale pin. The placeholder is removed
+            // below the loop on every exit path.
+            let watchDeadline = Date().addingTimeInterval(75)
             for delay in Self.pollingBackoffSeconds {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
+                // Build 128.5x: hard cap on total watch lifetime.
+                guard Date() < watchDeadline else {
+                    Self.logger.info("Server turn watch: deadline (75s) reached, stopping")
+                    break
+                }
                 // Build 128.50: if the user navigated away (New Chat / switch),
                 // stop the watch immediately - the remote turn keeps running on
                 // the other device, but THIS conversation is no longer the one
@@ -4474,14 +4489,24 @@ final class ChatStore {
     /// dropped it) the synthetic "Thinking..." bubble for a server-side turn.
     /// Creates the placeholder ID on first call so the bubble renders
     /// immediately; later calls only re-append when missing.
+    ///
+    /// Build 128.5x: label the placeholder honestly. The bubble is created
+    /// when the gateway reports a turn running on another device (or
+    /// started before this device was foregrounded). Setting `content` to a
+    /// short honest string bypasses the generic "Thinking... Xs" timer
+    /// placeholder and renders the text via the normal streaming markdown
+    /// path so the user can see the turn was NOT started here. The watch's
+    /// 75s deadline (see startServerTurnWatchIfNeeded) bounds the lifetime
+    /// so a stale pin can't leave this bubble on screen forever.
     private func ensureServerTurnPlaceholder() {
+        let label = "Running on another device…"
         if serverTurnPlaceholderID == nil {
             let placeholderID = UUID()
             serverTurnPlaceholderID = placeholderID
             conversation?.messages.append(Message(
                 id: placeholderID,
                 sender: .herald,
-                content: "",
+                content: label,
                 status: .sending,
                 isStreaming: true
             ))
@@ -4493,11 +4518,23 @@ final class ChatStore {
         }
         guard let placeholderID = serverTurnPlaceholderID,
               var conversation = conversation else { return }
-        if conversation.messages.contains(where: { $0.id == placeholderID }) { return }
+        if let existingIdx = conversation.messages.firstIndex(where: { $0.id == placeholderID }) {
+            // Build 128.5x: re-assert the honest label after a server
+            // refresh may have replaced the placeholder message. The
+            // timestamp is preserved so the streaming-clock stamp stays
+            // continuous.
+            if conversation.messages[existingIdx].content != label {
+                conversation.messages[existingIdx].content = label
+                self.conversation = conversation
+                persistence.saveConversationCache(conversation)
+                onConversationChanged?()
+            }
+            return
+        }
         conversation.messages.append(Message(
             id: placeholderID,
             sender: .herald,
-            content: "",
+            content: label,
             status: .sending,
             isStreaming: true
         ))
