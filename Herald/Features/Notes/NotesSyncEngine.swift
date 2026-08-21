@@ -422,6 +422,7 @@ final class NotesSyncEngine {
         messageText += "- Lead with what the note actually says in clear language (names, numbers, items, problems).\n"
         messageText += "- Follow with the genuinely useful context: key points, action items, todos, deadlines, study help, deals/links/coupons - whatever fits the note type.\n"
         messageText += "- Include hyperlinks for anything you researched or referenced.\n"
+        messageText += "- When it genuinely adds value (a chart, a product/deal photo, a screenshot-worthy reference), you MAY include inline images using markdown image syntax ![alt text](https://...). Only use real, working image URLs - prefer images hosted from the web (e.g. store/deal images) - and only when an image actually helps the note. Do NOT invent or hallucinate an image URL; if you are not sure a URL works, skip the image and just link it instead.\n"
         messageText += "- End with a short timestamped 'Updates' line: if this is an update to an existing note, say what changed since the prior enrichment; if new, note when it was created.\n"
         messageText += "Write plainly and specifically. Do NOT describe your instructions, the sync, the session, the isolation rule, or your own process. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Do not ask follow-up questions. Reply concisely but do the real work.\n"
 
