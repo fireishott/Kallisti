@@ -504,6 +504,16 @@ struct ChatScreen: View {
         content()
             .task {
                 chatStore.setPollingEnabled(true)
+                // Build 133.1 (Bug 5): re-sync the composer enablement gate on
+                // every Chat-tab appear. Returning from Settings / switching
+                // tabs can leave ChatStore._cachedConnectionStatus stale even
+                // though the live socket is up, so the compose bubble renders
+                // but stays read-only (no keyboard). Pull the authoritative
+                // status from the client into the store now that the tab is
+                // back on screen so the isEnabled gate re-opens.
+                if chatStore.connectionStatus != chatStore.heraldClient.connectionStatus {
+                    chatStore.updateConnectionStatus(chatStore.heraldClient.connectionStatus)
+                }
                 async let hostRefresh: Void = hostStore.refresh()
                 async let conversationLoad: Void = chatStore.loadConversationIfNeeded()
                 // Build 124: when the thread is already cached (typical on
