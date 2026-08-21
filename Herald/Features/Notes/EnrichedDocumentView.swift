@@ -141,10 +141,14 @@ struct EnrichedDocumentView: View {
 
     private var markdownSection: some View {
         VStack(alignment: .leading, spacing: Design.Spacing.sm) {
-            Text(result.markdown)
-                .font(Design.Typography.body)
-                .foregroundStyle(Design.Colors.foreground)
-                .textSelection(.enabled)
+            // Build 133.2: render the enrichment body as real markdown so
+            // inline hyperlinks are tappable and inline images render, rather
+            // than showing raw markdown source as plain text.
+            MarkdownContentView(
+                content: result.markdown,
+                isStreaming: false,
+                textColor: Design.Colors.foreground
+            )
         }
     }
 
@@ -161,10 +165,13 @@ struct EnrichedDocumentView: View {
                             .foregroundStyle(Design.Colors.foreground)
                     }
 
-                    Text(section.markdown)
-                        .font(Design.Typography.body)
-                        .foregroundStyle(Design.Colors.foreground)
-                        .textSelection(.enabled)
+                    // Build 133.2: section body also renders as markdown so any
+                    // links/images inside a section are interactive too.
+                    MarkdownContentView(
+                        content: section.markdown,
+                        isStreaming: false,
+                        textColor: Design.Colors.foreground
+                    )
                 }
                 .padding(Design.Spacing.sm)
                 .background(Design.Colors.surface)

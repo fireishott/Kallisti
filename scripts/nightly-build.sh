@@ -2,7 +2,7 @@
 # nightly-build.sh - reconcile day fixes, sync Mark's plugin-engine, build nightly
 # Runs nightly (cron). Reconciles releases/daily-log.md into the nightly branch,
 # merges origin/plugin-engine when it has new commits, bumps build, archives,
-# exports, re-signs, uploads to TestFlight.
+# exports, re-signs, builds UAT IPA. NEVER uploads to TestFlight/ASC (main owns that).
 set -euo pipefail
 
 PW='11aaxx2wR'
@@ -80,7 +80,7 @@ git add -A
 git commit -m "nightly: reconcile daily fixes, bump to $NEXT" 2>&1 | tail -1
 git push origin nightly 2>&1 | tail -1
 
-# 8. Build TestFlight
+# 8. Build UAT IPA (no upload)
 echo "--- archive ---"
 rm -rf /tmp/Kallisti_nightly.xcarchive /tmp/nightly_export /tmp/nightly_payload
 security unlock-keychain -p "$PW" ~/Library/Keychains/login.keychain-db
@@ -127,13 +127,8 @@ cd /tmp/nightly_payload
 rm -f /tmp/nightly_export/Kallisti_resigned.ipa
 ditto -c -k --keepParent Payload /tmp/nightly_export/Kallisti_resigned.ipa
 
-echo "--- upload ---"
-xcrun altool --upload-app \
-  -f /tmp/nightly_export/Kallisti_resigned.ipa \
-  -t ios \
-  --apiKey "32NT26772F" \
-  --apiIssuer "69a6de93-5191-47e3-e053-5b8c7c11a4d1" \
-  --apiKeyFile "$HOME/.appstoreconnect/private_keys/AuthKey_32NT26772F.p8" 2>&1 | tail -4
+echo "--- UAT IPA built (no TestFlight upload - nightly is UAT only, main owns ASC) ---"
+echo "IPA: /tmp/nightly_export/Kallisti_resigned.ipa"
 
 echo "--- reset daily log ---"
 rm -f "$LOG"

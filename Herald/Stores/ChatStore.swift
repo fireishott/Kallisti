@@ -505,6 +505,14 @@ final class ChatStore {
     /// the /new bug where a stale cached conversation survives the clear.
     private var needsServerRefresh = false
 
+    /// Build 128.5x: true after `clearConversation()` installs a fresh
+    /// local new chat. Guards the no-id `loadConversation()` path from
+    /// clobbering the freshly adopted conversation with a random-UUID
+    /// placeholder returned by the relay's `conversations/current` probe
+    /// (the Build 130.3 new-chat ghost). Cleared when a real conversation
+    /// is loaded by id or when the server-side session is adopted.
+    private var isLocalNewChat = false
+
     /// Build 26: true after a terminal completion when the active-chat
     /// projection was persisted but the server's conversation snapshot has
     /// not yet been proven to contain this terminal turn.  The next explicit
@@ -692,6 +700,19 @@ final class ChatStore {
             await loadConversation(id: selectedID)
             return
         }
+        // Build 128.5x: defense-in-depth guard for the new-chat ghost.
+        // When the persisted-id branch above does not fire (persistence
+        // reset, race during clearConversation), the local conversation
+        // still carries the fresh id minted by
+        // NativeKallistiClient.clearConversation(). If we let the no-id
+        // relay probe run here, it returns a random-UUID placeholder and
+        // re-points currentConversation at it. The placeholder id is NOT
+        // the local id, so the next send lands in a session the user did
+        // not select. Keep the fresh local conversation in place.
+        if isLocalNewChat, conversation?.id != nil {
+            Logger.app.info("loadConversation: skipping no-id probe — isLocalNewChat guard set")
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         // Build 31: capture generation before the await.  If a terminal row is
@@ -719,6 +740,10 @@ final class ChatStore {
             from: cachedConversation,
             into: refreshed
         )
+        // Build 128.5x: a successful no-id probe replaces whatever was
+        // local with the server's view, so the new-chat guard is no
+        // longer needed. The next clearConversation() will set it again.
+        isLocalNewChat = false
         if sendPhase == .idle {
             streamingPhase = .idle
         }
@@ -754,6 +779,10 @@ final class ChatStore {
                 streamingPhase = .idle
             }
             persistence.currentSessionId = conversation?.id
+            // Build 128.5x: a real (by-id) load resolves the new-chat ghost
+            // — the conversation is now backed by the relay, so the
+            // isLocalNewChat guard is no longer needed.
+            isLocalNewChat = false
             if let conversation {
                 var cacheCopy = conversation
                 cacheCopy.contextPercent = nil
@@ -1684,6 +1713,10 @@ final class ChatStore {
         // mid-submit) → back to .queued for the resubmit pass below.
         let now = Date.now
         var requeued = false
+        // .materializing / .submitting items that already have a jobID need
+        // a relay probe before they can be touched (the relay may still be
+        // running the job). Collected here, drained below in 2b.
+        var needsProbe = Set<UUID>()
         for idx in outboxItems.indices {
             let state = outboxItems[idx].state
             if state == .queued { continue }
@@ -1693,16 +1726,103 @@ final class ChatStore {
                 outboxItems[idx].state = .queued
                 requeued = true
             } else if state == .materializing || state == .submitting {
-                // A crashed submit left a lease behind. Re-leasing is safe:
-                // resubmission carries the same clientMessageID and the relay
-                // dedupes by it.
-                outboxItems[idx].state = .queued
-                outboxItems[idx].nextAttemptAt = nil
-                requeued = true
+                // A crashed submit left a lease behind. The relay may have
+                // already accepted the job (jobID known) and could still be
+                // running it; blindly re-queuing would resubmit a duplicate
+                // clientMessageID on relaunch and risk a ghost LLM run.
+                // - If the relay has a jobID for us, probe it first and
+                //   settle exactly like the .accepted branch above
+                //   (terminalize on terminal, fail on failed, cancel on
+                //   cancelled, leave in-flight if still running).
+                // - Only items with NO jobID (submit died before the relay
+                //   acknowledged) are safe to re-queue — the original POST
+                //   never reached the gateway, so the clientMessageID can't
+                //   duplicate an existing server job.
+                if outboxItems[idx].jobID != nil {
+                    // Defer to the async probe pass below. Marked so we
+                    // don't touch the record twice.
+                    needsProbe.insert(outboxItems[idx].clientMessageID)
+                } else {
+                    outboxItems[idx].state = .queued
+                    outboxItems[idx].nextAttemptAt = nil
+                    requeued = true
+                }
             }
         }
         if requeued {
             persistOutbox()
+        }
+
+        // 2b. Probe the relay for .materializing/.submitting items that
+        // acquired a jobID. The recovered .accepted branch already handles
+        // post-acceptance leases; this catches items whose POST took the
+        // job before the app died but never made it to .accepted locally.
+        // Re-uses the same terminalize / failOutboxItem paths so the
+        // user-row upgrade and the outbox FIFO converge on the same call.
+        if !needsProbe.isEmpty {
+            var settledAny = false
+            for clientMessageID in needsProbe {
+                guard let probeIdx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
+                      let jobID = outboxItems[probeIdx].jobID
+                else { continue }
+                let probeItem = outboxItems[probeIdx]
+                guard let status = await heraldClient.getJobStatus(jobID) else {
+                    // The relay cannot identify the job. The original POST
+                    // may have died before the relay persisted the job, OR
+                    // the relay reaped it. Either way: do NOT re-queue
+                    // blindly — surface as a manual-only retryable failure
+                    // so the user can decide (same posture as the .accepted
+                    // unknown-job branch above).
+                    failOutboxItem(
+                        probeItem,
+                        state: .retryableFailure,
+                        error: "The relay could not report this message's status after relaunch. Check the conversation and retry if needed."
+                    )
+                    settledAny = true
+                    continue
+                }
+                switch status.status {
+                case "completed", "delivered", "succeeded", "success", "terminal":
+                    if status.message?.id != nil,
+                       outboxItems.contains(where: { $0.clientMessageID == probeItem.clientMessageID }) {
+                        terminalizeOutboxItem(
+                            probeItem,
+                            canonicalUserMessageID: probeItem.clientMessageID,
+                            terminalMessageID: status.message?.id
+                        )
+                    } else {
+                        var updated = probeItem
+                        updated.state = .terminal
+                        updated.lastError = nil
+                        updated.nextAttemptAt = nil
+                        if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == probeItem.clientMessageID }) {
+                            outboxItems[idx] = updated
+                        }
+                        persistOutbox()
+                        outboxStore.removeStagedAttachments(for: updated)
+                    }
+                    settledAny = true
+                case "failed":
+                    let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
+                    failOutboxItem(probeItem, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: probeItem.attemptCount))
+                    settledAny = true
+                case "cancelled":
+                    failOutboxItem(probeItem, state: .cancelled, error: status.error ?? "Cancelled")
+                    settledAny = true
+                default:
+                    // Still running. Leave the record in its current
+                    // in-flight state — the poll loop and the next recovery
+                    // pass reconcile it. Crucially: do NOT re-queue — the
+                    // job is live server-side and resubmitting would mint
+                    // a ghost LLM run.
+                    break
+                }
+            }
+            if settledAny {
+                // Persist any outbox mutations the probe made so a second
+                // crash before the next submit pass doesn't re-probe.
+                persistOutbox()
+            }
         }
 
         // 3. Submit queued items for the current conversation (FIFO chain).
@@ -3085,6 +3205,16 @@ final class ChatStore {
         lastTokenUsage = fresh.latestUsage
         lastContextInfo = nil
         pendingMessageSentAt = nil
+        // Build 128.5x: persist the new chat's id so the next
+        // loadConversationIfNeeded() routes through loadConversation(id:)
+        // instead of the no-id path. The Build 130.3 guard already
+        // short-circuits the no-id path when persistence.currentSessionId
+        // is set, so this is the primary fix for the new-chat ghost.
+        // The flag below is a defense-in-depth guard for the very narrow
+        // window where persistence has been cleared but the local
+        // conversation still carries the fresh id.
+        persistence.currentSessionId = fresh.id
+        isLocalNewChat = true
         persistence.saveConversationCache(fresh)
         needsServerRefresh = true  // Force next loadConversationIfNeeded() to bypass cache
         onConversationChanged?()
@@ -4294,9 +4424,24 @@ final class ChatStore {
         serverTurnPollTask = Task { [weak self] in
             guard let self else { return }
 
+            // Build 128.5x: cap the watch window. The gateway's pin
+            // clear bound is ~90s; if the watch runs past that, the
+            // gateway has already cleared its pin but the local loop
+            // still believes a remote turn is running — a phantom
+            // "Thinking..." bubble with no real backing job. We give
+            // up at 75s (under the gateway bound) so the next
+            // foreground/refresh can re-probe fresh state instead of
+            // latching onto a stale pin. The placeholder is removed
+            // below the loop on every exit path.
+            let watchDeadline = Date().addingTimeInterval(75)
             for delay in Self.pollingBackoffSeconds {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
+                // Build 128.5x: hard cap on total watch lifetime.
+                guard Date() < watchDeadline else {
+                    Self.logger.info("Server turn watch: deadline (75s) reached, stopping")
+                    break
+                }
                 // Build 128.50: if the user navigated away (New Chat / switch),
                 // stop the watch immediately - the remote turn keeps running on
                 // the other device, but THIS conversation is no longer the one
@@ -4383,14 +4528,24 @@ final class ChatStore {
     /// dropped it) the synthetic "Thinking..." bubble for a server-side turn.
     /// Creates the placeholder ID on first call so the bubble renders
     /// immediately; later calls only re-append when missing.
+    ///
+    /// Build 128.5x: label the placeholder honestly. The bubble is created
+    /// when the gateway reports a turn running on another device (or
+    /// started before this device was foregrounded). Setting `content` to a
+    /// short honest string bypasses the generic "Thinking... Xs" timer
+    /// placeholder and renders the text via the normal streaming markdown
+    /// path so the user can see the turn was NOT started here. The watch's
+    /// 75s deadline (see startServerTurnWatchIfNeeded) bounds the lifetime
+    /// so a stale pin can't leave this bubble on screen forever.
     private func ensureServerTurnPlaceholder() {
+        let label = "Running on another device…"
         if serverTurnPlaceholderID == nil {
             let placeholderID = UUID()
             serverTurnPlaceholderID = placeholderID
             conversation?.messages.append(Message(
                 id: placeholderID,
                 sender: .herald,
-                content: "",
+                content: label,
                 status: .sending,
                 isStreaming: true
             ))
@@ -4402,11 +4557,23 @@ final class ChatStore {
         }
         guard let placeholderID = serverTurnPlaceholderID,
               var conversation = conversation else { return }
-        if conversation.messages.contains(where: { $0.id == placeholderID }) { return }
+        if let existingIdx = conversation.messages.firstIndex(where: { $0.id == placeholderID }) {
+            // Build 128.5x: re-assert the honest label after a server
+            // refresh may have replaced the placeholder message. The
+            // timestamp is preserved so the streaming-clock stamp stays
+            // continuous.
+            if conversation.messages[existingIdx].content != label {
+                conversation.messages[existingIdx].content = label
+                self.conversation = conversation
+                persistence.saveConversationCache(conversation)
+                onConversationChanged?()
+            }
+            return
+        }
         conversation.messages.append(Message(
             id: placeholderID,
             sender: .herald,
-            content: "",
+            content: label,
             status: .sending,
             isStreaming: true
         ))

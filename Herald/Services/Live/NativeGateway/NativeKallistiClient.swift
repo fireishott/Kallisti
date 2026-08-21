@@ -2256,7 +2256,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
     }
 
     func clearConversation() async throws -> Conversation {
-        let conv = Conversation(title: "New Chat")
+        // Build 128.5x: mint a stable local UUID for the new chat so the
+        // freshly adopted conversation has a real identity. Without this
+        // the next trigger of the no-id loadConversation() path (push
+        // wake, background refresh, launch) would call heraldClient.load
+        // Conversation() which returns a RANDOM-UUID placeholder and
+        // re-points currentConversation at it — the Build 130.3 new-chat
+        // ghost. The id is local-only and is rewritten by the gateway
+        // on the first send (the session-establishment path already
+        // adopts whatever id the relay returns).
+        let conv = Conversation(id: UUID(), title: "New Chat")
         currentConversation = conv
         return conv
     }
