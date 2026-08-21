@@ -105,12 +105,33 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         // auto-grows; width is driven by the SwiftUI layout. When an explicit
         // width is tracked (sidebar drag case), prefer it over bounds so the
         // resize actually happens even if SwiftUI doesn't relayout bounds.
+        //
+        // Build 133.4: contentSize is in the scroll view's UNZOOMED
+        // coordinate space, so the visible column width on screen equals
+        // contentSize.width * zoomScale. To make the visible column equal
+        // the target width while the ink is auto-shrunk by applyAutoFit, the
+        // content width must be targetWidth / zoomScale (NOT targetWidth).
+        // Setting it to targetWidth directly made the visible column even
+        // narrower than the target once zoom < 1, so the ink still clipped.
         let targetWidth = (canvasWidth ?? canvas.bounds.width)
-        if targetWidth > 0, canvas.contentSize.width != targetWidth {
-            canvas.contentSize.width = targetWidth
-            // The paper layer must follow or the ruled lines stop at the old
-            // column edge after a sidebar resize.
-            context.coordinator.updatePaper(style: context.coordinator.currentStyle)
+        if targetWidth > 0 {
+            let zoom = canvas.zoomScale
+            let desiredContentWidth = targetWidth / max(zoom, 0.01)
+            if canvas.contentSize.width != desiredContentWidth {
+                canvas.contentSize.width = desiredContentWidth
+                // The paper layer must follow or the ruled lines stop at the
+                // old column edge after a sidebar resize.
+                context.coordinator.updatePaper(style: context.coordinator.currentStyle)
+            }
+            // Build 133.4: AUTO-SCALE the ink to the column. When the sidebar
+            // opens, the editor width (and contentSize.width) shrinks, but
+            // PencilKit renders strokes at 1:1 in drawing coordinates - so ink
+            // drawn at full width spills past the new right edge and gets
+            // clipped (the right-side cutoff in every screenshot). Fix: zoom the
+            // canvas so the drawing's natural width fits the available column.
+            // Non-destructive: zoomScale only changes RENDERING; the PKDrawing
+            // coordinates stay intact, so nothing is corrupted or compounded.
+            context.coordinator.applyAutoFit(canvas: canvas, targetWidth: targetWidth)
         }
 
         // Restore tool picker and first responder after sheet/rotation/backgrounding.
@@ -199,12 +220,20 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                 MainActor.assumeIsolated { [weak self] in
                     guard let self, let paper = self.paperView else { return }
                     let contentSize = scrollView.contentSize
-                    let zoom = scrollView.zoomScale
+                    // Build 133.4: paper lives in the same scroll-view content
+                    // coordinate space as contentSize (both scale together with
+                    // zoomScale), so the paper frame width is contentSize.width
+                    // directly - NOT divided by zoom (that double-scaled it and
+                    // made the ruled lines overrun the column once auto-fit
+                    // zoomed below 1.0).
                     let paperSize = CGSize(
-                        width: contentSize.width / max(zoom, 0.01),
-                        height: contentSize.height / max(zoom, 0.01)
+                        width: contentSize.width,
+                        height: contentSize.height
                     )
-                    paper.frame = CGRect(origin: .zero, size: paperSize)
+                    if paper.frame.size != paperSize {
+                        paper.frame = CGRect(origin: .zero, size: paperSize)
+                        paper.setNeedsDisplay()
+                    }
                 }
             }
 
@@ -226,12 +255,15 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                     guard width > 0 else { return }
                     // Don't fight the explicit canvasWidth when present - the
                     // width-scale feature intentionally narrows the column.
-                    if let explicit = self.parent.canvasWidth, explicit > 0 {
-                        if scrollView.contentSize.width != explicit {
-                            scrollView.contentSize.width = explicit
-                        }
-                    } else if scrollView.contentSize.width != width {
-                        scrollView.contentSize.width = width
+                    // Build 133.4: with auto-fit zoom active, contentSize must
+                    // be targetWidth / zoom so the VISIBLE column equals the
+                    // target (contentSize is in unzoomed scroll coords).
+                    let explicit = self.parent.canvasWidth ?? 0
+                    let target = explicit > 0 ? explicit : width
+                    let zoom = scrollView.zoomScale
+                    let desiredContentWidth = target / max(zoom, 0.01)
+                    if scrollView.contentSize.width != desiredContentWidth {
+                        scrollView.contentSize.width = desiredContentWidth
                     }
                     // Force the paper to match the canvas content width so the
                     // ruled lines draw edge to edge. The contentSize KVO above
@@ -239,13 +271,19 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
                     // width didn't actually change (stale contentSize equals
                     // new width by coincidence) the paper never repaints.
                     if let paper = self.paperView {
-                        let zoom = scrollView.zoomScale
-                        let paperWidth = scrollView.contentSize.width / max(zoom, 0.01)
+                        // Paper spans the content width in scroll coords (scales
+                        // with zoom automatically) - see contentObserver note.
+                        let paperWidth = scrollView.contentSize.width
                         if paper.bounds.width != paperWidth {
                             paper.frame = CGRect(origin: .zero, size: CGSize(width: paperWidth, height: paper.bounds.height))
                         }
                         paper.setNeedsDisplay()
                     }
+                    // Build 133.4: run the ink auto-fit here too, so a sidebar
+                    // drag that SwiftUI's updateUIView cycle misses still
+                    // rescales the ink to the narrowed column instead of
+                    // clipping it at the right edge.
+                    self.applyAutoFit(canvas: scrollView, targetWidth: target)
                 }
             }
         }
@@ -254,6 +292,57 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
             paperView?.style = style
             paperView?.lineSpacing = parent.lineSpacing
             paperView?.setNeedsDisplay()
+        }
+
+        /// Build 133.4: make the ink auto-fit the available column width.
+        /// When the sidebar (or split-view / width-scale slider) narrows the
+        /// editor, contentSize.width shrinks under the strokes, and PencilKit
+        /// clips anything at 1:1 past the new right edge (the "right side
+        /// cutoff"). This zooms the canvas so the drawing's natural width
+        /// fits the target column - gestures and the drawing itself are
+        /// untouched, only the render scale changes, so this is reversible
+        /// and never compounds.
+        func applyAutoFit(canvas: PKCanvasView, targetWidth: CGFloat) {
+            let naturalWidth = canvas.drawing.bounds.width
+            // No ink yet (empty drawing has a 0-width bounds): nothing to fit.
+            guard naturalWidth > 1 else {
+                restoreFit(canvas: canvas)
+                return
+            }
+            // Fit only when the column is genuinely narrower than the ink.
+            // A thick usable margin widens naturalWidth by the paper inset;
+            // targeting the strokes keeps tiny marks from forcing a crisp 1:1.
+            let fitScale = targetWidth / naturalWidth
+            if fitScale < 0.95 {
+                // Clamp so we never zoom out past a legible floor, and never
+                // below what would make strokes disappearing.
+                let clamped = max(fitScale, 0.35)
+                // Only act when the scale actually changed (sidebar just moved).
+                let current = canvas.zoomScale
+                if abs(current - clamped) > 0.005 {
+                    canvas.minimumZoomScale = clamped
+                    canvas.zoomScale = clamped
+                    // Keep the view anchored at the left edge so the first
+                    // line stays visible after the zoom-out.
+                    canvas.contentOffset.x = 0
+                }
+                // Never let the auto-fit fight a pinch-zoom back above fit.
+                // If the user zooms in to inspect, honor it until the sidebar
+                // moves again.
+                if canvas.zoomScale > clamped && canvas.zoomScale < 1.0 {
+                    canvas.zoomScale = clamped
+                }
+            } else {
+                // Column is wide enough for the ink - restore natural scale.
+                restoreFit(canvas: canvas)
+            }
+        }
+
+        func restoreFit(canvas: PKCanvasView) {
+            if canvas.minimumZoomScale != 1.0 {
+                canvas.minimumZoomScale = 1.0
+                canvas.zoomScale = 1.0
+            }
         }
 
         // MARK: - PKCanvasViewDelegate
