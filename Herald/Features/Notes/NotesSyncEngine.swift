@@ -588,11 +588,16 @@ final class NotesSyncEngine {
     }
 
     /// Render a PKDrawing blob to a UIImage for attachment.
+    /// Build 133.1: render at 4x to match NoteRecognitionCoordinator's OCR
+    /// resolution (it renders at 4.0). The enrichment model was seeing a 2x
+    /// image while the on-device OCR read a 4x image - cursive strokes lost
+    /// detail in the attachment, which degraded the vision-model reading.
+    /// PendingAttachment downscales to fit the body limit, so 4x is safe.
     private func renderDrawingImage(_ data: Data) -> UIImage? {
         guard let drawing = try? PKDrawing(data: data) else { return nil }
         let bounds = drawing.bounds
         guard !bounds.isEmpty, bounds.width > 0, bounds.height > 0 else { return nil }
-        let image = drawing.image(from: bounds, scale: 2.0)
+        let image = drawing.image(from: bounds, scale: 4.0)
         return image
     }
 

@@ -10,3 +10,4 @@ Format: `- YYYY-MM-DD HH:MM PT | build | description`
 - 2026-08-20 15:47 PT | a81d2b0f | 132.3: launch-surface flap fix (never re-show after connected), smart completion notifications (real reply text in push+inbox via session history), inbox select-all + bulk dismiss, in-app banner suppression
 - 2026-08-20 15:58 PT | 43d4762a | 132.4: retire launch surface once connected + activeModel known - model refresh no longer holds cold start on Connected, <model>
 - 2026-08-20 19:25 PT | a3f04936 | 133.0: context-aware note enrichment - model reads drawing/attachments as source of truth, enriches by note type (study/meeting/shopping/personal/doodle), web research + hyperlinks enabled, callback isolation maintained
+- 2026-08-20 21:00 PT | bc64423f | Bug 1: enrichment 2x->4x drawing render; Bug 5: composer keyboard after Settings->Chat; driver scale + status resync. 133.1 installed both devices
