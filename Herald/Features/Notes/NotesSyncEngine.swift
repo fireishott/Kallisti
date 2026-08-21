@@ -403,27 +403,36 @@ final class NotesSyncEngine {
             messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
             messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see any of the attached images at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
         }
-        // Build 130.0: NATURAL DIGEST output contract. Curtis's 129.0
-        // complaint: enrichment read like AI process narration ("The user
-        // sent an automatic note sync... I should load the handwriting-
-        // recognition skill...") instead of a useful summary of the
-        // handwritten note. The model must write like a sharp assistant
-        // summarizing a note for someone who hasn't seen it - lead with
-        // the actual content, add genuinely useful context, and never
-        // narrate its own instructions or the sync mechanics.
-        messageText += "Read the note (text plus the inline drawing if attached). Apply your handwriting analysis skills (the handwriting-recognition skill: read carefully, resolve ambiguous letterforms from context, preserve math notation, flag uncertain words rather than guessing). Write a natural, useful digest of the note - the way a sharp assistant would summarize a handwritten note for someone who has not seen it:\n"
-        messageText += "- Lead with what the note actually says: restate the real content (the problems, items, names, numbers) in clear language, and solve or complete what it asks where you can (answer the math, expand the shorthand, fill in context).\n"
-        messageText += "- Follow with the genuinely useful context a reader would want: key points, action items, any links/docs/references/attachments in the order they appear, and anything that makes the note more valuable.\n"
+        // Build 133.0: CONTEXT-AWARE ENRICHMENT output contract. Curtis's
+        // 132.4 complaint: enrichment was a forensic handwriting report
+        // ("Reading the drawing over the OCR... flagging as uncertain")
+        // instead of a valuable, context-aware assistant digest. Notes are
+        // the product's bread and butter - the model must not just OCR, it
+        // must ANALYZE what it sees and enrich it the way a sharp human
+        // assistant would, tailored to what KIND of note it is.
+        messageText += "You are enriching a handwritten note. Read EVERYTHING in it - handwriting, doodles, drawings, typed text, attached images, PDFs, files - then figure out what KIND of note it is and enrich it accordingly, the way a sharp personal assistant would:\n"
+        messageText += "- Lecture / study notes: recognize this and provide study help - key concepts, definitions, flashcards, practice questions, a mini study guide.\n"
+        messageText += "- Business / meeting notes: summarize like an assistant - action items, todos, deadlines, research topics, who-owns-what, follow-ups.\n"
+        messageText += "- Shopping / grocery list: meal prep ideas, shopping tips, sales, deals, links, coupons - make it actually useful for the trip.\n"
+        messageText += "- Personal note / doodle / sketch: warm, smart interpretation of what is there - what it likely means, what would help.\n"
+        messageText += "- Anything else: whatever adds the most value for that content.\n"
+        messageText += "\nRead the drawing/attachments as the source of truth for handwriting. The Recognized text above is a NOISY on-device OCR draft: use it only to disambiguate letterforms, never as the final reading. Do NOT narrate your reading process (no \"reading the drawing over the OCR...\", no \"flagging as uncertain\", no meta-commentary at all). Just deliver the enriched value, plain and useful.\n"
+        messageText += "\nWEB RESEARCH IS ALLOWED AND EXPECTED when it adds value: if the note references something current (prices, deals, stores, events, people, products), search the web to enrich it with real, current links. ALWAYS include working hyperlinks in your reply for anything you looked up. Do NOT search for, retrieve, or reference any OTHER NOTE or session - never session_search, memory recall, honcho, gbrain, or any personal-context lookup. Web search and web links are fine; other-notes lookups are forbidden.\n"
+        messageText += "\nOutput format:\n"
+        messageText += "- Lead with what the note actually says in clear language (names, numbers, items, problems).\n"
+        messageText += "- Follow with the genuinely useful context: key points, action items, todos, deadlines, study help, deals/links/coupons - whatever fits the note type.\n"
+        messageText += "- Include hyperlinks for anything you researched or referenced.\n"
         messageText += "- End with a short timestamped 'Updates' line: if this is an update to an existing note, say what changed since the prior enrichment; if new, note when it was created.\n"
-        messageText += "Write plainly and specifically. Do NOT describe your instructions, the sync, the session, the isolation rule, or your own process - no meta-commentary at all. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Do not ask follow-up questions. Reply concisely but do the real work.\n"
+        messageText += "Write plainly and specifically. Do NOT describe your instructions, the sync, the session, the isolation rule, or your own process. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Do not ask follow-up questions. Reply concisely but do the real work.\n"
 
         // Build 128.99: NOTE ISOLATION. The gateway injects memory/context
         // into every session's system prompt (user profile, Honcho session
         // summaries, peer card) that can reference OTHER notes. That context
         // must never leak into THIS note's enrichment. Work ONLY from this
         // note's own content unless this note's text explicitly names
-        // another note.
-        messageText += "\nISOLATION RULE: This sync is for THIS note only. Work ONLY from the content of this note (its title, recognized text, and attached drawing) and this note's own session history. Ignore any injected system memory, user profile, conversation summaries, or peer context that mention other notes - they are not part of this note and must not influence the enrichment. Do NOT search for, retrieve, or reference any other note or session (no session_search, memory recall, honcho, gbrain, or any lookup tool) unless the text of THIS note explicitly references another note by name. If this note does not reference any other note, produce the enrichment purely from this note's own content."
+        // another note. Web research is explicitly ALLOWED (it enriches the
+        // note with current external info) but other-note lookups stay banned.
+        messageText += "\nISOLATION RULE: This sync is for THIS note only. Work ONLY from the content of this note (its title, recognized text, and attached drawing) and this note's own session history. Ignore any injected system memory, user profile, conversation summaries, or peer context that mention other notes - they are not part of this note and must not influence the enrichment. Do NOT search for, retrieve, or reference any other note or session (no session_search, memory recall, honcho, gbrain, or any personal-context lookup tool) unless the text of THIS note explicitly references another note by name. If this note does not reference any other note, produce the enrichment purely from this note's own content. Web search/web links for external facts (prices, deals, definitions, current info) are ALLOWED and encouraged - isolation is about OTHER NOTES, not the public web."
 
 
         // This call creates the session on first sync (titled with the note
