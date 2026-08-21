@@ -1684,6 +1684,10 @@ final class ChatStore {
         // mid-submit) → back to .queued for the resubmit pass below.
         let now = Date.now
         var requeued = false
+        // .materializing / .submitting items that already have a jobID need
+        // a relay probe before they can be touched (the relay may still be
+        // running the job). Collected here, drained below in 2b.
+        var needsProbe = Set<UUID>()
         for idx in outboxItems.indices {
             let state = outboxItems[idx].state
             if state == .queued { continue }
@@ -1693,16 +1697,103 @@ final class ChatStore {
                 outboxItems[idx].state = .queued
                 requeued = true
             } else if state == .materializing || state == .submitting {
-                // A crashed submit left a lease behind. Re-leasing is safe:
-                // resubmission carries the same clientMessageID and the relay
-                // dedupes by it.
-                outboxItems[idx].state = .queued
-                outboxItems[idx].nextAttemptAt = nil
-                requeued = true
+                // A crashed submit left a lease behind. The relay may have
+                // already accepted the job (jobID known) and could still be
+                // running it; blindly re-queuing would resubmit a duplicate
+                // clientMessageID on relaunch and risk a ghost LLM run.
+                // - If the relay has a jobID for us, probe it first and
+                //   settle exactly like the .accepted branch above
+                //   (terminalize on terminal, fail on failed, cancel on
+                //   cancelled, leave in-flight if still running).
+                // - Only items with NO jobID (submit died before the relay
+                //   acknowledged) are safe to re-queue — the original POST
+                //   never reached the gateway, so the clientMessageID can't
+                //   duplicate an existing server job.
+                if outboxItems[idx].jobID != nil {
+                    // Defer to the async probe pass below. Marked so we
+                    // don't touch the record twice.
+                    needsProbe.insert(outboxItems[idx].clientMessageID)
+                } else {
+                    outboxItems[idx].state = .queued
+                    outboxItems[idx].nextAttemptAt = nil
+                    requeued = true
+                }
             }
         }
         if requeued {
             persistOutbox()
+        }
+
+        // 2b. Probe the relay for .materializing/.submitting items that
+        // acquired a jobID. The recovered .accepted branch already handles
+        // post-acceptance leases; this catches items whose POST took the
+        // job before the app died but never made it to .accepted locally.
+        // Re-uses the same terminalize / failOutboxItem paths so the
+        // user-row upgrade and the outbox FIFO converge on the same call.
+        if !needsProbe.isEmpty {
+            var settledAny = false
+            for clientMessageID in needsProbe {
+                guard let probeIdx = outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }),
+                      let jobID = outboxItems[probeIdx].jobID
+                else { continue }
+                let probeItem = outboxItems[probeIdx]
+                guard let status = await heraldClient.getJobStatus(jobID) else {
+                    // The relay cannot identify the job. The original POST
+                    // may have died before the relay persisted the job, OR
+                    // the relay reaped it. Either way: do NOT re-queue
+                    // blindly — surface as a manual-only retryable failure
+                    // so the user can decide (same posture as the .accepted
+                    // unknown-job branch above).
+                    failOutboxItem(
+                        probeItem,
+                        state: .retryableFailure,
+                        error: "The relay could not report this message's status after relaunch. Check the conversation and retry if needed."
+                    )
+                    settledAny = true
+                    continue
+                }
+                switch status.status {
+                case "completed", "delivered", "succeeded", "success", "terminal":
+                    if status.message?.id != nil,
+                       outboxItems.contains(where: { $0.clientMessageID == probeItem.clientMessageID }) {
+                        terminalizeOutboxItem(
+                            probeItem,
+                            canonicalUserMessageID: probeItem.clientMessageID,
+                            terminalMessageID: status.message?.id
+                        )
+                    } else {
+                        var updated = probeItem
+                        updated.state = .terminal
+                        updated.lastError = nil
+                        updated.nextAttemptAt = nil
+                        if let idx = outboxItems.firstIndex(where: { $0.clientMessageID == probeItem.clientMessageID }) {
+                            outboxItems[idx] = updated
+                        }
+                        persistOutbox()
+                        outboxStore.removeStagedAttachments(for: updated)
+                    }
+                    settledAny = true
+                case "failed":
+                    let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
+                    failOutboxItem(probeItem, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: probeItem.attemptCount))
+                    settledAny = true
+                case "cancelled":
+                    failOutboxItem(probeItem, state: .cancelled, error: status.error ?? "Cancelled")
+                    settledAny = true
+                default:
+                    // Still running. Leave the record in its current
+                    // in-flight state — the poll loop and the next recovery
+                    // pass reconcile it. Crucially: do NOT re-queue — the
+                    // job is live server-side and resubmitting would mint
+                    // a ghost LLM run.
+                    break
+                }
+            }
+            if settledAny {
+                // Persist any outbox mutations the probe made so a second
+                // crash before the next submit pass doesn't re-probe.
+                persistOutbox()
+            }
         }
 
         // 3. Submit queued items for the current conversation (FIFO chain).
