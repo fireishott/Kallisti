@@ -164,15 +164,26 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         // state and the only effect of proceeding anyway is repeated UIKit
         // calls during exactly the churn window that corrupts an open
         // popover.
+        // Build 135.20: if the tool picker is ALREADY visible (including
+        // its attribute/color popover open), do nothing - no
+        // becomeFirstResponder, no setVisible. Any of those calls during
+        // a parent re-render steals the responder chain out from under the
+        // popover's internal controls and it vanishes. The ONLY time we
+        // restore is when the picker is genuinely hidden AND the canvas
+        // lost first responder (sheet/rotation/backgrounding recovery).
         if canvas.window != nil,
            let picker = context.coordinator.toolPicker,
-           !(picker.isVisible && canvas.isFirstResponder) {
-            if !picker.isVisible {
-                picker.setVisible(true, forFirstResponder: canvas)
-            }
-            if !canvas.isFirstResponder {
-                canvas.becomeFirstResponder()
-            }
+           picker.isVisible {
+            // Picker already visible - never touch responder or visibility.
+            // The attribute popover (color swatches) is open; leave it.
+            return
+        }
+        if canvas.window != nil,
+           let picker = context.coordinator.toolPicker,
+           !picker.isVisible,
+           !canvas.isFirstResponder {
+            picker.setVisible(true, forFirstResponder: canvas)
+            canvas.becomeFirstResponder()
         }
     }
 
