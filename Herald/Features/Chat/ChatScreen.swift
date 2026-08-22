@@ -2391,11 +2391,22 @@ struct QueueManagerSheet: View {
             .accessibilityLabel(confirmDeleteID == item.clientMessageID ? "Tap again to delete" : "Delete queued message")
         }
         .padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // Tap outside the action buttons dismisses any pending delete
-            // confirmation or edit without changing anything.
-            confirmDeleteID = nil
-        }
+        // Build 135.16: the old .contentShape(Rectangle()) + .onTapGesture on
+        // this container swallowed every tap, so the Send / Edit / Delete
+        // Buttons inside the row never fired ("these buttons don't work").
+        // A parent tap gesture claims the whole row area (contentShape makes
+        // it fully tappable) and wins over inner Buttons in SwiftUI. Use a
+        // simultaneousGesture so the buttons still receive taps; the pending
+        // delete-confirm dismissal still happens, just not at the expense of
+        // the row actions.
+        .simultaneousGesture(
+            TapGesture()
+                .onEnded {
+                    // Tap outside the action buttons dismisses any pending
+                    // delete confirmation without changing anything. Buttons
+                    // inside still fire (simultaneous, not exclusive).
+                    confirmDeleteID = nil
+                }
+        )
     }
 }
