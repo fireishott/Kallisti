@@ -25,7 +25,7 @@ struct CanvasView: View {
                     Label(artifact.type.displayName, systemImage: "doc.text")
                         .font(.system(.caption, weight: .semibold))
                         .foregroundStyle(Design.Brand.accent)
-                } else if store.isLiveActivityVisible {
+                } else if store.isLiveActivityVisible || store.isProcessFeedVisible {
                     Label("Live", systemImage: "bolt.horizontal.fill")
                         .font(.system(.caption, weight: .semibold))
                         .foregroundStyle(Design.Brand.accent)
@@ -70,8 +70,8 @@ struct CanvasView: View {
             Divider().background(Design.Colors.border)
 
             // Build 78: tab picker — only shown when there are live
-            // tool activities to display.
-            if store.isLiveActivityVisible {
+            // tool activities to display (or background processes).
+            if store.isLiveActivityVisible || store.isProcessFeedVisible {
                 Picker(
                     "",
                     selection: Binding(
@@ -91,7 +91,7 @@ struct CanvasView: View {
             }
 
             // Content area
-            if store.isLiveActivityVisible && store.activeTab == .live {
+            if (store.isLiveActivityVisible || store.isProcessFeedVisible) && store.activeTab == .live {
                 liveActivityList
             } else if store.activeArtifact != nil {
                 TextEditor(text: $editedContent)
@@ -130,6 +130,13 @@ struct CanvasView: View {
                 store.activeTab = .live
             }
         }
+        // Build 135.17: also auto-select Live when background processes
+        // show up, so the user sees the running task without hunting.
+        .onChange(of: store.isProcessFeedVisible) { _, isVisible in
+            if isVisible && store.activeTab == .artifact {
+                store.activeTab = .live
+            }
+        }
         .confirmationDialog(
             "Clear Artifact",
             isPresented: $showClearConfirmation,
@@ -148,17 +155,96 @@ struct CanvasView: View {
     /// Build 78: scrollable list of in-flight and completed tool
     /// activities. Each row shows the tool name, duration / running
     /// status, a status indicator, and a 2-line result preview.
+    /// Build 135.17: background process rows render below the tool
+    /// activities, each with its live output tail and a Stop button
+    /// while running.
     private var liveActivityList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Design.Spacing.sm) {
                 ForEach(store.liveToolActivities) { activity in
                     liveActivityRow(activity)
                 }
+                if !store.liveBackgroundProcesses.isEmpty {
+                    Divider().background(Design.Colors.border)
+                    Label("Background tasks", systemImage: "terminal.fill")
+                        .font(.system(.caption, weight: .semibold))
+                        .foregroundStyle(Design.Colors.secondaryForeground)
+                        .padding(.top, Design.Spacing.xs)
+                    ForEach(store.liveBackgroundProcesses) { process in
+                        backgroundProcessRow(process)
+                    }
+                }
             }
             .padding(.horizontal, Design.Spacing.md)
             .padding(.vertical, Design.Spacing.md)
         }
         .background(Design.Colors.background)
+    }
+
+    /// Build 135.17: one tracked background process. Running rows get a
+    /// spinner + Stop button; terminal rows show exit status + tail.
+    @ViewBuilder
+    private func backgroundProcessRow(_ process: BackgroundProcess) -> some View {
+        let statusColor: Color = process.status == .failed
+            ? .orange
+            : (process.status.isActive ? Design.Brand.accent : .green)
+        let statusSymbol: String = process.status == .failed
+            ? "exclamationmark.triangle.fill"
+            : (process.status.isActive ? "circle.dotted" : "checkmark.circle.fill")
+        VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+            HStack(spacing: Design.Spacing.sm) {
+                if process.status.isActive {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(statusColor)
+                } else {
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                }
+                Text(process.name.isEmpty ? process.commandLine : process.name)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(1)
+                Spacer()
+                if let code = process.exitCode, !process.status.isActive {
+                    Text("exit \(code)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(process.status == .failed ? .orange : Design.Colors.secondaryForeground)
+                }
+                if process.status.isActive {
+                    Button {
+                        // Build 135.17: best-effort kill via the store's
+                        // callback, wired by AppContainer to the connector's
+                        // /v1/canvas/processes/{id}/kill endpoint.
+                        store.killBackgroundProcess?(process.id)
+                    } label: {
+                        Image(systemName: "stop.circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Stop \(process.name)")
+                }
+            }
+            if !(process.outputTail ?? "").isEmpty {
+                TerminalOutputView(
+                    text: process.outputTail ?? "",
+                    isActive: process.status.isActive,
+                    maxChars: 24 * 1024
+                )
+            }
+        }
+        .padding(.horizontal, Design.Spacing.md)
+        .padding(.vertical, Design.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Design.Colors.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Design.Colors.border, lineWidth: 1)
+        )
     }
 
     @ViewBuilder

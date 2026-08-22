@@ -95,6 +95,7 @@ final class AppContainer {
     let dashboardLogService: DashboardLogService
     let themeManager: ThemeManager
     let hostStatusStream: HostStatusStreamService
+    let backgroundProcessStream: BackgroundProcessStreamService
     /// Build 33: restart-safe Hermes gateway control (preflight → confirm →
     /// idempotent submit → poll). App-scoped so an in-flight restart survives
     /// the Settings screen being dismissed mid-poll.
@@ -165,6 +166,7 @@ final class AppContainer {
         pushRegistrationCoordinator: PushRegistrationCoordinator? = nil,
         secureStore: (any SecureStoreProtocol)? = nil,
         hostStatusStream: HostStatusStreamService? = nil,
+        backgroundProcessStream: BackgroundProcessStreamService? = nil,
         gatewayControl: GatewayControlService? = nil
     ) {
         self.sessionStore = sessionStore
@@ -282,6 +284,27 @@ final class AppContainer {
                 await nativeGatewayClient?.usesCookieAuth() ?? false
             }
         )
+
+        // Build 135.17: background process stream feeds the Canvas Live
+        // tab. Same token provider as the other live services (native
+        // bearer first, relay session token fallback).
+        let processTokenProvider: @Sendable () async -> String? = { [nativeGatewayClient] in
+            if let nativeGatewayClient,
+               let nativeToken = await nativeGatewayClient.nativeAccessToken(),
+               !nativeToken.isEmpty {
+                return nativeToken
+            }
+            return await sessionStore.currentAccessToken()
+        }
+        self.backgroundProcessStream = backgroundProcessStream ?? BackgroundProcessStreamService(
+            apiClient: apiClient ?? RelayAPIClient { "" },
+            accessTokenProvider: processTokenProvider
+        )
+        self.backgroundProcessStream.onProcessEvent = { [weak self] process in
+            Task { @MainActor in
+                self?.canvasStore.upsertBackgroundProcess(process)
+            }
+        }
 
         // Observe Live Activity push token updates and register with relay
         NotificationCenter.default.addObserver(
@@ -1434,6 +1457,10 @@ final class AppContainer {
         } else {
             await hostStatusStream.stop()
         }
+        // Build 135.17: background process stream always runs - it is a
+        // connector endpoint independent of the native vs legacy status
+        // path, and the service's backoff handles connector restarts.
+        await backgroundProcessStream.start()
     }
 
     func handleRemoteNotificationWake(pushCategory: String? = nil) async {
