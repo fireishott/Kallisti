@@ -1434,10 +1434,29 @@ struct ChatScreen: View {
                 // Build 31: user-initiated drag pauses auto-follow.  The
                 // geometry handler below resets isUserScrolling when the user
                 // manually scrolls back to the bottom or taps Jump to Latest.
-                // No timer — the pause lasts until the user explicitly returns.
+                //
+                // Build 135.15: also release scroll ownership on a short grace
+                // timer after the drag ends. userScrollTimer was declared but
+                // never scheduled, so an accidental drag (rubber-band at the
+                // bottom, a horizontal swipe, a touch that barely moves) left
+                // isUserScrolling=true forever - streaming messages piled up
+                // off-screen and the Jump-to-Latest arrow's scrollToBottom was
+                // blocked by the same flag. Now a drag that stops re-enables
+                // auto-follow after 2.5s so the transcript stays bottom-anchored
+                // and the arrow always returns the user to the latest message.
                 DragGesture(minimumDistance: 16)
                     .onChanged { _ in
                         isUserScrolling = true
+                        userScrollTimer?.invalidate()
+                    }
+                    .onEnded { _ in
+                        userScrollTimer?.invalidate()
+                        userScrollTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { _ in
+                            Task { @MainActor in
+                                self.isUserScrolling = false
+                                self.userScrollTimer = nil
+                            }
+                        }
                     }
             )
             .onAppear { scrollProxy = proxy }
