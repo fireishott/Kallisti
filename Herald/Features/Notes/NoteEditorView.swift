@@ -307,6 +307,29 @@ struct NoteEditorView: View {
         .onAppear {
             loadNote()
             startCheckpointLoop()
+            // 135.11: last-chance safety save. A hard kill (Jetsam,
+            // resource watchdog, force-quit) never delivers scenePhase, so
+            // register for the two callbacks iOS DOES send before
+            // termination: didReceiveMemoryWarning (fires before Jetsam
+            // reclaims) and willTerminate. Best-effort synchronous flushes.
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil, queue: .main
+            ) { [self] _ in
+                self.persistTask?.cancel()
+                self.persistDrawing(self.drawing)
+                let snapText = self.typedText
+                Task { await self.notesStore.saveTypedText(noteId: self.noteId, text: snapText) }
+            }
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.willTerminateNotification,
+                object: nil, queue: .main
+            ) { [self] _ in
+                self.persistTask?.cancel()
+                self.persistDrawing(self.drawing)
+                let snapText = self.typedText
+                Task { await self.notesStore.saveTypedText(noteId: self.noteId, text: snapText) }
+            }
         }
         .onChange(of: noteId) { _, _ in
             persistTask?.cancel()
@@ -746,6 +769,19 @@ struct NoteEditorView: View {
     @State private var checkpointRestorationInFlight = false
     @State private var checkpointTask: Task<Void, Never>?
     @State private var canvasViewport: PencilCanvasRepresentable.CanvasViewport?
+    /// Re-entrancy latch: a snapshot is already in flight, so a nested
+    /// trigger (body re-render, sync event, onChange) must NOT start a
+    /// second copy. This breaks the checkpoint write/re-render feedback
+    /// loop that previously pegged CPU, dirtied gigabytes of file-backed
+    /// memory, and got the app killed by iOS resource limits (cpu_resource,
+    /// diskwrites_resource, Jetsam per-process-limit) while a note was open.
+    @State private var checkpointSnapshotInFlight = false
+    /// Throttle for automatic snapshots. Manual and backgrounding snapshots
+    /// always run; automatic ones are at least this far apart so an event
+    /// storm (sync completing + re-render cycles) cannot hammer the disk.
+    private let checkpointMinAutomaticInterval: TimeInterval = 10
+    /// Last time any checkpoint snapshot completed (used for the throttle).
+    @State private var lastCheckpointWriteAt: Date = .distantPast
 
     private func startCheckpointLoop() {
         checkpointTask?.cancel()
@@ -785,11 +821,36 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Persist a checkpoint of the current state. Cheap - records the
-    /// drawing revision + hash, doesn't copy the blob. Triggered every 5
-    /// minutes during active editing, on app backgrounding, when the user
-    /// taps "Save checkpoint now", and before every restore.
+    /// Persist a checkpoint of the current state. Records the drawing
+    /// revision + hash and copies the owned blob bundle (drawing, text,
+    /// attachments, enrichment, metadata) into a checkpoint directory.
+    /// Triggered every 5 minutes during active editing, on app
+    /// backgrounding, when the user taps "Save checkpoint now", and before
+    /// every restore.
+    ///
+    /// Defensive guards (135.11):
+    /// - Re-entrancy latch: never start a second snapshot while one is
+    ///   running. Nested triggers from body re-renders / sync events just
+    ///   return; the in-flight snapshot covers the current state.
+    /// - Throttle: automatic snapshots are at least 10s apart so an event
+    ///   storm cannot hammer disk I/O.
+    /// - No redundant @State writes: if the checkpoint list is unchanged we
+    ///   skip assigning it, so the SwiftUI body is not re-rendered for a
+    ///   no-op checkpoint (the re-render was the loop driver).
     private func saveCheckpointSnapshot(reason: CheckpointReason) async {
+        // Re-entrancy latch. Manual and backgrounding are user-critical and
+        // may still be skipped if a snapshot is genuinely mid-flight - the
+        // in-flight one already captured the current state a moment ago.
+        guard !checkpointSnapshotInFlight else { return }
+        // Throttle automatic snapshots (10s min). Manual, backgrounding,
+        // and restore-safety bypass the throttle - they are explicit.
+        if reason == .automatic {
+            let elapsed = Date().timeIntervalSince(lastCheckpointWriteAt)
+            guard elapsed >= checkpointMinAutomaticInterval else { return }
+        }
+        checkpointSnapshotInFlight = true
+        defer { checkpointSnapshotInFlight = false }
+
         let repo = NotesRepository()
         let safeReason: String
         switch reason {
@@ -804,8 +865,17 @@ struct NoteEditorView: View {
             )
             let recent = (try? await repo.loadCheckpoints(noteId: noteId, limit: 5)) ?? []
             await MainActor.run {
-                _recentCheckpoints = recent
-                lastCheckpoint = cp
+                // Only touch @State when the data actually changed, so a
+                // redundant snapshot cannot force a body re-render (which
+                // was the feedback loop).
+                let listChanged = recent.map(\.id) != _recentCheckpoints.map(\.id)
+                if listChanged {
+                    _recentCheckpoints = recent
+                }
+                if lastCheckpoint?.id != cp.id {
+                    lastCheckpoint = cp
+                }
+                lastCheckpointWriteAt = .now
             }
         } catch {
             // Best-effort; never block the user.
