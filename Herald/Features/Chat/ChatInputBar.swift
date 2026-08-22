@@ -56,18 +56,6 @@ struct ChatInputBar: View {
 
     @State private var speechService: (any SpeechDictationService)? = createSpeechDictationService()
     @State private var dictationBaseText = ""
-    /// Build 116: set by a completed long-press so the release-tap that
-    /// follows the gesture does not send/queue a second copy of the draft.
-    @State private var suppressNextTap = false
-    /// Build 128.52: slide-up-to-queue affordance. While the action button
-    /// (steer wheel / send) is HELD, a "Queue" pill appears above it; the
-    /// message is queued only when the finger then slides UP into the pill
-    /// and releases there. Hold alone reveals the pill (no accidental queue).
-    @State private var queuePillVisible = false
-    /// True while the finger is over the pill: highlighted + armed to queue.
-    @State private var queuePillArmed = false
-    /// Live drag translation.height while the sequenced drag runs.
-    @State private var queueDragHeight: CGFloat = 0
 
     private var canSend: Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -240,7 +228,6 @@ struct ChatInputBar: View {
                             }
                             .accessibilityLabel("Send message")
                             .accessibilityHint("Send the drafted message")
-                            .simultaneousGesture(longPressToQueueGesture)
                             .transition(.scale.combined(with: .opacity))
                         } else {
                             Button {
@@ -375,20 +362,12 @@ struct ChatInputBar: View {
                             .foregroundStyle(Design.Colors.secondaryForeground)
                             .frame(width: 40, height: 40)
                     }
-                    .accessibilityLabel("Queue message after current reply")
-                    .accessibilityHint("Hold, then slide up onto the queue pill")
-                    .simultaneousGesture(longPressToQueueGesture)
+                    .accessibilityLabel("Send next")
+                    .accessibilityHint("Sends this message after the current reply")
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            .overlay(alignment: .top) {
-                if queuePillVisible {
-                    queuePill
-                        .offset(y: -44)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .animation(.snappy(duration: 0.18), value: queuePillVisible)
+
         } else if canSend {
             // Build 121: send matches the mic style - plain vector icon,
             // no white circle. Same tap target, same secondary foreground.
@@ -399,135 +378,17 @@ struct ChatInputBar: View {
                     .frame(width: Design.Size.minTapTarget, height: Design.Size.minTapTarget)
             }
             .accessibilityLabel("Send message")
-            .simultaneousGesture(longPressToQueueGesture)
             .transition(.scale.combined(with: .opacity))
-            .overlay(alignment: .top) {
-                if queuePillVisible {
-                    queuePill
-                        .offset(y: -44)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .animation(.snappy(duration: 0.18), value: queuePillVisible)
+
         }
     }
 
-    /// Build 128.52: the "queue" pill revealed by holding the action button.
-    /// Arms (accent fill) once the finger slides up onto it; releasing over
-    /// the armed pill queues the draft.
-    private var queuePill: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "list.bullet.below.rectangle")
-                .font(.system(size: 11, weight: .semibold))
-            Text(queuePillArmed ? "Release to queue" : "Queue")
-                .font(Design.Typography.caption.weight(.semibold))
-        }
-        .foregroundStyle(queuePillArmed ? Color.black : Design.Brand.accent)
-        .padding(.horizontal, Design.Spacing.sm)
-        .padding(.vertical, 7)
-        .background(
-            Capsule()
-                .fill(queuePillArmed ? Design.Brand.accent : Design.Colors.surface)
-                .overlay(
-                    Capsule()
-                        .stroke(queuePillArmed ? Design.Brand.accent : Design.Brand.accent.opacity(0.6), lineWidth: 1)
-                )
-        )
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
-        .allowsHitTesting(false)
-    }
-
-    /// Build 128.52: hold the action button to reveal a "Queue" pill above
-    /// it, then slide the finger UP onto the pill to queue the draft behind
-    /// the active turn. Hold alone reveals the affordance; only release
-    /// over the pill queues. Same settings gate as the old Build 116
-    /// long-press queue.
-    private var longPressToQueueGesture: some Gesture {
-        LongPressGesture(minimumDuration: 0.4)
-            // Build 128.55: minimumDistance 8 (was 0). A zero-distance drag
-            // activates on the tiniest finger jitter during a hold, claims the
-            // touch, and CANCELS the Button tap - send never fired. The pill
-            // arms at -46pt of travel, so an 8pt threshold is invisible to the
-            // real gesture while letting plain taps through untouched.
-            .sequenced(before: DragGesture(minimumDistance: 8))
-            .onChanged { value in
-                switch value {
-                case .first(true):
-                    guard settingsStore.settings.longPressToQueue else { return }
-                    // Build 128.55: do NOT set suppressNextTap here. The user
-                    // has only held so far - they may still release to SEND.
-                    // Suppression is armed ONLY when the queue actually fires
-                    // in onEnded, so a plain hold+release can never eat the
-                    // next tap.
-                    withAnimation(.snappy(duration: 0.18)) {
-                        queuePillVisible = true
-                    }
-                case .second(true, let drag?):
-                    guard settingsStore.settings.longPressToQueue else { return }
-                    queueDragHeight = drag.translation.height
-                    // Pill sits ~46pt above the button's center: arm once the
-                    // finger has moved up past that line.
-                    let armed = drag.translation.height <= -46
-                    if armed != queuePillArmed {
-                        withAnimation(.snappy(duration: 0.12)) {
-                            queuePillArmed = armed
-                        }
-                    }
-                default:
-                    break
-                }
-            }
-            .onEnded { _ in
-                let shouldQueue = queuePillArmed
-                let holdCompleted = queuePillVisible
-                withAnimation(.snappy(duration: 0.18)) {
-                    queuePillVisible = false
-                    queuePillArmed = false
-                    queueDragHeight = 0
-                }
-                // Build 128.55: ALWAYS clear the suppression flag at the end of
-                // the gesture unless a message was actually queued. Previously
-                // an interrupted/cancelled sequence (view identity swap, app
-                // backgrounding, scroll steal) could leave suppressNextTap
-                // stuck true, silently swallowing every later tap on send.
-                guard settingsStore.settings.longPressToQueue else {
-                    suppressNextTap = false
-                    return
-                }
-                if shouldQueue {
-                    suppressNextTap = true
-                    onQueueNext()
-                } else if holdCompleted {
-                    // The user held long enough to reveal the pill but
-                    // released without sliding up onto it. Nothing was
-                    // queued, so don't leave the tap-suppression flag set -
-                    // otherwise the NEXT tap on this button would be
-                    // silently consumed.
-                    suppressNextTap = false
-                }
-            }
-    }
-
-    /// Send button tap. A just-completed long press leaves `suppressNextTap`
-    /// set, so the release-tap that follows must not send a second copy.
     private func sendAction() {
-        guard !consumeSuppressedTap() else { return }
         handlePrimaryAction()
     }
 
-    /// Steer button tap. Same suppression: a long press already queued the
-    /// draft, so the release-tap must not queue it again.
     private func steerAction() {
-        guard !consumeSuppressedTap() else { return }
         onQueueNext()
-    }
-
-    private func consumeSuppressedTap() -> Bool {
-        if suppressNextTap {
-            suppressNextTap = false
-            return true
-        }
-        return false
     }
 
     // MARK: - Dictation

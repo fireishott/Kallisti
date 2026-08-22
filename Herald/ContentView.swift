@@ -116,7 +116,7 @@ struct MainTabView: View {
                     // TabView), so the back gesture never runs in rich mode -
                     // otherwise a swipe both opens the drawer AND pops the
                     // nav stack / switches tabs underneath it.
-                    if settingsStore.settings.chatDisplayMode == .rich {
+                    if !DeviceClass.isPhone || settingsStore.settings.chatDisplayMode == .rich {
                         return
                     }
                     if !router.path().isEmpty {

@@ -75,12 +75,26 @@ struct NativeGatewayFeatureClient {
 
     /// Hermes Agent version string from `hermes version` via cli.exec.
     func agentVersion() async throws -> String {
-        let raw = try await cliExec(argv: ["version"], timeout: 30)
-        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let raw = try await cliExec(argv: ["--version"], timeout: 30)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             Self.logger.warning("agentVersion: empty response from cli.exec")
             return ""
         }
-        return raw
+        // cli.exec returns combined stdout/stderr. Only surface a real semver
+        // token so argparse usage text cannot poison the Infrastructure row.
+        let pattern = #"v?(\d+\.\d+\.\d+(?:[.-][A-Za-z0-9.]+)?)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: trimmed,
+                range: NSRange(trimmed.startIndex..., in: trimmed)
+              ),
+              let range = Range(match.range(at: 1), in: trimmed)
+        else {
+            Self.logger.warning("agentVersion: cli.exec returned no version token")
+            return ""
+        }
+        return String(trimmed[range])
     }
 
     /// Connector version from the HTTP facade /v1/version.
@@ -151,6 +165,73 @@ struct NativeGatewayFeatureClient {
             }
             return (decoded.activeProfile?.name, mapped)
         } catch { return nil }
+    }
+
+    // MARK: - Agent tools
+
+    struct ManagedSkill: Decodable, Identifiable, Hashable {
+        let name: String
+        let description: String
+        let path: String
+        var id: String { name }
+    }
+
+    struct ManagedCronJob: Decodable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let schedule: String
+        let prompt: String
+        let enabled: Bool
+        let lastRun: Date?
+        let nextRun: Date?
+        let lastResult: String?
+        enum CodingKeys: String, CodingKey {
+            case id, name, prompt, enabled
+            case schedule = "schedule_display"
+            case lastRun = "last_run_at"
+            case nextRun = "next_run_at"
+            case lastResult = "last_error"
+        }
+    }
+
+    private func decodeResult<T: Decodable>(_ response: NativeGatewayResponse, as type: T.Type) throws -> T {
+        if let error = response.error { throw error }
+        guard let result = response.result, let data = try? JSONEncoder().encode(result) else { throw NativeGatewayClientError.unexpectedFrame }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(T.self, from: data)
+    }
+
+    func managedSkills() async throws -> [ManagedSkill] {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Response: Decodable { let skills: [ManagedSkill] }
+        return try decodeResult(await client.send(method: "skills.list", params: [String: String]()), as: Response.self).skills
+    }
+
+    func managedCronJobs() async throws -> [ManagedCronJob] {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Response: Decodable { let jobs: [ManagedCronJob] }
+        return try decodeResult(await client.send(method: "cron.list", params: [String: String]()), as: Response.self).jobs
+    }
+
+    func createManagedCronJob(name: String, schedule: String, prompt: String) async throws -> ManagedCronJob {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Response: Decodable { let job: ManagedCronJob }
+        return try decodeResult(await client.send(method: "cron.create", params: ["name": name, "schedule": schedule, "prompt": prompt]), as: Response.self).job
+    }
+
+    func updateManagedCronJob(id: String, enabled: Bool) async throws -> ManagedCronJob {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Params: Encodable { let id: String; let enabled: Bool }
+        struct Response: Decodable { let job: ManagedCronJob }
+        return try decodeResult(await client.send(method: "cron.update", params: Params(id: id, enabled: enabled)), as: Response.self).job
+    }
+
+    func deleteManagedCronJob(id: String) async throws {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Response: Decodable { let deleted: Bool }
+        let response: Response = try decodeResult(await client.send(method: "cron.delete", params: ["id": id]), as: Response.self)
+        guard response.deleted else { throw NativeGatewayClientError.unexpectedFrame }
     }
 
     // MARK: - Gateway Status

@@ -439,3 +439,13 @@ distributed to TestFlight testers.
 - 2026-08-20 19:25 PT | a3f04936 | 133.0: context-aware note enrichment - model reads drawing/attachments as source of truth, enriches by note type (study/meeting/shopping/personal/doodle), web research + hyperlinks enabled, callback isolation maintained
 - 2026-08-20 21:00 PT | bc64423f | Bug 1: enrichment 2x->4x drawing render; Bug 5: composer keyboard after Settings->Chat; driver scale + status resync. 133.1 installed both devices
 - 2026-08-20 22:02 PT | 16b5b2f8 | 133.2: enrichment renders markdown (clickable hyperlinks + inline images when model emits them); writing pad sidebar resize (132.2 bounds observer) ships to devices; connector note.enrich prompt synced with hyperlink+inline-image rules
+
+## [Nightly] - $(date '+%Y-%m-%d')
+
+### Fixed (daily reconciliation)
+
+- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
+- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
+- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
+- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
+- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID

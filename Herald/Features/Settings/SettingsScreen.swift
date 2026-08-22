@@ -1995,16 +1995,6 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 settingsToggle(
-                    icon: "steeringwheel",
-                    iconColor: Design.Colors.foreground,
-                    title: "Long Press to Queue",
-                    subtitle: "Hold the send button to queue a message behind the current reply",
-                    isOn: longPressToQueueBinding
-                )
-
-                sectionDivider
-
-                settingsToggle(
                     icon: "sidebar.left",
                     iconColor: Design.Colors.foreground,
                     title: "Auto-Close Sidebar",
@@ -2381,41 +2371,6 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                // Build 130.1: note canvas width scale. Multiplies the
-                // editor's available width so the writing column can be
-                // narrower or wider than the screen. The trailing label
-                // shows the live scale.
-                VStack(alignment: .leading, spacing: Design.Spacing.xs) {
-                    HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: "arrow.left.and.right")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Design.Brand.primary)
-                            .frame(width: 20, alignment: .center)
-                        Text("Note width")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.foreground)
-                        Spacer()
-                        Text("\(Int(settingsStore.settings.notesCanvasWidthScale * 100))%")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                            .monospacedDigit()
-                    }
-                    .frame(minHeight: Design.Size.minTapTarget)
-
-                    Slider(
-                        value: Binding(
-                            get: { settingsStore.settings.notesCanvasWidthScale },
-                            set: { settingsStore.settings.notesCanvasWidthScale = $0 }
-                        ),
-                        in: 0.5...1.5,
-                        step: 0.05
-                    )
-                    .tint(Design.Brand.accent)
-                    .accessibilityLabel("Note width scale")
-                }
-
-                sectionDivider
-
                 // Build 130.2: note paper line spacing. 0 = follow the paper
                 // style default (fine 20 / medium 24 / wide 32); any other
                 // value forces the actual distance between ruled lines.
@@ -2485,6 +2440,38 @@ struct SettingsScreen: View {
                             .foregroundStyle(Design.Colors.foreground)
                         Spacer()
                         Text(settingsStore.settings.notesSyncInterval.displayLabel)
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                    .contentShape(Rectangle())
+                }
+
+                sectionDivider
+
+                Menu {
+                    ForEach(NotesSyncInterval.allCases, id: \.self) { interval in
+                        Button {
+                            settingsStore.settings.notesCheckpointInterval = interval
+                        } label: {
+                            if settingsStore.settings.notesCheckpointInterval == interval {
+                                Label(interval.displayLabel, systemImage: "checkmark")
+                            } else {
+                                Text(interval.displayLabel)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Brand.primary)
+                            .frame(width: 20, alignment: .center)
+                        Text("Recovery checkpoints")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+                        Spacer()
+                        Text(settingsStore.settings.notesCheckpointInterval.displayLabel)
                             .font(Design.Typography.callout)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     }
@@ -2771,13 +2758,6 @@ struct SettingsScreen: View {
         Binding(
             get: { settingsStore.settings.enterToSend },
             set: { settingsStore.settings.enterToSend = $0 }
-        )
-    }
-
-    private var longPressToQueueBinding: Binding<Bool> {
-        Binding(
-            get: { settingsStore.settings.longPressToQueue },
-            set: { settingsStore.settings.longPressToQueue = $0 }
         )
     }
 
