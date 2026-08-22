@@ -255,32 +255,6 @@ struct NoteEditorView: View {
                             set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }
                         ))
                         Divider()
-                        // Notes fix: checkpoint history (iPhone only - iPad
-                        // gets the same control via SettingsScreen). Lists
-                        // the last 5 saved snapshots with a Restore action
-                        // that snapshots the current state first.
-                        Menu {
-                            ForEach(recentCheckpoints, id: \.id) { snap in
-                                Button {
-                                    Task { await restoreCheckpoint(snap) }
-                                } label: {
-                                    Label(checkpointLabel(snap), systemImage: "clock.arrow.circlepath")
-                                }
-                            }
-                            if recentCheckpoints.isEmpty {
-                                Text("No checkpoints yet")
-                            }
-                            Divider()
-                            Button {
-                                Task { await saveCheckpointSnapshot(reason: .manual) }
-                            } label: {
-                                Label("Save checkpoint now", systemImage: "square.and.arrow.down")
-                            }
-                        } label: {
-                            Label("Checkpoints", systemImage: "clock.arrow.circlepath")
-                        }
-                        .accessibilityLabel("Checkpoint history")
-                        Divider()
                         // Line height (0 = Auto, follows paper style default)
                         LabeledContent("Line Height") {
                             Text(lineSpacingLabel)
@@ -306,7 +280,6 @@ struct NoteEditorView: View {
         }
         .onAppear {
             loadNote()
-            startCheckpointLoop()
             // 135.13: last-chance safety save, CHEAP version.
             //
             // 135.11/135.12 BUG: the didReceiveMemoryWarning observer called
@@ -344,8 +317,6 @@ struct NoteEditorView: View {
             loadNote()
         }
         .onDisappear {
-            checkpointTask?.cancel()
-            checkpointTask = nil
             persistTask?.cancel()
             // 135.13: remove the willTerminate observer so it doesn't leak.
             if let willTerminateObserver {
@@ -358,8 +329,8 @@ struct NoteEditorView: View {
         }
         // Notes fix: flush on background. The local save must not depend on
         // the AI sync engine - iOS will background the app any moment; we
-        // persist drawing + typed text + checkpoint NOW, before the OS
-        // suspends us, so a force-quit or eviction never costs a stroke.
+        // persist drawing + typed text NOW, before the OS suspends us, so
+        // a force-quit or eviction never costs a stroke.
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background || newPhase == .inactive {
                 persistTask?.cancel()
@@ -368,7 +339,6 @@ struct NoteEditorView: View {
                 let snapText = typedText
                 Task {
                     await notesStore.saveTypedText(noteId: noteId, text: snapText)
-                    await saveCheckpointSnapshot(reason: .backgrounding)
                 }
             }
         }
@@ -766,43 +736,7 @@ struct NoteEditorView: View {
     }
 
 
-    /// Why this checkpoint snapshot was taken. Surfaced in the menu so the
-    /// user can tell an autosave from a manual save from a restore.
-    enum CheckpointReason: String {
-        case manual
-        case backgrounding
-        case automatic
-        case restoreSafety = "restore-safety"
-    }
-
-    // MARK: - Checkpoint state
-
-    /// Last few checkpoints for the current note (newest first, max 5).
-    /// We pull this through a trivial getter/setter so the SwiftUI body
-    /// can react to it without paying for a full @State ObservableObject.
-    private var recentCheckpoints: [NoteCheckpoint] {
-        get { _recentCheckpoints }
-        set { _recentCheckpoints = newValue }
-    }
-    @State private var _recentCheckpoints: [NoteCheckpoint] = []
-    @State private var lastCheckpoint: NoteCheckpoint?
-    @State private var isCheckpointSheetPresented = false
-    @State private var checkpointRestorationInFlight = false
-    @State private var checkpointTask: Task<Void, Never>?
     @State private var canvasViewport: PencilCanvasRepresentable.CanvasViewport?
-    /// Re-entrancy latch: a snapshot is already in flight, so a nested
-    /// trigger (body re-render, sync event, onChange) must NOT start a
-    /// second copy. This breaks the checkpoint write/re-render feedback
-    /// loop that previously pegged CPU, dirtied gigabytes of file-backed
-    /// memory, and got the app killed by iOS resource limits (cpu_resource,
-    /// diskwrites_resource, Jetsam per-process-limit) while a note was open.
-    @State private var checkpointSnapshotInFlight = false
-    /// Throttle for automatic snapshots. Manual and backgrounding snapshots
-    /// always run; automatic ones are at least this far apart so an event
-    /// storm (sync completing + re-render cycles) cannot hammer the disk.
-    private let checkpointMinAutomaticInterval: TimeInterval = 10
-    /// Last time any checkpoint snapshot completed (used for the throttle).
-    @State private var lastCheckpointWriteAt: Date = .distantPast
     /// Build 135.12: hash of the last drawing content that OCR actually ran
     /// on. Persist triggers that fire with identical content (pencil-up,
     /// onChange, onDisappear, scenePhase) skip the recognition re-render,
@@ -812,21 +746,6 @@ struct NoteEditorView: View {
     /// removed on disappear (the 135.11 observers leaked - they were never
     /// removed and held strong captures of the view).
     @State private var willTerminateObserver: NSObjectProtocol?
-
-    private func startCheckpointLoop() {
-        checkpointTask?.cancel()
-        checkpointTask = Task {
-            while !Task.isCancelled {
-                guard let seconds = settingsStore.settings.notesCheckpointInterval.intervalSeconds else {
-                    try? await Task.sleep(for: .seconds(30))
-                    continue
-                }
-                try? await Task.sleep(for: .seconds(seconds))
-                guard !Task.isCancelled else { return }
-                await saveCheckpointSnapshot(reason: .automatic)
-            }
-        }
-    }
 
     private func persistViewport(_ viewport: PencilCanvasRepresentable.CanvasViewport) {
         guard let data = try? JSONEncoder().encode(viewport) else { return }
@@ -838,149 +757,6 @@ struct NoteEditorView: View {
               let viewport = try? JSONDecoder().decode(PencilCanvasRepresentable.CanvasViewport.self, from: data)
         else { return }
         canvasViewport = viewport
-    }
-
-    /// One-line label for the menu. Example: "Manual · 8:42 PM".
-    private func checkpointLabel(_ cp: NoteCheckpoint) -> String {
-        let time = cp.createdAt.formatted(date: .omitted, time: .shortened)
-        switch cp.reason {
-        case "manual": return "Manual · \(time)"
-        case "backgrounding": return "Auto · \(time)"
-        case "restore-safety": return "Safety · \(time)"
-        default: return "Checkpoint · \(time)"
-        }
-    }
-
-    /// Persist a checkpoint of the current state. Records the drawing
-    /// revision + hash and copies the owned blob bundle (drawing, text,
-    /// attachments, enrichment, metadata) into a checkpoint directory.
-    /// Triggered every 5 minutes during active editing, on app
-    /// backgrounding, when the user taps "Save checkpoint now", and before
-    /// every restore.
-    ///
-    /// Defensive guards (135.11):
-    /// - Re-entrancy latch: never start a second snapshot while one is
-    ///   running. Nested triggers from body re-renders / sync events just
-    ///   return; the in-flight snapshot covers the current state.
-    /// - Throttle: automatic snapshots are at least 10s apart so an event
-    ///   storm cannot hammer disk I/O.
-    /// - No redundant @State writes: if the checkpoint list is unchanged we
-    ///   skip assigning it, so the SwiftUI body is not re-rendered for a
-    ///   no-op checkpoint (the re-render was the loop driver).
-    private func saveCheckpointSnapshot(reason: CheckpointReason) async {
-        // Re-entrancy latch. Manual and backgrounding are user-critical and
-        // may still be skipped if a snapshot is genuinely mid-flight - the
-        // in-flight one already captured the current state a moment ago.
-        guard !checkpointSnapshotInFlight else { return }
-        // Throttle automatic snapshots (10s min). Manual, backgrounding,
-        // and restore-safety bypass the throttle - they are explicit.
-        if reason == .automatic {
-            let elapsed = Date().timeIntervalSince(lastCheckpointWriteAt)
-            guard elapsed >= checkpointMinAutomaticInterval else { return }
-        }
-        checkpointSnapshotInFlight = true
-        defer { checkpointSnapshotInFlight = false }
-
-        let repo = NotesRepository()
-        let safeReason: String
-        switch reason {
-        case .manual: safeReason = "manual"
-        case .backgrounding: safeReason = "backgrounding"
-        case .automatic: safeReason = "automatic"
-        case .restoreSafety: safeReason = "restore-safety"
-        }
-        do {
-            let cp = try await repo.snapshotCurrentStateAsCheckpoint(
-                noteId: noteId, reason: safeReason
-            )
-            // Build 135.14: bound checkpoint accumulation. Every snapshot
-            // copies the FULL drawing blob + ALL attachment blobs (including
-            // multi-MB screen recordings) into a new bundle. pruneOldCheckpoints
-            // exists but was NEVER called, so bundles accumulated unbounded -
-            // gigabytes of duplicated blobs, a disk-write storm (275GB over
-            // ~3h in the crash logs), and memory pressure from loading/encoding
-            // those bundles. Prune after every snapshot: keep the latest 10,
-            // delete the rest. The newest snapshot always has the current state.
-            try? await repo.pruneOldCheckpoints(noteId: noteId, keepLatest: 10)
-            let recent = (try? await repo.loadCheckpoints(noteId: noteId, limit: 5)) ?? []
-            await MainActor.run {
-                // Only touch @State when the data actually changed, so a
-                // redundant snapshot cannot force a body re-render (which
-                // was the feedback loop).
-                let listChanged = recent.map(\.id) != _recentCheckpoints.map(\.id)
-                if listChanged {
-                    _recentCheckpoints = recent
-                }
-                if lastCheckpoint?.id != cp.id {
-                    lastCheckpoint = cp
-                }
-                lastCheckpointWriteAt = .now
-            }
-        } catch {
-            // Best-effort; never block the user.
-        }
-    }
-
-    /// RESTORE SAFETY: before applying the snapshot, take a safety
-    /// checkpoint of the CURRENT state so the user can step forward again
-    /// if they regret the restore. Restore is implemented as: ask the
-    /// repository to atomically copy back the full checkpointed state
-    /// (drawing blob, typed text, title, page style, attachments index +
-    /// blob copies, enrichment result). The repository updates the
-    /// KallistiNote metadata in the index to match; we then apply the
-    /// returned payload to the editor's in-memory bindings so the UI
-    /// reflects the restored state without an additional reload cycle.
-    private func restoreCheckpoint(_ snap: NoteCheckpoint) async {
-        guard !checkpointRestorationInFlight else { return }
-        checkpointRestorationInFlight = true
-        defer { checkpointRestorationInFlight = false }
-
-        // Cancel pending persist tasks so they do not race the restore.
-        persistTask?.cancel()
-        typedTextPersistTask?.cancel()
-
-        // Save current state FIRST - never restore without a safety snap.
-        await saveCheckpointSnapshot(reason: .restoreSafety)
-
-        let repo = NotesRepository()
-        do {
-            let result = try await repo.restoreCheckpoint(
-                noteId: noteId, checkpointId: snap.id
-            )
-            await MainActor.run {
-                // Title
-                title = result.title
-                pageStyle = result.pageStyle
-                // Typed text
-                typedText = result.typedText
-                // Attachments metadata
-                attachments = result.attachments
-                // Enrichment result drives the Enriched tab
-                enrichmentResult = result.enrichment
-                // Drawing
-                if let blob = result.drawingData,
-                   let pk = try? PKDrawing(data: blob) {
-                    drawing = pk
-                }
-            }
-            // Sync the in-memory notes array from the index so the
-            // restored title/drawingRevision/pageStyle are reflected
-            // in the list view and any other readers.
-            await notesStore.loadNotes()
-            // Reload recognition (the recognitions index is shared with
-            // the active state and was NOT captured by the checkpoint
-            // — restore reflects whatever was true at snapshot time).
-            loadRecognitionAndEnrichment()
-            // Refresh the checkpoint history so the safety snapshot
-            // shows up at the top.
-            if let recent = try? await repo.loadCheckpoints(noteId: noteId, limit: 5) {
-                await MainActor.run { _recentCheckpoints = recent }
-            }
-        } catch {
-            // Best-effort: a failed restore leaves the user on the
-            // pre-restore state. The safety snapshot is still in the
-            // history so they can retry.
-        }
     }
 
 }
