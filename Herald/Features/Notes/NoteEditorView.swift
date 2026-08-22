@@ -893,6 +893,15 @@ struct NoteEditorView: View {
             let cp = try await repo.snapshotCurrentStateAsCheckpoint(
                 noteId: noteId, reason: safeReason
             )
+            // Build 135.14: bound checkpoint accumulation. Every snapshot
+            // copies the FULL drawing blob + ALL attachment blobs (including
+            // multi-MB screen recordings) into a new bundle. pruneOldCheckpoints
+            // exists but was NEVER called, so bundles accumulated unbounded -
+            // gigabytes of duplicated blobs, a disk-write storm (275GB over
+            // ~3h in the crash logs), and memory pressure from loading/encoding
+            // those bundles. Prune after every snapshot: keep the latest 10,
+            // delete the rest. The newest snapshot always has the current state.
+            try? await repo.pruneOldCheckpoints(noteId: noteId, keepLatest: 10)
             let recent = (try? await repo.loadCheckpoints(noteId: noteId, limit: 5)) ?? []
             await MainActor.run {
                 // Only touch @State when the data actually changed, so a
