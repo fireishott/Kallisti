@@ -143,8 +143,30 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         // Only when the canvas is actually on screen - never resurrect the picker
         // for an off-screen or removed view (that is how the floating markup bar
         // leaks onto other screens when the note editor closes).
+        //
+        // Build 135.10: guard against fighting an ACTIVE system popover (the
+        // color/attribute picker opened from a long-press on a tool). This
+        // updateUIView runs on every SwiftUI re-render of the parent - and
+        // NoteEditorView re-renders on every reasoning-stream delta tick
+        // while a note is syncing (ReasoningView's state drives the whole
+        // body). If the user has the tool's attribute popover open at that
+        // moment, forcing becomeFirstResponder() on the canvas underneath it
+        // steals the responder chain out from under the popover's own
+        // internal controls mid-interaction. Observed symptom (build 135.8/
+        // 135.9): the popover degrades to an empty gray rounded-rect "void"
+        // with no content, and recovers only on force-quit + relaunch.
+        // canvas.window's presentedViewController chain is nil while a
+        // PKToolPicker attribute popover is showing (it's a separate system
+        // window, not a presented VC), so we can't detect "popover open"
+        // directly. Instead: skip the restore pass entirely whenever the
+        // picker already reports itself visible AND the canvas already
+        // holds first responder, since there is nothing to restore in that
+        // state and the only effect of proceeding anyway is repeated UIKit
+        // calls during exactly the churn window that corrupts an open
+        // popover.
         if canvas.window != nil,
-           let picker = context.coordinator.toolPicker {
+           let picker = context.coordinator.toolPicker,
+           !(picker.isVisible && canvas.isFirstResponder) {
             if !picker.isVisible {
                 picker.setVisible(true, forFirstResponder: canvas)
             }

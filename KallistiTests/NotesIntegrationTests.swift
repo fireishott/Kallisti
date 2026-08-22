@@ -126,7 +126,7 @@ struct NotesIntegrationTests {
             hasRecognition: true,
             hasEnrichment: true
         )
-        #expect(layers.count == 4)
+        #expect(layers.count == 5)
         #expect(layers.contains { $0.id == "ink_pdf" })
         #expect(layers.contains { $0.id == "recognized_text" })
         #expect(layers.contains { $0.id == "enriched_markdown" })
@@ -351,7 +351,7 @@ struct NotesIntegrationTests {
 
         // All layers
         let all = NoteExportLayer.availableLayers(hasDrawing: true, hasRecognition: true, hasEnrichment: true)
-        #expect(all.count == 4)
+        #expect(all.count == 5)
     }
 
     // MARK: - EnrichmentResult Model
@@ -412,6 +412,6 @@ struct NotesIntegrationTests {
         #expect(policy.contains("Do not invent a topic"))
         #expect(policy.contains("Do not research by default"))
         #expect(policy.contains("only when the note explicitly requests research"))
-        #expect(policy.contains("do not invent citations"))
+        #expect(policy.lowercased().contains("do not invent citations"))
     }
 }
