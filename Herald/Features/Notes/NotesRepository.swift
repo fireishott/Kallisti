@@ -377,6 +377,9 @@ actor NotesRepository: NotesRepositoryProtocol {
 
     /// Save an enrichment result.
     func saveEnrichmentResult(_ result: EnrichmentResult, noteId: UUID) throws {
+        // Enrichment can arrive before a drawing/text blob exists. Make this
+        // write self-sufficient so an async response never loses its result.
+        try fileManager.createDirectory(at: noteDirectory(for: noteId), withIntermediateDirectories: true, attributes: nil)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(result)
@@ -388,6 +391,354 @@ actor NotesRepository: NotesRepositoryProtocol {
     private func noteDirectory(for noteId: UUID) -> URL {
         notesDirectory.appendingPathComponent(noteId.uuidString, isDirectory: true)
     }
+
+    // MARK: - Checkpoint storage (Build N)
+
+    private func checkpointsDirectory(for noteId: UUID) -> URL {
+        noteDirectory(for: noteId).appendingPathComponent("checkpoints", isDirectory: true)
+    }
+
+    private func checkpointURL(_ id: UUID, noteId: UUID) -> URL {
+        checkpointsDirectory(for: noteId).appendingPathComponent("\(id.uuidString).json")
+    }
+
+    /// Persist a checkpoint manifest for the note. The drawing blob is
+    /// referenced by revision - we do NOT copy it, so a checkpoint stays
+    /// cheap even when strokes are large. The manifest records the
+    /// current drawing revision and hash so restore can verify identity.
+    func saveCheckpoint(_ checkpoint: NoteCheckpoint) throws {
+        let dir = checkpointsDirectory(for: checkpoint.noteId)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(checkpoint)
+        try data.write(to: checkpointURL(checkpoint.id, noteId: checkpoint.noteId), options: .atomic)
+    }
+
+    /// Load the most recent checkpoints for the note (newest first).
+    /// `async throws` to match the protocol signature — the protocol
+    /// declares the method as a `Sendable` requirement, so the actor must
+    /// expose it as an async function for cross-actor calls.
+    func loadCheckpoints(noteId: UUID, limit: Int = 5) async throws -> [NoteCheckpoint] {
+        let dir = checkpointsDirectory(for: noteId)
+        guard fileManager.fileExists(atPath: dir.path) else { return [] }
+        let urls = try fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        var out: [NoteCheckpoint] = []
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for url in urls {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            if let cp = try? decoder.decode(NoteCheckpoint.self, from: data) {
+                out.append(cp)
+            }
+        }
+        return Array(out.sorted { $0.createdAt > $1.createdAt }.prefix(limit))
+    }
+
+    /// Full-state snapshot of the current note. Saves a manifest JSON AND
+    /// a sibling bundle directory (`<cp-id>/`) that owns copies of:
+    ///   - `drawing.pkdrawing` — the active drawing blob
+    ///   - `text.md` — the typed text body (may be empty)
+    ///   - `attachments.json` + `attachments/` — attachment metadata + blob copies
+    ///   - `enrichment.json` — enrichment result (if any)
+    ///   - `note-meta.json` — relevant note metadata (title, drawing revision, page style)
+    /// Restore is a copy-back from this bundle; the bundle is independent of
+    /// the live state so a restore can never destroy the snapshot.
+    /// `reason` describes why we triggered the snapshot (e.g. "manual",
+    /// "automatic", "backgrounding", "restore-safety").
+    func snapshotCurrentStateAsCheckpoint(
+        noteId: UUID,
+        reason: String
+    ) async throws -> NoteCheckpoint {
+        let dir = noteDirectory(for: noteId)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
+
+        guard let note = try loadNotes().first(where: { $0.id == noteId }) else {
+            throw NotesRepositoryError.noteNotFound(noteId)
+        }
+
+        let cpId = UUID()
+        let bundleDir = bundleDirectory(checkpointId: cpId, noteId: noteId)
+        try fileManager.createDirectory(at: bundleDir, withIntermediateDirectories: true, attributes: nil)
+
+        // 1. Drawing blob
+        var drawingHash = ""
+        let drawingRev = note.currentDrawingRevision
+        let blobURL = dir.appendingPathComponent("rev-\(drawingRev).pkdrawing")
+        if let data = try? Data(contentsOf: blobURL) {
+            drawingHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            try data.write(to: bundleDir.appendingPathComponent("drawing.pkdrawing"), options: .atomic)
+        }
+
+        // 2. Typed text body
+        var textHash = ""
+        let textURL = dir.appendingPathComponent("text.md")
+        if let text = try? String(contentsOf: textURL, encoding: .utf8) {
+            textHash = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+            try Data(text.utf8).write(to: bundleDir.appendingPathComponent("text.md"), options: .atomic)
+        }
+
+        // 3. Attachments — metadata + owned blob copies
+        let attachments = (try? await loadAttachments(noteId: noteId)) ?? []
+        if !attachments.isEmpty {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let attachMetaData = try encoder.encode(attachments)
+            try attachMetaData.write(
+                to: bundleDir.appendingPathComponent("attachments.json"),
+                options: .atomic
+            )
+            let attachBlobsDir = bundleDir.appendingPathComponent("attachments", isDirectory: true)
+            try fileManager.createDirectory(at: attachBlobsDir, withIntermediateDirectories: true, attributes: nil)
+            for attachment in attachments {
+                let srcURL = URL(fileURLWithPath: attachment.blobPath)
+                guard fileManager.fileExists(atPath: srcURL.path) else { continue }
+                let dstURL = attachBlobsDir.appendingPathComponent(
+                    "\(attachment.id.uuidString)-\(attachment.fileName)"
+                )
+                try? fileManager.copyItem(at: srcURL, to: dstURL)
+            }
+        }
+
+        // 4. Enrichment result
+        let hadEnrichment = (try? loadEnrichmentResult(noteId: noteId)) != nil
+        let enrichmentURL = enrichmentResultURL(for: noteId)
+        if hadEnrichment, fileManager.fileExists(atPath: enrichmentURL.path) {
+            let dst = bundleDir.appendingPathComponent("enrichment.json")
+            try? fileManager.copyItem(at: enrichmentURL, to: dst)
+        }
+
+        // 5. Note metadata relevant to restore (title + drawing revision + page style)
+        struct NoteMetaSnapshot: Codable {
+            let title: String
+            let currentDrawingRevision: Int
+            let currentDrawingRevisionId: UUID?
+            let currentTextRevision: Int
+            let pageStyle: NotePageStyle
+        }
+        let meta = NoteMetaSnapshot(
+            title: note.title,
+            currentDrawingRevision: note.currentDrawingRevision,
+            currentDrawingRevisionId: note.currentDrawingRevisionId,
+            currentTextRevision: note.currentTextRevision,
+            pageStyle: note.pageStyle
+        )
+        let metaEncoder = JSONEncoder()
+        metaEncoder.dateEncodingStrategy = .iso8601
+        let metaData = try metaEncoder.encode(meta)
+        try metaData.write(
+            to: bundleDir.appendingPathComponent("note-meta.json"),
+            options: .atomic
+        )
+
+        let cp = NoteCheckpoint(
+            id: cpId,
+            noteId: noteId,
+            reason: reason,
+            createdAt: .now,
+            drawingRevision: drawingRev,
+            drawingHash: drawingHash,
+            textHash: textHash,
+            title: note.title,
+            attachmentsCount: attachments.count,
+            hadEnrichment: hadEnrichment
+        )
+        try saveCheckpoint(cp)
+        return cp
+    }
+
+    /// Bundle directory for a checkpoint manifest. The directory holds the
+    /// owned copies of every file needed to restore the note's full state.
+    private func bundleDirectory(checkpointId: UUID, noteId: UUID) -> URL {
+        checkpointsDirectory(for: noteId).appendingPathComponent(checkpointId.uuidString, isDirectory: true)
+    }
+
+    /// Restore the note's full state from a checkpoint. The caller MUST have
+    /// taken a safety snapshot of the current state BEFORE calling this. We
+    /// copy owned bundle files back into the active state location, update
+    /// the KallistiNote's metadata (title, drawing revision, text revision,
+    /// page style) so the index agrees with the restored files, and return
+    /// a `NoteRestoreResult` payload so the UI can update its local copies.
+    ///
+    /// Implementation is atomic per file (writes go via `.atomic`) so a crash
+    /// mid-restore cannot leave a torn state — each file either is the
+    /// pre-restore version or the restored version. We never delete the
+    /// pre-restore files; the safety snapshot is the recovery path if the
+    /// user wants to undo the restore.
+    @discardableResult
+    func restoreCheckpoint(noteId: UUID, checkpointId: UUID) async throws -> NoteRestoreResult {
+        guard let manifest = try await loadCheckpoints(noteId: noteId, limit: 200)
+            .first(where: { $0.id == checkpointId })
+        else {
+            throw NotesRepositoryError.checkpointNotFound(checkpointId)
+        }
+
+        let bundleDir = bundleDirectory(checkpointId: checkpointId, noteId: noteId)
+        guard fileManager.fileExists(atPath: bundleDir.path) else {
+            throw NotesRepositoryError.checkpointBundleMissing(checkpointId)
+        }
+
+        let activeDir = noteDirectory(for: noteId)
+        try fileManager.createDirectory(at: activeDir, withIntermediateDirectories: true, attributes: nil)
+
+        // 1. Drawing — copy the bundle's drawing.pkdrawing back to the
+        //    canonical blob path (rev-<drawingRevision>.pkdrawing).
+        let drawingURL = bundleDir.appendingPathComponent("drawing.pkdrawing")
+        var drawingData: Data? = nil
+        if fileManager.fileExists(atPath: drawingURL.path) {
+            drawingData = try Data(contentsOf: drawingURL)
+            let blobPath = activeDir.appendingPathComponent("rev-\(manifest.drawingRevision).pkdrawing")
+            try drawingData!.write(to: blobPath, options: .atomic)
+        }
+
+        // 2. Typed text
+        var typedText: String? = nil
+        let textURL = bundleDir.appendingPathComponent("text.md")
+        if fileManager.fileExists(atPath: textURL.path) {
+            typedText = try String(contentsOf: textURL, encoding: .utf8)
+            try Data(typedText!.utf8).write(
+                to: activeDir.appendingPathComponent("text.md"),
+                options: .atomic
+            )
+        }
+
+        // 3. Attachments — metadata + owned blob copies
+        var restoredAttachments: [NoteAttachment] = []
+        let attachMetaURL = bundleDir.appendingPathComponent("attachments.json")
+        if fileManager.fileExists(atPath: attachMetaURL.path) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let metadata = try Data(contentsOf: attachMetaURL)
+            let attachments = try decoder.decode([NoteAttachment].self, from: metadata)
+            // Replace the active attachments.json atomically.
+            try metadata.write(
+                to: attachmentsMetadataURL(for: noteId),
+                options: .atomic
+            )
+            // Copy each owned attachment blob back to its canonical path.
+            let attachBlobsDir = bundleDir.appendingPathComponent("attachments", isDirectory: true)
+            for attachment in attachments {
+                let srcURL = attachBlobsDir.appendingPathComponent(
+                    "\(attachment.id.uuidString)-\(attachment.fileName)"
+                )
+                let dstURL = URL(fileURLWithPath: attachment.blobPath)
+                if fileManager.fileExists(atPath: srcURL.path) {
+                    try fileManager.createDirectory(
+                        at: dstURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true,
+                        attributes: nil
+                    )
+                    // Atomic overwrite so restoring an attachment whose canonical
+                    // file already exists is a normal, reliable operation.
+                    let data = try Data(contentsOf: srcURL)
+                    try data.write(to: dstURL, options: .atomic)
+                }
+                restoredAttachments.append(attachment)
+            }
+        } else {
+            // Bundle had no attachments — clear active attachments index.
+            try? Data("[]".utf8).write(
+                to: attachmentsMetadataURL(for: noteId),
+                options: .atomic
+            )
+        }
+
+        // 4. Enrichment result
+        var restoredEnrichment: EnrichmentResult? = nil
+        let enrichURL = bundleDir.appendingPathComponent("enrichment.json")
+        if fileManager.fileExists(atPath: enrichURL.path) {
+            let data = try Data(contentsOf: enrichURL)
+            try data.write(to: enrichmentResultURL(for: noteId), options: .atomic)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            restoredEnrichment = try? decoder.decode(EnrichmentResult.self, from: data)
+        } else {
+            // Bundle had no enrichment — remove the active one if present
+            // so the Enriched tab reflects the restored state honestly.
+            let activeEnrich = enrichmentResultURL(for: noteId)
+            if fileManager.fileExists(atPath: activeEnrich.path) {
+                try? fileManager.removeItem(at: activeEnrich)
+            }
+        }
+
+        // 5. Note metadata — title, drawing revision, page style, etc.
+        //    Update the KallistiNote in the index so it agrees with the
+        //    files we just restored.
+        let metaURL = bundleDir.appendingPathComponent("note-meta.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        struct NoteMetaSnapshot: Codable {
+            let title: String
+            let currentDrawingRevision: Int
+            let currentDrawingRevisionId: UUID?
+            let currentTextRevision: Int
+            let pageStyle: NotePageStyle
+        }
+        let meta = try decoder.decode(NoteMetaSnapshot.self, from: Data(contentsOf: metaURL))
+
+        var notes = try loadNotes()
+        guard let noteIndex = notes.firstIndex(where: { $0.id == noteId }) else {
+            throw NotesRepositoryError.noteNotFound(noteId)
+        }
+        var updated = notes[noteIndex]
+        updated.title = meta.title
+        updated.currentDrawingRevision = meta.currentDrawingRevision
+        updated.currentDrawingRevisionId = meta.currentDrawingRevisionId
+        updated.currentTextRevision = meta.currentTextRevision
+        updated.pageStyle = meta.pageStyle
+        updated.updatedAt = .now
+        // Mark local-only so a sync push won't accidentally re-upload an
+        // older state. The user's edits after the restore will re-dirty it.
+        updated.syncState = .local
+        notes[noteIndex] = updated
+        try saveNotes(notes)
+
+        return NoteRestoreResult(
+            checkpointId: manifest.id,
+            noteId: noteId,
+            title: meta.title,
+            drawingData: drawingData,
+            drawingRevision: meta.currentDrawingRevision,
+            typedText: typedText ?? "",
+            attachments: restoredAttachments,
+            enrichment: restoredEnrichment,
+            pageStyle: meta.pageStyle
+        )
+    }
+
+    /// Load the enrichment result embedded in a checkpoint bundle. Useful
+    /// when the caller wants to inspect a checkpoint without restoring it.
+    /// `async throws` for the same reason as `loadCheckpoints`.
+    func loadEnrichmentResultFromCheckpoint(checkpointId: UUID, noteId: UUID) async throws -> EnrichmentResult? {
+        let url = bundleDirectory(checkpointId: checkpointId, noteId: noteId)
+            .appendingPathComponent("enrichment.json")
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(EnrichmentResult.self, from: data)
+    }
+
+    /// Trims to keep at most 10 checkpoints to bound disk use. The newest
+    /// `keepLatest` are retained; everything older is removed.
+    /// `async` because the underlying `loadCheckpoints` is now async.
+    func pruneOldCheckpoints(noteId: UUID, keepLatest: Int = 10) async throws {
+        let all = try await loadCheckpoints(noteId: noteId, limit: keepLatest + 50)
+        let toRemove = Array(all.dropFirst(keepLatest))
+        let dir = checkpointsDirectory(for: noteId)
+        for cp in toRemove {
+            let url = checkpointURL(cp.id, noteId: noteId)
+            if fileManager.fileExists(atPath: url.path) {
+                try? fileManager.removeItem(at: url)
+            }
+            let bundle = bundleDirectory(checkpointId: cp.id, noteId: noteId)
+            if fileManager.fileExists(atPath: bundle.path) {
+                try? fileManager.removeItem(at: bundle)
+            }
+        }
+        _ = dir
+    }
 }
 
 // MARK: - Errors
@@ -396,6 +747,8 @@ enum NotesRepositoryError: LocalizedError {
     case noteNotFound(UUID)
     case blobNotFound(UUID, Int)
     case cannotHardDeleteActive(UUID)
+    case checkpointNotFound(UUID)
+    case checkpointBundleMissing(UUID)
 
     var errorDescription: String? {
         switch self {
@@ -405,6 +758,59 @@ enum NotesRepositoryError: LocalizedError {
             return "Blob not found for note \(id) revision \(rev)"
         case .cannotHardDeleteActive(let id):
             return "Cannot hard-delete active note \(id); soft-delete first"
+        case .checkpointNotFound(let id):
+            return "Checkpoint not found: \(id)"
+        case .checkpointBundleMissing(let id):
+            return "Checkpoint bundle directory missing: \(id)"
         }
+    }
+}
+
+// MARK: - Checkpoints (Build N)
+//
+// A checkpoint is a recoverable snapshot of the full note state - drawing,
+// typed text, title, attachments index, enrichment result. Saved to a
+// dedicated subdirectory under the note. Restore ALWAYS takes a safety
+// snapshot of the current state BEFORE applying (the safety snapshot is
+// itself a checkpoint and is shown in the history so the user can step
+// forward again if the restore was wrong).
+
+struct NoteCheckpoint: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    let noteId: UUID
+    let reason: String
+    let createdAt: Date
+    let drawingRevision: Int
+    let drawingHash: String
+    let textHash: String
+    let title: String
+    let attachmentsCount: Int
+    let hadEnrichment: Bool
+}
+
+/// Payload returned by `NotesRepository.restoreCheckpoint` so the caller
+/// can update its in-memory UI state without re-reading every restored
+/// file from disk. Fields mirror the data the checkpoint bundle owns.
+struct NoteRestoreResult: Equatable, Sendable {
+    let checkpointId: UUID
+    let noteId: UUID
+    let title: String
+    let drawingData: Data?
+    let drawingRevision: Int
+    let typedText: String
+    let attachments: [NoteAttachment]
+    let enrichment: EnrichmentResult?
+    let pageStyle: NotePageStyle
+
+    static func == (lhs: NoteRestoreResult, rhs: NoteRestoreResult) -> Bool {
+        lhs.checkpointId == rhs.checkpointId
+            && lhs.noteId == rhs.noteId
+            && lhs.title == rhs.title
+            && lhs.drawingData == rhs.drawingData
+            && lhs.drawingRevision == rhs.drawingRevision
+            && lhs.typedText == rhs.typedText
+            && lhs.attachments == rhs.attachments
+            && lhs.enrichment == rhs.enrichment
+            && lhs.pageStyle == rhs.pageStyle
     }
 }

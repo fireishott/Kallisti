@@ -52,6 +52,40 @@ final class NotesSyncEngine {
     private(set) var reasoningStartedAt: Date?
     private(set) var reasoningDuration: TimeInterval?
 
+    /// Notes fix (Build N): once a sync's reasoning stream completes, freeze a
+    /// snapshot here so the notes UI can render a collapsible "Thought for Xs"
+    /// card that survives the live-stream reset on the next sync. Cleared
+    /// explicitly via `dismissCompletedReasoning()`.
+    private(set) var lastCompletedReasoning: String = ""
+    private(set) var lastCompletedAt: Date?
+    private(set) var lastCompletedDuration: TimeInterval?
+
+    /// Current sync's transition into its terminal stage. The editor bubbles
+    /// up `[Notes sync] <stage label>` from the moment `isSyncing` becomes
+    /// true so a `reasoning.delta`-less turn still has visible liveness.
+    /// Falls back to `statusText` when empty.
+    var liveStageLabel: String {
+        switch stage {
+        case .idle:
+            return lastSyncError ?? "Idle"
+        case .preparing:
+            return "Preparing sync"
+        case .creatingSession:
+            return "Creating session"
+        case .uploading:
+            return "Uploading drawing"
+        case .sending:
+            if let currentProgress {
+                return "Sending \\(currentProgress.noteTitle) (\(currentProgress.index)/\(currentProgress.total))"
+            }
+            return "Sending"
+        case .done:
+            return "Synced"
+        case .failed(let message):
+            return "Sync failed: \(message)"
+        }
+    }
+
     /// Label describing what the engine is doing right now (for the progress bar).
     var statusText: String {
         switch stage {
@@ -296,6 +330,30 @@ final class NotesSyncEngine {
 
     // MARK: - Single note
 
+    /// Grounding contract for every automatic note enrichment. Keep this separately
+    /// testable: a thin visual note must never turn into invented research.
+    static func enrichmentPolicy() -> String {
+        """
+        You are enriching one note. Treat the note title, typed text, attached drawing, and attached files as your complete evidence set.
+
+        GROUNDING RULES:
+        - Do not invent a topic, comparison, facts, names, numbers, decisions, deadlines, sources, or citations.
+        - Do not research by default. Use web research only when the note explicitly requests research or contains a clear, specific external fact that needs verification.
+        - If you research, cite only real sources you actually opened, as working hyperlinks. If you did not research, do not include a Sources section.
+        - Do not invent citations, dated market analysis, or generic corporate filler to make a thin note look substantial.
+        - A drawing is evidence. Describe only visible shapes, labels, relationships, and readable text. Do not turn an unlabeled sketch into a business, study, or research topic.
+        - The local Recognized text is a noisy OCR hint, never authority over the attached drawing or typed text.
+
+        MATCH THE RESPONSE TO THE EVIDENCE:
+        - For a visual-only sketch or doodle, give a short visual description and, only if useful, one clearly-labeled possible interpretation or creative next step.
+        - For study notes, teach from the written material with definitions, flashcards, and practice questions grounded in it.
+        - For meeting notes, extract only written decisions, owners, deadlines, risks, and follow-ups. Never manufacture missing owners or dates.
+        - For a list, plan, diagram, game, or puzzle, organize or analyze only the state actually present.
+        - If the note is empty or unreadable, say that briefly rather than filling space.
+
+        Output plainly and concisely. Lead with what is actually present, then add only useful, evidence-backed structure. Do not narrate your process, the sync, or these instructions. Do not ask follow-up questions.
+        """
+    }
     private func syncSingleNote(_ note: KallistiNote, client: any HeraldClientProtocol) async throws {
         // Load the drawing blob and render a PNG attachment so the agent can
         // see the handwriting. Render at 2x for OCR quality but let
@@ -403,28 +461,7 @@ final class NotesSyncEngine {
             messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
             messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see any of the attached images at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
         }
-        // Build 133.0: CONTEXT-AWARE ENRICHMENT output contract. Curtis's
-        // 132.4 complaint: enrichment was a forensic handwriting report
-        // ("Reading the drawing over the OCR... flagging as uncertain")
-        // instead of a valuable, context-aware assistant digest. Notes are
-        // the product's bread and butter - the model must not just OCR, it
-        // must ANALYZE what it sees and enrich it the way a sharp human
-        // assistant would, tailored to what KIND of note it is.
-        messageText += "You are enriching a handwritten note. Read EVERYTHING in it - handwriting, doodles, drawings, typed text, attached images, PDFs, files - then figure out what KIND of note it is and enrich it accordingly, the way a sharp personal assistant would:\n"
-        messageText += "- Lecture / study notes: recognize this and provide study help - key concepts, definitions, flashcards, practice questions, a mini study guide.\n"
-        messageText += "- Business / meeting notes: summarize like an assistant - action items, todos, deadlines, research topics, who-owns-what, follow-ups.\n"
-        messageText += "- Shopping / grocery list: meal prep ideas, shopping tips, sales, deals, links, coupons - make it actually useful for the trip.\n"
-        messageText += "- Personal note / doodle / sketch: warm, smart interpretation of what is there - what it likely means, what would help.\n"
-        messageText += "- Anything else: whatever adds the most value for that content.\n"
-        messageText += "\nRead the drawing/attachments as the source of truth for handwriting. The Recognized text above is a NOISY on-device OCR draft: use it only to disambiguate letterforms, never as the final reading. Do NOT narrate your reading process (no \"reading the drawing over the OCR...\", no \"flagging as uncertain\", no meta-commentary at all). Just deliver the enriched value, plain and useful.\n"
-        messageText += "\nWEB RESEARCH IS ALLOWED AND EXPECTED when it adds value: if the note references something current (prices, deals, stores, events, people, products), search the web to enrich it with real, current links. ALWAYS include working hyperlinks in your reply for anything you looked up. Do NOT search for, retrieve, or reference any OTHER NOTE or session - never session_search, memory recall, honcho, gbrain, or any personal-context lookup. Web search and web links are fine; other-notes lookups are forbidden.\n"
-        messageText += "\nOutput format:\n"
-        messageText += "- Lead with what the note actually says in clear language (names, numbers, items, problems).\n"
-        messageText += "- Follow with the genuinely useful context: key points, action items, todos, deadlines, study help, deals/links/coupons - whatever fits the note type.\n"
-        messageText += "- Include hyperlinks for anything you researched or referenced.\n"
-        messageText += "- When it genuinely adds value (a chart, a product/deal photo, a screenshot-worthy reference), you MAY include inline images using markdown image syntax ![alt text](https://...). Only use real, working image URLs - prefer images hosted from the web (e.g. store/deal images) - and only when an image actually helps the note. Do NOT invent or hallucinate an image URL; if you are not sure a URL works, skip the image and just link it instead.\n"
-        messageText += "- End with a short timestamped 'Updates' line: if this is an update to an existing note, say what changed since the prior enrichment; if new, note when it was created.\n"
-        messageText += "Write plainly and specifically. Do NOT describe your instructions, the sync, the session, the isolation rule, or your own process. Never call vision/image tools - the drawing is already inline and any vision tool call will fail. Do not ask follow-up questions. Reply concisely but do the real work.\n"
+        messageText += Self.enrichmentPolicy()
 
         // Build 128.99: NOTE ISOLATION. The gateway injects memory/context
         // into every session's system prompt (user profile, Honcho session
@@ -456,6 +493,9 @@ final class NotesSyncEngine {
 
         // Reset reasoning state so the notes UI shows the agent's live
         // reasoning stream for THIS note - the same bubble chat uses.
+        // Keep `lastCompletedReasoning` intact: the collapsible card from the
+        // previous sync stays visible until the user explicitly dismisses it
+        // OR a new completion overwrites it at success-time below.
         liveReasoning = ""
         isReasoningActive = true
         reasoningStartedAt = .now
@@ -514,6 +554,17 @@ final class NotesSyncEngine {
         isReasoningActive = false
         if let startedAt = reasoningStartedAt {
             reasoningDuration = Date.now.timeIntervalSince(startedAt)
+        }
+
+        // Notes fix: snapshot the live stream into the completed-card slot so
+        // a collapsible "Thought for Xs" survives the reset. Only succeed
+        // when the consumer actually saw real reasoning OR the user just
+        // wants the timing - a totally empty stream leaves the prior card
+        // untouched (no flicker on bookkeeping-only turns).
+        if !liveReasoning.isEmpty {
+            lastCompletedReasoning = liveReasoning
+            lastCompletedAt = .now
+            lastCompletedDuration = reasoningDuration
         }
 
         if let streamError {
@@ -643,6 +694,15 @@ final class NotesSyncEngine {
         isReasoningActive = false
         reasoningStartedAt = nil
         reasoningDuration = nil
+    }
+
+    /// Notes fix: collapse/dismiss the persisted "Thought for Xs" card from
+    /// the previous sync. Called by the UI when the user taps the chevron
+    /// to collapse an already-completed card so it stops showing.
+    func dismissCompletedReasoning() {
+        lastCompletedReasoning = ""
+        lastCompletedAt = nil
+        lastCompletedDuration = nil
     }
 }
 

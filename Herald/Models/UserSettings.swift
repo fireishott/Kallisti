@@ -607,6 +607,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     var dashboardUsername: String?
     var dashboardPassword: String?
     var notesSyncInterval: NotesSyncInterval
+    /// Cadence for local, recoverable note checkpoints. Independent from AI auto-sync.
+    var notesCheckpointInterval: NotesSyncInterval
     /// Build 128.94: AI enrichment toggle. When OFF, notes stay local - no
     /// sync, no sessions, no model turns. Users who just want a scratchpad
     /// never touch the gateway.
@@ -664,6 +666,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardUsername: String? = nil,
         dashboardPassword: String? = nil,
         notesSyncInterval: NotesSyncInterval = .manual,
+        notesCheckpointInterval: NotesSyncInterval = .minutes5,
         notesEnrichmentEnabled: Bool = true,
         notesEnrichmentModelName: String? = nil,
         notesEnrichmentProvider: String? = nil,
@@ -705,6 +708,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.dashboardUsername = dashboardUsername
         self.dashboardPassword = dashboardPassword
         self.notesSyncInterval = notesSyncInterval
+        self.notesCheckpointInterval = notesCheckpointInterval
         self.notesEnrichmentEnabled = notesEnrichmentEnabled
         self.notesEnrichmentModelName = notesEnrichmentModelName
         self.notesEnrichmentProvider = notesEnrichmentProvider
@@ -748,6 +752,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case dashboardUsername
         case dashboardPassword
         case notesSyncInterval
+        case notesCheckpointInterval
         case notesEnrichmentEnabled
         case notesEnrichmentModelName
         case notesEnrichmentProvider
@@ -800,6 +805,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         dashboardUsername = try container.decodeIfPresent(String.self, forKey: .dashboardUsername)
         dashboardPassword = try container.decodeIfPresent(String.self, forKey: .dashboardPassword)
         notesSyncInterval = try container.decodeIfPresent(NotesSyncInterval.self, forKey: .notesSyncInterval) ?? .manual
+        notesCheckpointInterval = try container.decodeIfPresent(NotesSyncInterval.self, forKey: .notesCheckpointInterval) ?? .minutes5
         notesEnrichmentEnabled = try container.decodeIfPresent(Bool.self, forKey: .notesEnrichmentEnabled) ?? true
         notesEnrichmentModelName = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentModelName)
         notesEnrichmentProvider = try container.decodeIfPresent(String.self, forKey: .notesEnrichmentProvider)
@@ -844,6 +850,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encodeIfPresent(dashboardUsername, forKey: .dashboardUsername)
         try container.encodeIfPresent(dashboardPassword, forKey: .dashboardPassword)
         try container.encode(notesSyncInterval, forKey: .notesSyncInterval)
+        try container.encode(notesCheckpointInterval, forKey: .notesCheckpointInterval)
         try container.encode(notesEnrichmentEnabled, forKey: .notesEnrichmentEnabled)
         try container.encodeIfPresent(notesEnrichmentModelName, forKey: .notesEnrichmentModelName)
         try container.encodeIfPresent(notesEnrichmentProvider, forKey: .notesEnrichmentProvider)

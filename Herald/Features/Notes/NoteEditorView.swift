@@ -3,11 +3,10 @@ import PhotosUI
 import SwiftUI
 import VisionKit
 
-/// View mode for the note editor — ink+text are one surface; recognized and
-/// enriched are read-only derived views.
+/// Notes deliberately expose only source ink and the useful enrichment.
+/// On-device OCR remains an internal assist for enrichment, never a user-facing claim.
 enum NoteViewMode: String, CaseIterable, Identifiable {
     case ink
-    case recognized
     case enriched
 
     var id: String { rawValue }
@@ -15,7 +14,6 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .ink: "Ink"
-        case .recognized: "Recognized"
         case .enriched: "Enriched"
         }
     }
@@ -23,8 +21,7 @@ enum NoteViewMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .ink: "pencil.tip"
-        case .recognized: "text.viewfinder"
-        case .enriched: "doc.text"
+        case .enriched: "sparkles"
         }
     }
 }
@@ -35,6 +32,7 @@ struct NoteEditorView: View {
     @Environment(NotesStore.self) private var notesStore
     @Environment(NotesSyncEngine.self) private var syncEngine
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var title: String = ""
     @State private var typedText: String = ""
     @State private var isTypingActive: Bool = false
@@ -71,6 +69,7 @@ struct NoteEditorView: View {
     @State private var pendingOCRRRevision: Int?
 
     /// Serializes on-device OCR so a stroke batch doesn't queue multiple runs.
+
     private let recognitionCoordinator = NoteRecognitionCoordinator()
 
     var body: some View {
@@ -87,7 +86,7 @@ struct NoteEditorView: View {
                     updateTitle(newValue)
                 }
 
-            // View mode picker
+            // Keep the surface honest: source ink or useful enrichment. OCR is internal.
             Picker("View Mode", selection: $viewMode) {
                 ForEach(NoteViewMode.allCases) { mode in
                     Label(mode.displayName, systemImage: mode.systemImage)
@@ -101,16 +100,46 @@ struct NoteEditorView: View {
 
             Divider()
 
-            // Chat reasoning bubble during note sync - the agent's live
-            // reasoning stream from the gateway, rendered with the SAME
-            // ReasoningView component chat uses. NOT a local OCR readout.
-            if viewMode == .ink, syncEngine.isReasoningActive || !syncEngine.liveReasoning.isEmpty {
+            // Notes fix: show the thought bubble across BOTH the Ink and Enriched
+            // tabs - users must see the agent is working regardless of which
+            // surface they're looking at. Three states drive the bubble:
+            //   1. live: a `reasoning.delta` stream is in flight.
+            //   2. in-progress without deltas: sync is active OR a stage
+            //      transition just happened - keep the bubble visible with
+            //      honest stage text so the user is never left staring at a
+            //      frozen UI.
+            //   3. completed: render a collapsible "Thought for Xs" card from
+            //      the last successful sync that the user can dismiss.
+            // Recognized tab is gone - kept the comment intentional.
+            let bubbleReasoning = effectiveBubbleReasoning
+            let bubbleStreaming = syncEngine.isReasoningActive
+            let bubbleDuration = syncEngine.reasoningDuration
+            let showCompletedCard = !bubbleStreaming && bubbleReasoning.isEmpty
+                && !syncEngine.lastCompletedReasoning.isEmpty
+
+            if !bubbleReasoning.isEmpty || syncEngine.isReasoningActive
+                || showCompletedCard {
                 ReasoningView(
-                    reasoning: syncEngine.liveReasoning,
-                    isStreaming: syncEngine.isReasoningActive,
-                    duration: syncEngine.reasoningDuration
+                    reasoning: bubbleStreaming
+                        ? bubbleReasoning
+                        : (showCompletedCard
+                            ? syncEngine.lastCompletedReasoning
+                            : bubbleReasoning),
+                    isStreaming: bubbleStreaming,
+                    duration: bubbleStreaming
+                        ? bubbleDuration
+                        : (showCompletedCard ? syncEngine.lastCompletedDuration : bubbleDuration),
+                    emptyFallbackText: syncEngine.isSyncing || syncEngine.stage != .idle
+                        ? syncEngine.liveStageLabel
+                        : nil
                 )
                 .transition(.move(edge: .top).combined(with: .opacity))
+                .onTapGesture(count: 2) {
+                    // Double-tap the completed card to dismiss it.
+                    if showCompletedCard {
+                        syncEngine.dismissCompletedReasoning()
+                    }
+                }
             }
 
             // Attachment strip (Phase 3)
@@ -128,8 +157,6 @@ struct NoteEditorView: View {
             switch viewMode {
             case .ink:
                 inkView
-            case .recognized:
-                recognizedView
             case .enriched:
                 enrichedView
             }
@@ -228,19 +255,31 @@ struct NoteEditorView: View {
                             set: { settingsStore.settings.notesDefaultLinesEnabled = $0 }
                         ))
                         Divider()
-                        // Note width scale (0.5x - 1.5x)
-                        LabeledContent("Note Width") {
-                            Text("\(Int(settingsStore.settings.notesCanvasWidthScale * 100))%")
-                                .monospacedDigit()
+                        // Notes fix: checkpoint history (iPhone only - iPad
+                        // gets the same control via SettingsScreen). Lists
+                        // the last 5 saved snapshots with a Restore action
+                        // that snapshots the current state first.
+                        Menu {
+                            ForEach(recentCheckpoints, id: \.id) { snap in
+                                Button {
+                                    Task { await restoreCheckpoint(snap) }
+                                } label: {
+                                    Label(checkpointLabel(snap), systemImage: "clock.arrow.circlepath")
+                                }
+                            }
+                            if recentCheckpoints.isEmpty {
+                                Text("No checkpoints yet")
+                            }
+                            Divider()
+                            Button {
+                                Task { await saveCheckpointSnapshot(reason: .manual) }
+                            } label: {
+                                Label("Save checkpoint now", systemImage: "square.and.arrow.down")
+                            }
+                        } label: {
+                            Label("Checkpoints", systemImage: "clock.arrow.circlepath")
                         }
-                        Slider(
-                            value: Binding(
-                                get: { settingsStore.settings.notesCanvasWidthScale },
-                                set: { settingsStore.settings.notesCanvasWidthScale = $0 }
-                            ),
-                            in: 0.5...1.5,
-                            step: 0.05
-                        )
+                        .accessibilityLabel("Checkpoint history")
                         Divider()
                         // Line height (0 = Auto, follows paper style default)
                         LabeledContent("Line Height") {
@@ -267,6 +306,7 @@ struct NoteEditorView: View {
         }
         .onAppear {
             loadNote()
+            startCheckpointLoop()
         }
         .onChange(of: noteId) { _, _ in
             persistTask?.cancel()
@@ -276,10 +316,28 @@ struct NoteEditorView: View {
             loadNote()
         }
         .onDisappear {
+            checkpointTask?.cancel()
+            checkpointTask = nil
             persistTask?.cancel()
             persistDrawing(drawing)
             typedTextPersistTask?.cancel()
             Task { await notesStore.saveTypedText(noteId: noteId, text: typedText) }
+        }
+        // Notes fix: flush on background. The local save must not depend on
+        // the AI sync engine - iOS will background the app any moment; we
+        // persist drawing + typed text + checkpoint NOW, before the OS
+        // suspends us, so a force-quit or eviction never costs a stroke.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                persistTask?.cancel()
+                persistDrawing(drawing)
+                typedTextPersistTask?.cancel()
+                let snapText = typedText
+                Task {
+                    await notesStore.saveTypedText(noteId: noteId, text: snapText)
+                    await saveCheckpointSnapshot(reason: .backgrounding)
+                }
+            }
         }
         .userActivity(QuickNoteConstants.activityType) { activity in
             let displayTitle = title.isEmpty ? "Untitled Note" : title
@@ -343,10 +401,9 @@ struct NoteEditorView: View {
                     drawing: $drawing,
                     pageStyle: pageStyle,
                     pencilOnly: pencilOnly,
-                    // Build 130.1: honor the user's canvas width scale. 1.0 =
-                    // full column (the old behavior); <1 narrows the writing
-                    // column, >1 widens it.
-                    canvasWidth: proxy.size.width * CGFloat(settingsStore.settings.notesCanvasWidthScale),
+                    // The canvas always owns the available column. Resizing the
+                    // writing surface during a pinch caused the viewport to jump.
+                    canvasWidth: proxy.size.width,
                     // Build 130.2: user line-height override. 0 = follow the
                     // paper style default; >0 forces the actual line spacing.
                     lineSpacing: settingsStore.settings.notesLineSpacing,
@@ -357,42 +414,32 @@ struct NoteEditorView: View {
                     onToolUseEnded: {
                         // Immediate persist on pencil-up
                         persistDrawing(drawing)
-                    }
+                    },
+                    onViewportChanged: { viewport in
+                        canvasViewport = viewport
+                        persistViewport(viewport)
+                    },
+                    initialViewport: canvasViewport
                 )
             }
         }
     }
 
-    @ViewBuilder
-    private var recognizedView: some View {
-        if let recognition = currentRecognition {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Design.Spacing.md) {
-                    RecognizedTextReviewView(
-                        recognition: recognition,
-                        directives: parsedDirectives,
-                        onCorrectedTextChanged: { corrected in
-                            Task { await saveCorrectedText(corrected) }
-                        }
-                    )
-
-                    if !parsedDirectives.isEmpty {
-                        DirectiveProgressView(
-                            directives: parsedDirectives,
-                            commandResults: commandResults,
-                            runStatus: runStatus?.status
-                        )
-                    }
-                }
-                .padding()
-            }
-        } else {
-            ContentUnavailableView(
-                "No Recognition",
-                systemImage: "text.viewfinder",
-                description: Text("Write with Apple Pencil and recognition will run automatically after a short delay.")
-            )
+    /// Notes fix: when the live reasoning stream is empty but the engine is
+    /// mid-sync, fall back to the current stage label so the bubble stays
+    /// visibly alive (Preparing / Creating session / Uploading drawing /
+    /// Sending). Once real `reasoning.delta` text arrives it overrides
+    /// this placeholder automatically.
+    private var effectiveBubbleReasoning: String {
+        if !syncEngine.liveReasoning.isEmpty { return syncEngine.liveReasoning }
+        if syncEngine.isReasoningActive
+            || syncEngine.stage == .preparing
+            || syncEngine.stage == .creatingSession
+            || syncEngine.stage == .uploading
+            || syncEngine.stage == .sending {
+            return syncEngine.liveStageLabel
         }
+        return ""
     }
 
     @ViewBuilder
@@ -436,6 +483,7 @@ struct NoteEditorView: View {
         guard let note = notesStore.notes.first(where: { $0.id == noteId }) else { return }
         title = note.title
         pageStyle = note.pageStyle
+        loadViewport()
         // Reset the live OCR readout for the new note - the banner must
         // never carry text from the previous note.
         liveOCRText = ""
@@ -487,21 +535,30 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Schedule a debounced persist (300–750ms settle).
+    /// Notes fix: idle settle bumped from 500ms -> 2s.
+    /// The `onToolUseEnded` callback already persists IMMEDIATELY when a
+    /// stroke completes (`persistDrawing(drawing)` on pencil-up), so this
+    /// debounce only catches the in-stroke `onDrawingChanged` ticks that
+    /// fire while the finger is moving. 2s of idle without a tool-up means
+    /// the user walked away mid-stroke; we settle the partial work
+    /// without thrashing the disk. Pencil-up always wins.
     private func schedulePersist(_ newDrawing: PKDrawing) {
         persistTask?.cancel()
         persistTask = Task {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             persistDrawing(newDrawing)
         }
     }
 
-    /// Debounced persist for typed text (500ms settle after typing pauses).
+    /// Notes fix: typed-text idle settle bumped to 2s for the same reason as
+    /// drawing - the user pausing the keyboard for >=2s signals an
+    /// intentional break worth flushing without fighting the AI checkpoint
+    /// cadence (the local save path is independent of any in-flight sync).
     private func scheduleTypedTextPersist(_ newText: String) {
         typedTextPersistTask?.cancel()
         typedTextPersistTask = Task {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             await notesStore.saveTypedText(noteId: noteId, text: newText)
         }
@@ -518,18 +575,23 @@ struct NoteEditorView: View {
             let newRevision = note.currentDrawingRevision + 1
             _ = await notesStore.saveDrawing(noteId: noteId, data: data, revision: newRevision)
 
-            // Serialize OCR: if a run is in flight, record the newest
-            // revision and let the active run re-read it on completion so
-            // the banner always reflects the latest strokes.
-            if isOCRWorking {
-                if let current = pendingOCRRRevision {
-                    if newRevision > current { pendingOCRRRevision = newRevision }
-                } else {
-                    pendingOCRRRevision = newRevision
-                }
-                return
-            }
-            await runLiveOCR(revision: newRevision, noteId: noteId)
+            // Local drawing durability stays immediate. OCR is intentionally
+            // deferred through the coordinator settled debounce so a long
+            // drawing does not render a 4x bitmap and run Vision per stroke.
+            let rec = await recognitionCoordinator.scheduleRecognition(
+                noteId: noteId,
+                drawingRevision: newRevision
+            )
+            guard let rec, !rec.rawText.isEmpty else { return }
+            liveOCRText = rec.rawText
+            currentRecognition = rec
+            try? await notesStore.saveRecognition(rec, noteId: noteId)
+            let parser = NoteDirectiveParser()
+            parsedDirectives = parser.parse(
+                text: rec.effectiveText,
+                noteId: noteId,
+                sourceTextRevision: newRevision.hashValue
+            )
         }
     }
 
@@ -658,6 +720,160 @@ struct NoteEditorView: View {
         await notesStore.deleteAttachment(attachment)
         attachments.removeAll { $0.id == attachment.id }
     }
+
+
+    /// Why this checkpoint snapshot was taken. Surfaced in the menu so the
+    /// user can tell an autosave from a manual save from a restore.
+    enum CheckpointReason: String {
+        case manual
+        case backgrounding
+        case automatic
+        case restoreSafety = "restore-safety"
+    }
+
+    // MARK: - Checkpoint state
+
+    /// Last few checkpoints for the current note (newest first, max 5).
+    /// We pull this through a trivial getter/setter so the SwiftUI body
+    /// can react to it without paying for a full @State ObservableObject.
+    private var recentCheckpoints: [NoteCheckpoint] {
+        get { _recentCheckpoints }
+        set { _recentCheckpoints = newValue }
+    }
+    @State private var _recentCheckpoints: [NoteCheckpoint] = []
+    @State private var lastCheckpoint: NoteCheckpoint?
+    @State private var isCheckpointSheetPresented = false
+    @State private var checkpointRestorationInFlight = false
+    @State private var checkpointTask: Task<Void, Never>?
+    @State private var canvasViewport: PencilCanvasRepresentable.CanvasViewport?
+
+    private func startCheckpointLoop() {
+        checkpointTask?.cancel()
+        checkpointTask = Task {
+            while !Task.isCancelled {
+                guard let seconds = settingsStore.settings.notesCheckpointInterval.intervalSeconds else {
+                    try? await Task.sleep(for: .seconds(30))
+                    continue
+                }
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                await saveCheckpointSnapshot(reason: .automatic)
+            }
+        }
+    }
+
+    private func persistViewport(_ viewport: PencilCanvasRepresentable.CanvasViewport) {
+        guard let data = try? JSONEncoder().encode(viewport) else { return }
+        UserDefaults.standard.set(data, forKey: "kallisti.notes.viewport.\(noteId.uuidString)")
+    }
+
+    private func loadViewport() {
+        guard let data = UserDefaults.standard.data(forKey: "kallisti.notes.viewport.\(noteId.uuidString)"),
+              let viewport = try? JSONDecoder().decode(PencilCanvasRepresentable.CanvasViewport.self, from: data)
+        else { return }
+        canvasViewport = viewport
+    }
+
+    /// One-line label for the menu. Example: "Manual · 8:42 PM".
+    private func checkpointLabel(_ cp: NoteCheckpoint) -> String {
+        let time = cp.createdAt.formatted(date: .omitted, time: .shortened)
+        switch cp.reason {
+        case "manual": return "Manual · \(time)"
+        case "backgrounding": return "Auto · \(time)"
+        case "restore-safety": return "Safety · \(time)"
+        default: return "Checkpoint · \(time)"
+        }
+    }
+
+    /// Persist a checkpoint of the current state. Cheap - records the
+    /// drawing revision + hash, doesn't copy the blob. Triggered every 5
+    /// minutes during active editing, on app backgrounding, when the user
+    /// taps "Save checkpoint now", and before every restore.
+    private func saveCheckpointSnapshot(reason: CheckpointReason) async {
+        let repo = NotesRepository()
+        let safeReason: String
+        switch reason {
+        case .manual: safeReason = "manual"
+        case .backgrounding: safeReason = "backgrounding"
+        case .automatic: safeReason = "automatic"
+        case .restoreSafety: safeReason = "restore-safety"
+        }
+        do {
+            let cp = try await repo.snapshotCurrentStateAsCheckpoint(
+                noteId: noteId, reason: safeReason
+            )
+            let recent = (try? await repo.loadCheckpoints(noteId: noteId, limit: 5)) ?? []
+            await MainActor.run {
+                _recentCheckpoints = recent
+                lastCheckpoint = cp
+            }
+        } catch {
+            // Best-effort; never block the user.
+        }
+    }
+
+    /// RESTORE SAFETY: before applying the snapshot, take a safety
+    /// checkpoint of the CURRENT state so the user can step forward again
+    /// if they regret the restore. Restore is implemented as: ask the
+    /// repository to atomically copy back the full checkpointed state
+    /// (drawing blob, typed text, title, page style, attachments index +
+    /// blob copies, enrichment result). The repository updates the
+    /// KallistiNote metadata in the index to match; we then apply the
+    /// returned payload to the editor's in-memory bindings so the UI
+    /// reflects the restored state without an additional reload cycle.
+    private func restoreCheckpoint(_ snap: NoteCheckpoint) async {
+        guard !checkpointRestorationInFlight else { return }
+        checkpointRestorationInFlight = true
+        defer { checkpointRestorationInFlight = false }
+
+        // Cancel pending persist tasks so they do not race the restore.
+        persistTask?.cancel()
+        typedTextPersistTask?.cancel()
+
+        // Save current state FIRST - never restore without a safety snap.
+        await saveCheckpointSnapshot(reason: .restoreSafety)
+
+        let repo = NotesRepository()
+        do {
+            let result = try await repo.restoreCheckpoint(
+                noteId: noteId, checkpointId: snap.id
+            )
+            await MainActor.run {
+                // Title
+                title = result.title
+                pageStyle = result.pageStyle
+                // Typed text
+                typedText = result.typedText
+                // Attachments metadata
+                attachments = result.attachments
+                // Enrichment result drives the Enriched tab
+                enrichmentResult = result.enrichment
+                // Drawing
+                if let blob = result.drawingData,
+                   let pk = try? PKDrawing(data: blob) {
+                    drawing = pk
+                }
+            }
+            // Sync the in-memory notes array from the index so the
+            // restored title/drawingRevision/pageStyle are reflected
+            // in the list view and any other readers.
+            await notesStore.loadNotes()
+            // Reload recognition (the recognitions index is shared with
+            // the active state and was NOT captured by the checkpoint
+            // — restore reflects whatever was true at snapshot time).
+            loadRecognitionAndEnrichment()
+            // Refresh the checkpoint history so the safety snapshot
+            // shows up at the top.
+            if let recent = try? await repo.loadCheckpoints(noteId: noteId, limit: 5) {
+                await MainActor.run { _recentCheckpoints = recent }
+            }
+        } catch {
+            // Best-effort: a failed restore leaves the user on the
+            // pre-restore state. The safety snapshot is still in the
+            // history so they can retry.
+        }
+    }
+
 }
 
 // MARK: - OCR Thinking Bubble
