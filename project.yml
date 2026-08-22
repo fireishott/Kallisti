@@ -104,7 +104,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti
         PRODUCT_NAME: Kallisti
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         DEVELOPMENT_TEAM: 58U7UPFS53
         CODE_SIGN_STYLE: Automatic
@@ -184,7 +184,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Widgets
         PRODUCT_NAME: KallistiWidgets
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         SWIFT_VERSION: "6.2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -223,7 +223,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.NotificationService
         PRODUCT_NAME: KallistiNotificationService
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
@@ -264,7 +264,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.Intents
         PRODUCT_NAME: KallistiIntents
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
@@ -292,7 +292,7 @@ targets:
         INFOPLIST_FILE: KallistiControls/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.controlsWidget
         PRODUCT_NAME: KallistiControls
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
@@ -348,7 +348,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.fihonline.kallisti.watchkitapp
         PRODUCT_NAME: KallistiWatch
-        MARKETING_VERSION: "0.3.1"
+        MARKETING_VERSION: "0.3.2"
         CURRENT_PROJECT_VERSION: "135.10"
         SWIFT_VERSION: "6.2"
         CODE_SIGN_STYLE: Automatic
