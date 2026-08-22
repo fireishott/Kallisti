@@ -381,11 +381,16 @@ struct CameraPickerView: UIViewControllerRepresentable {
             _ picker: UIImagePickerController,
             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
         ) {
+            // Build 135.19: dismiss the system picker before handing the
+            // image up. Without this, tapping Use Photo left the picker
+            // on screen with dead buttons until the app was force-quit.
+            picker.dismiss(animated: true)
             let image = info[.originalImage] as? UIImage
             onComplete(image)
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
             onComplete(nil)
         }
     }
