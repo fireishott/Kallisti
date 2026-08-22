@@ -2449,38 +2449,6 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
-                Menu {
-                    ForEach(NotesSyncInterval.allCases, id: \.self) { interval in
-                        Button {
-                            settingsStore.settings.notesCheckpointInterval = interval
-                        } label: {
-                            if settingsStore.settings.notesCheckpointInterval == interval {
-                                Label(interval.displayLabel, systemImage: "checkmark")
-                            } else {
-                                Text(interval.displayLabel)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: Design.Spacing.sm) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Design.Brand.primary)
-                            .frame(width: 20, alignment: .center)
-                        Text("Recovery checkpoints")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.foreground)
-                        Spacer()
-                        Text(settingsStore.settings.notesCheckpointInterval.displayLabel)
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                    }
-                    .frame(minHeight: Design.Size.minTapTarget)
-                    .contentShape(Rectangle())
-                }
-
-                sectionDivider
-
                 // Build 128.94: AI enrichment toggle + model picker.
                 Toggle(isOn: Binding(
                     get: { settingsStore.settings.notesEnrichmentEnabled },
