@@ -415,6 +415,12 @@ struct ChatScreen: View {
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPickerView { image in
+                // Build 135.19: dismiss the cover when the user taps Use
+                // Photo (or retakes/cancels). Without this the picker's
+                // didFinish fired, the image was attached, but the
+                // fullScreenCover never dismissed - the app sat frozen in
+                // the camera UI and the user had to force-quit.
+                showCamera = false
                 if let image {
                     handleAttachmentResult(.image(image))
                 }
