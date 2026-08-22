@@ -273,6 +273,12 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// duplicate callers return immediately; the in-flight attempt's result
     /// is the one that stands.
     private var isConnecting = false
+    /// Build 135.10: wall-clock timestamp of the current in-flight connect()
+    /// attempt's generation. Nil when no attempt is in flight. Used by the
+    /// zombie-connect watchdog (see connectWatchdogNanos) to detect a
+    /// connect() that iOS silently suspended and never resumed, so the
+    /// isConnecting guard doesn't latch permanently.
+    private var connectAttemptStartedAt: Date?
     /// Build 131.4: monotonically increasing generation counter. Each
     /// resetConnection() bumps it; an in-flight connect() that started under
     /// an older generation aborts before publishing its socket. This makes
@@ -1112,6 +1118,23 @@ final class NativeKallistiClient: HeraldClientProtocol {
         }
     }
 
+    /// Build 135.10 (zombie-connect watchdog): iOS can suspend an in-flight
+    /// URLRequest/URLSessionWebSocketTask mid-connect (device sleep, hard
+    /// background) without ever delivering a completion or error to the
+    /// awaiting Task. When that happens, connect() never reaches its defer
+    /// block, isConnecting latches true forever, and every recovery path
+    /// (reconnectIfNeeded on foreground, the backoff loop, the stream
+    /// watchdog) all funnel back into connect() and bounce off the
+    /// isConnecting guard for the rest of the app's life - the user sees a
+    /// permanent "Connecting..." that only a force-quit clears. This ceiling
+    /// force-clears the in-flight flag if a single connect() attempt hasn't
+    /// resolved within the window, so the NEXT trigger (foreground, timer,
+    /// manual reset) can actually start a fresh attempt instead of being
+    /// silently swallowed. Comfortably above the sum of every internal
+    /// timeout in this function (8s ticket mint + 15s verify probe = 23s)
+    /// with headroom for a slow radio.
+    private static let connectWatchdogNanos: UInt64 = 40_000_000_000
+
     func connect() async {
         // Build 131.12: a deliberately-disconnected client (Reset Connection
         // wiped credentials) must NOT reconnect until the user completes a
@@ -1141,8 +1164,22 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // bump and will abort at its own guard. Only non-reset callers
         // (reconnect loop, launch trigger) collapse onto the in-flight one.
         if !isResetting && isConnecting && startedGeneration == connectGeneration {
-            Self.logger.info("connect() skipped - another connect is already in flight")
-            return
+            // Build 135.10: a stuck connect() latches isConnecting forever
+            // if iOS silently suspended its in-flight request (see watchdog
+            // doc above). Check how long ago THIS generation's attempt
+            // started; past the watchdog window, treat it as dead, bump the
+            // generation so the stale attempt's own late completion cannot
+            // resurrect state, and fall through to start a genuinely fresh
+            // attempt instead of bouncing off the guard forever.
+            if let startedAt = connectAttemptStartedAt,
+               Date().timeIntervalSince(startedAt) > Double(Self.connectWatchdogNanos) / 1_000_000_000 {
+                Self.logger.warning("connect() watchdog: prior attempt has been in flight > \(Int(Double(Self.connectWatchdogNanos) / 1_000_000_000))s with no result - forcing it stale and starting fresh")
+                connectGeneration += 1
+                isConnecting = false
+            } else {
+                Self.logger.info("connect() skipped - another connect is already in flight")
+                return
+            }
         }
         // Build 128.88 (connection bounce): if we're ALREADY connected with a
         // live client, a redundant connect() (e.g. the launch trigger firing
@@ -1157,14 +1194,21 @@ final class NativeKallistiClient: HeraldClientProtocol {
             Self.logger.info("connect() skipped - already connected with a live client")
             return
         }
+        // Build 135.10: re-read the generation AFTER the watchdog may have
+        // bumped it above, so this attempt's defer/guards use the correct
+        // (possibly newer) generation rather than the stale one captured
+        // before the watchdog fired.
+        let effectiveGeneration = connectGeneration
         isConnecting = true
+        connectAttemptStartedAt = Date()
         defer {
             // Build 131.4: only clear the in-flight flag if no newer connect
-            // (from a reset) has taken over. A stale connect that aborted at
-            // the generation guard must NOT clear the flag the reset's
-            // connect is actively using.
-            if startedGeneration == connectGeneration {
+            // (from a reset OR the watchdog above) has taken over. A stale
+            // connect that aborted at the generation guard must NOT clear
+            // the flag the reset's connect is actively using.
+            if effectiveGeneration == connectGeneration {
                 isConnecting = false
+                connectAttemptStartedAt = nil
             }
         }
         connectionStatus = .connecting
@@ -1244,7 +1288,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // verifying, abort before publishing - the reset's own connect()
             // is about to install a fresh socket and publishing ours would
             // resurrect exactly the parallel-socket race we're eliminating.
-            guard startedGeneration == connectGeneration else {
+            guard effectiveGeneration == connectGeneration else {
                 await client.close()
                 Self.logger.info("connect() aborted - superseded by resetConnection()")
                 return

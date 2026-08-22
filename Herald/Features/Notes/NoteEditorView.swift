@@ -575,18 +575,23 @@ struct NoteEditorView: View {
             let newRevision = note.currentDrawingRevision + 1
             _ = await notesStore.saveDrawing(noteId: noteId, data: data, revision: newRevision)
 
-            // Serialize OCR: if a run is in flight, record the newest
-            // revision and let the active run re-read it on completion so
-            // the banner always reflects the latest strokes.
-            if isOCRWorking {
-                if let current = pendingOCRRRevision {
-                    if newRevision > current { pendingOCRRRevision = newRevision }
-                } else {
-                    pendingOCRRRevision = newRevision
-                }
-                return
-            }
-            await runLiveOCR(revision: newRevision, noteId: noteId)
+            // Local drawing durability stays immediate. OCR is intentionally
+            // deferred through the coordinator settled debounce so a long
+            // drawing does not render a 4x bitmap and run Vision per stroke.
+            let rec = await recognitionCoordinator.scheduleRecognition(
+                noteId: noteId,
+                drawingRevision: newRevision
+            )
+            guard let rec, !rec.rawText.isEmpty else { return }
+            liveOCRText = rec.rawText
+            currentRecognition = rec
+            try? await notesStore.saveRecognition(rec, noteId: noteId)
+            let parser = NoteDirectiveParser()
+            parsedDirectives = parser.parse(
+                text: rec.effectiveText,
+                noteId: noteId,
+                sourceTextRevision: newRevision.hashValue
+            )
         }
     }
 

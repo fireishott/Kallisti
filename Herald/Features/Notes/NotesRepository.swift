@@ -377,6 +377,9 @@ actor NotesRepository: NotesRepositoryProtocol {
 
     /// Save an enrichment result.
     func saveEnrichmentResult(_ result: EnrichmentResult, noteId: UUID) throws {
+        // Enrichment can arrive before a drawing/text blob exists. Make this
+        // write self-sufficient so an async response never loses its result.
+        try fileManager.createDirectory(at: noteDirectory(for: noteId), withIntermediateDirectories: true, attributes: nil)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(result)
