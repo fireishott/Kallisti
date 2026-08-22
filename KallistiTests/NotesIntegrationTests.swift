@@ -398,12 +398,20 @@ struct NotesIntegrationTests {
 
     // MARK: - Note View Mode
 
-    @Test("NoteViewMode has all cases")
+    @Test("NoteViewMode exposes source ink and enrichment")
     func testNoteViewModeCases() throws {
         let cases = NoteViewMode.allCases
-        #expect(cases.count == 3)
+        #expect(cases.count == 2)
         #expect(cases.contains(.ink))
-        #expect(cases.contains(.recognized))
         #expect(cases.contains(.enriched))
+    }
+
+    @Test("Visual-only note enrichment stays grounded and does not research by default")
+    func testVisualOnlyEnrichmentPolicyIsGrounded() {
+        let policy = NotesSyncEngine.enrichmentPolicy()
+        #expect(policy.contains("Do not invent a topic"))
+        #expect(policy.contains("Do not research by default"))
+        #expect(policy.contains("only when the note explicitly requests research"))
+        #expect(policy.contains("do not invent citations"))
     }
 }

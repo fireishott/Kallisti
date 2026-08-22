@@ -195,11 +195,13 @@ final class AppContainer {
         )
         self.skillsStore = skillsStore ?? SkillsStore(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { [nativeGatewayClient] in nativeGatewayClient?.featureClient }
         )
         self.cronStore = cronStore ?? CronStore(
             apiClient: apiClient,
-            accessTokenProvider: { await sessionStore.currentAccessToken() }
+            accessTokenProvider: { await sessionStore.currentAccessToken() },
+            nativeFeatureClientProvider: { [nativeGatewayClient] in nativeGatewayClient?.featureClient }
         )
         self.canvasStore = canvasStore ?? HeraldCanvasStore()
         let chatStoreRef = self.chatStore

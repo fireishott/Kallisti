@@ -17,12 +17,24 @@ struct ReasoningView: View {
     let reasoning: String
     let isStreaming: Bool
     let duration: TimeInterval?
+    /// Notes fix: when reasoning is empty but the owner is mid-flight
+    /// (no `reasoning.delta` yet), surface a stage label so the bubble is
+    /// visibly alive. Falls back to the body view rendering the label
+    /// instead of leaving the bubble empty.
+    let emptyFallbackText: String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
     @State private var isLarge = false
     @State private var shimmerPhase: CGFloat = -1
     @State private var startedAt: Date = .now
+
+    init(reasoning: String, isStreaming: Bool, duration: TimeInterval?, emptyFallbackText: String? = nil) {
+        self.reasoning = reasoning
+        self.isStreaming = isStreaming
+        self.duration = duration
+        self.emptyFallbackText = emptyFallbackText
+    }
 
     private let streamingViewportHeight: CGFloat = 132
     /// Build 128.56: large monitor viewport - ~52% of the screen height so a
@@ -73,7 +85,15 @@ struct ReasoningView: View {
 
     @ViewBuilder
     private func body(for text: String) -> some View {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // Notes fix: when nothing has streamed yet but the sync engine is
+        // mid-flight, surface the stage label as the FIRST line so the
+        // bubble is never empty. Real reasoning appends below it.
+        let effectiveText: String = {
+            if !text.isEmpty { return text }
+            if let fallback = emptyFallbackText, !fallback.isEmpty { return fallback }
+            return text
+        }()
+        let lines = effectiveText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let content = VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                 Text(line)
