@@ -118,6 +118,11 @@ final class AppContainer {
     // instantly ready and stays live.
     private(set) var connectorLatencyMs: Int?
     private var latencyMonitorTask: Task<Void, Never>?
+    /// Periodic in-app memory footprint logger (build 135.12 diagnostics).
+    /// Samples physical footprint every 30s while the app is running so a
+    /// Jetsam kill can be correlated with the growth curve without needing
+    /// an external profiler. Also logs on memory warnings.
+    private var footprintLoggerTask: Task<Void, Never>?
 
     // Build 70: aux model service hoisted from Settings so the Infrastructure
     // section loads at connection time, not when Settings first appears.
@@ -1037,8 +1042,50 @@ final class AppContainer {
         connectorLatencyMs = nil
     }
 
+    /// Build 135.12: sample the process physical footprint and log it so a
+    /// Jetsam kill can be correlated with the memory growth curve. Also
+    /// registers a memory-warning observer that logs the footprint at the
+    /// moment iOS signals pressure. Safe to call from any thread.
+    func startFootprintLogging() {
+        guard footprintLoggerTask == nil else { return }
+        // Log immediately at start so we have a baseline.
+        logFootprint("start")
+        footprintLoggerTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                logFootprint("tick")
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.logFootprint("memory-warning")
+        }
+    }
+
+    private func logFootprint(_ tag: String) {
+        var info = task_vm_info()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else {
+            Logger.app.warning("footprint[\(tag)] task_info failed: \(kr)")
+            return
+        }
+        let footprintMB = Double(info.phys_footprint) / (1024 * 1024)
+        let residentMB = Double(info.resident_size) / (1024 * 1024)
+        Logger.app.info("footprint[\(tag)] phys_footprint=\(String(format: "%.1f", footprintMB)) MB resident=\(String(format: "%.1f", residentMB)) MB")
+    }
+
     func initialize() async {
         notesSyncEngine.start()
+        // Build 135.12: start the memory footprint logger (diagnostics for
+        // the Jetsam kills while in Notes - correlates growth with kill time).
+        startFootprintLogging()
         // Build 108 §15A.4: run the legacy → shared-Keychain token migration
         // once per launch.  Idempotent and best-effort; if the shared
         // Keychain entry is unreachable (no entitlement yet) we log and

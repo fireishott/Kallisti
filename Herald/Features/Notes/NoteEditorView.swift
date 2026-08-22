@@ -593,6 +593,16 @@ struct NoteEditorView: View {
         let data = newDrawing.dataRepresentation()
         guard !data.isEmpty else { return }
 
+        // Build 135.12: skip OCR if this exact drawing content was already
+        // recognized. Without this, every persist trigger (pencil-up,
+        // onChange, onDisappear, scenePhase) re-renders the full canvas
+        // and re-runs Vision even when the strokes didn't change, and each
+        // 4x render allocates a big bitmap that piles up until Jetsam
+        // kills the app. Dedupe on content so a no-op save costs nothing.
+        let contentHash = data.hashValue
+        let alreadyRecognized = (contentHash == lastRecognizedDrawingHash)
+        guard !alreadyRecognized else { return }
+
         Task {
             guard let note = notesStore.notes.first(where: { $0.id == noteId }) else { return }
             let newRevision = note.currentDrawingRevision + 1
@@ -606,6 +616,7 @@ struct NoteEditorView: View {
                 drawingRevision: newRevision
             )
             guard let rec, !rec.rawText.isEmpty else { return }
+            self.lastRecognizedDrawingHash = contentHash
             liveOCRText = rec.rawText
             currentRecognition = rec
             try? await notesStore.saveRecognition(rec, noteId: noteId)
@@ -782,6 +793,11 @@ struct NoteEditorView: View {
     private let checkpointMinAutomaticInterval: TimeInterval = 10
     /// Last time any checkpoint snapshot completed (used for the throttle).
     @State private var lastCheckpointWriteAt: Date = .distantPast
+    /// Build 135.12: hash of the last drawing content that OCR actually ran
+    /// on. Persist triggers that fire with identical content (pencil-up,
+    /// onChange, onDisappear, scenePhase) skip the recognition re-render,
+    /// which keeps the 4x full-canvas bitmap from piling up in memory.
+    @State private var lastRecognizedDrawingHash: Int?
 
     private func startCheckpointLoop() {
         checkpointTask?.cancel()
