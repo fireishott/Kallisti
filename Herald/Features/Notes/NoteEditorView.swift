@@ -307,28 +307,33 @@ struct NoteEditorView: View {
         .onAppear {
             loadNote()
             startCheckpointLoop()
-            // 135.11: last-chance safety save. A hard kill (Jetsam,
-            // resource watchdog, force-quit) never delivers scenePhase, so
-            // register for the two callbacks iOS DOES send before
-            // termination: didReceiveMemoryWarning (fires before Jetsam
-            // reclaims) and willTerminate. Best-effort synchronous flushes.
-            NotificationCenter.default.addObserver(
-                forName: UIApplication.didReceiveMemoryWarningNotification,
-                object: nil, queue: .main
-            ) { [self] _ in
-                self.persistTask?.cancel()
-                self.persistDrawing(self.drawing)
-                let snapText = self.typedText
-                Task { await self.notesStore.saveTypedText(noteId: self.noteId, text: snapText) }
-            }
-            NotificationCenter.default.addObserver(
+            // 135.13: last-chance safety save, CHEAP version.
+            //
+            // 135.11/135.12 BUG: the didReceiveMemoryWarning observer called
+            // persistDrawing() (full drawing dataRepresentation + scheduled
+            // 4x OCR render) at the exact moment iOS was demanding we FREE
+            // memory. Allocating a large bitmap during a memory warning is a
+            // guaranteed Jetsam kill - the app closed instantly with no crash
+            // log, progressively worse as memory climbed. REMOVED.
+            //
+            // willTerminate stays, but only does a cheap synchronous write of
+            // the drawing blob + typed text - no OCR, no render, no Task that
+            // can be cut off. scenePhase/onDisappear already handle the normal
+            // background flush path.
+            willTerminateObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.willTerminateNotification,
                 object: nil, queue: .main
             ) { [self] _ in
                 self.persistTask?.cancel()
-                self.persistDrawing(self.drawing)
-                let snapText = self.typedText
-                Task { await self.notesStore.saveTypedText(noteId: self.noteId, text: snapText) }
+                // Synchronous, cheap: write the drawing data straight to the
+                // store without rendering or OCR. WillTerminate gives ~5s.
+                let data = self.drawing.dataRepresentation()
+                guard !data.isEmpty else { return }
+                Task { @MainActor in
+                    guard let note = self.notesStore.notes.first(where: { $0.id == self.noteId }) else { return }
+                    let newRevision = note.currentDrawingRevision + 1
+                    _ = await self.notesStore.saveDrawing(noteId: self.noteId, data: data, revision: newRevision)
+                }
             }
         }
         .onChange(of: noteId) { _, _ in
@@ -342,6 +347,11 @@ struct NoteEditorView: View {
             checkpointTask?.cancel()
             checkpointTask = nil
             persistTask?.cancel()
+            // 135.13: remove the willTerminate observer so it doesn't leak.
+            if let willTerminateObserver {
+                NotificationCenter.default.removeObserver(willTerminateObserver)
+                self.willTerminateObserver = nil
+            }
             persistDrawing(drawing)
             typedTextPersistTask?.cancel()
             Task { await notesStore.saveTypedText(noteId: noteId, text: typedText) }
@@ -798,6 +808,10 @@ struct NoteEditorView: View {
     /// onChange, onDisappear, scenePhase) skip the recognition re-render,
     /// which keeps the 4x full-canvas bitmap from piling up in memory.
     @State private var lastRecognizedDrawingHash: Int?
+    /// Build 135.13: token for the willTerminate observer so it can be
+    /// removed on disappear (the 135.11 observers leaked - they were never
+    /// removed and held strong captures of the view).
+    @State private var willTerminateObserver: NSObjectProtocol?
 
     private func startCheckpointLoop() {
         checkpointTask?.cancel()
