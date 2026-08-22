@@ -13,6 +13,19 @@ final class HeraldCanvasStore {
     /// the canvas panel (build 78).
     var liveToolActivities: [ToolActivity] = []
 
+    /// Background processes tracked by the connector (build 135.17).
+    /// Appended/merged as SSE events arrive from
+    /// /v1/canvas/processes/stream. Rendered in the Live tab below the
+    /// tool activities with a Stop button per running row.
+    var liveBackgroundProcesses: [BackgroundProcess] = []
+
+    /// Wired by AppContainer to the connector's process kill endpoint
+    /// (build 135.17). CanvasView calls this when the user taps Stop on
+    /// a running row. Nil = kill not wired (Stop hidden is handled by
+    /// the row only showing the button while active, so a nil callback
+    /// simply no-ops).
+    var killBackgroundProcess: (@MainActor (String) -> Void)?
+
     /// Selected tab in the canvas panel. Auto-switches to .live when
     /// liveToolActivities becomes non-empty.
     var activeTab: CanvasTab = .artifact
@@ -66,6 +79,34 @@ final class HeraldCanvasStore {
             defaults.removeObject(forKey: storageKey + "." + sessionID)
         }
         activeArtifact = nil
+    }
+
+    // MARK: - Background process feed (build 135.17)
+
+    /// True when there is at least one background process row to show.
+    var isProcessFeedVisible: Bool { !liveBackgroundProcesses.isEmpty }
+
+    /// Merge an incoming SSE process event into the feed. Existing rows
+    /// are updated in place (identity = process id); new ids are appended.
+    /// Completed/failed rows stay listed so the user can read the tail,
+    /// with the terminal status shown in the row.
+    func upsertBackgroundProcess(_ process: BackgroundProcess) {
+        if let idx = liveBackgroundProcesses.firstIndex(where: { $0.id == process.id }) {
+            liveBackgroundProcesses[idx] = liveBackgroundProcesses[idx].merged(with: process)
+        } else {
+            liveBackgroundProcesses.append(process)
+        }
+    }
+
+    /// Drop terminal rows that finished more than `cutoff` seconds ago
+    /// so the Live tab does not accumulate finished processes forever.
+    func pruneFinishedBackgroundProcesses(olderThan cutoff: TimeInterval = 120) {
+        let now = Date()
+        liveBackgroundProcesses.removeAll { process in
+            guard !process.status.isActive else { return false }
+            guard let finished = process.finishedAt ?? process.startedAt else { return true }
+            return now.timeIntervalSince(finished) > cutoff
+        }
     }
 
     private func persist(_ artifact: KallistiArtifact) {

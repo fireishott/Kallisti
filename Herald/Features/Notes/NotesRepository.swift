@@ -479,7 +479,14 @@ actor NotesRepository: NotesRepositoryProtocol {
             try Data(text.utf8).write(to: bundleDir.appendingPathComponent("text.md"), options: .atomic)
         }
 
-        // 3. Attachments — metadata + owned blob copies
+        // 3. Attachments - metadata ONLY. Do NOT copy attachment blob files
+        //    into the bundle. Attachment blobs already live in the note's
+        //    canonical directory (blobPath is a path into noteDirectory(for:))
+        //    and persist across snapshots, so duplicating multi-MB media
+        //    (screen recordings, images) into every checkpoint bundle was
+        //    melting the device: each snapshot rewrote gigabytes. The
+        //    checkpoint records the metadata index (which carries blobPath +
+        //    contentHash) so restore can reference the live blobs.
         let attachments = (try? await loadAttachments(noteId: noteId)) ?? []
         if !attachments.isEmpty {
             let encoder = JSONEncoder()
@@ -489,16 +496,6 @@ actor NotesRepository: NotesRepositoryProtocol {
                 to: bundleDir.appendingPathComponent("attachments.json"),
                 options: .atomic
             )
-            let attachBlobsDir = bundleDir.appendingPathComponent("attachments", isDirectory: true)
-            try fileManager.createDirectory(at: attachBlobsDir, withIntermediateDirectories: true, attributes: nil)
-            for attachment in attachments {
-                let srcURL = URL(fileURLWithPath: attachment.blobPath)
-                guard fileManager.fileExists(atPath: srcURL.path) else { continue }
-                let dstURL = attachBlobsDir.appendingPathComponent(
-                    "\(attachment.id.uuidString)-\(attachment.fileName)"
-                )
-                try? fileManager.copyItem(at: srcURL, to: dstURL)
-            }
         }
 
         // 4. Enrichment result
@@ -603,7 +600,13 @@ actor NotesRepository: NotesRepositoryProtocol {
             )
         }
 
-        // 3. Attachments — metadata + owned blob copies
+        // 3. Attachments - metadata index pointers only. Modern checkpoints do
+        //    NOT carry owned attachment blob copies (see snapshot note: blobs
+        //    live in the note's canonical directory and persist across
+        //    snapshots). Restoring just rewrites attachments.json; each
+        //    attachment's blobPath already points at the live canonical file,
+        //    which still exists. This mirrors the metadata-only snapshot and
+        //    avoids re-copying multi-MB media during restore.
         var restoredAttachments: [NoteAttachment] = []
         let attachMetaURL = bundleDir.appendingPathComponent("attachments.json")
         if fileManager.fileExists(atPath: attachMetaURL.path) {
@@ -616,26 +619,7 @@ actor NotesRepository: NotesRepositoryProtocol {
                 to: attachmentsMetadataURL(for: noteId),
                 options: .atomic
             )
-            // Copy each owned attachment blob back to its canonical path.
-            let attachBlobsDir = bundleDir.appendingPathComponent("attachments", isDirectory: true)
-            for attachment in attachments {
-                let srcURL = attachBlobsDir.appendingPathComponent(
-                    "\(attachment.id.uuidString)-\(attachment.fileName)"
-                )
-                let dstURL = URL(fileURLWithPath: attachment.blobPath)
-                if fileManager.fileExists(atPath: srcURL.path) {
-                    try fileManager.createDirectory(
-                        at: dstURL.deletingLastPathComponent(),
-                        withIntermediateDirectories: true,
-                        attributes: nil
-                    )
-                    // Atomic overwrite so restoring an attachment whose canonical
-                    // file already exists is a normal, reliable operation.
-                    let data = try Data(contentsOf: srcURL)
-                    try data.write(to: dstURL, options: .atomic)
-                }
-                restoredAttachments.append(attachment)
-            }
+            restoredAttachments.append(contentsOf: attachments)
         } else {
             // Bundle had no attachments — clear active attachments index.
             try? Data("[]".utf8).write(

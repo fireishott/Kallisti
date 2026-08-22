@@ -48,6 +48,11 @@ from .restart_operations import (
     get_restart_store,
 )
 from . import __version__, HERALD_PROTOCOL
+from .background_processes import (
+    BackgroundProcessRegistry,
+    get_registry as get_process_registry,
+    tracked_subprocess_exec,
+)
 from .pairing_code_store import PairingCodeStore
 from .terminal_bridge import handle_terminal_websocket
 
@@ -3183,10 +3188,17 @@ async def gateway_logs_stream(request: Request) -> StreamingResponse:
     journal_unit = _ALLOWED_LOG_SOURCES[source]
 
     async def stream() -> AsyncIterator[str]:
-        proc = await asyncio.create_subprocess_exec(
-            "journalctl", "--user", "-u", journal_unit,
-            "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        # Build 135.17: route the journal tail through the background-
+        # process registry so the Live tab can show the journalctl
+        # stdout alongside any other long-running commands.
+        proc, _record = await tracked_subprocess_exec(
+            name=f"journalctl: {source}",
+            args=[
+                "journalctl", "--user", "-u", journal_unit,
+                "-f", "-n", "0", "-p", priority, "-o", "json", "--no-pager",
+            ],
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         try:
             while True:
@@ -4526,6 +4538,106 @@ async def config_put(request: Request) -> JSONResponse:
     })
 
 
+# ── Canvas Live tab: background process stream (build 135.17) ──────────
+#
+# The iOS Canvas "Live" tab subscribes to /v1/canvas/processes/stream
+# to render any long-running commands the connector spawns on its
+# behalf (journal tails, restart scripts, hermes update applies, etc).
+# Other code paths in the connector can register arbitrary processes
+# with ``tracked_subprocess_exec`` and they will appear here
+# automatically — no per-feature plumbing required.
+
+
+async def canvas_processes_list(request: Request) -> JSONResponse:
+    """GET /v1/canvas/processes — current snapshot of tracked processes."""
+    await require_auth(request)
+    registry = get_process_registry()
+    rows = registry.list_snapshots()
+    return JSONResponse({"data": {"processes": rows}})
+
+
+async def canvas_processes_register(request: Request) -> JSONResponse:
+    """POST /v1/canvas/processes — register a process to track.
+
+    Body (JSON):
+        {
+            "command": ["argv0", "argv1", ...],
+            "name": "friendly label"
+        }
+
+    Spawns the process, registers it with the global registry, and
+    returns the new id + initial snapshot.  The registry's tail
+    loop streams stdout/stderr to every subscriber of
+    /v1/canvas/processes/stream.
+    """
+    await require_auth(request)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    cmd = body.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(s, str) for s in cmd):
+        raise HTTPException(
+            status_code=400,
+            detail="`command` must be a non-empty list of strings",
+        )
+    name = body.get("name") or cmd[0] or "process"
+    proc, record = await tracked_subprocess_exec(
+        name=name,
+        args=cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    return JSONResponse({"data": {"process": record.snapshot()}})
+
+
+async def canvas_processes_kill(request: Request) -> JSONResponse:
+    """POST /v1/canvas/processes/{id}/kill — terminate a tracked process."""
+    await require_auth(request)
+    process_id = request.path_params.get("id", "")
+    ok = await get_process_registry().kill(process_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Process not found")
+    record = get_process_registry().get(process_id)
+    return JSONResponse(
+        {"data": {"process": record.snapshot() if record else {"id": process_id}}}
+    )
+
+
+async def canvas_processes_stream(request: Request) -> StreamingResponse:
+    """GET /v1/canvas/processes/stream — SSE feed of process events.
+
+    Each event is a JSON object with the same shape as
+    ``BackgroundProcessRegistry.TrackedProcess.snapshot()``.  A
+    ``{"event": "keepalive"}`` sentinel is emitted every ~15s to
+    keep the SSE connection alive through buffering proxies.
+    """
+    await require_auth(request)
+
+    async def stream() -> AsyncIterator[str]:
+        registry = get_process_registry()
+        try:
+            async for event in registry.stream():
+                if await request.is_disconnected():
+                    return
+                if event.get("event") == "keepalive":
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"event: process\ndata: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Application ─────────────────────────────────────────────────────────
 
 
@@ -4646,6 +4758,21 @@ routes = [
     Route("/gw/update/progress", gateway_update_progress, methods=["GET"]),
     Route("/gw/hermes/logs", hermes_logs_proxy, methods=["GET"]),  # Build 31
     Route("/v1/relay/identity", stub_relay_identity, methods=["GET"]),
+    # Build 135.17: Canvas "Live" tab background process feed.
+    # The iOS app subscribes to /v1/canvas/processes/stream (SSE) and
+    # reads the snapshot via GET /v1/canvas/processes.
+    Route("/v1/canvas/processes", canvas_processes_list, methods=["GET"]),
+    Route("/v1/canvas/processes", canvas_processes_register, methods=["POST"]),
+    Route(
+        "/v1/canvas/processes/{id}/kill",
+        canvas_processes_kill,
+        methods=["POST"],
+    ),
+    Route(
+        "/v1/canvas/processes/stream",
+        canvas_processes_stream,
+        methods=["GET"],
+    ),
     # Native-completion to push bridge (Task 12)
     Route("/v1/native/watch", native_watch_route, methods=["POST"]),
     Route("/v1/native/media", native_media_route, methods=["GET"]),
@@ -4670,6 +4797,8 @@ app = Starlette(
     debug=False,
     routes=routes,
     exception_handlers={HTTPException: http_exception_handler},
+    on_startup=[get_process_registry().start],
+    on_shutdown=[get_process_registry().stop],
 )
 
 
