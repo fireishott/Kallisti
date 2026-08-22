@@ -112,7 +112,14 @@ struct NoteDrawingRevision: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let noteId: UUID
     let revision: Int
-    let drawingData: Data
+    // Build 135.20: NO LONGER embed the full drawing blob in revisions.json.
+    // The drawing bytes live in rev-<revision>.pkdrawing files. Embedding
+    // data here made revisions.json balloon to 100MB+ (a full blob per
+    // persist), and opening a note tried to load/decode the whole thing -
+    // a 3GB memory spike that Jetsam killed. Kept optional + Codable so
+    // pre-existing files with embedded data still decode (migrated on next
+    // save), but new saves write nil. Use loadDrawingBlob() to fetch bytes.
+    let drawingData: Data?
     let contentHash: String  // SHA-256 hex
     let canvasSize: CGSize
     let pageStyle: NotePageStyle
@@ -123,7 +130,7 @@ struct NoteDrawingRevision: Codable, Identifiable, Hashable, Sendable {
         id: UUID = UUID(),
         noteId: UUID,
         revision: Int,
-        drawingData: Data,
+        drawingData: Data? = nil,
         contentHash: String,
         canvasSize: CGSize = NotePageStyle.letter.size,
         pageStyle: NotePageStyle = .letter,
