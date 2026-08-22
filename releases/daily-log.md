@@ -19,3 +19,4 @@ Format: `- YYYY-MM-DD HH:MM PT | build | description`
 - 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
 - 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
 - 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
+- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions

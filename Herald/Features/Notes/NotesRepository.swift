@@ -151,11 +151,15 @@ actor NotesRepository: NotesRepositoryProtocol {
         let blobURL = noteDir.appendingPathComponent("rev-\(revision).pkdrawing")
         try data.write(to: blobURL, options: .atomic)
 
-        // Record the revision metadata
+        // Record the revision metadata. Build 135.20: drawingData is NOT
+        // embedded here anymore - the bytes already live in rev-N.pkdrawing.
+        // Storing data inside revisions.json ballooned it to 100MB+ (a full
+        // blob per persist) and made note-open load/decode the whole file
+        // into a 3GB memory spike that iOS killed. Metadata only now.
         let drawingRevision = NoteDrawingRevision(
             noteId: noteId,
             revision: revision,
-            drawingData: data,
+            drawingData: nil,
             contentHash: hashHex,
             pageStyle: pageStyle,
             deviceId: deviceIdentifier
@@ -231,19 +235,59 @@ actor NotesRepository: NotesRepositoryProtocol {
     }
 
     /// Load all drawing revision records for a note.
+    ///
+    /// Build 135.20: pre-135.20 revisions.json files embedded the FULL
+    /// drawing blob in every record (drawingData), ballooning the file to
+    /// 100MB+ and blowing memory on note-open. We now migrate on load:
+    /// decode once, strip the embedded blobs, and rewrite the compact
+    /// metadata-only file so the next load is cheap. The drawing bytes
+    /// themselves remain in rev-<revision>.pkdrawing files.
     func loadDrawingRevisions(noteId: UUID) throws -> [NoteDrawingRevision] {
         let url = revisionsMetadataURL(for: noteId)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([NoteDrawingRevision].self, from: data)
+        let revisions = try decoder.decode([NoteDrawingRevision].self, from: data)
+
+        // Migration: if any revision still embeds drawingData, strip it and
+        // rewrite the compact file. This collapses a 100MB file to KBs on
+        // first open after upgrade.
+        if revisions.contains(where: { $0.drawingData != nil }) {
+            let compact = revisions.map { rev -> NoteDrawingRevision in
+                NoteDrawingRevision(
+                    id: rev.id,
+                    noteId: rev.noteId,
+                    revision: rev.revision,
+                    drawingData: nil,
+                    contentHash: rev.contentHash,
+                    canvasSize: rev.canvasSize,
+                    pageStyle: rev.pageStyle,
+                    createdAt: rev.createdAt,
+                    deviceId: rev.deviceId
+                )
+            }
+            try? writeDrawingRevisions(compact, noteId: noteId)
+            return compact
+        }
+        return revisions
     }
 
-    /// Save a drawing revision metadata record.
+    /// Save a drawing revision metadata record. Build 135.20: caps the
+    /// retained list at the latest 30 so revisions.json can never balloon
+    /// again, and never embeds drawing blobs.
     private func saveDrawingRevision(_ revision: NoteDrawingRevision, noteId: UUID) throws {
         var revisions = try loadDrawingRevisions(noteId: noteId)
         revisions.append(revision)
+        // Keep only the latest 30 (drawing blobs live in rev-N files, so
+        // this only prunes metadata; restore/undo uses the current blob).
+        if revisions.count > 30 {
+            revisions = Array(revisions.suffix(30))
+        }
+        try writeDrawingRevisions(revisions, noteId: noteId)
+    }
+
+    private func writeDrawingRevisions(_ revisions: [NoteDrawingRevision], noteId: UUID) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(revisions)
