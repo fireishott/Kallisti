@@ -83,7 +83,25 @@ actor NoteRecognitionCoordinator {
             // detail. Handwriting recognition is dramatically better at
             // higher resolutions; the old 2x upscale lost the stroke
             // boundaries that distinguish "Qwen" from "Quen".
-            let image = drawing.image(from: drawing.bounds, scale: 4.0)
+            //
+            // Build 135.12: cap the rendered bounds so an unbounded canvas
+            // (PencilCanvasRepresentable contentSize.height = 4000) can't
+            // allocate a huge bitmap every OCR pass. At 4x a 1000x4000pt
+            // drawing becomes 4000x16000 px = ~256 MB per frame; repeated
+            // passes pile up in the compressor until Jetsam kills the app.
+            // We render at up to 4x but never let the LONGEST side exceed
+            // 2000 px, preserving fine stroke detail for normal-size notes
+            // while bounding the worst case to ~2000x2000 px (~16 MB).
+            let bounds = drawing.bounds
+            let longestSide = max(bounds.width, bounds.height)
+            let maxRenderDimension: CGFloat = 2000
+            let renderScale: CGFloat
+            if longestSide == 0 {
+                renderScale = 1.0
+            } else {
+                renderScale = min(4.0, maxRenderDimension / longestSide)
+            }
+            let image = drawing.image(from: bounds, scale: renderScale)
             guard let imageData = image.pngData() else {
                 logger.error("Failed to render drawing to PNG")
                 return nil
