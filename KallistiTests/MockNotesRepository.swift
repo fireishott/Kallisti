@@ -90,4 +90,32 @@ actor MockNotesRepository: NotesRepositoryProtocol {
         }
         recognitions[noteId]?.append(recognition)
     }
+
+    func snapshotCurrentStateAsCheckpoint(noteId: UUID, reason: String) async throws -> NoteCheckpoint {
+        if let error { throw error }
+        return NoteCheckpoint(
+            id: UUID(), noteId: noteId, reason: reason, createdAt: .now,
+            drawingRevision: 0, drawingHash: "", textHash: "", title: "",
+            attachmentsCount: 0, hadEnrichment: false
+        )
+    }
+
+    func loadCheckpoints(noteId: UUID, limit: Int) async throws -> [NoteCheckpoint] {
+        if let error { throw error }
+        return []
+    }
+
+    func restoreCheckpoint(noteId: UUID, checkpointId: UUID) async throws -> NoteRestoreResult {
+        if let error { throw error }
+        return NoteRestoreResult(
+            checkpointId: checkpointId, noteId: noteId, title: "", drawingData: nil,
+            drawingRevision: 0, typedText: mockTypedText ?? "", attachments: [],
+            enrichment: nil, pageStyle: .linesMedium
+        )
+    }
+
+    func loadEnrichmentResultFromCheckpoint(checkpointId: UUID, noteId: UUID) async throws -> EnrichmentResult? {
+        if let error { throw error }
+        return nil
+    }
 }

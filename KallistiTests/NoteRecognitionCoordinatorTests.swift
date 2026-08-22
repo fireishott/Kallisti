@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import PencilKit
 @testable import Kallisti
 
 @Suite(.serialized)
@@ -25,7 +26,7 @@ struct NoteRecognitionCoordinatorTests {
         let (repo, _) = try makeRepo()
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Debounce Test")
-        let data = Data("drawing".utf8)
+        let data = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: [PKStrokePoint(location: CGPoint(x: 1, y: 1), timeOffset: 0, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0), PKStrokePoint(location: CGPoint(x: 80, y: 20), timeOffset: 0.1, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0)], creationDate: .now))]).dataRepresentation()
         try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         let coordinator = NoteRecognitionCoordinator(
@@ -35,14 +36,19 @@ struct NoteRecognitionCoordinatorTests {
         )
 
         // Fire 5 rapid calls — only the last one should produce recognition
-        var results: [NoteRecognition?] = []
-        for _ in 1...5 {
-            let result = await coordinator.scheduleRecognition(
-                noteId: note.id,
-                drawingRevision: 1,
-                languages: ["en-US"]
-            )
-            results.append(result)
+        let results = await withTaskGroup(of: NoteRecognition?.self, returning: [NoteRecognition?].self) { group in
+            for _ in 1...5 {
+                group.addTask {
+                    await coordinator.scheduleRecognition(
+                        noteId: note.id,
+                        drawingRevision: 1,
+                        languages: ["en-US"]
+                    )
+                }
+            }
+            var collected: [NoteRecognition?] = []
+            for await result in group { collected.append(result) }
+            return collected
         }
 
         // The first 4 should return nil (cancelled by debounce); the last one succeeds
@@ -62,7 +68,7 @@ struct NoteRecognitionCoordinatorTests {
         let (repo, _) = try makeRepo()
         try await repo.ensureDirectories()
         let note = try await repo.createNote(title: "Version Refresh Test")
-        let data = Data("drawing".utf8)
+        let data = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: [PKStrokePoint(location: CGPoint(x: 1, y: 1), timeOffset: 0, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0), PKStrokePoint(location: CGPoint(x: 80, y: 20), timeOffset: 0.1, size: CGSize(width: 5, height: 5), opacity: 1, force: 1, azimuth: 0, altitude: 0)], creationDate: .now))]).dataRepresentation()
         try await repo.saveDrawingBlob(noteId: note.id, data: data, revision: 1, pageStyle: .linesMedium)
 
         // First recognition with version 1.0

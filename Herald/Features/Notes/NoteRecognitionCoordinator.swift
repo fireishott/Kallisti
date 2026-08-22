@@ -16,6 +16,9 @@ actor NoteRecognitionCoordinator {
 
     /// Debounce task for settled edits.
     private var debounceTask: Task<Void, Never>?
+    /// Identity of the latest scheduled edit. Cancelled sleep alone is not
+    /// enough because try? returns immediately on cancellation.
+    private var scheduledRecognitionID: UUID?
 
     /// Debounce interval — recognition fires after this many seconds of inactivity.
     let debounceDuration: TimeInterval
@@ -38,13 +41,15 @@ actor NoteRecognitionCoordinator {
         languages: [String] = []
     ) async -> NoteRecognition? {
         debounceTask?.cancel()
+        let scheduleID = UUID()
+        scheduledRecognitionID = scheduleID
         let task = Task<Void, Never> { [debounceDuration] in
             try? await Task.sleep(nanoseconds: UInt64(debounceDuration * 1_000_000_000))
         }
         debounceTask = task
         await task.value
 
-        guard !Task.isCancelled else { return nil }
+        guard scheduledRecognitionID == scheduleID else { return nil }
         return await recognize(noteId: noteId, drawingRevision: drawingRevision, languages: languages)
     }
 

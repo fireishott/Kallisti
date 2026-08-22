@@ -18,6 +18,11 @@ protocol NotesRepositoryProtocol: Sendable {
     func saveAttachmentBlob(noteId: UUID, data: Data, type: NoteAttachmentType, fileName: String, mimeType: String) async throws -> NoteAttachment
     func deleteAttachment(_ attachment: NoteAttachment) async throws
     func saveRecognition(_ recognition: NoteRecognition, noteId: UUID) async throws
+    // Checkpoints (Build N)
+    func snapshotCurrentStateAsCheckpoint(noteId: UUID, reason: String) async throws -> NoteCheckpoint
+    func loadCheckpoints(noteId: UUID, limit: Int) async throws -> [NoteCheckpoint]
+    func restoreCheckpoint(noteId: UUID, checkpointId: UUID) async throws -> NoteRestoreResult
+    func loadEnrichmentResultFromCheckpoint(checkpointId: UUID, noteId: UUID) async throws -> EnrichmentResult?
 }
 
 /// Manages the notes list state and coordinates with the repository.

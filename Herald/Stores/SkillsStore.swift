@@ -31,10 +31,12 @@ final class SkillsStore {
 
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
+    private let nativeFeatureClientProvider: () -> NativeGatewayFeatureClient?
 
-    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?) {
+    init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?, nativeFeatureClientProvider: @escaping () -> NativeGatewayFeatureClient? = { nil }) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
+        self.nativeFeatureClientProvider = nativeFeatureClientProvider
     }
 
     /// Skills filtered by the current search text, matching on name or description.
@@ -53,25 +55,20 @@ final class SkillsStore {
            !skills.isEmpty {
             return
         }
-        guard let apiClient, let token = await accessTokenProvider() else {
-            errorMessage = "Not connected to a relay."
-            return
-        }
-
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
         do {
-            let response: SkillCatalogResponse = try await apiClient.get(
-                path: "skills",
-                accessToken: token
-            )
-            skills = response.skills
+            if let nativeFeatureClient = nativeFeatureClientProvider() {
+                skills = try await nativeFeatureClient.managedSkills().map { HeraldSkill(name: $0.name, description: $0.description, path: $0.path) }
+            } else {
+                guard let apiClient, let token = await accessTokenProvider() else { errorMessage = "Not connected to a relay."; return }
+                let response: SkillCatalogResponse = try await apiClient.get(path: "skills", accessToken: token)
+                skills = response.skills
+            }
             lastLoadedAt = .now
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func reset() {

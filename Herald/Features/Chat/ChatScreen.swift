@@ -1646,104 +1646,35 @@ struct ChatScreen: View {
     // messages are queued behind the active turn and whether they're HELD
     // (won't auto-fire) or will drain automatically when the turn ends.
     private var queueStatusBar: some View {
-        HStack(spacing: Design.Spacing.sm) {
-            Image(systemName: chatStore.isQueueHeld ? "pause.circle.fill" : "list.bullet.below.rectangle")
-                .font(.system(size: 13))
-                .foregroundStyle(chatStore.isQueueHeld ? Design.Colors.warning : Design.Brand.accent)
-                .layoutPriority(3)
-            Text(queueStatusText)
-                .font(Design.Typography.caption)
-                .foregroundStyle(Design.Colors.secondaryForeground)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .truncationMode(.tail)
-                .layoutPriority(0)
-            Spacer(minLength: 0)
-            Button {
-                showQueueManager = true
-            } label: {
-                Text("View")
-                    .font(Design.Typography.caption.weight(.semibold))
+        Button {
+            showQueueManager = true
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                Image(systemName: "list.bullet.below.rectangle")
+                    .font(.system(size: 13))
                     .foregroundStyle(Design.Brand.accent)
-                    .padding(.horizontal, Design.Spacing.sm)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(Design.Colors.surface)
-                            .overlay(
-                                Capsule()
-                                    .stroke(Design.Colors.border, lineWidth: 1)
-                            )
-                    )
+                Text(queueStatusText)
+                    .font(Design.Typography.caption.weight(.medium))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
                     .lineLimit(1)
-                    .fixedSize()
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
-            .buttonStyle(.plain)
-            .layoutPriority(2)
-            .accessibilityLabel("View queued messages")
-            .accessibilityHint("View, edit, or delete queued messages")
-            Button {
-                chatStore.setQueueHeld(!chatStore.isQueueHeld)
-            } label: {
-                Text(chatStore.isQueueHeld ? "Release" : "Hold")
-                    .font(Design.Typography.caption.weight(.semibold))
-                    .foregroundStyle(chatStore.isQueueHeld ? Design.Brand.accent : Design.Colors.warning)
-                    .padding(.horizontal, Design.Spacing.sm)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(Design.Colors.surface)
-                            .overlay(
-                                Capsule()
-                                    .stroke(Design.Colors.border, lineWidth: 1)
-                            )
-                    )
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .buttonStyle(.plain)
-            .layoutPriority(2)
-            .accessibilityLabel(chatStore.isQueueHeld ? "Release held messages" : "Hold queued messages")
-            Button {
-                let ids = chatStore.queuedMessagesForCurrentConversation.map(\.clientMessageID)
-                for id in ids {
-                    chatStore.removeQueuedItem(id)
-                }
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Design.Colors.warning)
-                    .padding(.horizontal, Design.Spacing.sm)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(Design.Colors.surface)
-                            .overlay(
-                                Capsule()
-                                    .stroke(Design.Colors.border, lineWidth: 1)
-                            )
-                    )
-                    .fixedSize()
-            }
-            .buttonStyle(.plain)
-            .layoutPriority(2)
-            .accessibilityLabel("Delete all queued messages")
-            .accessibilityHint("Removes every queued message for this conversation")
+            .frame(height: 34)
+            .padding(.horizontal, Design.Spacing.md)
+            .contentShape(Rectangle())
         }
-        .frame(height: 34)
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .padding(.horizontal, Design.Spacing.md)
-        .padding(.vertical, 4)
-        .background(chatStore.isQueueHeld ? Design.Colors.warning.opacity(0.10) : Design.Brand.accent.opacity(0.06))
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open queue")
+        .accessibilityHint("Review, send, edit, or delete queued messages")
+        .background(Design.Brand.accent.opacity(0.06))
     }
 
     private var queueStatusText: String {
         let count = chatStore.queuedCountForCurrentConversation
-        if chatStore.isQueueHeld {
-            return "\(count) queued - paused"
-        }
-        return "\(count) queued - sends after this turn"
+        return count == 1 ? "1 message queued" : "\(count) messages queued"
     }
 
     // D4: contextWarningBanner removed — was driven by fabricated percentage.
