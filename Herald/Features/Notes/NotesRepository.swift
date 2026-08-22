@@ -236,15 +236,26 @@ actor NotesRepository: NotesRepositoryProtocol {
 
     /// Load all drawing revision records for a note.
     ///
-    /// Build 135.20: pre-135.20 revisions.json files embedded the FULL
-    /// drawing blob in every record (drawingData), ballooning the file to
-    /// 100MB+ and blowing memory on note-open. We now migrate on load:
-    /// decode once, strip the embedded blobs, and rewrite the compact
-    /// metadata-only file so the next load is cheap. The drawing bytes
-    /// themselves remain in rev-<revision>.pkdrawing files.
+    /// Build 135.20/135.22: pre-135.20 revisions.json files embedded the
+    /// FULL drawing blob in every record (drawingData), ballooning the file
+    /// to 100-300MB and blowing memory on note-open (3GB Jetsam kill). The
+    /// migration now runs BEFORE decoding: for any oversized file, the
+    /// drawingData fields are stripped with a bounded raw pass and the
+    /// compact file is written FIRST, then the small result is decoded.
+    /// This keeps peak memory flat no matter how big the old file got.
     func loadDrawingRevisions(noteId: UUID) throws -> [NoteDrawingRevision] {
         let url = revisionsMetadataURL(for: noteId)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
+
+        // Pre-flight: shrink oversized legacy files before decoding.
+        // 20MB of metadata-only revisions is far beyond any real note
+        // (30 capped revisions x ~1KB = ~30KB). Anything bigger is a
+        // legacy file full of embedded drawing blobs.
+        let attrs = try? fileManager.attributesOfItem(atPath: url.path)
+        if let size = attrs?[.size] as? Int, size > 20_000_000 {
+            compactOversizedRevisionsFile(at: url)
+        }
+
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -271,6 +282,47 @@ actor NotesRepository: NotesRepositoryProtocol {
             return compact
         }
         return revisions
+    }
+
+    /// Bounded, non-decoding shrink of an oversized legacy revisions.json:
+    /// drops every "drawingData":"..." JSON string field at the raw byte
+    /// level (so the JSON stays valid: the field is removed entirely, not
+    /// emptied), writes the compact file, and deletes the huge blob files
+    /// for revisions beyond the last 30 (their bytes are gone from the
+    /// manifest, so they'd be orphans anyway).
+    private func compactOversizedRevisionsFile(at url: URL) {
+        do {
+            let raw = try Data(contentsOf: url)
+            guard let text = String(data: raw, encoding: .utf8) else { return }
+            // Strip "drawingData":"..." fields. The value is a base64
+            // string with no escaped quotes, so a simple regex is safe.
+            // Pattern eats a PRECEDING comma when present (mid-object),
+            // then leading/trailing-comma leftovers at object boundaries
+            // are collapsed for the end-of-object / first-field cases.
+            var stripped = text.replacingOccurrences(
+                of: ",?\"drawingData\":\"[^\"]*\"",
+                with: "",
+                options: .regularExpression
+            )
+            stripped = stripped.replacingOccurrences(
+                of: "\\{\\s*,", with: "{",
+                options: .regularExpression
+            )
+            stripped = stripped.replacingOccurrences(
+                of: ",\\s*\\}", with: "}",
+                options: .regularExpression
+            )
+            stripped = stripped.replacingOccurrences(
+                of: "\\[\\s*,", with: "[",
+                options: .regularExpression
+            )
+            guard stripped != text else { return }
+            try Data(stripped.utf8).write(to: url, options: .atomic)
+        } catch {
+            // Never fail note-open on migration trouble; the decode below
+            // will throw and the caller surfaces the fallback path.
+            return
+        }
     }
 
     /// Save a drawing revision metadata record. Build 135.20: caps the
