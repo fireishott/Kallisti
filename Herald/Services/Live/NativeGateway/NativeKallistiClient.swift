@@ -259,7 +259,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Build 97: grace window before flipping to .reconnecting. Short enough
     /// that a real outage is visible within a second or two; long enough that
     /// a flaky-but-recovering WS never paints the dot yellow at all.
-    private let reconnectGraceSeconds: TimeInterval = 3.0
+    private let reconnectGraceSeconds: TimeInterval = 15.0
     /// Build 97: jitter factor applied to the exponential backoff so multiple
     /// clients / reconnect storms don't synchronize. ±25% of the computed
     /// delay keeps the average the same while avoiding thundering-herd.
@@ -1433,7 +1433,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// disconnect before it runs.
     private func scheduleReconnectGrace() {
         reconnectGraceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(self?.reconnectGraceSeconds ?? 3.0))
+            try? await Task.sleep(for: .seconds(self?.reconnectGraceSeconds ?? 15.0))
             guard let self, !Task.isCancelled else { return }
             // Only flip to .reconnecting if we're not already back up.
             // connect()'s success path will have cancelled this task and

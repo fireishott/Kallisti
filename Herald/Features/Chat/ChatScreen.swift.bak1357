@@ -326,28 +326,21 @@ struct ChatScreen: View {
                     onSend: sendMessage,
                     onStop: { chatStore.cancelStreaming() },
                     onQueueNext: {
-                        // Build 135.7: steer = interrupt + send. The steer
-                        // button used to just enqueue behind the active turn
-                        // ("sends this message after the current reply"),
-                        // which is why steering during a long tool call "did
-                        // nothing." Now it preempts: interrupt the running
-                        // turn, then submit the new direction immediately.
-                        // Draft is frozen and cleared exactly as before.
+                        // Build 31: enqueue a message to send after the active
+                        // turn finishes.  Freeze the draft now so later edits
+                        // don't change the queued text.
+                        // Build 33 WSB: the queue is durable — the outbox owns
+                        // the text before the composer is cleared, and the
+                        // submit phase runs immediately (it no-ops while a job
+                        // is active and the FIFO chain picks the item up after).
                         let frozenText = chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID())
                         let frozenAttachments = pendingAttachments
                         let conversationID = chatStore.conversation?.id
-                        if chatStore.isStreaming || chatStore.isServerTurnActive {
-                            let record = chatStore.interruptAndSend(frozenText, attachments: frozenAttachments)
-                            guard record != nil else { return }
+                        Task {
+                            guard chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments) != nil else { return }
                             if let cid = conversationID { chatStore.clearDraft(for: cid) }
                             pendingAttachments = []
-                        } else {
-                            Task {
-                                guard chatStore.queueNextMessage(text: frozenText, attachments: frozenAttachments) != nil else { return }
-                                if let cid = conversationID { chatStore.clearDraft(for: cid) }
-                                pendingAttachments = []
-                                await chatStore.submitNextEligible(for: conversationID)
-                            }
+                            await chatStore.submitNextEligible(for: conversationID)
                         }
                     },
                     onAttach: { showAttachmentPicker = true },
@@ -1813,26 +1806,6 @@ struct ChatScreen: View {
         Task {
             if content.hasPrefix("/") && attachments.isEmpty {
                 await dispatchTypedSlashCommand(content)
-                return
-            }
-
-            // Build 135.7: if a turn is active, sending a message is a STEER -
-            // interrupt the running turn and submit immediately instead of
-            // parking behind the active lease (the old behavior queued behind
-            // a multi-minute tool call and "steer did nothing"). When no turn
-            // is active this is the normal two-phase send.
-            if chatStore.isStreaming || chatStore.isServerTurnActive {
-                let record = chatStore.interruptAndSend(
-                    content,
-                    attachments: attachments,
-                    clientMessageID: clientMessageID
-                )
-                guard record != nil else {
-                    // Rejected (empty/duplicate/over-limit) — keep the draft.
-                    return
-                }
-                if let cid = conversationID { chatStore.clearDraft(for: cid) }
-                pendingAttachments = []
                 return
             }
 

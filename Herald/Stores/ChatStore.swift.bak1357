@@ -3595,19 +3595,6 @@ final class ChatStore {
             persistence.saveConversationCache(cacheCopy)
             onConversationChanged?()
         }
-
-        // Build 135.7: after cancelling/interrupting the active turn, drain the
-        // queue. Previously the FIFO chain only fired on a clean .finished
-        // terminal event, so queued items (steer / send-now / queued drafts)
-        // sat forever in .queued after a Stop or interrupt - the "queue bar
-        // vanished, messages stuck on RETRY" bug. Release the lease we just
-        // cleared and submit the next eligible item immediately.
-        Task { [weak self] in
-            guard let self else { return }
-            if self.activeLeases.isEmpty {
-                await self.submitNextEligible(for: self.conversation?.id)
-            }
-        }
     }
 
 
@@ -3724,35 +3711,6 @@ final class ChatStore {
         }
     }
 
-    /// Build 135.7: interrupt-then-send. If a server turn or local stream is
-    /// active, stop it first (server-side session.interrupt + local teardown),
-    /// THEN enqueue and submit immediately. This is what "steer" should do:
-    /// the new message preempts the running turn instead of parking in .queued
-    /// behind a long tool call. The stale .finished event from the interrupted
-    /// turn is fenced by the bumped activeAttemptID in cancelStreaming, so it
-    /// cannot clobber the new turn.
-    @discardableResult
-    func interruptAndSend(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) -> ChatOutboxRecord? {
-        let activeLocal = !activeStreams.isEmpty
-        let activeServer = isServerTurnActive
-        if activeLocal || activeServer {
-            cancelStreaming(interruptServerTurn: true)
-        }
-        // enqueueMessage is synchronous - the durable outbox owns the text
-        // before this returns, so a force-quit cannot lose it.
-        let record = enqueueMessage(
-            content,
-            attachments: attachments,
-            clientMessageID: clientMessageID
-        )
-        guard let record else { return nil }
-        let conversationID = record.conversationID
-        Task { @MainActor [weak self] in
-            await self?.submitNextEligible(for: conversationID)
-        }
-        return record
-    }
-
     /// Build 131.20: force-submit a specific queued item NOW instead of
     /// waiting behind the queue hold or the FIFO chain. If the item is still
     /// `.queued`, temporarily release the hold so it can be leased, then
@@ -3773,15 +3731,6 @@ final class ChatStore {
             isQueueHeld = false
         }
         onConversationChanged?()
-        // Build 135.7: Send Now must actually interrupt. If a server turn or
-        // local stream is active, stop it FIRST so the force-submit doesn't
-        // park behind the active lease (the old behavior just re-queued it
-        // behind a 7-minute tool call - "send now cont work").
-        let activeLocal = !activeStreams.isEmpty
-        let activeServer = isServerTurnActive
-        if activeLocal || activeServer {
-            cancelStreaming(interruptServerTurn: true)
-        }
         Task { @MainActor [weak self] in
             await self?.submitNextEligible(for: item.conversationID)
         }
@@ -4667,16 +4616,6 @@ final class ChatStore {
         sendPhase = .idle
         sendPhaseOwner = nil
         appendLog(level: .info, "stopServerTurn: drop-in turn interrupted")
-
-        // Build 135.7: drain the queue after interrupting the drop-in turn so
-        // queued messages (steer / send-now) actually fire instead of sitting
-        // in .queued forever waiting for a .finished that never comes.
-        Task { [weak self] in
-            guard let self else { return }
-            if self.activeLeases.isEmpty {
-                await self.submitNextEligible(for: self.conversation?.id)
-            }
-        }
     }
 
     /// Build 128.47: remove the synthetic "Thinking..." bubble and clear its
