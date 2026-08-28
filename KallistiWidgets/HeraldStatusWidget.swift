@@ -47,7 +47,7 @@ private struct KallistiStatusView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 KallistiBrandIcon(size: 22)
-                Text("Herald")
+                Text("Kallisti")
                     .font(.system(.caption, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.2)
@@ -88,7 +88,7 @@ private struct KallistiStatusView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .widgetURL(URL(string: "herald://chat"))
+        .widgetURL(URL(string: "kallisti://chat"))
     }
 
     // MARK: - Accessory Circular (Lock Screen + CarPlay)
@@ -106,7 +106,7 @@ private struct KallistiStatusView: View {
                 .fill(entry.data.hostOnline ? KallistiBrand.accent : .gray)
                 .frame(width: 5, height: 5)
         }
-        .widgetURL(URL(string: "herald://chat"))
+        .widgetURL(URL(string: "kallisti://chat"))
     }
 
     // MARK: - Accessory Rectangular (Lock Screen)
@@ -115,7 +115,7 @@ private struct KallistiStatusView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 KallistiBrandIcon(size: 14)
-                Text("Herald")
+                Text("Kallisti")
                     .font(.system(.caption2, design: .monospaced))
                     .textCase(.uppercase)
                     .tracking(1.2)
@@ -141,7 +141,7 @@ private struct KallistiStatusView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .widgetURL(URL(string: "herald://chat"))
+        .widgetURL(URL(string: "kallisti://chat"))
     }
 }
 

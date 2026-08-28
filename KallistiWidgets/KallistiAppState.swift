@@ -16,17 +16,17 @@ final class KallistiAppState: @unchecked Sendable {
         }
         return suite
     }()
-    private let logger = Logger(subsystem: "net.fihonline.herald", category: "AppState")
+    private let logger = Logger(subsystem: "net.fihonline.kallisti", category: "AppState")
 
     /// The relay base URL. Set by the main app after pairing.
     /// Widgets read this from shared App Group UserDefaults.
     var relayBaseURL: String {
-        defaults.string(forKey: "herald.relayBaseURL") ?? ""
+        defaults.string(forKey: "kallisti.relayBaseURL") ?? ""
     }
 
     /// The current relay access token, if authenticated.
     var accessToken: String? {
-        defaults.string(forKey: "herald.accessToken")
+        defaults.string(forKey: "kallisti.accessToken")
     }
 
     /// True when the main app has an active relay session.
@@ -37,18 +37,18 @@ final class KallistiAppState: @unchecked Sendable {
     /// Called by the main app to update shared state after authentication or
     /// relay configuration changes.
     func update(relayBaseURL: String, accessToken: String?) {
-        defaults.set(relayBaseURL, forKey: "herald.relayBaseURL")
+        defaults.set(relayBaseURL, forKey: "kallisti.relayBaseURL")
         if let token = accessToken {
-            defaults.set(token, forKey: "herald.accessToken")
+            defaults.set(token, forKey: "kallisti.accessToken")
         } else {
-            defaults.removeObject(forKey: "herald.accessToken")
+            defaults.removeObject(forKey: "kallisti.accessToken")
         }
         logger.debug("App state updated: url=\(relayBaseURL) auth=\(accessToken != nil)")
     }
 
     /// Clear all shared state (called on sign-out).
     func clear() {
-        defaults.removeObject(forKey: "herald.relayBaseURL")
-        defaults.removeObject(forKey: "herald.accessToken")
+        defaults.removeObject(forKey: "kallisti.relayBaseURL")
+        defaults.removeObject(forKey: "kallisti.accessToken")
     }
 }

@@ -32,7 +32,7 @@ struct KallistiTimelineProvider: TimelineProvider {
         }
         return "group.net.fihonline.kallisti"
     }()
-    private static let dataKey = "herald.widget.data"
+    private static let dataKey = "kallisti.widget.data"
 
     func placeholder(in context: Context) -> KallistiWidgetEntry {
         .placeholder
