@@ -2395,6 +2395,8 @@ struct QueueManagerSheet: View {
                         .foregroundStyle(Design.Brand.accent)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Send queued message now")
                 Button {
                     editingID = item.clientMessageID
@@ -2405,6 +2407,8 @@ struct QueueManagerSheet: View {
                         .foregroundStyle(Design.Colors.secondaryForeground)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Edit queued message")
             }
             Button {
@@ -2421,25 +2425,10 @@ struct QueueManagerSheet: View {
                     .foregroundStyle(confirmDeleteID == item.clientMessageID ? Design.Colors.warning : Design.Colors.secondaryForeground)
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel(confirmDeleteID == item.clientMessageID ? "Tap again to delete" : "Delete queued message")
         }
         .padding(.vertical, 2)
-        // Build 135.16: the old .contentShape(Rectangle()) + .onTapGesture on
-        // this container swallowed every tap, so the Send / Edit / Delete
-        // Buttons inside the row never fired ("these buttons don't work").
-        // A parent tap gesture claims the whole row area (contentShape makes
-        // it fully tappable) and wins over inner Buttons in SwiftUI. Use a
-        // simultaneousGesture so the buttons still receive taps; the pending
-        // delete-confirm dismissal still happens, just not at the expense of
-        // the row actions.
-        .simultaneousGesture(
-            TapGesture()
-                .onEnded {
-                    // Tap outside the action buttons dismisses any pending
-                    // delete confirmation without changing anything. Buttons
-                    // inside still fire (simultaneous, not exclusive).
-                    confirmDeleteID = nil
-                }
-        )
     }
 }

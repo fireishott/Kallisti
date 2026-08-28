@@ -314,10 +314,21 @@ private struct VideoAttachmentView: View {
         generator.appliesPreferredTrackTransform = true
         do {
             let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
-            thumbnail = UIImage(cgImage: cgImage)
+            // Honor the video track's preferred transform (portrait recordings
+            // are stored rotated); UIImage(cgImage:) alone ignores it.
+            thumbnail = UIImage(cgImage: cgImage, scale: 1, orientation: preferredOrientation(for: asset))
         } catch {
             loadFailed = true
         }
+    }
+
+    private func preferredOrientation(for asset: AVAsset) -> UIImage.Orientation {
+        guard let track = asset.tracks(withMediaType: .video).first else { return .up }
+        let t = track.preferredTransform
+        if t.a == 0 && t.b == 1.0 && t.c == -1.0 && t.d == 0 { return .right }      // 90 CW
+        if t.a == 0 && t.b == -1.0 && t.c == 1.0 && t.d == 0 { return .left }       // 90 CCW
+        if t.a == -1.0 && t.b == 0 && t.c == 0 && t.d == -1.0 { return .down }      // 180
+        return .up
     }
 }
 
@@ -373,7 +384,13 @@ private struct PDFAttachmentView: View {
     }
 
     private func loadThumbnail() async {
-        guard let data = await attachmentService.data(for: attachment),
+        let data: Data?
+        if let base64 = attachment.thumbnailBase64, let d = Data(base64Encoded: base64) {
+            data = d
+        } else {
+            data = await attachmentService.data(for: attachment)
+        }
+        guard let data,
               let document = PDFDocument(data: data),
               let page = document.page(at: 0) else {
             loadFailed = true

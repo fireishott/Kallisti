@@ -774,6 +774,14 @@ final class ChatStore {
         conversationGeneration &+= 1
         do {
             let refreshed = try await heraldClient.loadConversation(id: id)
+            // Identity guard: if the user switched to another conversation
+            // (New Chat / session switch) while this load was in flight,
+            // discard the stale result instead of clobbering the new chat
+            // with the old conversation's messages (thinking bubble bleed).
+            guard conversation?.id == id else {
+                Self.logger.info("loadConversation: conversation changed during load (\(id.uuidString.prefix(8)) -> \(self.conversation?.id.uuidString.prefix(8) ?? "nil")), discarding stale result")
+                return
+            }
             conversation = mergeConversationMetadata(from: conversation, into: refreshed)
             if sendPhase == .idle {
                 streamingPhase = .idle
