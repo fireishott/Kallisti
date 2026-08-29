@@ -4913,6 +4913,14 @@ final class ChatStore {
         }
         if newCount > 0 {
             pendingNewMessageCount = newCount
+            // A cross-client completion is authoritative evidence that this
+            // device's prior chat activity is stale. There is no local stream
+            // or outbox item at this point (guarded above), so sweep every
+            // ActivityKit card now instead of waiting for a remote end push.
+            // This is the manual-refresh and foreground recovery escape hatch
+            // for a response delivered through Electron, CLI, or another
+            // Kallisti device.
+            endStreamingLiveActivity(reason: "cross-client response reconciled")
         }
         restartPendingPollingIfNeeded()
         clearNotificationsForCurrentConversation()
