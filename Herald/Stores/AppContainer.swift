@@ -1342,11 +1342,12 @@ final class AppContainer {
         do {
             let conversation = try await chatStore.heraldClient.loadConversation(id: conversationID)
             // Build 31: merge instead of raw assignment so local-only rows survive.
-            chatStore.conversation = chatStore.mergeConversationMetadata(
+            let selected = chatStore.mergeConversationMetadata(
                 from: chatStore.conversation,
                 into: conversation
-            )
-            Logger.app.info("Notification route: loaded conversation \(conversationID.uuidString.prefix(8))")
+            ) ?? conversation
+            chatStore.adoptLoadedConversation(selected)
+            Logger.app.info("Notification route: selected and loaded conversation \(conversationID.uuidString.prefix(8))")
         } catch {
             Logger.app.warning("Notification route: failed to load conversation \(conversationID.uuidString.prefix(8)): \(error.localizedDescription)")
             // Build 83: a push can carry a conversationId for a session that

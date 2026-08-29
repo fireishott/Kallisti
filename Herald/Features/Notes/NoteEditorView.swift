@@ -41,6 +41,11 @@ struct NoteEditorView: View {
     @State private var attachments: [NoteAttachment] = []
     @State private var pencilOnly: Bool = true
     @State private var viewMode: NoteViewMode = .ink
+    @State private var isCanvasFocused = false
+    @State private var canUndoDrawing = false
+    @State private var canRedoDrawing = false
+    @State private var undoRequest = 0
+    @State private var redoRequest = 0
 
     /// Debounce timer for persisting drawings.
     @State private var persistTask: Task<Void, Never>?
@@ -84,6 +89,8 @@ struct NoteEditorView: View {
                         enrichedView
                     }
                 }
+            } else if isCanvasFocused {
+                inkView
             } else {
                 noteHeader
                 inkView
@@ -111,6 +118,32 @@ struct NoteEditorView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if viewMode == .ink {
+                    Button {
+                        undoRequest &+= 1
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .disabled(!canUndoDrawing)
+                    .accessibilityLabel("Undo drawing")
+
+                    Button {
+                        redoRequest &+= 1
+                    } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                    }
+                    .disabled(!canRedoDrawing)
+                    .accessibilityLabel("Redo drawing")
+
+                    Button {
+                        isCanvasFocused.toggle()
+                    } label: {
+                        Image(systemName: isCanvasFocused ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .accessibilityLabel(isCanvasFocused ? "Exit canvas focus" : "Focus canvas")
+                    .accessibilityHint("Hides note chrome so the canvas fills the screen")
+                }
+
                 // Pencil-only toggle
                 Button {
                     pencilOnly.toggle()
@@ -424,6 +457,12 @@ struct NoteEditorView: View {
                         canvasViewport = viewport
                         persistViewport(viewport)
                     },
+                    onUndoStateChanged: { canUndo, canRedo in
+                        canUndoDrawing = canUndo
+                        canRedoDrawing = canRedo
+                    },
+                    undoRequest: undoRequest,
+                    redoRequest: redoRequest,
                     initialViewport: canvasViewport
                 )
             }

@@ -575,6 +575,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     /// "GlassKallisti" = the iOS 26 glass UI coin.
     var appIconName: String?
     var notificationsEnabled: Bool
+    /// Completion alerts are noisy for some workflows. Keep Inbox and system alerts intact.
+    var responseReadyAlertsEnabled: Bool
     var hapticFeedbackEnabled: Bool
     var environment: AppEnvironment
     var relayConfiguration: RelayConfiguration
@@ -637,6 +639,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         appDisplayName: String = "Kallisti",
         appIconName: String? = nil,
         notificationsEnabled: Bool = true,
+        responseReadyAlertsEnabled: Bool = true,
         hapticFeedbackEnabled: Bool = true,
         environment: AppEnvironment = AppEnvironmentPolicy.currentBuild.defaultEnvironment,
         relayConfiguration: RelayConfiguration = RelayConfiguration.defaultValue(),
@@ -679,6 +682,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.appDisplayName = appDisplayName
         self.appIconName = appIconName
         self.notificationsEnabled = notificationsEnabled
+        self.responseReadyAlertsEnabled = responseReadyAlertsEnabled
         self.hapticFeedbackEnabled = hapticFeedbackEnabled
         self.environment = environment
         self.relayConfiguration = relayConfiguration
@@ -723,6 +727,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case appDisplayName
         case appIconName
         case notificationsEnabled
+        case responseReadyAlertsEnabled
         case hapticFeedbackEnabled
         case environment
         case relayConfiguration
@@ -768,6 +773,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         appDisplayName = try container.decodeIfPresent(String.self, forKey: .appDisplayName) ?? "Kallisti"
         appIconName = try container.decodeIfPresent(String.self, forKey: .appIconName)
         notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
+        responseReadyAlertsEnabled = try container.decodeIfPresent(Bool.self, forKey: .responseReadyAlertsEnabled) ?? true
         hapticFeedbackEnabled = try container.decodeIfPresent(Bool.self, forKey: .hapticFeedbackEnabled) ?? true
         environment = try container.decodeIfPresent(AppEnvironment.self, forKey: .environment) ?? AppEnvironmentPolicy.currentBuild.defaultEnvironment
         relayConfiguration = try container.decodeIfPresent(RelayConfiguration.self, forKey: .relayConfiguration)
@@ -821,6 +827,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(appDisplayName, forKey: .appDisplayName)
         try container.encodeIfPresent(appIconName, forKey: .appIconName)
         try container.encode(notificationsEnabled, forKey: .notificationsEnabled)
+        try container.encode(responseReadyAlertsEnabled, forKey: .responseReadyAlertsEnabled)
         try container.encode(hapticFeedbackEnabled, forKey: .hapticFeedbackEnabled)
         try container.encode(environment, forKey: .environment)
         try container.encode(relayConfiguration, forKey: .relayConfiguration)

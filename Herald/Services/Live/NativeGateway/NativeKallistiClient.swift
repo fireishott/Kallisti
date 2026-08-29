@@ -1035,6 +1035,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // device's token separate from other devices (iPad vs iPhone).
             // Matches the installationID the pairing flow uses.
             "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
+            "responseReadyAlertsEnabled": AppContainer.sharedDefault().settingsStore.settings.responseReadyAlertsEnabled,
         ]
         // Build 65: route through `postFacadeJSON` so a stale cached bearer
         // (server-side expired while the local `expiresAt` is still ahead)
