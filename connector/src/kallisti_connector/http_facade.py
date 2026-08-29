@@ -679,7 +679,7 @@ async def gateway_restart_preflight(request: Request) -> JSONResponse:
     stale version (gateway state changed since the preflight was shown) is
     rejected with 409.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     target = request.query_params.get("target", "hermes")
     if target not in ("hermes", "connector"):
         raise HTTPException(status_code=400, detail=f"Unknown target: {target}")
@@ -739,7 +739,7 @@ async def gateway_restart(request: Request) -> JSONResponse:
     * Without the header — legacy one-shot behaviour: fire the RPC handler
       and return its result, with "target" added to the response.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     ctx = get_context()
     try:
         body = await request.json()
@@ -3604,7 +3604,7 @@ async def stub_skills(request: Request) -> JSONResponse:
     iOS Skills browser shows the actual installed skills instead of an empty
     list. Falls back to an empty list if the provider is unavailable.
     """
-    await require_auth(request)
+    await require_native_or_paired_auth(request)
     ctx = get_context()
     if ctx.commands_catalog is not None:
         try:

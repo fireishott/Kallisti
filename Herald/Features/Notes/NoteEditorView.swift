@@ -74,91 +74,19 @@ struct NoteEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Title field
-            TextField("Note Title", text: $title)
-                .font(.headline)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .accessibilityLabel("Note title")
-                .accessibilityHint("Enter a title for this note")
-                .onChange(of: title) { _, newValue in
-                    updateTitle(newValue)
-                }
-
-            // Keep the surface honest: source ink or useful enrichment. OCR is internal.
-            Picker("View Mode", selection: $viewMode) {
-                ForEach(NoteViewMode.allCases) { mode in
-                    Label(mode.displayName, systemImage: mode.systemImage)
-                        .tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .accessibilityLabel("Note view mode")
-
-            Divider()
-
-            // Notes fix: show the thought bubble across BOTH the Ink and Enriched
-            // tabs - users must see the agent is working regardless of which
-            // surface they're looking at. Three states drive the bubble:
-            //   1. live: a `reasoning.delta` stream is in flight.
-            //   2. in-progress without deltas: sync is active OR a stage
-            //      transition just happened - keep the bubble visible with
-            //      honest stage text so the user is never left staring at a
-            //      frozen UI.
-            //   3. completed: render a collapsible "Thought for Xs" card from
-            //      the last successful sync that the user can dismiss.
-            // Recognized tab is gone - kept the comment intentional.
-            let bubbleReasoning = effectiveBubbleReasoning
-            let bubbleStreaming = syncEngine.isReasoningActive
-            let bubbleDuration = syncEngine.reasoningDuration
-            let showCompletedCard = !bubbleStreaming && bubbleReasoning.isEmpty
-                && !syncEngine.lastCompletedReasoning.isEmpty
-
-            if !bubbleReasoning.isEmpty || syncEngine.isReasoningActive
-                || showCompletedCard {
-                ReasoningView(
-                    reasoning: bubbleStreaming
-                        ? bubbleReasoning
-                        : (showCompletedCard
-                            ? syncEngine.lastCompletedReasoning
-                            : bubbleReasoning),
-                    isStreaming: bubbleStreaming,
-                    duration: bubbleStreaming
-                        ? bubbleDuration
-                        : (showCompletedCard ? syncEngine.lastCompletedDuration : bubbleDuration),
-                    emptyFallbackText: syncEngine.isSyncing || syncEngine.stage != .idle
-                        ? syncEngine.liveStageLabel
-                        : nil
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .onTapGesture(count: 2) {
-                    // Double-tap the completed card to dismiss it.
-                    if showCompletedCard {
-                        syncEngine.dismissCompletedReasoning()
+            // Build 135.32: enriched mode gets a full-page ScrollView so title,
+            // picker, reasoning, and content all scroll as a unit. Ink mode
+            // keeps the fixed layout (PencilKit handles its own scrolling).
+            if viewMode == .enriched {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 0) {
+                        noteHeader
+                        enrichedView
                     }
                 }
-            }
-
-            // Attachment strip (Phase 3)
-            if !attachments.isEmpty {
-                NoteAttachmentStrip(
-                    attachments: attachments,
-                    onDelete: { attachment in
-                        Task { await deleteAttachment(attachment) }
-                    }
-                )
-                Divider()
-            }
-
-            // Content based on view mode — fills remaining space
-            switch viewMode {
-            case .ink:
+            } else {
+                noteHeader
                 inkView
-            case .enriched:
-                enrichedView
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -378,6 +306,80 @@ struct NoteEditorView: View {
     }
 
     @ViewBuilder
+    /// Title, picker, reasoning bubble, and attachment strip — shared between
+    /// ink and enriched modes. In enriched mode this lives inside the ScrollView;
+    /// in ink mode it's pinned above the canvas.
+    private var noteHeader: some View {
+        Group {
+            // Title field
+            TextField("Note Title", text: $title)
+                .font(.headline)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .accessibilityLabel("Note title")
+                .accessibilityHint("Enter a title for this note")
+                .onChange(of: title) { _, newValue in
+                    updateTitle(newValue)
+                }
+
+            // Keep the surface honest: source ink or useful enrichment. OCR is internal.
+            Picker("View Mode", selection: $viewMode) {
+                ForEach(NoteViewMode.allCases) { mode in
+                    Label(mode.displayName, systemImage: mode.systemImage)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Note view mode")
+
+            Divider()
+
+            let bubbleReasoning = effectiveBubbleReasoning
+            let bubbleStreaming = syncEngine.isReasoningActive
+            let bubbleDuration = syncEngine.reasoningDuration
+            let showCompletedCard = !bubbleStreaming && bubbleReasoning.isEmpty
+                && !syncEngine.lastCompletedReasoning.isEmpty
+
+            if !bubbleReasoning.isEmpty || syncEngine.isReasoningActive
+                || showCompletedCard {
+                ReasoningView(
+                    reasoning: bubbleStreaming
+                        ? bubbleReasoning
+                        : (showCompletedCard
+                            ? syncEngine.lastCompletedReasoning
+                            : bubbleReasoning),
+                    isStreaming: bubbleStreaming,
+                    duration: bubbleStreaming
+                        ? bubbleDuration
+                        : (showCompletedCard ? syncEngine.lastCompletedDuration : bubbleDuration),
+                    emptyFallbackText: syncEngine.isSyncing || syncEngine.stage != .idle
+                        ? syncEngine.liveStageLabel
+                        : nil
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .onTapGesture(count: 2) {
+                    if showCompletedCard {
+                        syncEngine.dismissCompletedReasoning()
+                    }
+                }
+            }
+
+            // Attachment strip (Phase 3)
+            if !attachments.isEmpty {
+                NoteAttachmentStrip(
+                    attachments: attachments,
+                    onDelete: { attachment in
+                        Task { await deleteAttachment(attachment) }
+                    }
+                )
+                Divider()
+            }
+        }
+    }
+
     private var inkView: some View {
         VStack(spacing: 0) {
             // Typed text + ink are ONE surface (Build 131.1). The keyboard

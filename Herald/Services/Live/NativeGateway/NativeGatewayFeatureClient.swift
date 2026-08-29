@@ -132,6 +132,24 @@ struct NativeGatewayFeatureClient {
     struct NativeProfileEnvelope: Decodable {
         let activeProfile: NativeProfileEntry?
         let profiles: [NativeProfileEntry]?
+        enum CodingKeys: String, CodingKey {
+            case activeProfile, profiles, data
+        }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            // Try top-level first (direct response), then unwrap data envelope
+            if let envelope = try? container.decode(NativeProfileDataEnvelope.self, forKey: .data) {
+                activeProfile = envelope.activeProfile
+                profiles = envelope.profiles
+            } else {
+                activeProfile = try container.decodeIfPresent(NativeProfileEntry.self, forKey: .activeProfile)
+                profiles = try container.decodeIfPresent([NativeProfileEntry].self, forKey: .profiles)
+            }
+        }
+    }
+    private struct NativeProfileDataEnvelope: Decodable {
+        let activeProfile: NativeProfileEntry?
+        let profiles: [NativeProfileEntry]?
     }
 
     func profileCatalog() async -> (active: String?, profiles: [(name: String, description: String, skillCount: Int)])? {
@@ -186,11 +204,13 @@ struct NativeGatewayFeatureClient {
         let nextRun: Date?
         let lastResult: String?
         enum CodingKeys: String, CodingKey {
-            case id, name, prompt, enabled
-            case schedule = "schedule_display"
+            case name, enabled
+            case id = "job_id"
+            case prompt = "prompt_preview"
+            case schedule
             case lastRun = "last_run_at"
             case nextRun = "next_run_at"
-            case lastResult = "last_error"
+            case lastResult = "last_status"
         }
     }
 
@@ -202,36 +222,52 @@ struct NativeGatewayFeatureClient {
         return try decoder.decode(T.self, from: data)
     }
 
+    /// Build 135.32: retargeted from dead `skills.list` to `skills.manage(action:"list")`.
+    /// Gateway returns `{skills: {category: [name, ...]}}` - flatten to ManagedSkill stubs.
     func managedSkills() async throws -> [ManagedSkill] {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
-        struct Response: Decodable { let skills: [ManagedSkill] }
-        return try decodeResult(await client.send(method: "skills.list", params: [String: String]()), as: Response.self).skills
+        struct Response: Decodable { let skills: [String: [String]] }
+        let result = try decodeResult(await client.send(method: "skills.manage", params: ["action": "list"]), as: Response.self)
+        return result.skills.flatMap { category, names in
+            names.map { ManagedSkill(name: $0, description: category, path: "") }
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Build 135.32: retargeted from dead `cron.list` to `cron.manage(action:"list")`.
     func managedCronJobs() async throws -> [ManagedCronJob] {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
         struct Response: Decodable { let jobs: [ManagedCronJob] }
-        return try decodeResult(await client.send(method: "cron.list", params: [String: String]()), as: Response.self).jobs
+        return try decodeResult(await client.send(method: "cron.manage", params: ["action": "list"]), as: Response.self).jobs
     }
 
+    /// Build 135.32: retargeted from dead `cron.create` to `cron.manage(action:"add")`.
     func createManagedCronJob(name: String, schedule: String, prompt: String) async throws -> ManagedCronJob {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
-        struct Response: Decodable { let job: ManagedCronJob }
-        return try decodeResult(await client.send(method: "cron.create", params: ["name": name, "schedule": schedule, "prompt": prompt]), as: Response.self).job
+        struct Params: Encodable { let action: String; let name: String; let schedule: String; let prompt: String }
+        struct Response: Decodable { let job_id: String; let name: String; let schedule: String }
+        let result = try decodeResult(await client.send(method: "cron.manage", params: Params(action: "add", name: name, schedule: schedule, prompt: prompt)), as: Response.self)
+        return ManagedCronJob(id: result.job_id, name: result.name, schedule: result.schedule, prompt: prompt, enabled: true, lastRun: nil, nextRun: nil, lastResult: nil)
     }
 
+    /// Build 135.32: retargeted from dead `cron.update` to `cron.manage(action:"pause"/"resume")`.
     func updateManagedCronJob(id: String, enabled: Bool) async throws -> ManagedCronJob {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
-        struct Params: Encodable { let id: String; let enabled: Bool }
-        struct Response: Decodable { let job: ManagedCronJob }
-        return try decodeResult(await client.send(method: "cron.update", params: Params(id: id, enabled: enabled)), as: Response.self).job
+        let action = enabled ? "resume" : "pause"
+        struct Params: Encodable { let action: String; let job_id: String }
+        struct Response: Decodable { let success: Bool }
+        let result = try decodeResult(await client.send(method: "cron.manage", params: Params(action: action, job_id: id)), as: Response.self)
+        guard result.success else { throw NativeGatewayClientError.unexpectedFrame }
+        // Return a stub; caller should re-fetch the full list for accurate state
+        return ManagedCronJob(id: id, name: "", schedule: "", prompt: "", enabled: enabled, lastRun: nil, nextRun: nil, lastResult: nil)
     }
 
+    /// Build 135.32: retargeted from dead `cron.delete` to `cron.manage(action:"remove")`.
     func deleteManagedCronJob(id: String) async throws {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
-        struct Response: Decodable { let deleted: Bool }
-        let response: Response = try decodeResult(await client.send(method: "cron.delete", params: ["id": id]), as: Response.self)
-        guard response.deleted else { throw NativeGatewayClientError.unexpectedFrame }
+        struct Params: Encodable { let action: String; let job_id: String }
+        struct Response: Decodable { let success: Bool }
+        let result = try decodeResult(await client.send(method: "cron.manage", params: Params(action: "remove", job_id: id)), as: Response.self)
+        guard result.success else { throw NativeGatewayClientError.unexpectedFrame }
     }
 
     // MARK: - Gateway Status

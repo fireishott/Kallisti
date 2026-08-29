@@ -363,7 +363,7 @@ struct GatewayLogsScreen: View {
     private func startNativeFacadeStream(_ nativeClient: NativeKallistiClient) {
         streamTask = Task {
             guard let facadeBase = await nativeClient.facadeBaseURLString(),
-                  let nativeToken = await nativeClient.nativeAccessToken(),
+                  let nativeToken = await nativeClient.refreshAccessToken(),
                   let url = URL(string: "\(facadeBase)/gw/logs/stream?level=\(selectedLevel)&source=\(selectedSource)")
             else {
                 await MainActor.run {
