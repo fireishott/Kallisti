@@ -385,24 +385,6 @@ struct SettingsScreen: View {
     // `hermes update --yes` runs in the background.
     @State private var updateProgressLines: [String] = []
     @State private var updateProgressState: String? // idle | running | done | failed
-    // Build 135.38: always-on "What's new in this build" sheet. Populated
-    // from the latest updateCheck() payload (which includes the currently
-    // installed version's release notes) so the user can see the full
-    // changelog even when Hermes has nothing newer to offer.
-    @State private var isInstalledChangelogPresented = false
-    @State private var installedChangelogInfo: NativeKallistiClient.HermesUpdateInfo?
-    /// Version string for the currently installed Hermes build, used to
-    /// label the always-on changelog row. Pulled from `updateInfo.currentVersion`
-    /// or the `hostStore.currentHost?.heraldVersion` fallback.
-    private var currentHermesVersion: String {
-        if let fromUpdate = updateInfo?.currentVersion, !fromUpdate.isEmpty {
-            return fromUpdate
-        }
-        if let fromHost = hostStore.currentHost?.heraldVersion, !fromHost.isEmpty {
-            return fromHost
-        }
-        return "current build"
-    }
     private let skippedVersionKey = "kallisti.skippedUpdateVersion"
     private var skippedVersionCurrent: String? {
         UserDefaults.standard.string(forKey: skippedVersionKey)
@@ -748,69 +730,24 @@ struct SettingsScreen: View {
                 }
                 .frame(minHeight: Design.Size.minTapTarget)
             }
-
-            // Build 135.38: always-on changelog row. The "Changelog" link
-            // inside the new-version block only renders when an update is
-            // available, so a current build has no way to see its own
-            // release notes. This row renders unconditionally and reuses
-            // UpdateChangelogSheet so the same full-text view is always one
-            // tap away. If `updateInfo` hasn't loaded yet, the sheet still
-            // opens with a minimal "no remote info yet" placeholder so the
-            // tap does not silently no-op.
-            sectionDivider
-
-            Button {
-                installedChangelogInfo = updateInfo ?? NativeKallistiClient.HermesUpdateInfo(
-                    currentVersion: currentHermesVersion,
-                    latestVersion: currentHermesVersion,
-                    updateAvailable: false,
-                    behindCount: 0,
-                    releaseURL: nil,
-                    changelog: nil,
-                    commits: nil,
-                    lastCheckedAt: nil,
-                    error: nil
-                )
-                isInstalledChangelogPresented = true
-            } label: {
-                HStack(spacing: Design.Spacing.sm) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Design.Brand.accent)
-                        .frame(width: 20, alignment: .center)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("What's new in \(currentHermesVersion)")
-                            .font(Design.Typography.callout)
-                            .foregroundStyle(Design.Colors.foreground)
-                        Text("Full changelog for the installed build")
-                            .font(Design.Typography.caption)
-                            .foregroundStyle(Design.Colors.secondaryForeground)
-                    }
-
-                    Spacer()
-
-                    Text("View")
-                        .font(Design.Typography.caption)
-                        .foregroundStyle(Design.Brand.accent)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Design.Colors.secondaryForeground)
-                }
-                .frame(minHeight: Design.Size.minTapTarget)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
         }
-        .sheet(isPresented: $isInstalledChangelogPresented) {
-            if let info = installedChangelogInfo {
+        .sheet(isPresented: $isChangelogPresented) {
+            if let info = updateInfo {
                 UpdateChangelogSheet(
                     info: info,
-                    isUpdating: .constant(false),
-                    progressLines: [],
-                    progressState: nil,
-                    onUpdateNow: {},
-                    onSkip: { isInstalledChangelogPresented = false }
+                    isUpdating: $isUpdatingAgent,
+                    progressLines: updateProgressLines,
+                    progressState: updateProgressState,
+                    onUpdateNow: {
+                        Task { await updateAgent() }
+                    },
+                    onSkip: {
+                        if let latest = info.latestVersion {
+                            UserDefaults.standard.set(latest, forKey: skippedVersionKey)
+                            skippedVersion = latest
+                        }
+                        isChangelogPresented = false
+                    }
                 )
             }
         }
