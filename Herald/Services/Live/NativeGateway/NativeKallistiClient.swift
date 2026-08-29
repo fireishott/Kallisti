@@ -2535,6 +2535,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         sessionTitle: String? = nil,
         enrichmentModelName: String? = nil,
         enrichmentProvider: String? = nil,
+        thinkingAsReasoning: Bool = false,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
         // Build 26 (latency fix): verify the socket is genuinely alive BEFORE
@@ -2598,6 +2599,9 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: mediaBaseURL)
             }
         )
+        // Build 135.39: notes sync streams surface thinking.delta frames as
+        // reasoning lines (see StreamEventHandler.thinkingAsReasoning).
+        handler.thinkingAsReasoning = thinkingAsReasoning
         handler.onComplete = { [weak self] in
             self?.activeStreamHandlers.removeValue(forKey: sid)
             // Build 95: the app has the reply (message.complete arrived over
@@ -2694,6 +2698,10 @@ final class NativeKallistiClient: HeraldClientProtocol {
                             NativeKallistiClient.nativeMediaURL(for: path, gatewayBaseURL: freshMediaBaseURL)
                         }
                     )
+                    // Build 135.39: carry the notes thinking.delta flag onto
+                    // the reconnect handler so the thought stream survives a
+                    // mid-sync transport rebuild.
+                    freshHandler.thinkingAsReasoning = thinkingAsReasoning
                     await client.onEvent { event in
                         freshHandler.handle(event)
                     }
@@ -3217,7 +3225,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
     /// Streaming variant of sendNoteMessage. Yields the gateway's live
     /// reasoning deltas so the notes UI can render the agent's actual reasoning
     /// stream (same component chat uses), not a local OCR readout.
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil) -> AsyncStream<StreamingUpdate> {
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil, thinkingAsReasoning: Bool = true) -> AsyncStream<StreamingUpdate> {
         sendStreamingToConversation(
             message: text,
             attachments: attachments,
@@ -3225,7 +3233,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
             conversationID: conversationID,
             title: title,
             enrichmentModelName: enrichmentModelName,
-            enrichmentProvider: enrichmentProvider
+            enrichmentProvider: enrichmentProvider,
+            thinkingAsReasoning: thinkingAsReasoning
         )
     }
 
@@ -3239,7 +3248,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         conversationID: UUID,
         title: String,
         enrichmentModelName: String? = nil,
-        enrichmentProvider: String? = nil
+        enrichmentProvider: String? = nil,
+        thinkingAsReasoning: Bool = false
     ) -> AsyncStream<StreamingUpdate> {
         return AsyncStream { continuation in
             Task { [weak self] in
@@ -3252,6 +3262,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     sessionTitle: title,
                     enrichmentModelName: enrichmentModelName,
                     enrichmentProvider: enrichmentProvider,
+                    thinkingAsReasoning: thinkingAsReasoning,
                     continuation: continuation
                 )
             }
@@ -3304,6 +3315,10 @@ private final class StreamEventHandler: @unchecked Sendable {
     let continuation: AsyncStream<StreamingUpdate>.Continuation
     private var completed = false
     private let mediaURLProvider: @Sendable (String) -> URL?
+    /// Build 135.39: when true (notes sync path), non-empty `thinking.delta`
+    /// frames surface as reasoning lines - the only live signal for models
+    /// that never emit reasoning.delta. Chat keeps Build 26 spinner-drop.
+    var thinkingAsReasoning = false
     /// ANSI-colored inline diffs accumulated from `tool.complete` events this
     /// turn. Parsed into a CodeDiff at `message.complete` so a multi-file edit
     /// turn renders one collapsible diff card on the final message.
@@ -3348,9 +3363,20 @@ private final class StreamEventHandler: @unchecked Sendable {
             // on this event via thinking_callback - one frame per tool-call
             // API round. They are transient UI noise, NOT reasoning: feeding
             // them into .reasoningDelta stacked faces up in the thought card
-            // and pushed out the real chain-of-thought. Real CoT arrives on
-            // "reasoning.delta" (handled below). Drop the spinner frames.
-            break
+            // and pushed out the real chain-of-thought.
+            //
+            // Build 135.39 (notes thought stream): for models that emit NO
+            // reasoning.delta frames at all (verified 2026-08-29: ag/gemini
+            // via 9Router streams only `content` deltas plus these frames),
+            // this event is the ONLY live signal a notes sync has. When the
+            // notes sync sets thinkingAsReasoning, non-empty frames surface
+            // as reasoning lines; empty frames (spinner clears) are still
+            // dropped, and chat keeps the strict Build 26 behavior.
+            if thinkingAsReasoning,
+               let delta = event.params.decodePayload(NativeThinkingDeltaPayload.self),
+               !delta.text.isEmpty {
+                continuation.yield(.reasoningDelta(delta.text))
+            }
         case "reasoning.delta":
             // Real chain-of-thought from the gateway's reasoning_callback.
             if let delta = event.params.decodePayload(NativeThinkingDeltaPayload.self) {
