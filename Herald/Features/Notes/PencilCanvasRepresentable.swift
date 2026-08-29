@@ -192,13 +192,21 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
     /// PKToolPicker (a system floating window) stays visible forever, overlapping
     /// the composer and other chrome after leaving the note editor.
     static func dismantleUIView(_ uiView: PKCanvasView, coordinator: Coordinator) {
-        coordinator.toolPicker?.setVisible(false, forFirstResponder: uiView)
-        coordinator.toolPicker?.removeObserver(uiView)
-        coordinator.toolPicker = nil
-        if uiView.isFirstResponder {
-            uiView.resignFirstResponder()
+        // Build 135.34: defer teardown to the next runloop. Called synchronously
+        // during SwiftUI graph invalidation, resignFirstResponder() walks the
+        // responder chain and re-enters AttributeGraph while layout attributes
+        // are mid-computation (UnaryLayoutComputer) -> AG precondition abort.
+        // This crashed the app when leaving ink mode while the canvas held
+        // first-responder status (b135.33 enriched-tab crash).
+        DispatchQueue.main.async {
+            coordinator.toolPicker?.setVisible(false, forFirstResponder: uiView)
+            coordinator.toolPicker?.removeObserver(uiView)
+            coordinator.toolPicker = nil
+            if uiView.isFirstResponder {
+                uiView.resignFirstResponder()
+            }
+            coordinator.canvasView = nil
         }
-        coordinator.canvasView = nil
     }
 
     // MARK: - Coordinator
