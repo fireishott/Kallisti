@@ -45,6 +45,23 @@ final class LiveActivityService {
     /// 10s elapsed heartbeat can re-assert the correct telemetry session type
     /// instead of hardcoding "tool". Mirrors startThinking/startToolCall/etc.
     private var currentSessionType: String = "chat"
+    /// Build 135.31: timestamp of the last `endActivity()`. A turn that has
+    /// reached a terminal outcome must not be resurrected by a late in-flight
+    /// event (a trailing `toolActivity`, a delta that lost the race with
+    /// `.finished`, or a reconnect handler firing after the choke point ran).
+    /// Any `start*`/`update*` call inside this window is ignored so the
+    /// activity we just dismissed with `.immediate` cannot pop back onto the
+    /// Lock Screen as a fresh "Responding…" card that nothing will ever end.
+    /// A genuinely new user turn is always further out than this window because
+    /// it requires user input after the previous turn settled.
+    private var endedAt: Date?
+    private static let restartSuppressionWindow: TimeInterval = 1.5
+
+    /// True when a terminal `endActivity()` ran within the suppression window.
+    private var isWithinRestartSuppression: Bool {
+        guard let endedAt else { return false }
+        return Date.now.timeIntervalSince(endedAt) < Self.restartSuppressionWindow
+    }
 
     var isAvailable: Bool {
         ActivityAuthorizationInfo().areActivitiesEnabled
@@ -54,6 +71,9 @@ final class LiveActivityService {
 
     func startVoiceSession() {
         guard isAvailable else { return }
+        // Build 135.31: never resurrect an activity we just terminally ended.
+        guard !isWithinRestartSuppression else { return }
+        endedAt = nil
         lockScreenPhase = .thinking  // voice starts in thinking/model-loading
         let now = Date.now
         adoptExistingActivityIfNeeded()
@@ -82,6 +102,8 @@ final class LiveActivityService {
     }
 
     func updateVoiceState(_ status: String, toolName: String? = nil) {
+        // Build 135.31: a late voice event must not re-arm a dismissed card.
+        guard currentActivity != nil, !isWithinRestartSuppression else { return }
         lockScreenPhase = sanitizedPhase(for: status)
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
@@ -94,6 +116,9 @@ final class LiveActivityService {
 
     func startThinking() {
         guard isAvailable else { return }
+        // Build 135.31: never resurrect an activity we just terminally ended.
+        guard !isWithinRestartSuppression else { return }
+        endedAt = nil
         lockScreenPhase = .thinking
         let now = Date.now
         adoptExistingActivityIfNeeded()
@@ -122,7 +147,9 @@ final class LiveActivityService {
     }
 
     func updatePhase(_ status: String) {
-        guard currentActivity != nil else { return }
+        // Build 135.31: added the suppression check so a delta/tool event that
+        // lost the race with the terminal choke point cannot re-arm the card.
+        guard currentActivity != nil, !isWithinRestartSuppression else { return }
         lockScreenPhase = sanitizedPhase(for: status)
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
@@ -140,6 +167,9 @@ final class LiveActivityService {
     /// "Using tools…" phase — details stay inside the unlocked app.
     func startToolCall(toolName: String) {
         guard isAvailable else { return }
+        // Build 135.31: never resurrect an activity we just terminally ended.
+        guard !isWithinRestartSuppression else { return }
+        endedAt = nil
         lockScreenPhase = .usingTools
         let now = Date.now
         adoptExistingActivityIfNeeded()
@@ -168,6 +198,10 @@ final class LiveActivityService {
     }
 
     func updateToolProgress(_ status: String, toolName: String? = nil) {
+        // Build 135.31: a trailing tool event after the turn ended must not
+        // re-arm the card. This was the most common resurrection route -
+        // delegate_task subagents emit toolActivity after .finished.
+        guard currentActivity != nil, !isWithinRestartSuppression else { return }
         lockScreenPhase = .usingTools
         let elapsed = Int(Date().timeIntervalSince(startedAt ?? .now))
         let state = makeContentState(
@@ -179,11 +213,27 @@ final class LiveActivityService {
 
     // MARK: - End
 
+    /// Terminal choke point for a turn: dismisses EVERY live Kallisti activity
+    /// immediately, whether or not this instance currently holds a reference.
+    ///
+    /// Build 135.31 (stuck "Responding…" fix): the old implementation had
+    /// `guard currentActivity != nil else { return }` BEFORE the sweep, so an
+    /// activity the OS still owns but this instance had lost track of (app
+    /// relaunched mid-turn, `adoptExistingActivityIfNeeded` never ran, a second
+    /// LiveActivityService instance created the activity — ChatStore and
+    /// TalkStore each own their own) was never dismissed. The Lock Screen kept
+    /// whatever phase it last received ("Responding…") forever. The sweep is
+    /// unconditional now; `Activity.activities` is the source of truth, not
+    /// `currentActivity`.
+    ///
+    /// Idempotent: a second call finds an empty `Activity.activities` and is a
+    /// no-op. `endedAt` additionally suppresses a spurious activity restart from
+    /// a late in-flight event arriving after the turn is already terminal.
     func endActivity() {
         startedAt = nil
         lockScreenPhase = .done
+        endedAt = Date.now
         stopHeartbeat()
-        guard currentActivity != nil else { return }
         currentActivity = nil
 
         let finalContent = ActivityContent(
@@ -295,7 +345,7 @@ final class LiveActivityService {
     /// active progress the moment they unlock the phone. No-op when no
     /// activity is live or when we never marked needsAttention.
     func markStreamForegrounded() {
-        guard currentActivity != nil else { return }
+        guard currentActivity != nil, !isWithinRestartSuppression else { return }
         guard lockScreenPhase == .needsAttention else { return }
         // Best-guess phase for a recovering stream: "responding" covers both
         // tool calls (which re-enter as text deltas) and pure text deltas.
