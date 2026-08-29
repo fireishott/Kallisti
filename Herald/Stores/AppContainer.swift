@@ -1758,6 +1758,10 @@ final class AppContainer {
     /// settings that affect push registration change (e.g. the notifications
     /// toggle) so the user immediately sees the effect.
     func reregisterStoredPushToken() async {
+        // A preference change must reach the connector even if the APNs token
+        // itself is unchanged. Clear the dedup key before re-registering.
+        lastAcceptedDeviceToken = nil
+        lastAcceptedDeviceEnvironment = nil
         guard let token = await currentStoredAPNsToken() else { return }
         await registerPushTokenIfNeeded(token)
     }
