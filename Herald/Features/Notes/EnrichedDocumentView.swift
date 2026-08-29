@@ -5,22 +5,43 @@ struct EnrichedDocumentView: View {
     let result: EnrichmentResult
     let isEditingCopy: Bool
     var onEditCopy: (() -> Void)?
+    // Build 135.33: when embedded under NoteEditorView page-level ScrollView,
+    // skip our own ScrollView - nested scrollers trigger an AttributeGraph
+    // layout cycle that aborts the app (b135.32 crash, UnaryLayoutComputer).
+    var embedsInParentScroll: Bool = false
 
     @State private var showExportSheet = false
 
     init(
         result: EnrichmentResult,
         isEditingCopy: Bool = false,
-        onEditCopy: (() -> Void)? = nil
+        onEditCopy: (() -> Void)? = nil,
+        embedsInParentScroll: Bool = false
     ) {
         self.result = result
         self.isEditingCopy = isEditingCopy
         self.onEditCopy = onEditCopy
+        self.embedsInParentScroll = embedsInParentScroll
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Design.Spacing.lg) {
+        if embedsInParentScroll {
+            enrichedContent
+        } else {
+            ScrollView {
+                enrichedContent
+            }
+            .toolbar {
+                toolbarContent
+            }
+            .sheet(isPresented: $showExportSheet) {
+                NoteExportSheet(result: result)
+            }
+        }
+    }
+
+    private var enrichedContent: some View {
+        VStack(alignment: .leading, spacing: Design.Spacing.lg) {
                 // Header with title and stale warning
                 headerSection
 
@@ -49,28 +70,26 @@ struct EnrichedDocumentView: View {
                 metadataFooter
             }
             .padding(Design.Spacing.md)
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    showExportSheet = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .accessibilityLabel("Export document")
+    }
 
-                if !isEditingCopy, let onEditCopy {
-                    Button {
-                        onEditCopy()
-                    } label: {
-                        Image(systemName: "doc.badge.plus")
-                    }
-                    .accessibilityLabel("Edit as derived copy")
-                }
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                showExportSheet = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
             }
-        }
-        .sheet(isPresented: $showExportSheet) {
-            NoteExportSheet(result: result)
+            .accessibilityLabel("Export document")
+
+            if !isEditingCopy, let onEditCopy {
+                Button {
+                    onEditCopy()
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                }
+                .accessibilityLabel("Edit as derived copy")
+            }
         }
     }
 
