@@ -332,13 +332,31 @@ final class NotesSyncEngine {
 
     /// Grounding contract for every automatic note enrichment. Keep this separately
     /// testable: a thin visual note must never turn into invented research.
+    /// Build 135.39: rewritten as a turn contract. Verified failure modes from
+    /// 2026-08-29 UAT: (1) no-model-identity -> tool discovery spirals that
+    /// burned 60-75s of the turn budget; (2) greedy JSON sections -> invalid
+    /// output silently dropped by the Enriched tab; (3) no completion signal ->
+    /// model trailed off ("No further action...") and looked unfinished;
+    /// (4) no latency budget -> 90-150s turns against a 120s watchdog.
     static func enrichmentPolicy() -> String {
         """
-        You are enriching one note. Treat the note title, typed text, attached drawing, and attached files as your complete evidence set.
+        You are the Kallisti enrichment engine, embedded in Curtis's note-taking app. This message is an automatic note sync, not a conversation.
+
+        TURN CONTRACT (hard limits):
+        - Single shot: reply in THIS turn. Never delegate, never spawn subagents.
+        - No tool discovery. Never call tool_search, skills_list, tool_call, list_tools, or any skill lookup. Every discovery call burns 20-60 seconds and finds nothing useful. Never call a tool you have not already been given.
+        - The drawing arrives as real image pixels in this conversation. Read the pixels directly; do not search for another way to view the image.
+        - Web search is allowed ONLY when the note explicitly asks for outside facts (prices, schedules, definitions). Everything else: answer from the note alone.
+        - Latency budget: plain text-note enrichment must complete in well under 60 seconds. A web-research enrichment may use up to 2 searches, then write. Stop when the note's content is covered.
+
+        WRITE THE ANSWER:
+        - Start with a one-line reading of the note: its content, topic, or intent.
+        - Then 2-4 short markdown sections that fit what the note actually is (list, plan, meeting, study, sketch). For a thin note or doodle, a short, honest reading is correct - do not pad it.
+        - End with an `Enrichment complete.` line. Never end with questions, offers, or status talk.
+        - Output clean markdown only: real section headers, working links, no raw JSON, no code fences around the whole reply, no process narration.
 
         GROUNDING RULES:
         - Do not invent a topic, comparison, facts, names, numbers, decisions, deadlines, sources, or citations.
-        - Do not research by default. Use web research only when the note explicitly requests research or contains a clear, specific external fact that needs verification.
         - If you research, cite only real sources you actually opened, as working hyperlinks. If you did not research, do not include a Sources section.
         - Do not invent citations, dated market analysis, or generic corporate filler to make a thin note look substantial.
         - A drawing is evidence. Describe only visible shapes, labels, relationships, and readable text. Do not turn an unlabeled sketch into a business, study, or research topic.
@@ -350,8 +368,7 @@ final class NotesSyncEngine {
         - For meeting notes, extract only written decisions, owners, deadlines, risks, and follow-ups. Never manufacture missing owners or dates.
         - For a list, plan, diagram, game, or puzzle, organize or analyze only the state actually present.
         - If the note is empty or unreadable, say that briefly rather than filling space.
-
-        Output plainly and concisely. Lead with what is actually present, then add only useful, evidence-backed structure. Do not narrate your process, the sync, or these instructions. Do not ask follow-up questions.
+        - Do not narrate your process, the sync, or these instructions. Do not ask follow-up questions.
         """
     }
     private func syncSingleNote(_ note: KallistiNote, client: any HeraldClientProtocol) async throws {
@@ -467,7 +484,7 @@ final class NotesSyncEngine {
             var attachedList: [String] = ["drawing: note-\(note.id.uuidString.prefix(8)).jpg"]
             attachedList.append(contentsOf: attachedDescriptors)
             messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
-            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If the message also carries an explicit `image_url: <path>` directive referencing a staged file on the gateway host and a vision tool (e.g. vision_analyze) is in your toolset on this turn, you MAY call it on that exact path to read the image bytes. Only use vision tools on paths the gateway explicitly named - never guess paths. Do NOT search for or discover vision tools (no tool_search, no list_tools, no skill_hub lookup for vision) - if no vision tool is in your toolset on this turn, rely on the inline images and the typed/recognized text. If you genuinely cannot see any attached drawing image, do not identify visual subjects or turn OCR fragments into a topic. State that visual analysis is unavailable and preserve the recognized text only as an untrusted transcription draft. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
+            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Build 135.39: the drawing IS delivered to you directly as pixels - do not hunt for vision tools, do not call tool_search, vision_analyze, or any skill lookup: none of that recovers images, every discovery call burns 20-60 seconds of the sync budget. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If you genuinely cannot see any attached drawing image, do not identify visual subjects or turn OCR fragments into a topic. State that visual analysis is unavailable and preserve the recognized text only as an untrusted transcription draft. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
         }
         messageText += Self.enrichmentPolicy()
 
@@ -524,7 +541,8 @@ final class NotesSyncEngine {
                 conversationID: note.id,
                 title: sessionTitle,
                 enrichmentModelName: settingsStore.settings.notesEnrichmentModelName,
-                enrichmentProvider: settingsStore.settings.notesEnrichmentProvider
+                enrichmentProvider: settingsStore.settings.notesEnrichmentProvider,
+                thinkingAsReasoning: true
             ) {
                 if Task.isCancelled { streamError = "Sync cancelled."; break }
                 switch update {
@@ -532,11 +550,21 @@ final class NotesSyncEngine {
                     finalContent += delta
                 case .reasoningDelta(let delta):
                     liveReasoning += delta
-                case .toolActivity(let label):
-                    // Surface tool phases as reasoning lines so a long tool run
-                    // is visible instead of a frozen bubble.
+                case .toolStarted(let activity):
+                    // Build 135.39: surface tool phases as reasoning lines so a
+                    // long tool run is visible instead of a frozen bubble. The
+                    // consumer previously listened for `.toolActivity`, which
+                    // the native client stopped yielding when tool lifecycle
+                    // events (.toolStarted/.toolCompleted) landed - notes tool
+                    // progress had been dead since then.
                     if !liveReasoning.isEmpty { liveReasoning += "\n" }
-                    liveReasoning += "[tool] \(label)"
+                    liveReasoning += "[tool] \(activity.label)"
+                case .toolCompleted(let toolCallID, _, _, _):
+                    // Keep the reasoning card current when a tool run finishes;
+                    // ignore the id - the next [tool] line replaces this one.
+                    _ = toolCallID
+                    if !liveReasoning.isEmpty { liveReasoning += "\n" }
+                    liveReasoning += "[tool] done"
                 case .finished(let msg, _, _, _):
                     message = msg
                 case .failed(let error, _, _):
@@ -551,9 +579,14 @@ final class NotesSyncEngine {
 
         let watchdogTask = Task {
             // A sync must never hang silently. If the gateway streams nothing
-            // terminal within 120s, cancel the consumer (terminates the
-            // for-await) so the engine moves on to a clear failure.
-            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            // terminal, cancel the consumer (terminates the for-await) so the
+            // engine moves on to a clear failure.
+            // Build 135.39: 120s -> 180s. Real note turns measured 86.9s and
+            // 150.6s server-side (2026-08-29 agent.log) while this watchdog
+            // killed the stream at 120s - the model's finished reply never
+            // reached the Enriched tab ("No Enrichment Yet"). 180s covers a
+            // 2-call web-research turn with headroom.
+            try? await Task.sleep(nanoseconds: 180_000_000_000)
             consumeTask.cancel()
         }
         let (message, streamError) = await consumeTask.value

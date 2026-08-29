@@ -23,7 +23,7 @@ protocol HeraldClientProtocol {
     /// UI can render the agent's ACTUAL reasoning bubble (same component chat
     /// uses) while a note syncs. Default implementation reports the capability
     /// is unavailable; the native gateway client overrides it.
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?) -> AsyncStream<StreamingUpdate>
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?, thinkingAsReasoning: Bool) -> AsyncStream<StreamingUpdate>
 
     /// Build 128.97: re-attach a note to its EXISTING gateway session by the
     /// FULL session key pinned on the note. Called before a note sync so an
@@ -257,7 +257,7 @@ extension HeraldClientProtocol {
         )
     }
 
-    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil) -> AsyncStream<StreamingUpdate> {
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String? = nil, enrichmentProvider: String? = nil, thinkingAsReasoning: Bool = true) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             continuation.yield(.failed("Note sync requires the native gateway client."))
             continuation.finish()
