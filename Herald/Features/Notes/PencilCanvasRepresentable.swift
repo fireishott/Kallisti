@@ -25,6 +25,11 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
     /// viewport so the editor can persist it with the note and restore
     /// it on reopen.
     var onViewportChanged: ((CanvasViewport) -> Void)?
+    /// Reports PKCanvasView undo availability after each draw/undo/redo.
+    var onUndoStateChanged: ((Bool, Bool) -> Void)?
+    /// Monotonic commands from SwiftUI. Each increment performs one operation.
+    var undoRequest: Int = 0
+    var redoRequest: Int = 0
     /// Notes fix: when the canvas re-mounts, the caller hands back the
     /// last-known viewport. The coordinator applies it after the first
     /// layout settles so we don't fight the PencilKit zoomScale animation.
@@ -60,6 +65,9 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         canvas.showsVerticalScrollIndicator = true
         
         context.coordinator.canvasView = canvas
+        context.coordinator.lastUndoRequest = undoRequest
+        context.coordinator.lastRedoRequest = redoRequest
+        context.coordinator.publishUndoState(from: canvas)
 
         // Install paper layer behind canvas content
         context.coordinator.installPaper(in: canvas, style: pageStyle)
@@ -96,6 +104,15 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         // Never overwrite during active drawing — the coordinator handles that.
         if drawing != canvas.drawing && !context.coordinator.isDrawingActive {
             canvas.drawing = drawing
+        }
+
+        if undoRequest != context.coordinator.lastUndoRequest {
+            context.coordinator.lastUndoRequest = undoRequest
+            context.coordinator.undo()
+        }
+        if redoRequest != context.coordinator.lastRedoRequest {
+            context.coordinator.lastRedoRequest = redoRequest
+            context.coordinator.redo()
         }
 
         // Update drawing policy if pencilOnly changed
@@ -227,6 +244,8 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         /// Notes fix: whether we've applied the editor's initial viewport
         /// on this representable instance. Prevents fighting PencilKit.
         var didApplyInitialViewport: Bool = false
+        var lastUndoRequest: Int = 0
+        var lastRedoRequest: Int = 0
         private var contentObserver: NSKeyValueObservation?
         private var scrollObserver: NSKeyValueObservation?
         /// Build 132.2: observes the canvas's own bounds so the paper width
@@ -353,6 +372,27 @@ struct PencilCanvasRepresentable: UIViewRepresentable {
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             parent.drawing = canvasView.drawing
             parent.onDrawingChanged?(canvasView.drawing)
+            publishUndoState(from: canvasView)
+        }
+
+        func undo() {
+            guard let canvas = canvasView, canvas.undoManager?.canUndo == true else { return }
+            canvas.undoManager?.undo()
+            parent.drawing = canvas.drawing
+            parent.onDrawingChanged?(canvas.drawing)
+            publishUndoState(from: canvas)
+        }
+
+        func redo() {
+            guard let canvas = canvasView, canvas.undoManager?.canRedo == true else { return }
+            canvas.undoManager?.redo()
+            parent.drawing = canvas.drawing
+            parent.onDrawingChanged?(canvas.drawing)
+            publishUndoState(from: canvas)
+        }
+
+        func publishUndoState(from canvas: PKCanvasView) {
+            parent.onUndoStateChanged?(canvas.undoManager?.canUndo ?? false, canvas.undoManager?.canRedo ?? false)
         }
 
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {

@@ -3313,6 +3313,22 @@ final class ChatStore {
         }
     }
 
+    /// Adopt a conversation explicitly selected by a notification route.
+    /// The selected ID must be persisted before the next foreground refresh so
+    /// ChatStore cannot reopen the prior active session through its no-id path.
+    func adoptLoadedConversation(_ selected: Conversation) {
+        conversationGeneration &+= 1
+        conversation = selected
+        persistence.currentSessionId = selected.id
+        isLocalNewChat = false
+        needsServerRefresh = false
+        var cacheCopy = selected
+        cacheCopy.contextPercent = nil
+        cacheCopy.latestUsage = nil
+        persistence.saveConversationCache(cacheCopy)
+        onConversationChanged?()
+    }
+
     func clearConversation() async throws {
         streamingTask?.cancel()
         streamingTask = nil

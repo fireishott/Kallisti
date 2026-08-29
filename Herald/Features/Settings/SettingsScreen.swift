@@ -1977,6 +1977,16 @@ struct SettingsScreen: View {
                 sectionDivider
 
                 settingsToggle(
+                    icon: "bell.slash.fill",
+                    iconColor: Design.Colors.foreground,
+                    title: "Response Ready Alerts",
+                    subtitle: "Turn completion alerts only. Inbox and system alerts stay on.",
+                    isOn: responseReadyAlertsBinding
+                )
+
+                sectionDivider
+
+                settingsToggle(
                     icon: "hand.tap.fill",
                     iconColor: Design.Colors.foreground,
                     title: "Haptic Feedback",
@@ -2711,6 +2721,16 @@ struct SettingsScreen: View {
                 Task {
                     await AppContainer.sharedDefault().reregisterStoredPushToken()
                 }
+            }
+        )
+    }
+
+    private var responseReadyAlertsBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.responseReadyAlertsEnabled },
+            set: { newValue in
+                settingsStore.settings.responseReadyAlertsEnabled = newValue
+                Task { await AppContainer.sharedDefault().reregisterStoredPushToken() }
             }
         )
     }

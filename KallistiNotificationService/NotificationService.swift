@@ -85,7 +85,20 @@ class NotificationService: UNNotificationServiceExtension {
                 guard let location = location, error == nil else { return }
 
                 let tmpDir = FileManager.default.temporaryDirectory
-                let ext = mediaUrl.pathExtension.lowercased()
+                let responseMIME = (response as? HTTPURLResponse)?.mimeType?.lowercased() ?? ""
+                let pathExt = mediaUrl.pathExtension.lowercased()
+                let ext: String
+                if responseMIME == "application/pdf" || pathExt == "pdf" {
+                    ext = "pdf"
+                } else if pathExt.isEmpty, responseMIME == "image/png" {
+                    ext = "png"
+                } else if pathExt.isEmpty, responseMIME == "image/gif" {
+                    ext = "gif"
+                } else if pathExt.isEmpty, responseMIME == "image/webp" {
+                    ext = "webp"
+                } else {
+                    ext = pathExt.isEmpty ? "jpg" : pathExt
+                }
 
                 // PDF: render first page to a PNG so the notification thumbnail
                 // is oriented correctly.
@@ -128,7 +141,9 @@ class NotificationService: UNNotificationServiceExtension {
                 } catch {}
             }
             task.resume()
-            _ = semaphore.wait(timeout: .now() + 5.0)
+            // APNs grants the extension roughly 30 seconds. Five seconds was
+            // too short for authenticated media over a cold cellular/TLS path.
+            _ = semaphore.wait(timeout: .now() + 20.0)
         }
 
         // Ensure deep-link fields are present for tap handling
