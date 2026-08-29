@@ -198,7 +198,7 @@ _PUSH_BODY_MAX_CHARS = 300
 
 def _session_status_is_running(output: str) -> bool | None:
     """Parse session.status text output. True=still running, False=idle,
-    None=unparseable (caller should keep polling)."""
+    None=unparseable (caller must keep polling, never infer terminal)."""
     m = _POLL_AGENT_RUNNING_RE.search(output or "")
     if not m:
         return None
@@ -530,7 +530,19 @@ async def run_watcher(
                             if running is True:
                                 last_observed_running[sid] = True
                                 continue
-                            if running is False or error is not None:
+                            # A failed or malformed status probe is unknown,
+                            # not a terminal turn. Treating RPC errors as idle
+                            # sent completion alerts and ActivityKit end events
+                            # while Hermes could still be working elsewhere.
+                            if running is None:
+                                logger.warning(
+                                    "Native watch poll: session=%s status unknown "
+                                    "(error=%s) - retaining watch",
+                                    sid,
+                                    bool(error),
+                                )
+                                continue
+                            if running is False:
                                 prev = last_observed_running.get(sid)
                                 # Build 97: hold first-idle observations for a
                                 # fresh watch.  iOS registers the watch at

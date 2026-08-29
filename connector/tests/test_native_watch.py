@@ -121,22 +121,16 @@ async def test_tokens_access_token_refreshes_on_first_call(tmp_path, monkeypatch
     cfg.write_text(json.dumps({"refresh_token": "tok-123"}))
     monkeypatch.setattr("kallisti_connector.native_watch.CONFIG_PATH", cfg)
 
-    mock_resp = AsyncMock()
-    mock_resp.status = 200
-    mock_resp.json = AsyncMock(
-        return_value={
-            "access_token": "access-456",
-            "refresh_token": "refresh-new",
-        }
-    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "access_token": "access-456",
+        "refresh_token": "refresh-new",
+    }
 
-    # session.post() is used as an async context manager (async with ...)
-    mock_ctx = AsyncMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
-
+    # Production uses httpx: post() is awaited and returns a Response.
     session = MagicMock()
-    session.post = MagicMock(return_value=mock_ctx)
+    session.post = AsyncMock(return_value=mock_resp)
 
     tokens = NativeWatchTokens(session=session)
     token = await tokens.access_token()
