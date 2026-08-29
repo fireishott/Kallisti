@@ -453,7 +453,8 @@ struct NoteEditorView: View {
             EnrichedDocumentView(
                 result: result,
                 isEditingCopy: false,
-                onEditCopy: { createDerivedCopy() }
+                onEditCopy: { createDerivedCopy() },
+                embedsInParentScroll: true
             )
         } else if runStatus?.status == .queued || runStatus?.status == .claimed {
             VStack(spacing: Design.Spacing.lg) {
