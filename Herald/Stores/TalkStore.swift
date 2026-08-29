@@ -284,9 +284,21 @@ final class TalkStore {
     }
 
     func endSession() async {
-        guard let coordinator = hermesCoordinator else { return }
-        let turnCount = transcriptItems.filter { !$0.isPartial }.count
+        // Build 135.31: the Live Activity teardown must NOT sit behind the
+        // coordinator guard. `guard let coordinator ... else { return }` used to
+        // come first, so ending a voice session when the coordinator had already
+        // been torn down (deinit race, app relaunch, readiness lost mid-session)
+        // returned early and left the voice card on the Lock Screen forever.
+        // endActivity() is idempotent and independent of the coordinator.
         liveActivity.endActivity()
+        guard let coordinator = hermesCoordinator else {
+            // Still settle local session state so the UI does not claim an
+            // active session that has no coordinator behind it.
+            stopDurationTimer()
+            isSessionActive = false
+            return
+        }
+        let turnCount = transcriptItems.filter { !$0.isPartial }.count
         coordinator.endSession()
         stopDurationTimer()
         if turnCount > 0 {

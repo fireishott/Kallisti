@@ -437,6 +437,49 @@ final class ChatStore {
         endStreamKeepAwake()
     }
 
+    // MARK: - Live Activity terminal choke point (Build 135.31)
+
+    /// Unconditionally dismisses the chat Live Activity.
+    ///
+    /// Every terminal turn outcome routes through here instead of calling
+    /// `chatLiveActivity.endActivity()` directly, so there is one place to
+    /// instrument and one definition of "the lock-screen card is gone".
+    /// `LiveActivityService.endActivity()` is idempotent (it sweeps
+    /// `Activity.activities`, which is empty after the first call), so a
+    /// double-fire from a handler plus the `submitNextEligible` defer is
+    /// harmless. It also arms a short restart-suppression window inside the
+    /// service so a late in-flight event cannot pop a fresh "Responding…"
+    /// card back onto the Lock Screen after the turn is already terminal.
+    func endStreamingLiveActivity(reason: String) {
+        chatLiveActivity.endActivity()
+        appendLog(level: .info, "Live Activity ended: \(reason)")
+    }
+
+    /// The guarded form used by the `submitNextEligible` defer and by the
+    /// watchdog stall breaks.
+    ///
+    /// `submitNextEligible` tail-recurses to drain the FIFO outbox queue, and
+    /// the recursive call runs `startThinking()` for the NEXT turn before the
+    /// outer frames unwind. An unconditional end in the defer would therefore
+    /// dismiss the card for a turn that is genuinely in flight. Gate on "no
+    /// stream is owned any more":
+    ///
+    ///   * `activeStreams` empty          - no accepted job is streaming
+    ///   * `pendingStreamPlaceholders` empty - no pre-job placeholder is live
+    ///     (together these two are exactly `isStreaming == false`)
+    ///   * no outbox item still in flight - the FIFO chain has drained, so no
+    ///     recursive frame below us started a replacement turn
+    ///
+    /// When all three hold, the turn (and the queue behind it) is over and the
+    /// activity must go. When any hold false, a live turn owns the card and its
+    /// own terminal path will end it — with this defer as the backstop on the
+    /// frame that finally sees an empty queue.
+    func endStreamingLiveActivityIfTurnFinished() {
+        guard !isStreaming else { return }
+        guard !outboxItems.contains(where: { $0.isInFlight }) else { return }
+        endStreamingLiveActivity(reason: "turn finished (no live stream, queue drained)")
+    }
+
     // MARK: - Build 84 Option C-B: stream keep-awake re-arm
 
     /// Single choke point for "streaming progress just happened". Updates
@@ -1171,6 +1214,9 @@ final class ChatStore {
             markOptimisticRowFailed(item, error: error)
             failOutboxItem(item, state: .permanentFailure, error: error)
             sendPhase = .failed(error)
+            // Build 135.31: covered by the defer above, but end explicitly so
+            // the card clears on the same tick as the visible failure.
+            endStreamingLiveActivityIfTurnFinished()
             return
         }
 
@@ -1201,6 +1247,29 @@ final class ChatStore {
         // take seconds; waiting for .messageSent made the Lock Screen appear
         // 60+ seconds late even though the turn was already in flight.
         chatLiveActivity.startThinking()
+        // Build 135.31 (stuck "Responding…" choke point): from this line on,
+        // a Live Activity is on the Lock Screen and SOMETHING must take it
+        // down. Previously the end calls were sprinkled across ~10 individual
+        // terminal handlers, and several exits had none:
+        //   * the `guard attachments.count == ...` failure return below
+        //   * the `guard sessionEstablished else` return below
+        //   * runAttemptLoop's bare `return` on any non-stalled terminal
+        //   * both watchdogs' absolute-deadline / no-progress stall breaks
+        //     (they set .needsAttention / .waitingForHost and returned)
+        //   * an event handler skipped by its `activeAttemptID` fence
+        //   * any thrown/cancelled Task unwinding through this frame
+        // Each of those left the widget frozen on its last phase - usually
+        // "Responding…" - until the user swiped it away by hand.
+        //
+        // This defer is the single guaranteed terminal path. It is NOT
+        // unconditional: submitNextEligible tail-recurses to drain the FIFO
+        // queue (line ~1380), and the next turn calls startThinking() before
+        // the outer frames unwind. Ending there would kill the live card for a
+        // turn that is genuinely in flight. So the defer fires only when
+        // nothing owns a stream any more - which is exactly the "turn is over"
+        // condition. endStreamingLiveActivity() is idempotent, so a handler
+        // that already ended the activity makes this a no-op sweep.
+        defer { endStreamingLiveActivityIfTurnFinished() }
 
         // Render the stream placeholder before session health checks. A
         // reconnect can legitimately take a few seconds after backgrounding,
@@ -1256,6 +1325,11 @@ final class ChatStore {
             sendPhase = .failed(error)
             pendingMessageSentAt = nil
             streamingPhase = .idle
+            // Build 135.31: the host was unreachable so no stream ever started,
+            // but startThinking() already put a card on the Lock Screen. This
+            // return had no end call - a send attempted with the host down left
+            // a permanent "Thinking…"/"Responding…" card.
+            endStreamingLiveActivityIfTurnFinished()
             Logger.app.error("submitNextEligible blocked: ensureConversation returned no session")
             return
         }
@@ -1325,6 +1399,11 @@ final class ChatStore {
                     )
                 }
                 sendPhase = .failed(error)
+                // Build 135.31: non-streaming send failed. startThinking() ran
+                // at the top of submitNextEligible regardless of transport
+                // mode, so the card is up and this path never ended it. (The
+                // defer also covers it; explicit is clearer and immediate.)
+                endStreamingLiveActivityIfTurnFinished()
             } else {
                 terminalizeOutboxItem(
                     item,
@@ -1332,6 +1411,8 @@ final class ChatStore {
                     terminalMessageID: response.id
                 )
                 sendPhase = .completed
+                // Build 135.31: non-streaming send completed - same gap.
+                endStreamingLiveActivityIfTurnFinished()
                 // Build 78: sweep orphaned streaming placeholders.
                 // When delegate_task or any long tool is in-flight, the
                 // .finished handler clears activeStreams but a placeholder
@@ -1570,16 +1651,27 @@ final class ChatStore {
                     }
                 }
             }
+            // Build 135.31: server-confirmed completion found by the settle
+            // probe (the stream never delivered .finished). Had no Live
+            // Activity end call.
+            endStreamingLiveActivityIfTurnFinished()
         case "failed":
             let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed"
             failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
             sendPhase = .failed(error)
+            // Build 135.31: authoritative server-side failure discovered by the
+            // settle probe. This path had no Live Activity end call, so a turn
+            // whose stream died before any terminal event (transport death) and
+            // was only resolved here left the card up indefinitely.
+            endStreamingLiveActivityIfTurnFinished()
         case "cancelled":
             var updated = item
             updated.state = .cancelled
             updated.lastError = status.error
             outboxItems[idx] = updated
             persistOutbox()
+            // Build 135.31: server-confirmed cancellation - same gap as .failed.
+            endStreamingLiveActivityIfTurnFinished()
         default:
             // Still running — leave in-flight; the poll loop and the next
             // recovery pass reconcile it.
@@ -1869,7 +1961,20 @@ final class ChatStore {
         // UI mutations for these cases. Only .stalled(jobID) needs the
         // polling fallback below; the job is still alive on the relay
         // and may resolve via a later refresh or explicit GET.
-        guard case .stalled = terminal else { return }
+        // Build 135.31: `guard case .stalled = terminal else { return }` used to
+        // return bare. `.completed` and `.cancelledByUser` DO have Live Activity
+        // end calls inside the consumer's `.finished`/`.cancelled`/`.failed`
+        // handlers - but only when those handlers actually run. Every handler is
+        // fenced by `guard self.activeAttemptID == attemptID else { break }`, so
+        // a superseded attempt (retry, New Chat, session switch, reconnect that
+        // bumped activeAttemptID) skips the handler entirely and the activity was
+        // never ended. Same for the transport dying before any terminal event
+        // reaches the consumer. `endStreamingLiveActivity()` is idempotent, so
+        // calling it on the normal path too is free.
+        guard case .stalled = terminal else {
+            endStreamingLiveActivity(reason: "attempt loop terminal (non-stalled)")
+            return
+        }
 
         // — Stream stalled — start parallel polling —
         streamingPhase = .stalled
@@ -1915,6 +2020,12 @@ final class ChatStore {
                 }
                 activeStreams.removeAll()
                 streamingPhase = .idle
+                // Build 135.31: this is the happy exit from the stall polling
+                // loop - the outbox item settled, so the turn is over. It had
+                // no Live Activity end call, so a turn that stalled and then
+                // resolved by polling left the card frozen on "waitingForHost"
+                // (or "Responding…" if the stall fired before the phase bump).
+                endStreamingLiveActivity(reason: "poll loop settled outbox item")
                 return
             }
 
@@ -2934,6 +3045,15 @@ final class ChatStore {
                 // attempt count + connection state.
                 markStalled()
                 stallDetected = true
+                // Build 135.31: this break returns `true` (stalled) up to
+                // runAttemptLoop, which starts the polling fallback. If the
+                // poll loop then exits via a path with no end call - or the
+                // whole Task is cancelled while polling - the Lock Screen sat
+                // on needsAttention forever. The submitNextEligible defer is
+                // the backstop, but end here too the moment the queue is
+                // already drained so the card clears immediately rather than
+                // waiting for the poll loop to unwind.
+                endStreamingLiveActivityIfTurnFinished()
                 break
             }
 
@@ -2998,6 +3118,9 @@ final class ChatStore {
                 // attempt count + connection state.
                 markStalled()
                 stallDetected = true
+                // Build 135.31: same backstop as the absolute-deadline break
+                // above - clear the card now if nothing is left in flight.
+                endStreamingLiveActivityIfTurnFinished()
                 break
             }
         }
@@ -3050,6 +3173,13 @@ final class ChatStore {
                 // attempt count + connection state.
                 self.streamingPhase = .stalled
                 self.markStalled()
+                // Build 135.31: the structured watchdog never touched the Live
+                // Activity at all - it returned .stalled and the card stayed on
+                // whatever phase the last delta set ("Responding…"). Mirror the
+                // legacy watchdog: show the warning state, then let the
+                // choke-point sweep clear it if the queue is already drained.
+                self.chatLiveActivity.updatePhase(LiveActivityPhase.needsAttention.rawValue)
+                self.endStreamingLiveActivityIfTurnFinished()
                 Self.logger.warning(
                     "attemptWatchdog: absolute deadline exceeded (\(Int(wallElapsed))s) returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
                 )
@@ -3095,6 +3225,10 @@ final class ChatStore {
                 // attempt count + connection state.
                 self.streamingPhase = .stalled
                 self.markStalled()
+                // Build 135.31: as above - reflect the stall on the Lock Screen
+                // and sweep the card when nothing is left in flight.
+                self.chatLiveActivity.updatePhase(LiveActivityPhase.waitingForHost.rawValue)
+                self.endStreamingLiveActivityIfTurnFinished()
                 Self.logger.warning(
                     "attemptWatchdog: no progress for \(Int(elapsed.components.seconds))s returning .stalled(jobID=\(jobID.uuidString.prefix(8)))"
                 )

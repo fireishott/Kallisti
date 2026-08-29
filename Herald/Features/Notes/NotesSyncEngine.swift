@@ -415,8 +415,11 @@ final class NotesSyncEngine {
         // The enrichment model/provider is named in the prompt so the model
         // knows what is handling the note.
         let isNewNote = note.lastSyncedAt == nil
-        var messageText = "[Note sync from Kallisti - automatic, not a chat message]\n"
-        messageText += "Note title: \(sessionTitle)\n"
+        // Build 135.31 (smart-title fix): the note's real content leads so
+        // the gateway auto-titler derives from it, not the machine envelope.
+        // The "[Note sync from Kallisti...]" marker is appended later (after
+        // typed text) so it no longer poisons the derived title.
+        var messageText = "Note title: \(sessionTitle)\n"
         if isNewNote {
             messageText += "This is a NEW note - create the enrichment for it.\n"
         } else {
@@ -435,6 +438,11 @@ final class NotesSyncEngine {
            !typedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             messageText += "Typed text: \"\(typedText)\"\n"
         }
+
+        // Build 135.31 (smart-title fix): append the machine envelope here,
+        // AFTER the human content, so the gateway auto-titler's leading-line
+        // derivation reads real content first.
+        messageText += "[Note sync from Kallisti - automatic, not a chat message]\n"
 
         // Enrichment provider context - the model knows who it is.
         let settings = settingsStore.settings
@@ -459,7 +467,7 @@ final class NotesSyncEngine {
             var attachedList: [String] = ["drawing: note-\(note.id.uuidString.prefix(8)).jpg"]
             attachedList.append(contentsOf: attachedDescriptors)
             messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
-            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Do NOT call vision_analyze or any other vision/image tool; none exists in your toolset. Do NOT search for vision tools (no tool_search, no list_tools, no discovery for vision). If you cannot see any of the attached images at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
+            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If the message also carries an explicit `image_url: <path>` directive referencing a staged file on the gateway host and a vision tool (e.g. vision_analyze) is in your toolset on this turn, you MAY call it on that exact path to read the image bytes. Only use vision tools on paths the gateway explicitly named - never guess paths. Do NOT search for or discover vision tools (no tool_search, no list_tools, no skill_hub lookup for vision) - if no vision tool is in your toolset on this turn, rely on the inline images and the typed/recognized text. If you genuinely cannot see any of the attached images at all, fall back to the Recognized text as a draft and say the reading is uncertain.\n"
         }
         messageText += Self.enrichmentPolicy()
 
@@ -601,7 +609,10 @@ final class NotesSyncEngine {
             let trimmedTitle = stored.title.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedTitle.isEmpty || trimmedTitle == "Untitled Note" {
                 if let recognitionText = await loadLatestRecognitionText(for: note) {
-                    let sourceText = recognitionText.isEmpty ? message.content : recognitionText
+                    // Build 135.31 (smart-title fix): prefer the enrichment
+                    // reply (the real drawing reading) over the noisy OCR draft.
+                    let enriched = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let sourceText = enriched.isEmpty ? recognitionText : message.content
                     do {
                         let generated = try await client.generateSessionTitle(
                             sessionId: note.id,
