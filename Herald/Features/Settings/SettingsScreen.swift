@@ -3091,19 +3091,33 @@ private struct UpdateChangelogSheet: View {
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
 
-                        // Build 128.49: live update progress while running.
+                        // Build 135.32: determinate progress bar + live output.
                         if isUpdating || !progressLines.isEmpty {
                             sectionDivider
                             VStack(alignment: .leading, spacing: Design.Spacing.sm) {
                                 HStack(spacing: Design.Spacing.sm) {
+                                    // Build 135.32: determinate progress bar replaces spinner.
                                     if progressState == "running" || progressState == nil {
-                                        ProgressView()
-                                            .controlSize(.small)
+                                        ProgressView(value: progressFraction, total: 1.0)
+                                            .progressViewStyle(.linear)
+                                            .tint(Design.Brand.accent)
+                                            .frame(maxWidth: 120)
+                                    } else if progressState == "done" {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(Design.Colors.success)
+                                            .font(.system(size: 14))
+                                    } else if progressState == "failed" {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(Design.Colors.danger)
+                                            .font(.system(size: 14))
                                     }
                                     Text(progressTitle)
                                         .font(Design.Typography.callout.weight(.semibold))
                                         .foregroundStyle(Design.Colors.foreground)
                                     Spacer()
+                                    Text("\(progressLines.count) lines")
+                                        .font(Design.Typography.caption)
+                                        .foregroundStyle(Design.Colors.tertiaryForeground)
                                 }
                                 ScrollView {
                                     VStack(alignment: .leading, spacing: 3) {
@@ -3202,6 +3216,18 @@ private struct UpdateChangelogSheet: View {
         case "done": return "Update complete"
         case "failed": return "Update failed"
         default: return "Updating…"
+        }
+    }
+
+    /// Build 135.32: estimate progress from output line count.
+    /// Hermes update typically emits ~15-25 lines (pip install, git pull, etc.)
+    private var progressFraction: Double {
+        switch progressState {
+        case "done": return 1.0
+        case "failed": return 1.0
+        default:
+            let estimatedTotal = 20.0
+            return min(Double(progressLines.count) / estimatedTotal, 0.9)
         }
     }
 

@@ -22,6 +22,8 @@ struct ConfigEditorScreen: View {
     @State private var savedMessage: String?
     @State private var validationError: String?
     @State private var editorController: YamlEditorController?
+    @State private var showFindBar = false
+    @State private var findText = ""
     @State private var showSaveOptions = false
     @State private var isRestarting = false
     @State private var restartPhase: RestartPhase?
@@ -91,6 +93,13 @@ struct ConfigEditorScreen: View {
                         .padding(.vertical, Design.Spacing.xs)
 
                     Divider().overlay(Design.Colors.divider)
+
+                    if showFindBar {
+                        findBar
+                            .padding(.horizontal, Design.Spacing.md)
+                            .padding(.vertical, Design.Spacing.xs)
+                        Divider().overlay(Design.Colors.divider)
+                    }
 
                     YamlEditorView(
                         text: $content,
@@ -202,12 +211,60 @@ struct ConfigEditorScreen: View {
                 Task { await validate() }
             }
             .disabled(isValidationRunning)
+            toolButton("magnifyingglass", "Find") {
+                showFindBar.toggle()
+            }
             Spacer()
             Text("YAML")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .tracking(0.8)
                 .foregroundStyle(Design.Colors.tertiaryForeground)
         }
+    }
+
+    private var findBar: some View {
+        HStack(spacing: Design.Spacing.sm) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(Design.Colors.secondaryForeground)
+            TextField("Find in config...", text: $findText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, design: .monospaced))
+                .onSubmit {
+                    editorController?.findNext(findText)
+                }
+            if !findText.isEmpty {
+                Text(matchCount)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Design.Colors.tertiaryForeground)
+            }
+            Button {
+                editorController?.findPrevious(findText)
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .disabled(findText.isEmpty)
+            Button {
+                editorController?.findNext(findText)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .disabled(findText.isEmpty)
+            Button {
+                showFindBar = false
+                findText = ""
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+            }
+        }
+    }
+
+    private var matchCount: String {
+        guard !findText.isEmpty, let text = editorController?.textView?.text else { return "" }
+        let count = text.components(separatedBy: findText).count - 1
+        return count > 0 ? "\(count) found" : "0 found"
     }
 
     private func toolButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {

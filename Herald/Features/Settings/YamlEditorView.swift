@@ -54,6 +54,59 @@ final class YamlEditorController {
         apply(textView, result)
     }
 
+    // MARK: - Find (Build 135.32)
+
+    /// Find the next occurrence of `query` from the current selection and scroll to it.
+    /// Returns true if found.
+    @discardableResult
+    func findNext(_ query: String) -> Bool {
+        guard let textView, !query.isEmpty else { return false }
+        let text = textView.text ?? ""
+        let nsText = text as NSString
+        let start = NSMaxRange(textView.selectedRange)
+        let searchRange = NSRange(location: start, length: nsText.length - start)
+        let range = nsText.range(of: query, options: [], range: searchRange)
+        if range.location != NSNotFound {
+            textView.selectedRange = range
+            textView.scrollRangeToVisible(range)
+            return true
+        }
+        // Wrap around from beginning
+        let wrapRange = NSRange(location: 0, length: min(start, nsText.length))
+        let wrap = nsText.range(of: query, options: [], range: wrapRange)
+        if wrap.location != NSNotFound {
+            textView.selectedRange = wrap
+            textView.scrollRangeToVisible(wrap)
+            return true
+        }
+        return false
+    }
+
+    /// Find the previous occurrence of `query` from the current selection.
+    @discardableResult
+    func findPrevious(_ query: String) -> Bool {
+        guard let textView, !query.isEmpty else { return false }
+        let text = textView.text ?? ""
+        let nsText = text as NSString
+        let end = textView.selectedRange.location
+        let searchRange = NSRange(location: 0, length: min(end, nsText.length))
+        let range = nsText.range(of: query, options: .backwards, range: searchRange)
+        if range.location != NSNotFound {
+            textView.selectedRange = range
+            textView.scrollRangeToVisible(range)
+            return true
+        }
+        // Wrap around from end
+        let wrapRange = NSRange(location: min(end, nsText.length), length: nsText.length - min(end, nsText.length))
+        let wrap = nsText.range(of: query, options: .backwards, range: wrapRange)
+        if wrap.location != NSNotFound {
+            textView.selectedRange = wrap
+            textView.scrollRangeToVisible(wrap)
+            return true
+        }
+        return false
+    }
+
     // MARK: - Engine
 
     /// Expand the selection to whole lines, run `transform` on each touched

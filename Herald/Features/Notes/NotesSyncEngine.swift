@@ -71,7 +71,7 @@ final class NotesSyncEngine {
         case .preparing:
             return "Preparing sync"
         case .creatingSession:
-            return "Creating session"
+            return "Preparing enrichment"
         case .uploading:
             return "Uploading drawing"
         case .sending:
@@ -94,7 +94,7 @@ final class NotesSyncEngine {
         case .preparing:
             return "Preparing notes..."
         case .creatingSession:
-            return "Creating session..."
+            return "Preparing enrichment..."
         case .uploading:
             return "Uploading drawing..."
         case .sending:
