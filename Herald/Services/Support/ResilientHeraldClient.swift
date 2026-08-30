@@ -118,6 +118,10 @@ extension ResilientHeraldClient {
         try await primary.generateSessionTitle(sessionId: sessionId, userMessage: userMessage, assistantMessage: assistantMessage)
     }
 
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        try await primary.generateCreativeTitle(sessionId: sessionId, userMessage: userMessage, assistantMessage: assistantMessage)
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         try await primary.loadConversation(id: id)
     }

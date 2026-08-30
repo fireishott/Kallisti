@@ -5,6 +5,13 @@ import WidgetKit
 
 // Brand palette mirrored from KallistiTheme — widget target doesn't link the
 // main app's Design module, so we keep a minimal palette inline.
+/// Build 135.40: matches LiveActivityService.maxActivityLifetime (30 min).
+/// The widget extension cannot import the app module, so the cap lives here
+/// in the shared widget target. Keep in sync with the service constant.
+enum LiveActivityLifetimeCap {
+    static let seconds: TimeInterval = 30 * 60
+}
+
 enum KallistiBrand {
     static let accent = Color(red: 0.784, green: 0.800, blue: 0.824)    // platinum #C8CCD2
     static let foreground = Color(red: 0.941, green: 0.949, blue: 0.961) // bone #F0F2F5
@@ -168,7 +175,14 @@ struct KallistiLiveActivity: Widget {
             // Use the native timer when a start date is available —
             // this ticks in real-time without needing Live Activity updates.
             if let start = context.state.startDate {
-                Text(timerInterval: start...Date.distantFuture, countsDown: false)
+                // Build 135.40: bound the native timer so a card that was never
+                // terminally ended (app suspended mid-turn, no push) cannot
+                // tick past the 30-minute hard cap and look "live" forever.
+                // The service sweeps such cards on foreground/start; this
+                // bound is the widget-side guarantee that the timer itself
+                // stops even if the sweep has not run yet.
+                let end = start.addingTimeInterval(LiveActivityLifetimeCap.seconds)
+                Text(timerInterval: start...end, countsDown: false)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)

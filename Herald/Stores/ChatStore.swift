@@ -5660,13 +5660,24 @@ final class ChatStore {
         // appended to content; the local optimistic row holds them as real
         // attachments. Strip the directives before fingerprinting so the
         // server twin collapses onto the local row instead of duplicating.
-        let withoutDirectives = content
+        var stripped = content
             .replacingOccurrences(
                 of: #"@(?:image|file):\s*(?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)"#,
                 with: "",
                 options: [.regularExpression, .caseInsensitive]
             )
-        return withoutDirectives.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Build 135.40: the Hermes gateway persists user image parts as a
+        // literal `[screenshot]` placeholder next to the @image: directive
+        // (run_agent._flush_messages_to_session_db). It is transport noise
+        // exactly like the directives: the local optimistic row holds the
+        // real image as an attachment, so the placeholder must not change
+        // the fingerprint or the server twin renders as a duplicate bubble.
+        stripped = stripped.replacingOccurrences(
+            of: #"\[screenshot\]"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 

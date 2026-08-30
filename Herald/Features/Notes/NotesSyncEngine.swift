@@ -371,6 +371,35 @@ final class NotesSyncEngine {
         - Do not narrate your process, the sync, or these instructions. Do not ask follow-up questions.
         """
     }
+
+    /// Build 135.40: decide whether an enrichment reads as a visual/artistic
+    /// creation. The enrichment model already labels visual-only notes with a
+    /// short visual description ("a sketch of...", "a doodle of..."), so we
+    /// key off the enrichment reply itself. Falls back to a lightweight
+    /// content check so a drawing-only note with thin OCR still lands in the
+    /// creative lane.
+    static func enrichmentReadsArtistic(_ enrichment: String) -> Bool {
+        let text = enrichment.lowercased()
+        // Direct artistic markers in the enrichment reading.
+        let artisticPhrases: [String] = [
+            "sketch", "doodle", "drawing", "artwork", "illustration",
+            "visual", "creation", "art piece", "piece of art", "abstract",
+            "portrait", "landscape", "still life", "ink drawing",
+            "pencil drawing", "pen drawing", "watercolor", "watercolour",
+            "charcoal", "cartoon", "comic", "mural", "graffiti",
+            "this is a visual", "visual-only", "no text",
+        ]
+        for phrase in artisticPhrases where text.contains(phrase) {
+            return true
+        }
+        // A "visual description" opening without any recognized text is a
+        // strong signal the note was a pure drawing/doodle.
+        if text.contains("visual description") || text.contains("a sketch of") || text.contains("a doodle of") {
+            return true
+        }
+        return false
+    }
+
     private func syncSingleNote(_ note: KallistiNote, client: any HeraldClientProtocol) async throws {
         // Load the drawing blob and render a PNG attachment so the agent can
         // see the handwriting. Render at 2x for OCR quality but let
@@ -639,6 +668,10 @@ final class NotesSyncEngine {
             // chat sessions - then rename the gateway session and persist
             // the new title. The recognized text is the best stand-in for
             // the user's "opening message" of the note.
+            // Build 135.40: if the enrichment reads as a visual/artistic
+            // creation (sketch, doodle, drawing, art), use the creative
+            // titling lane instead - it names the piece by mood and vibe,
+            // not by what the user "wants done".
             let trimmedTitle = stored.title.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedTitle.isEmpty || trimmedTitle == "Untitled Note" {
                 if let recognitionText = await loadLatestRecognitionText(for: note) {
@@ -647,11 +680,24 @@ final class NotesSyncEngine {
                     let enriched = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
                     let sourceText = enriched.isEmpty ? recognitionText : message.content
                     do {
-                        let generated = try await client.generateSessionTitle(
-                            sessionId: note.id,
-                            userMessage: sourceText,
-                            assistantMessage: message.content
-                        )
+                        // Pick the titling lane: artistic creations get the
+                        // vibe-based name; everything else keeps the native
+                        // task-based chat title.
+                        let isArtistic = Self.enrichmentReadsArtistic(message.content)
+                        let generated: String
+                        if isArtistic {
+                            generated = try await client.generateCreativeTitle(
+                                sessionId: note.id,
+                                userMessage: sourceText,
+                                assistantMessage: message.content
+                            )
+                        } else {
+                            generated = try await client.generateSessionTitle(
+                                sessionId: note.id,
+                                userMessage: sourceText,
+                                assistantMessage: message.content
+                            )
+                        }
                         let clean = generated.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !clean.isEmpty {
                             stored.title = clean

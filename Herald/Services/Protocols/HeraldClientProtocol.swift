@@ -89,6 +89,10 @@ protocol HeraldClientProtocol {
     /// Generate a concise title via LLM for a session.
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String
 
+    /// Generate a creative/vibe-based title for an artistic creation note
+    /// (sketch, doodle, drawing). Build 135.40.
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String
+
     /// Load a specific conversation by session ID.
     func loadConversation(id: UUID) async throws -> Conversation
 

@@ -58,11 +58,21 @@ final class CronStore {
             if let nativeFeatureClient = nativeFeatureClientProvider() {
                 jobs = try await nativeFeatureClient.managedCronJobs().map { CronJob(id: $0.id, name: $0.name, schedule: $0.schedule, prompt: $0.prompt, enabled: $0.enabled, lastRun: $0.lastRun, nextRun: $0.nextRun, lastResult: $0.lastResult) }
             } else {
-                guard let apiClient, let token = await accessTokenProvider() else { errorMessage = "Not connected to a relay."; return }
+                guard let apiClient, let token = await accessTokenProvider() else {
+                    // Build 135.40: keep the loaded list on connectivity miss.
+                    errorMessage = "Not connected to a relay."
+                    return
+                }
                 let response: CronListResponse = try await apiClient.get(path: "cron", accessToken: token)
                 jobs = response.jobs
             }
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            // Build 135.40: failed refresh keeps the existing list so back-nav
+            // never blanks a populated cron list to the error/empty state.
+            if jobs.isEmpty {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func createJob(name: String, schedule: String, prompt: String) async throws {
@@ -85,6 +95,21 @@ final class CronStore {
         guard let apiClient, let token = await accessTokenProvider() else { errorMessage = "Not connected to a relay."; return }
         let response: CronJobResponse = try await apiClient.patch(path: "cron/\(job.id)", body: CronUpdateBody(enabled: !job.enabled), accessToken: token)
         if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = response.job }
+    }
+
+    /// Build 135.40: persist name/schedule/prompt edits from the rich editor.
+    func updateJobContent(id: String, name: String, schedule: String, prompt: String) async throws {
+        if let nativeFeatureClient = nativeFeatureClientProvider() {
+            let updated = try await nativeFeatureClient.updateManagedCronJobContent(id: id, name: name, schedule: schedule, prompt: prompt)
+            if let index = jobs.firstIndex(where: { $0.id == id }) {
+                jobs[index] = CronJob(id: updated.id, name: updated.name, schedule: updated.schedule, prompt: updated.prompt, enabled: jobs[index].enabled, lastRun: jobs[index].lastRun, nextRun: jobs[index].nextRun, lastResult: jobs[index].lastResult)
+            }
+            return
+        }
+        guard let apiClient, let token = await accessTokenProvider() else { errorMessage = "Not connected to a relay."; return }
+        struct CronUpdateContentBody: Encodable { let name: String; let schedule: String; let prompt: String }
+        let response: CronJobResponse = try await apiClient.patch(path: "cron/\(id)", body: CronUpdateContentBody(name: name, schedule: schedule, prompt: prompt), accessToken: token)
+        if let index = jobs.firstIndex(where: { $0.id == id }) { jobs[index] = response.job }
     }
 
     func deleteJob(_ job: CronJob) async throws {

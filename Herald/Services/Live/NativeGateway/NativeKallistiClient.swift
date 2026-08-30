@@ -2101,6 +2101,75 @@ final class NativeKallistiClient: HeraldClientProtocol {
         return ""
     }
 
+    /// Build 135.40: artistic-creation titling lane. When a note is a visual
+    /// creation (sketch, doodle, drawing, art), the generic chat titler is the
+    /// wrong tool - it names what the user wants DONE, not what the piece IS.
+    /// This uses the same llm.oneshot title_generation path (inherits the
+    /// session model, cheap/fast tier, 64-token cap) but with a prompt that
+    /// names the piece by its mood, energy, and subject.
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        guard let client else { throw NativeGatewayClientError.notConnected }
+        guard let nativeId = await idMap.nativeId(for: sessionId) else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        // Same one-shot path as generateSessionTitle; only the prompt differs.
+        // The reply shape is identical ({"title": "..."}) so the same
+        // extraction + fallback machinery applies.
+        let instructions = """
+        You name visual artworks. Given a description of a drawing, sketch, doodle, or visual creation, write a short evocative title that captures the piece's mood, energy, and subject.
+
+        Rules:
+        - 3 to 7 words, sentence case (capitalize only the first word and proper nouns).
+        - Lead with the FEEL or VIBE of the piece, then the subject: "Electric Sunset Bloom", "Quiet Forest Descent", "Restless City Glow".
+        - Name what the piece IS or FEELS like - never describe it literally like a caption.
+        - Keep it original and poetic, not generic: no "Untitled", no "Sketch 1", no "Abstract Art".
+        - Do not mention the medium (no "Pencil Drawing", no "Sketch of").
+        - No trailing punctuation, no quotes, no 'Title:' prefix.
+        - Always produce something, even for a bare squiggle.
+        - Write the title in the same language as the description.
+        Good: {"title": "Electric Sunset Bloom"}
+        Good: {"title": "Restless City Glow"}
+        Good: {"title": "Whisper of the Deep"}
+        Too caption-like: {"title": "Drawing of a sunset with orange and pink colors"}
+        Too generic: {"title": "Abstract art"}
+
+        Reply with JSON only: {"title": "..."}
+        """
+        // Cap the input so a long enrichment cannot blow the one-shot token
+        // budget - naming only needs the opening feel of the piece.
+        let input = String(userMessage.prefix(2000))
+        let response = try await client.send(
+            method: "llm.oneshot",
+            params: [
+                "session_id": nativeId,
+                "task": "title_generation",
+                "instructions": instructions,
+                "input": input,
+                "max_tokens": "64",
+                "temperature": "0.7"
+            ],
+            timeoutNanos: 30_000_000_000
+        )
+        if let error = response.error { throw error }
+        guard let result = response.result else { throw NativeGatewayClientError.unexpectedFrame }
+        let data = try JSONEncoder().encode(result)
+        struct OneshotEnvelope: Decodable {
+            let text: String?
+        }
+        let envelope = try JSONDecoder().decode(OneshotEnvelope.self, from: data)
+        guard let rawText = envelope.text else { throw NativeGatewayClientError.unexpectedFrame }
+        let generated = Self.extractTitle(from: rawText)
+        if !generated.isEmpty {
+            return generated
+        }
+        // Same fallback as the chat lane: never leave an untitled note blank.
+        let fallback = Self.fallbackTitle(from: userMessage)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return ""
+    }
+
     /// Derive a short title from the note's recognized/enriched text when the
     /// model one-shot fails. Picks the first 3-6 meaningful words, sentence
     /// case, strips the "[Note sync from Kallisti" prefix and OCR noise.
@@ -2988,7 +3057,16 @@ final class NativeKallistiClient: HeraldClientProtocol {
             )
             mutable.replaceCharacters(in: match.range, with: "")
         }
-        return (mutable as String, attachments)
+        // Build 135.40: the gateway persists user image parts as a literal
+        // `[screenshot]` placeholder after the @image: directive. Strip it
+        // here too so the visible bubble never shows dead placeholder text
+        // (the attachment itself renders via the media URL).
+        let cleaned = (mutable as String).replacingOccurrences(
+            of: #"\[screenshot\]"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return (cleaned, attachments)
     }
 
     /// Classify a media path by extension into a kind + MIME type so the
