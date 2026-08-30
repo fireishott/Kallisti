@@ -72,6 +72,84 @@ struct ChatInputBar: View {
         return "Send message"
     }
 
+    /// Build 135.41: markdown formatting toolbar (bold, italic, code, bullet,
+    /// link). Wraps the composer's current selection; falls back to inserting
+    /// the wrapper pair at the cursor when nothing is selected.
+    private var formatToolbar: some View {
+        HStack(spacing: Design.Spacing.xs) {
+            formatButton("B", prefix: "**", suffix: "**", label: "Bold")
+            formatButton("I", prefix: "*", suffix: "*", label: "Italic")
+            formatButton("</>", prefix: "`", suffix: "`", label: "Code")
+            formatButton("•", prefix: "- ", suffix: "", label: "Bullet")
+            formatButton("Link", prefix: "[", suffix: "](https://)", label: "Link")
+            Spacer()
+        }
+        .padding(.horizontal, Design.Spacing.xs)
+        .padding(.vertical, 2)
+    }
+
+    private func formatButton(_ title: String, prefix: String, suffix: String, label: String) -> some View {
+        Button {
+            formatText(prefix: prefix, suffix: suffix)
+        } label: {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Design.Colors.secondaryForeground)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Design.Colors.surface2, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Build 135.41: find the composer UITextView and apply markdown wrapping.
+    /// Uses the accessibility identifier the representable sets ("chat.composer").
+    private func formatText(prefix: String, suffix: String) {
+        guard let textView = Self.findComposerTextView() else { return }
+        let selected = textView.selectedRange
+        let full = textView.text as NSString
+        let selectedText = selected.length > 0
+            ? full.substring(with: selected)
+            : ""
+        let replacement: String
+        if selectedText.isEmpty {
+            replacement = prefix + suffix
+        } else {
+            replacement = prefix + selectedText + suffix
+        }
+        let newText = full.replacingCharacters(in: selected, with: replacement)
+        textView.text = newText
+        text = newText
+        let innerStart = selected.location + prefix.count
+        let innerLen = selectedText.isEmpty ? 0 : selectedText.count
+        textView.selectedRange = NSRange(location: innerStart, length: innerLen)
+        textView.invalidateIntrinsicContentSize()
+        textView.isScrollEnabled = PasteAwareComposerTextView.needsScroll(textView)
+        isFocused.wrappedValue = true
+    }
+
+    private static func findComposerTextView() -> UITextView? {
+        guard let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+              let window = windowScene.windows.first(where: { $0.isKeyWindow })
+        else { return nil }
+        return findTextView(in: window)
+    }
+
+    private static func findTextView(in view: UIView) -> UITextView? {
+        if let tv = view as? UITextView, tv.accessibilityIdentifier == "chat.composer" {
+            return tv
+        }
+        for subview in view.subviews {
+            if let found = findTextView(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
+
     /// Parses the command and any trailing argument from the text field.
     private var parsedSlashInput: (command: String, argument: String?) {
         let raw = String(text.dropFirst()).lowercased()
@@ -122,6 +200,13 @@ struct ChatInputBar: View {
                     onSlashCommand(command, arg)
                 }
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            // Build 135.41: markdown formatting toolbar. Appears once the
+            // user has typed text. Applies markdown around the selection in
+            // the composer's UITextView.
+            if !text.isEmpty && !isSlashMode {
+                formatToolbar
             }
 
             // Composer container. Build 120: iMessage-style. The text field is

@@ -20,6 +20,19 @@ final class SkillsStore {
         let skills: [HeraldSkill]
     }
 
+    /// Build 135.41: full skill detail (SKILL.md content) from the
+    /// connector's /v1/skills/{name} endpoint.
+    struct SkillDetail: Decodable, Sendable {
+        let name: String
+        let path: String?
+        let description: String?
+        let content: String?
+    }
+
+    private struct SkillDetailEnvelope: Decodable {
+        let data: SkillDetail
+    }
+
     private(set) var skills: [HeraldSkill] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -60,17 +73,20 @@ final class SkillsStore {
         defer { isLoading = false }
 
         do {
-            if let nativeFeatureClient = nativeFeatureClientProvider() {
-                skills = try await nativeFeatureClient.managedSkills().map { HeraldSkill(name: $0.name, description: $0.description, path: $0.path) }
-            } else {
-                guard let apiClient, let token = await accessTokenProvider() else {
-                    // Build 135.40: keep whatever we already have on a
-                    // connectivity miss instead of nuking the list to empty.
-                    errorMessage = "Not connected to a relay."
-                    return
-                }
+            // Build 135.41: prefer the REST /v1/skills catalog (real name +
+            // description + path from the connector) over the native gateway
+            // path. The gateway's skills.manage(action:"list") returns only
+            // {category: [names]} — no descriptions, no paths — which made the
+            // iOS Skills browser show category names as descriptions and
+            // empty detail shells.
+            if let apiClient, let token = await accessTokenProvider() {
                 let response: SkillCatalogResponse = try await apiClient.get(path: "skills", accessToken: token)
                 skills = response.skills
+            } else if let nativeFeatureClient = nativeFeatureClientProvider() {
+                skills = try await nativeFeatureClient.managedSkills().map { HeraldSkill(name: $0.name, description: $0.description, path: $0.path) }
+            } else {
+                errorMessage = "Not connected to a relay."
+                return
             }
             lastLoadedAt = .now
         } catch {
@@ -83,6 +99,28 @@ final class SkillsStore {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Build 135.41: fetch one skill's SKILL.md content via the REST
+    /// /v1/skills/{name} endpoint (falls back to native gateway if REST is
+    /// unavailable). Returns the parsed detail or throws.
+    func loadDetail(name: String) async throws -> SkillDetail {
+        if let apiClient, let token = await accessTokenProvider() {
+            do {
+                let envelope: SkillDetailEnvelope = try await apiClient.get(path: "skills/\(name)", accessToken: token)
+                return envelope.data
+            } catch {
+                // Fall through to native gateway on REST failure
+            }
+        }
+        if let nativeFeatureClient = nativeFeatureClientProvider() {
+            // Native gateway has no per-skill content endpoint; return a
+            // minimal detail from the list entry so the view still renders.
+            if let skill = skills.first(where: { $0.name == name }) {
+                return SkillDetail(name: skill.name, path: skill.path, description: skill.description, content: nil)
+            }
+        }
+        throw URLError(.badURL)
     }
 
     func reset() {
