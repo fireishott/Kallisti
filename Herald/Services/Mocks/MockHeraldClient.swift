@@ -170,6 +170,10 @@ extension MockHeraldClient {
         "New Chat"
     }
 
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        "New Creation"
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         currentConversation ?? DemoData.sampleConversation
     }

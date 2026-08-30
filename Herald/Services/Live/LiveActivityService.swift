@@ -56,6 +56,14 @@ final class LiveActivityService {
     /// it requires user input after the previous turn settled.
     private var endedAt: Date?
     private static let restartSuppressionWindow: TimeInterval = 1.5
+    /// Build 135.40: hard cap on a single Live Activity lifetime. A turn
+    /// that dies silently while the app is suspended (SSE task frozen, no
+    /// terminal event, no push) would otherwise leave the card on the Lock
+    /// Screen forever with the elapsed timer ticking past 1h (observed
+    /// 2026-08-29: "Using tools..." stuck at 1:00:07). The OS keeps a
+    /// stale activity visible but the app can end it - so we sweep on every
+    /// start/update and on foreground, dismissing anything older than this.
+    private static let maxActivityLifetime: TimeInterval = 30 * 60
 
     /// True when a terminal `endActivity()` ran within the suppression window.
     private var isWithinRestartSuppression: Bool {
@@ -73,6 +81,8 @@ final class LiveActivityService {
         guard isAvailable else { return }
         // Build 135.31: never resurrect an activity we just terminally ended.
         guard !isWithinRestartSuppression else { return }
+        // Build 135.40: sweep any stale activity before starting a new one.
+        endStaleActivitiesIfNeeded()
         endedAt = nil
         lockScreenPhase = .thinking  // voice starts in thinking/model-loading
         let now = Date.now
@@ -118,6 +128,8 @@ final class LiveActivityService {
         guard isAvailable else { return }
         // Build 135.31: never resurrect an activity we just terminally ended.
         guard !isWithinRestartSuppression else { return }
+        // Build 135.40: sweep any stale activity before starting a new one.
+        endStaleActivitiesIfNeeded()
         endedAt = nil
         lockScreenPhase = .thinking
         let now = Date.now
@@ -169,6 +181,8 @@ final class LiveActivityService {
         guard isAvailable else { return }
         // Build 135.31: never resurrect an activity we just terminally ended.
         guard !isWithinRestartSuppression else { return }
+        // Build 135.40: sweep any stale activity before starting a new one.
+        endStaleActivitiesIfNeeded()
         endedAt = nil
         lockScreenPhase = .usingTools
         let now = Date.now
@@ -335,7 +349,63 @@ final class LiveActivityService {
     /// Called when the app returns to foreground. No timer to restart —
     /// the widget uses Text(timerInterval:) which ticks natively via the OS.
     func handleAppDidBecomeActive() {
+        // Build 135.40: on foreground, sweep any activity that outlived the
+        // hard cap. A suspended app cannot process terminal events, so the
+        // card may be orphaned; this is the catch-all that clears it.
+        endStaleActivitiesIfNeeded()
         adoptExistingActivityIfNeeded()
+    }
+
+    /// Build 135.40: dismiss every Live Activity whose `startDate` is older
+    /// than `maxActivityLifetime`. The elapsed timer on the Lock Screen ticks
+    /// natively (Text(timerInterval:)) so a card with no terminal event keeps
+    /// counting forever; this sweep is the backstop that guarantees a stuck
+    /// "Using tools..." card cannot outlive the cap. Idempotent and safe to
+    /// call from any start/update/lifecycle point.
+    func endStaleActivitiesIfNeeded() {
+        let now = Date.now
+        let staleActivities = Activity<KallistiActivityAttributes>.activities.filter { activity in
+            // Only sweep activities that are still active (not already ended).
+            guard activity.activityState != .ended else { return false }
+            // An activity with no startDate (already terminal state) is stale.
+            guard let start = activity.content.state.startDate else { return true }
+            return now.timeIntervalSince(start) > Self.maxActivityLifetime
+        }
+        guard !staleActivities.isEmpty else { return }
+        let finalContent = ActivityContent(
+            state: KallistiActivityAttributes.ContentState(
+                status: LiveActivityPhase.done.rawValue,
+                toolName: nil,
+                elapsedSeconds: 0,
+                startDate: nil,
+                sessionType: "chat",
+                emoji: "\u{2705}"
+            ),
+            staleDate: nil
+        )
+        // Build 135.40 fix: end the stale activities from a detached task,
+        // matching the file's established pattern in updateActivity() -
+        // capture only the Sendable activity IDs, not the main-actor-isolated
+        // Activity objects, then resolve them inside the task. This avoids
+        // both "sending 'activity' risks causing data races" (previous
+        // @MainActor Task wrapper) and "async call in a function that does
+        // not support concurrency" (direct await in this sync method).
+        let staleIDs = staleActivities.map(\.id)
+        Task.detached {
+            for id in staleIDs {
+                for activity in Activity<KallistiActivityAttributes>.activities where activity.id == id {
+                    await activity.end(finalContent, dismissalPolicy: .immediate)
+                }
+            }
+        }
+        // If the current activity was swept, drop our reference so a future
+        // startThinking() creates a fresh one instead of updating a ghost.
+        if let currentActivity,
+           currentActivity.content.state.startDate.map({ now.timeIntervalSince($0) > Self.maxActivityLifetime }) == true {
+            self.currentActivity = nil
+            self.startedAt = nil
+            self.stopHeartbeat()
+        }
     }
 
     /// Build 64: called when the app returns to foreground with a stream still

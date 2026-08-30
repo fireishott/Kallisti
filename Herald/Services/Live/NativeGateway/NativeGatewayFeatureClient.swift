@@ -261,6 +261,48 @@ struct NativeGatewayFeatureClient {
         return ManagedCronJob(id: id, name: "", schedule: "", prompt: "", enabled: enabled, lastRun: nil, nextRun: nil, lastResult: nil)
     }
 
+    /// Build 135.40: edit a cron job's name/schedule/prompt via
+    /// `cron.manage(action:"update")` — the gateway's cronjob() tool
+    /// supports full field updates. Returns the updated job (caller should
+    /// re-fetch the full list for accurate lastRun/nextRun state).
+    func updateManagedCronJobContent(id: String, name: String?, schedule: String?, prompt: String?) async throws -> ManagedCronJob {
+        guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
+        struct Params: Encodable {
+            let action: String
+            let job_id: String
+            let name: String?
+            let schedule: String?
+            let prompt: String?
+        }
+        struct Response: Decodable {
+            struct Job: Decodable {
+                let job_id: String?
+                let name: String?
+                let schedule: String?
+            }
+            let success: Bool
+            let job: Job?
+            let error: String?
+        }
+        let result = try decodeResult(await client.send(
+            method: "cron.manage",
+            params: Params(action: "update", job_id: id, name: name, schedule: schedule, prompt: prompt)
+        ), as: Response.self)
+        guard result.success else {
+            throw NativeGatewayClientError.unexpectedFrame
+        }
+        return ManagedCronJob(
+            id: result.job?.job_id ?? id,
+            name: result.job?.name ?? name ?? "",
+            schedule: result.job?.schedule ?? schedule ?? "",
+            prompt: prompt ?? "",
+            enabled: true,
+            lastRun: nil,
+            nextRun: nil,
+            lastResult: nil
+        )
+    }
+
     /// Build 135.32: retargeted from dead `cron.delete` to `cron.manage(action:"remove")`.
     func deleteManagedCronJob(id: String) async throws {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }

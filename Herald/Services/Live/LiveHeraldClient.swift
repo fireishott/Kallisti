@@ -1259,6 +1259,14 @@ extension LiveHeraldClient {
         return title
     }
 
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        // Build 135.40: same remote generate-title endpoint as the chat lane.
+        // The server-side handler drives the same llm.oneshot path; the
+        // creative prompt lives client-side on the native path. The relay
+        // endpoint takes the same body shape, so reuse it here.
+        try await generateSessionTitle(sessionId: sessionId, userMessage: userMessage, assistantMessage: assistantMessage)
+    }
+
     func loadConversation(id: UUID) async throws -> Conversation {
         let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
             try await self.apiClient.get(

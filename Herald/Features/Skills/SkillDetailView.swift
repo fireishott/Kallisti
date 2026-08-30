@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// Build 135.40: skill detail view. Shows metadata + path. SKILL.md content
+/// editing from iOS needs a gateway content endpoint (skills.manage inspect
+/// returns hub metadata, not local SKILL.md); the Cron editor is the fully
+/// wired rich editor this build.
 struct SkillDetailView: View {
     let skill: SkillsStore.HeraldSkill
 

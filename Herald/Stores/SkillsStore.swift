@@ -63,12 +63,26 @@ final class SkillsStore {
             if let nativeFeatureClient = nativeFeatureClientProvider() {
                 skills = try await nativeFeatureClient.managedSkills().map { HeraldSkill(name: $0.name, description: $0.description, path: $0.path) }
             } else {
-                guard let apiClient, let token = await accessTokenProvider() else { errorMessage = "Not connected to a relay."; return }
+                guard let apiClient, let token = await accessTokenProvider() else {
+                    // Build 135.40: keep whatever we already have on a
+                    // connectivity miss instead of nuking the list to empty.
+                    errorMessage = "Not connected to a relay."
+                    return
+                }
                 let response: SkillCatalogResponse = try await apiClient.get(path: "skills", accessToken: token)
                 skills = response.skills
             }
             lastLoadedAt = .now
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            // Build 135.40: a failed refresh must NOT clear the loaded list.
+            // The old code left `skills` as-is but the view had no error UI,
+            // so a transient RPC failure during back-nav rendered the bare
+            // yellow-triangle empty state (and a successful list vanished).
+            // Surface the error for the view; the stale list stays visible.
+            if skills.isEmpty {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func reset() {
