@@ -234,10 +234,12 @@ struct NativeGatewayFeatureClient {
     }
 
     /// Build 135.32: retargeted from dead `cron.list` to `cron.manage(action:"list")`.
+    /// Build 135.41: pass include_disabled=true so paused jobs stay visible in
+    /// the iOS Cron browser (they must remain re-enableable, not vanish).
     func managedCronJobs() async throws -> [ManagedCronJob] {
         guard let client = await clientProvider() else { throw NativeGatewayClientError.notConnected }
         struct Response: Decodable { let jobs: [ManagedCronJob] }
-        return try decodeResult(await client.send(method: "cron.manage", params: ["action": "list"]), as: Response.self).jobs
+        return try decodeResult(await client.send(method: "cron.manage", params: ["action": "list", "include_disabled": "true"]), as: Response.self).jobs
     }
 
     /// Build 135.32: retargeted from dead `cron.create` to `cron.manage(action:"add")`.
