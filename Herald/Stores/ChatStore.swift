@@ -365,6 +365,20 @@ final class ChatStore {
     /// the turn is abandoned).
     private static let phantomProbeInterval: TimeInterval = 60
 
+    /// Build 135.45: last time the watchdog probed the server for a parked
+    /// clarify. The clarify.request WS event can be lost (transport blip,
+    /// reconnect race, proxy idle reap) while the gateway turn stays parked
+    /// waiting for the user. When that happens the spinner keeps spinning and
+    /// no ClarifyCard appears - the turn hangs until clarify_timeout (600s)
+    /// kills it server-side. Throttled to clarifyProbeInterval so the probe
+    /// does not hammer session.resume on every watchdog tick.
+    private var lastClarifyProbeAt: Date = .distantPast
+
+    /// Build 135.45: minimum spacing between parked-clarify probes. 20s means
+    /// a lost clarify.request surfaces the card within ~20s of the park
+    /// instead of 10 minutes later (or never).
+    private static let clarifyProbeInterval: TimeInterval = 20
+
     /// Build 84 Option C-B (keep-awake re-arm): background task that keeps
     /// the process alive while a stream is in flight. Re-armed on every
     /// streaming progress event so iOS does not suspend the process (and
@@ -3089,6 +3103,20 @@ final class ChatStore {
                     appendLog(level: .info, "watchdog: no progress for \(Int(elapsed.components.seconds))s - probing socket before declaring stall")
                     await self.heraldClient.reconnectIfNeeded()
                 }
+                // Build 135.45: a parked clarify keeps the tool in flight,
+                // so the stall watchdog (gated on activeToolCount == 0 below)
+                // never fires and the turn hangs until clarify_timeout. Probe
+                // the server for a parked clarify whenever the stream is
+                // quiet - even mid-tool. If found, surface the card and let
+                // the loop keep waiting for the user's answer instead of
+                // declaring a stall or spinning forever.
+                if self.pendingClarify == nil,
+                   await self.probeParkedClarifyIfNeeded() {
+                    appendLog(level: .info, "watchdog: parked clarify surfaced - turn is waiting on the user")
+                    self.streamingProgressAt = .now
+                    self.streamingPhase = .streaming
+                    continue
+                }
                 // Build 128.45: harden the foreground stream. Before declaring
                 // a visible stall, ask the SERVER whether the job is actually
                 // still running. A WS blip (proxy idle reap, cell handoff,
@@ -4594,6 +4622,37 @@ final class ChatStore {
     /// exists, refreshes the active conversation on a backoff until the server
     /// reports idle. Idempotent: no-ops when local polling or a stream already
     /// owns the thread, and never overlaps an existing server-turn task.
+    /// Build 135.45: ask the server whether the current session is parked on
+    /// a clarify question, and if so surface the ClarifyCard + settle the
+    /// streaming placeholder. This is the safety net for a lost
+    /// clarify.request WS event: the gateway parks the turn and emits the
+    /// event, but if it never lands in StreamEventHandler, pendingClarify
+    /// stays nil and the user sees a stuck spinner with no way to answer.
+    /// Returns true when a parked clarify was found and surfaced.
+    @discardableResult
+    func probeParkedClarifyIfNeeded() async -> Bool {
+        guard pendingClarify == nil else { return false }
+        guard Date.now.timeIntervalSince(lastClarifyProbeAt) >= Self.clarifyProbeInterval else { return false }
+        lastClarifyProbeAt = .now
+        guard let pending = await heraldClient.fetchPendingClarify(),
+              !pending.question.isEmpty else { return false }
+        pendingClarify = pending
+        appendLog(level: .info, "Clarify card surfaced from watchdog probe (request \(pending.requestID.prefix(8)))")
+        // Settle any streaming placeholder row so the "Thinking... Ns"
+        // bubble dies - the model is not working, the USER is up.
+        if var conv = conversation {
+            for idx in conv.messages.indices where conv.messages[idx].isStreaming {
+                conv.messages[idx].isStreaming = false
+                conv.messages[idx].toolActivity = "awaiting your answer"
+            }
+            conversation = conv
+        }
+        streamingPhase = .streaming
+        clearStall()
+        recordStreamingActivity(label: "awaiting your answer")
+        return true
+    }
+
     func startServerTurnWatchIfNeeded() async {
         guard isPollingEnabled else { return }
         guard conversation != nil else { return }
@@ -4717,6 +4776,20 @@ final class ChatStore {
                        !pending.question.isEmpty {
                         self.pendingClarify = pending
                         self.appendLog(level: .info, "Clarify card re-shown from server snapshot")
+                    }
+                    // Build 135.45: belt-and-suspenders - run the shared probe
+                    // too so the placeholder row settles and the phase clears
+                    // even when the snapshot path above already set the card.
+                    if self.pendingClarify != nil {
+                        if var conv = self.conversation {
+                            for idx in conv.messages.indices where conv.messages[idx].isStreaming {
+                                conv.messages[idx].isStreaming = false
+                                conv.messages[idx].toolActivity = "awaiting your answer"
+                            }
+                            self.conversation = conv
+                        }
+                        self.streamingPhase = .streaming
+                        self.clearStall()
                     }
                     break
                 }
