@@ -92,10 +92,16 @@ if [ ! -f /tmp/ExportOptions-b90-manual.plist ]; then
   cp /tmp/ExportOptionsManual.plist /tmp/ExportOptions-b90-manual.plist
 fi
 
+# FIX 2026-08-31: archive WITH signing. CODE_SIGNING_ALLOWED=NO produced an
+# export with no embedded.mobileprovision, so the re-sign loop died under
+# set -e (every nightly since this flag was introduced ended at re-sign with
+# exit 1 and no resigned IPA). Xcode now embeds the app-store profile, and
+# the re-sign loop below works on the embedded profiles.
 xcodebuild -project Herald.xcodeproj -scheme Kallisti \
   -destination "generic/platform=iOS" -configuration Release \
   -archivePath /tmp/Kallisti_nightly.xcarchive \
-  -allowProvisioningUpdates CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+  -allowProvisioningUpdates \
+  CODE_SIGN_IDENTITY="iPhone Distribution: C Freeman (58U7UPFS53)" \
   archive 2>&1 | tail -2
 
 echo "--- export ---"
@@ -113,6 +119,10 @@ MAIN="Kallisti.app"
 for ext in "$MAIN/PlugIns/"*.appex; do
   [ -d "$ext" ] || continue
   name=$(basename "$ext")
+  if [ ! -f "$ext/embedded.mobileprovision" ]; then
+    echo "WARN: $name has no embedded.mobileprovision - skipping re-sign"
+    continue
+  fi
   security cms -D -i "$ext/embedded.mobileprovision" -o /tmp/prov.plist 2>/dev/null
   plutil -extract Entitlements xml1 -o /tmp/ent.plist /tmp/prov.plist
   codesign -f -s "iPhone Distribution: C Freeman (58U7UPFS53)" --entitlements /tmp/ent.plist "$ext"
