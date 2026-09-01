@@ -3226,6 +3226,23 @@ final class ChatStore {
             let stallTimeout: Duration = self.sendPhase == .waitingForHermes
                 ? Self.thinkingOnlyTimeout
                 : Self.watchdogTimeout
+            // Build 135.46: probe for a parked clarify BEFORE the stall
+            // logic. This watchdog survives stream failure (unlike the
+            // legacy continuous watchdog, which exits when the consumer
+            // finishes), so it is the last line of defense when the WS
+            // died right as the clarify.request event was emitted - the
+            // exact failure seen 2026-08-31 17:36 (CommandCode error +
+            // stuck Thinking bubble). A parked clarify keeps the tool in
+            // flight, so activeToolCount stays > 0 and the stall gate
+            // below would never fire; probe regardless of tool count.
+            if self.pendingClarify == nil,
+               Date.now.timeIntervalSince(self.lastClarifyProbeAt) >= Self.clarifyProbeInterval,
+               await self.probeParkedClarifyIfNeeded() {
+                appendLog(level: .info, "attemptWatchdog: parked clarify surfaced - turn is waiting on the user")
+                self.streamingProgressAt = .now
+                self.streamingPhase = .streaming
+                continue
+            }
             // Build 55: same tool-in-flight exemption as the continuous
             // watchdog - long tool calls (image gen) legitimately run minutes
             // with no deltas, so the no-progress stall must not fire while a
