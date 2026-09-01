@@ -2534,8 +2534,63 @@ final class NativeKallistiClient: HeraldClientProtocol {
                     Self.logger.warning("ensureConversation: transport failure for \(id.uuidString.prefix(8)) (\(error.localizedDescription)) — keeping idMap")
                     return false
                 }
-                // Definitive probe failure (non-transport): treat as stale
-                // and fall through to recreate, as before.
+                // Definitive probe failure (non-transport): fall through to the resume attempt below before recreating.
+            }
+            // Build 135.47 (fork-on-reply fix): a non-transport probe failure
+            // here used to delete the idMap entry and mint a BRAND-NEW
+            // session, so a reply to a previous chat forked into a fresh,
+            // history-less thread (2026-08-31: "Fix dashboard update issue"
+            // session 20260831_180907 minted on the reply to the
+            // 17:52/17:34 warehouse threads). The gateway detaches/reaps
+            // session runtimes after an idle grace and its session-scoped
+            // RPCs answer "not in memory—client should resume the stored
+            // session". The stored conversation is still fully alive in
+            // state.db; the server is ASKING for session.resume.
+            //
+            // ensureSessionForSwitch got exactly this fix in Build 54 (tap
+            // old chat = resume, history intact) but the SEND path never
+            // did—so the thread LOOKED fine and the next message forked.
+            // Mirror the Build 54 block: try session.resume with the FULL
+            // stored session key first (the gateway's db lookup matches by
+            // stored key, not the short live id), fall back to the short
+            // id, and only when resume also fails drop to createSession.
+            // Re-point the idMap at the resumed live id so the following
+            // prompt.submit lands in the resumed session.
+            do {
+                guard let client else { throw NativeGatewayClientError.notConnected }
+                let storedKey = await idMap.sessionKey(for: id)
+                let resumeTarget = (storedKey?.isEmpty == false) ? storedKey! : nativeId
+                Self.logger.info("ensureConversation: status failed (definitive), trying session.resume for \(resumeTarget)")
+                let resume = try await client.send(
+                    method: "session.resume",
+                    params: ["session_id": resumeTarget],
+                    timeoutNanos: Self.probeTimeoutNanos
+                )
+                if resume.error == nil {
+                    if let result = resume.result,
+                       let data = try? JSONEncoder().encode(result),
+                       let decoded = try? JSONDecoder().decode(NativeResumeResult.self, from: data),
+                       let resumedLiveID = decoded.sessionId, !resumedLiveID.isEmpty {
+                        await idMap.register(uuid: id, nativeId: resumedLiveID)
+                        if let resumedKey = decoded.sessionKey, !resumedKey.isEmpty {
+                            await idMap.registerKey(uuid: id, sessionKey: resumedKey)
+                        }
+                        Self.logger.info("ensureConversation: re-pointed idMap \(id) -> \(resumedLiveID) after resume")
+                    }
+                    if currentConversation?.id != id {
+                        currentConversation = Conversation(id: id, title: currentConversation?.title ?? "New Chat")
+                    }
+                    return true
+                }
+                // Resume rejected (e.g. 4007 row gone): genuinely stale.
+            } catch {
+                // Transport failure mid-resume: same policy as the probe—
+                // keep the idMap and let the caller retry later rather than
+                // forking a fresh session on a connectivity blip.
+                if SessionListStore.isTransientConnectivityError(error) {
+                    Self.logger.warning("ensureConversation: resume transport failure for \(id.uuidString.prefix(8)) (\(error.localizedDescription))—keeping idMap")
+                    return false
+                }
             }
             await idMap.remove(uuid: id)
         }
