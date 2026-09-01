@@ -3082,6 +3082,21 @@ final class ChatStore {
             // it stalled, the outbox auto-retried, and the SAME image gen ran
             // again: double billing and the "took too long" restart loop.
             // Only the absolute deadline above still applies as the hard cap.
+            // Build 135.45 fix v2: a parked clarify keeps the clarify tool in
+            // flight, so activeToolCount stays > 0 and the stall block below
+            // (gated on activeToolCount == 0) never runs. Probe for a parked
+            // clarify whenever the stream is quiet - regardless of tool
+            // count. If found, surface the card, settle the placeholder,
+            // and keep waiting for the user instead of spinning forever.
+            if self.pendingClarify == nil,
+               Date.now.timeIntervalSince(self.lastClarifyProbeAt) >= Self.clarifyProbeInterval,
+               await self.probeParkedClarifyIfNeeded() {
+                appendLog(level: .info, "watchdog: parked clarify surfaced - turn is waiting on the user")
+                self.streamingProgressAt = .now
+                self.streamingPhase = .streaming
+                continue
+            }
+
             if elapsed > stallTimeout && self.activeToolCount == 0 {
                 // Build 84 Option C-A (probe-through-phantom): before
                 // declaring a stall, force a REAL socket probe. A zombie
@@ -3102,20 +3117,6 @@ final class ChatStore {
                     self.lastPhantomProbeAt = .now
                     appendLog(level: .info, "watchdog: no progress for \(Int(elapsed.components.seconds))s - probing socket before declaring stall")
                     await self.heraldClient.reconnectIfNeeded()
-                }
-                // Build 135.45: a parked clarify keeps the tool in flight,
-                // so the stall watchdog (gated on activeToolCount == 0 below)
-                // never fires and the turn hangs until clarify_timeout. Probe
-                // the server for a parked clarify whenever the stream is
-                // quiet - even mid-tool. If found, surface the card and let
-                // the loop keep waiting for the user's answer instead of
-                // declaring a stall or spinning forever.
-                if self.pendingClarify == nil,
-                   await self.probeParkedClarifyIfNeeded() {
-                    appendLog(level: .info, "watchdog: parked clarify surfaced - turn is waiting on the user")
-                    self.streamingProgressAt = .now
-                    self.streamingPhase = .streaming
-                    continue
                 }
                 // Build 128.45: harden the foreground stream. Before declaring
                 // a visible stall, ask the SERVER whether the job is actually
