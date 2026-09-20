@@ -236,6 +236,12 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, default="Herald")
     herald_session_id: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What this conversation IS. NULL / "chat" = a real chat the user opened;
+    # "note" = a Kallisti note's own enrichment session. Note sessions are
+    # durable on purpose (the note's thread and smart title live here) but they
+    # must never be listed as chats: the enrichment turn's raw prompt and reply
+    # are not chat messages and the session browser must not offer them.
+    kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)

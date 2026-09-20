@@ -731,6 +731,11 @@ final class LiveHeraldClient: HeraldClientProtocol {
         await ensureConversation(id: id, adoptAsCurrent: true)
     }
 
+    /// Relay turns never carry image bytes: the connector stages each
+    /// attachment on disk and hands the agent a `vision_analyze` path, so the
+    /// note prompt must ask for the drawing to be read from that path.
+    var deliversAttachmentsInline: Bool { false }
+
     /// - Parameter adoptAsCurrent: When false, the conversation is created
     ///   server-side but `currentConversation` is left untouched. Note
     ///   enrichment uses this: adopting the note's session as the "current"
@@ -745,7 +750,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
     /// one-time setup (e.g. naming a note's session) exactly once instead of on
     /// every sync. `hasSession` is true for an already-existing row, so it must
     /// never be used as a "newly created" signal.
-    func ensureConversationDetailed(id: UUID, adoptAsCurrent: Bool) async -> (hasSession: Bool, created: Bool) {
+    func ensureConversationDetailed(id: UUID, adoptAsCurrent: Bool, kind: String? = nil) async -> (hasSession: Bool, created: Bool) {
         struct EnsureResponse: Decodable {
             let conversationId: String?
             let sessionId: String?
@@ -755,8 +760,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
         do {
             struct EnsureBody: Encodable {
                 let conversationId: String
+                /// "note" tells the relay this conversation is a note's own
+                /// enrichment session so it is never listed as a chat. The chat
+                /// path leaves it nil.
+                let kind: String?
             }
-            let body = EnsureBody(conversationId: id.uuidString.lowercased())
+            let body = EnsureBody(conversationId: id.uuidString.lowercased(), kind: kind)
             let response: EnsureResponse = try await performAuthorizedRequest { [self] token in
                 try await self.apiClient.post(
                     path: "conversations/ensure",
@@ -1682,7 +1691,11 @@ extension LiveHeraldClient {
                 // a missing row is the naming problem, not the enrichment one.
                 // adoptAsCurrent: false - creating the note's session must not
                 // rebind the chat's selected conversation.
-                let ensureResult = await self.ensureConversationDetailed(id: conversationID, adoptAsCurrent: false)
+                let ensureResult = await self.ensureConversationDetailed(
+                    id: conversationID,
+                    adoptAsCurrent: false,
+                    kind: "note"
+                )
 
                 // Name the note's session after the note, but ONLY when the row
                 // was just created. `/conversations/ensure` hardcodes "New Chat",

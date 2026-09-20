@@ -2756,9 +2756,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         - If the id is unknown, create it with that exact id (the client
           already minted it and will keep using it).
         - If it belongs to ANOTHER user, refuse rather than hijack it.
+
+        ``kind`` marks what the conversation is. "note" = a Kallisti note's own
+        enrichment session: durable like any conversation (it holds the note's
+        thread and its generated title) but excluded from the chat session
+        list, because its prompt/reply are enrichment I/O, not chat. The note
+        path re-ensures with kind="note" on every sync, which also heals rows
+        created before the column existed.
         """
         requested_id = body.conversationId.strip()
         conversation = db.get(Conversation, requested_id)
+        requested_kind = (body.kind or "").strip().lower() or None
 
         if conversation is not None and conversation.user_id != auth.user.id:
             raise HTTPException(
@@ -2774,6 +2782,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 device_id=auth.device.id,
                 title="New Chat",
                 source="ios",
+                kind=requested_kind,
             )
             db.add(conversation)
             db.commit()
@@ -2786,6 +2795,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conversation.is_archived = False
             if conversation.device_id is None:
                 conversation.device_id = auth.device.id
+            # Never downgrade a note session to a chat: the note path always
+            # declares kind="note" and the chat path never declares anything,
+            # so an omitted kind must leave an existing marker alone.
+            if requested_kind is not None and conversation.kind != requested_kind:
+                conversation.kind = requested_kind
             db.commit()
             db.refresh(conversation)
 
@@ -2796,7 +2810,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             action="chat.conversation.ensure",
             entity_type="conversation",
             entity_id=conversation.id,
-            payload={"created": created},
+            payload={"created": created, "kind": conversation.kind},
         )
         db.commit()
 

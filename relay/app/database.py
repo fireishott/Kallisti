@@ -151,6 +151,12 @@ class Database:
             conversation_columns = {column["name"] for column in inspector.get_columns("conversations")}
             if "herald_session_id" not in conversation_columns:
                 connection.execute(text("ALTER TABLE conversations ADD COLUMN herald_session_id TEXT"))
+            # --- conversations.kind: note sessions vs chat sessions ---
+            # Existing rows predate the column and are chats by default; the
+            # note path re-ensures its own session with kind="note" on the next
+            # sync, so no backfill is required.
+            if "kind" not in conversation_columns:
+                connection.execute(text("ALTER TABLE conversations ADD COLUMN kind TEXT"))
 
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "delivery_status" not in message_columns:

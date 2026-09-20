@@ -59,6 +59,11 @@ final class NotesSyncEngine {
     private(set) var lastCompletedReasoning: String = ""
     private(set) var lastCompletedAt: Date?
     private(set) var lastCompletedDuration: TimeInterval?
+    /// Which note produced `lastCompletedReasoning`. The editor only renders
+    /// the completed card when this matches the note on screen, so a sync of
+    /// another note (batch auto-sync) can never paint its 'Thought for Xs'
+    /// card over the note the user is looking at.
+    private(set) var lastCompletedNoteID: UUID?
 
     /// Current sync's transition into its terminal stage. The editor bubbles
     /// up `[Notes sync] <stage label>` from the moment `isSyncing` becomes
@@ -338,14 +343,27 @@ final class NotesSyncEngine {
     /// output silently dropped by the Enriched tab; (3) no completion signal ->
     /// model trailed off ("No further action...") and looked unfinished;
     /// (4) no latency budget -> 90-150s turns against a 120s watchdog.
-    static func enrichmentPolicy() -> String {
-        """
+    static func enrichmentPolicy(inlineAttachments: Bool) -> String {
+        // The policy MUST state the same attachment contract as the note body.
+        // It previously hardcoded the inline-pixel wording, so on the relay path
+        // the body said "the drawing is staged on disk" while the policy said
+        // "the drawing arrives as real image pixels ... do not search for
+        // another way to view the image" - the second wins, no enrichment turn
+        // ever called vision_analyze, and every relay enrichment was written
+        // from the noisy on-device OCR draft.
+        let attachmentContract = inlineAttachments
+            ? "- The drawing arrives as real image pixels in this conversation. Read the pixels directly; do not search for another way to view the image."
+            : """
+            - The drawing does NOT arrive inline on this transport. It is staged as a file on this machine and its exact path is in the attachment block at the end of this message. Call vision_analyze with image_url set to that exact path for EVERY attached image, drawing first, BEFORE you write anything - that call is the only way to see the actual handwriting. Read any non-image attachment (PDF, txt, csv) with read_file. This is not "tool discovery": vision_analyze and read_file are already available to you for this turn, and skipping the vision call means writing from the OCR draft, which is not an acceptable enrichment.
+            """
+
+        return """
         You are the Kallisti enrichment engine, embedded in Curtis's note-taking app. This message is an automatic note sync, not a conversation.
 
         TURN CONTRACT (hard limits):
         - Single shot: reply in THIS turn. Never delegate, never spawn subagents.
-        - No tool discovery. Never call tool_search, skills_list, tool_call, list_tools, or any skill lookup. Every discovery call burns 20-60 seconds and finds nothing useful. Never call a tool you have not already been given.
-        - The drawing arrives as real image pixels in this conversation. Read the pixels directly; do not search for another way to view the image.
+        - No tool discovery. Never call tool_search, skills_list, tool_call, list_tools, or any skill lookup. Every discovery call burns 20-60 seconds and finds nothing useful.
+        \(attachmentContract)
         - Web search is allowed ONLY when the note explicitly asks for outside facts (prices, schedules, definitions). Everything else: answer from the note alone.
         - Latency budget: plain text-note enrichment must complete in well under 60 seconds. A web-research enrichment may use up to 2 searches, then write. Stop when the note's content is covered.
 
@@ -513,9 +531,20 @@ final class NotesSyncEngine {
             var attachedList: [String] = ["drawing: note-\(note.id.uuidString.prefix(8)).jpg"]
             attachedList.append(contentsOf: attachedDescriptors)
             messageText += "Attached files: [\(attachedList.joined(separator: ", "))]\n"
-            messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Build 135.39: the drawing IS delivered to you directly as pixels - do not hunt for vision tools, do not call tool_search, vision_analyze, or any skill lookup: none of that recovers images, every discovery call burns 20-60 seconds of the sync budget. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If you genuinely cannot see any attached drawing image, do not identify visual subjects or turn OCR fragments into a topic. State that visual analysis is unavailable and preserve the recognized text only as an untrusted transcription draft. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
+            // The attachment contract is transport-specific: native gateway
+            // turns carry the drawing inline as pixels, relay turns carry
+            // PATHS (the connector stages each file and appends a
+            // vision_analyze pointer). Emitting the inline wording on the relay
+            // path told the model the drawing was already visible AND forbade
+            // vision_analyze, so enrichments were written from the on-device
+            // OCR draft with invented visual detail.
+            if client.deliversAttachmentsInline {
+                messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Build 135.39: the drawing IS delivered to you directly as pixels - do not hunt for vision tools, do not call tool_search, vision_analyze, or any skill lookup: none of that recovers images, every discovery call burns 20-60 seconds of the sync budget. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If you genuinely cannot see any attached drawing image, do not identify visual subjects or turn OCR fragments into a topic. State that visual analysis is unavailable and preserve the recognized text only as an untrusted transcription draft. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
+            } else {
+                messageText += Self.stagedAttachmentGuidance
+            }
         }
-        messageText += Self.enrichmentPolicy()
+        messageText += Self.enrichmentPolicy(inlineAttachments: client.deliversAttachmentsInline)
 
         // Build 128.99: NOTE ISOLATION. The gateway injects memory/context
         // into every session's system prompt (user profile, Honcho session
@@ -635,6 +664,9 @@ final class NotesSyncEngine {
             lastCompletedReasoning = liveReasoning
             lastCompletedAt = .now
             lastCompletedDuration = reasoningDuration
+            // Stamp the owner so the card can never be rendered over another
+            // note (a batch auto-sync runs this while the user sits in one note).
+            lastCompletedNoteID = note.id
         }
 
         if let streamError {
@@ -773,17 +805,40 @@ final class NotesSyncEngine {
         return false
     }
 
+    // MARK: - Attachment contract
+
+    /// Attachment guidance for a transport that stages files on disk instead of
+    /// sending pixels inline (the relay path). It has to NAME the tool and the
+    /// exact argument: a vague "read the attached image" gets skipped, and the
+    /// enrichment is then written from the on-device OCR draft with invented
+    /// stroke/layout detail. Omitting it is worse - the previous relay prompt
+    /// claimed the drawing was already inline AND forbade vision_analyze, so
+    /// the model never saw the note it was enriching.
+    private static let stagedAttachmentGuidance = """
+    Every attached file above is staged on THIS machine's disk, and the exact path for each one appears in the attachment block at the end of this message. The drawing is the SOURCE OF TRUTH for any handwriting, so CALL vision_analyze ON THE DRAWING - image_url set to that exact path - BEFORE you write anything. One call per image, drawing first, then any photo/scan of the same note in the listed order; read any non-image file (PDF, txt, csv) with read_file. Do not call tool_search, skills_list, or any other skill/tool-discovery helper, and do not hunt for another way to view the image: vision_analyze on the given path is the only step needed, and skipping it leaves you blind to the actual note. The Recognized text above is a NOISY on-device OCR draft - use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the image. If vision_analyze genuinely fails or returns nothing useful, say that visual analysis is unavailable and treat the recognized text as an untrusted transcription draft only. Never describe strokes, flourishes, layout, diagrams, or visual subjects you have not actually seen, and never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.
+    """
+
     // MARK: - Reasoning bubble reset
 
     /// Clear the live reasoning stream so the notes page does not render a
     /// 'Thought for Xs' bubble left over from a previous note. Mirrors the
     /// reset performed at the start of syncSingleNote so callers that load
     /// an editor without immediately syncing still get a clean bubble.
+    ///
+    /// The COMPLETED snapshot is cleared here too, and that is the point: it is
+    /// the only reset that runs when the editor loads a note, and it belongs to
+    /// whichever note produced it. Leaving it intact rendered the previous
+    /// note's "Thought for 18s" card - with the previous note's reasoning text
+    /// behind the chevron - over a brand-new empty note.
     func resetReasoningState() {
         liveReasoning = ""
         isReasoningActive = false
         reasoningStartedAt = nil
         reasoningDuration = nil
+        lastCompletedReasoning = ""
+        lastCompletedAt = nil
+        lastCompletedDuration = nil
+        lastCompletedNoteID = nil
     }
 
     /// Notes fix: collapse/dismiss the persisted "Thought for Xs" card from
