@@ -375,6 +375,11 @@ struct NoteEditorView: View {
             let bubbleDuration = syncEngine.reasoningDuration
             let showCompletedCard = !bubbleStreaming && bubbleReasoning.isEmpty
                 && !syncEngine.lastCompletedReasoning.isEmpty
+                // Owner check: the completed card belongs to the note that
+                // produced it. Without this a brand-new note inherited the
+                // previous note's "Thought for Xs" card (and its reasoning text)
+                // because the engine is a singleton shared by every note.
+                && syncEngine.lastCompletedNoteID == noteId
 
             if !bubbleReasoning.isEmpty || syncEngine.isReasoningActive
                 || showCompletedCard {

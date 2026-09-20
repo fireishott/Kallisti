@@ -32,6 +32,20 @@ protocol HeraldClientProtocol {
     /// (legacy relay/mock clients have no durable key map).
     func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool
 
+    /// Whether the transport hands the agent the attachment BYTES inline (real
+    /// image content parts) or only files staged on disk.
+    ///
+    /// The note enrichment prompt has to state a contract the transport can
+    /// actually satisfy: native gateway turns carry pixels, relay turns carry
+    /// PATHS (the connector stages each attachment and appends a
+    /// `vision_analyze` pointer). A prompt written for the inline contract on
+    /// the path-based transport tells the model the drawing is already visible
+    /// AND forbids calling `vision_analyze`, so the enrichment gets written
+    /// from the on-device OCR draft with invented visual detail.
+    ///
+    /// Default is `true` (native inline pixels); the relay client returns false.
+    var deliversAttachmentsInline: Bool { get }
+
     /// Build 128.97: the FULL gateway session key currently mapped to a note's
     /// conversation UUID, if any. The sync engine pins this on the note after
     /// the first successful sync so future syncs can resume the same session.
@@ -251,6 +265,10 @@ extension HeraldClientProtocol {
 // MARK: - Default sendNoteMessage (unavailable for non-native clients)
 
 extension HeraldClientProtocol {
+    /// Native gateway turns deliver attachment bytes inline; conformers on a
+    /// path-based transport override this with `false`.
+    var deliversAttachmentsInline: Bool { true }
+
     func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
         Message(
             id: clientMessageID,

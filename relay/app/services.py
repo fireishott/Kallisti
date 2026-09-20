@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -1742,6 +1742,18 @@ def cleanup_old_job_events(db: Session, retention_hours: int = 24) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _exclude_note_sessions(statement):
+    """Keep Kallisti note sessions out of the chat session browser.
+
+    A note's enrichment runs inside a durable conversation of its own (that is
+    what carries the note's thread and its smart title), but that conversation
+    is NOT a chat: listing it puts the raw enrichment prompt in the user's chat
+    list and lets them open it as a conversation. Legacy rows have a NULL kind
+    and are chats.
+    """
+    return statement.where(or_(Conversation.kind.is_(None), Conversation.kind != "note"))
+
+
 def list_sessions(
     db: Session,
     *,
@@ -1764,6 +1776,7 @@ def list_sessions(
     )
     if device_id is not None:
         base = base.where(Conversation.device_id == device_id)
+    base = _exclude_note_sessions(base)
 
     # Count total matching sessions
     count_stmt = select(sqlfunc.count()).select_from(base.subquery())
@@ -1798,6 +1811,7 @@ def search_sessions(db: Session, *, user_id: str, query: str, device_id: str | N
     )
     if device_id is not None:
         base = base.where(Conversation.device_id == device_id)
+    base = _exclude_note_sessions(base)
     return list(
         db.scalars(
             base.order_by(Conversation.last_message_at.desc().nullslast()).limit(20)

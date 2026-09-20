@@ -266,6 +266,9 @@ class ConversationEnsureRequest(BaseModel):
     uses as the conversation id on subsequent requests.
     """
     conversationId: str = Field(min_length=1, max_length=36)
+    # "note" marks a Kallisti note's own enrichment session so it stays out of
+    # the chat session list. Omitted / "chat" for real chats.
+    kind: str | None = Field(default=None, max_length=16)
 
 
 class RenameSessionBody(BaseModel):
