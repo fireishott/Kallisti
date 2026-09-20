@@ -387,6 +387,47 @@ def test_failed_job_response_and_conversation_include_job_id(tmp_path):
             assert data["conversation"]["messages"][-1]["jobId"] == job["id"]
 
 
+def test_relay_settings_routes_proxy_to_paired_connector(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        pairing_code = create_phone_pairing_code(client, connector_data["connectorCredential"])
+        access_token = redeem_phone(
+            client, pairing_code["displayCode"], "51515151-4141-5151-6161-717171717171"
+        )["auth"]["accessToken"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json({"type": "hello", "connector": connector_setup_payload()["connector"]})
+            assert websocket.receive_json()["type"] == "ready"
+
+            responses: dict[str, object] = {}
+
+            def fetch(name: str, path: str, method: str = "get") -> None:
+                responses[name] = getattr(client, method)(path, headers=headers, json={} if method == "post" else None)
+
+            requests = [
+                ("aux", "/v1/aux", "auxiliary.list", {"tasks": [{"task": "title", "provider": "auto", "model": "auto"}]}),
+                ("status", "/v1/gw/status", "gateway.status", {"connected": True, "model": "test/model"}),
+                ("logs", "/v1/gw/logs?lines=12&level=all&source=hermes-gateway", "gateway.logs", {"lines": []}),
+                ("update", "/v1/gw/update/check", "gateway.update_check", {"message": "Up to date"}),
+            ]
+            for name, path, rpc_method, rpc_result in requests:
+                thread = Thread(target=fetch, args=(name, path, "post" if name == "update" else "get"))
+                thread.start()
+                rpc = websocket.receive_json()
+                assert rpc["method"] == rpc_method
+                if name == "logs":
+                    assert rpc["params"] == {"lines": 12, "level": "all", "source": "hermes-gateway"}
+                websocket.send_json({"type": "rpc.response", "requestId": rpc["requestId"], "success": True, "result": rpc_result})
+                thread.join(timeout=5)
+                response = responses[name]
+                assert response.status_code == 200
+                assert response.json()["data"] == rpc_result
+
+
 def test_talk_readiness_reflects_connector_configuration(tmp_path):
     with build_client(tmp_path) as client:
         connector_data = setup_connector(client)

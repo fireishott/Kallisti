@@ -297,17 +297,31 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isLoading = false }
 
-        guard let nativeClient = container.nativeGatewayClient else {
-            errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
-            return
+        // Relay mode has no nativeGatewayClient, but the host is still
+        // reachable through the relay. Fall back to the relay-backed config
+        // routes instead of failing the screen outright.
+        if let nativeClient = container.nativeGatewayClient {
+            let doc = await nativeClient.featureClient.configDocument()
+            if let doc {
+                content = doc.content
+                path = doc.path
+                return
+            }
         }
-        let doc = await nativeClient.featureClient.configDocument()
-        if let doc {
-            content = doc.content
-            path = doc.path
-        } else {
-            errorMessage = "Couldn't fetch config.yaml from the host."
+
+        if let relayConfig = container.relayConfigService {
+            do {
+                let doc = try await relayConfig.configDocument()
+                content = doc.content
+                path = doc.path
+                return
+            } catch {
+                errorMessage = "Couldn't fetch config.yaml from the host: \(error.localizedDescription)"
+                return
+            }
         }
+
+        errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
     }
 
     /// Build 128.59: validate YAML content via connector without writing.
@@ -316,12 +330,15 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isValidationRunning = false }
 
-        guard let nativeClient = container.nativeGatewayClient else {
-            validationError = "Native gateway unavailable."
-            return
-        }
         do {
-            _ = try await nativeClient.featureClient.validateConfigDocument(content)
+            if let nativeClient = container.nativeGatewayClient {
+                _ = try await nativeClient.featureClient.validateConfigDocument(content)
+            } else if let relayConfig = container.relayConfigService {
+                _ = try await relayConfig.validateConfigDocument(content)
+            } else {
+                validationError = "Native gateway unavailable."
+                return
+            }
             validationError = nil
             savedMessage = "YAML is valid"
         } catch {
@@ -337,16 +354,29 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isSaving = false }
 
-        guard let nativeClient = container.nativeGatewayClient else {
+        guard container.nativeGatewayClient != nil || container.relayConfigService != nil else {
             errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
             return
         }
         do {
-            let backup = try await nativeClient.featureClient.saveConfigDocument(content)
+            let backup = try await saveConfigContent()
             savedMessage = backup.map { "Saved. Backup: \($0)" } ?? "Saved."
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Persists config.yaml through whichever transport is active.
+    /// Returns the host-side backup path when the host reports one.
+    private func saveConfigContent() async throws -> String? {
+        if let nativeClient = container.nativeGatewayClient {
+            return try await nativeClient.featureClient.saveConfigDocument(content)
+        }
+        if let relayConfig = container.relayConfigService {
+            let result = try await relayConfig.saveConfigDocument(content)
+            return result.backup
+        }
+        throw RelayConfigService.ServiceError.notConnected
     }
 
     /// Build 128.59: save then trigger gateway restart with realtime overlay.
@@ -358,12 +388,12 @@ struct ConfigEditorScreen: View {
         defer { isSaving = false }
 
         // 1. Save
-        guard let nativeClient = container.nativeGatewayClient else {
+        guard container.nativeGatewayClient != nil || container.relayConfigService != nil else {
             errorMessage = "Native gateway unavailable."
             return
         }
         do {
-            let backup = try await nativeClient.featureClient.saveConfigDocument(content)
+            let backup = try await saveConfigContent()
             savedMessage = backup.map { "Saved. Backup: \($0)" } ?? "Saved."
         } catch {
             errorMessage = error.localizedDescription

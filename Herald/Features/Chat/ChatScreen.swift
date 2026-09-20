@@ -199,6 +199,15 @@ struct ChatScreen: View {
 
     @State private var pendingAttachments: [PendingAttachment] = []
 
+    /// The PTY bridge is exposed by the native connector, not by the relay's
+    /// job/RPC WebSocket. Relay mode therefore keeps the TUI setting but
+    /// renders the supported rich chat rather than opening an unsupported
+    /// terminal WebSocket that leaves a black screen.
+    private var usesEmbeddedTerminal: Bool {
+        settingsStore.settings.chatDisplayMode == .terminal
+            && container.nativeGatewayClient != nil
+    }
+
     /// Backed by ChatStore so the draft survives view recreation during reconnects.
     private var messageTextBinding: Binding<String> {
         Binding(
@@ -250,7 +259,7 @@ struct ChatScreen: View {
     var body: some View {
         scrollAnchored {
             ZStack {
-            if settingsStore.settings.chatDisplayMode == .rich {
+            if !usesEmbeddedTerminal {
                 ChatWallpaperBackground(
                     wallpaper: settingsStore.settings.chatWallpaper,
                     tint: themeManager.preset.accent
@@ -294,7 +303,7 @@ struct ChatScreen: View {
                 if chatStore.restartInProgress {
                     restartBanner
                 }
-                if settingsStore.settings.chatDisplayMode == .terminal {
+                if usesEmbeddedTerminal {
                     // Build 128.82: REAL embedded terminal. The connector's
                     // /v1/terminal WS bridge spawns `hermes --tui` in a PTY
                     // on the host; SwiftTerm renders the actual CLI. Input,
@@ -317,7 +326,7 @@ struct ChatScreen: View {
                 }
                 // Build 128.78: in TUI mode the terminal view owns input - the iOS
                 // composer is hidden entirely.
-                if settingsStore.settings.chatDisplayMode == .rich {
+                if !usesEmbeddedTerminal {
                     ChatInputBar(
                     text: messageTextBinding,
                     pendingAttachments: $pendingAttachments,
@@ -671,7 +680,7 @@ struct ChatScreen: View {
     private var iPhoneToolbarContent: some ToolbarContent {
         // Build 128.81: no session drawer button in TUI mode - the terminal
         // owns the whole surface, and there is no left session bar.
-        if settingsStore.settings.chatDisplayMode == .rich {
+        if !usesEmbeddedTerminal {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
                     withAnimation(Design.Motion.standard) {
@@ -691,7 +700,7 @@ struct ChatScreen: View {
         // .principal (statusText), so adding compactStatusControl here too
         // would put two principals on one compact toolbar and squeeze the
         // terminal. Keep the chip for rich mode only.
-        if settingsStore.settings.chatDisplayMode == .rich {
+        if !usesEmbeddedTerminal {
             ToolbarItem(placement: .principal) {
                 // Build 128.1: double-tap the top bar to jump to the top of the
                 // thread (oldest messages). Single tap still opens the context
@@ -714,7 +723,7 @@ struct ChatScreen: View {
         // touch-toggle / keyboard-dismiss buttons into overflow (the
         // "circle with up arrow does nothing" report). Gate them the same
         // way leading/principal already are.
-        if settingsStore.settings.chatDisplayMode == .rich {
+        if !usesEmbeddedTerminal {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: Design.Spacing.sm) {
                     catchUpButton
@@ -740,7 +749,7 @@ struct ChatScreen: View {
         // / sessionTimerChip are the hub entry points; leaving them
         // ungated meant the model picker stayed reachable over the TUI
         // screen. Gate them on rich mode like the iPhone principal.
-        if settingsStore.settings.chatDisplayMode == .rich {
+        if !usesEmbeddedTerminal {
             ToolbarItem(placement: .principal) {
                 // Build 128.1: double-tap the top bar to jump to the top of the
                 // thread (oldest messages) - same affordance as iPhone.
@@ -1283,7 +1292,8 @@ struct ChatScreen: View {
             streamStalled: chatStore.stallSnapshot != nil
                 || chatStore.streamingPhase == .stalled
                 || chatStore.streamingPhase == .reconnecting,
-            hasConnectedOnce: container.nativeGatewayClient?.hasConnectedOnce ?? false
+            hasConnectedOnce: container.nativeGatewayClient?.hasConnectedOnce
+                ?? chatStore.hasEverConnected
         )
     }
 
@@ -1292,7 +1302,7 @@ struct ChatScreen: View {
         // verified connect), never claim "Disconnected" - the app is still
         // trying to establish the first socket. Show a stable "Connecting..."
         // so the pill does not strobe red -> yellow across backoff retries.
-        if !(container.nativeGatewayClient?.hasConnectedOnce ?? false) {
+        if !(container.nativeGatewayClient?.hasConnectedOnce ?? chatStore.hasEverConnected) {
             return "Connecting..."
         }
         if chatStore.connectionStatus == .connected,

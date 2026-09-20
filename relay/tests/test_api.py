@@ -42,6 +42,21 @@ def register_device(client: TestClient):
     return response.json()["data"]
 
 
+def test_relay_terminal_sessions_falls_back_without_a_host(tmp_path):
+    """Relay-mode TUI probes must not produce a retried 404 storm."""
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+
+        response = client.get(
+            "/v1/terminal/sessions?limit=5",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {"sessions": []}
+
+
 def test_device_register_session_and_refresh(tmp_path):
     with build_client(tmp_path) as client:
         register_data = register_device(client)

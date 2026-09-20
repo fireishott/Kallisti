@@ -258,6 +258,16 @@ class CreateSessionBody(BaseModel):
     title: str = "New Chat"
 
 
+class ConversationEnsureRequest(BaseModel):
+    """Body for POST /v1/conversations/ensure.
+
+    The iOS client calls this before every send to guarantee a server-backed
+    conversation exists. ``conversationId`` is the client-minted UUID it then
+    uses as the conversation id on subsequent requests.
+    """
+    conversationId: str = Field(min_length=1, max_length=36)
+
+
 class RenameSessionBody(BaseModel):
     title: str
 

@@ -73,6 +73,10 @@ final class AppContainer {
     /// any other way — `NativeKallistiClient.connect()` alone has no UI to
     /// present a login screen from.
     let nativeGatewayClient: NativeKallistiClient?
+    /// Relay-backed config.yaml access for Settings > Config Editor.
+    /// Non-nil in relay mode, where nativeGatewayClient is nil but the host
+    /// is still reachable through the relay.
+    let relayConfigService: RelayConfigService?
     let hostStore: KallistiHostStore
     let chatStore: ChatStore
     let inboxStore: InboxStore
@@ -145,6 +149,7 @@ final class AppContainer {
         sessionStore: AppSessionStore,
         pairingStore: PairingStore,
         nativeGatewayClient: NativeKallistiClient? = nil,
+        relayConfigService: RelayConfigService? = nil,
         hostStore: KallistiHostStore,
         chatStore: ChatStore,
         inboxStore: InboxStore,
@@ -172,6 +177,7 @@ final class AppContainer {
         self.sessionStore = sessionStore
         self.pairingStore = pairingStore
         self.nativeGatewayClient = nativeGatewayClient
+        self.relayConfigService = relayConfigService
         self.hostStore = hostStore
         self.chatStore = chatStore
         self.inboxStore = inboxStore
@@ -511,8 +517,7 @@ final class AppContainer {
         let heraldClient: any HeraldClientProtocol
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
-        } else if UserDefaults.standard.object(forKey: "useNativeGateway") == nil
-                   || UserDefaults.standard.bool(forKey: "useNativeGateway") {
+        } else if UserDefaults.standard.bool(forKey: "useNativeGateway") {
             // Not hardcoded: derived from the same relay-URL setting the
             // legacy connector path already uses (settingsStore.settings
             // .relayConfiguration -- user-editable in Settings, same field
@@ -691,6 +696,12 @@ final class AppContainer {
             sessionStore: sessionStore,
             pairingStore: runtimePairingStore,
             nativeGatewayClient: nativeGatewayClient,
+            relayConfigService: nativeGatewayClient == nil
+                ? RelayConfigService(
+                    apiClient: apiClient,
+                    accessTokenProvider: { await sessionStore.currentAccessToken() }
+                )
+                : nil,
             hostStore: hostStore,
             chatStore: chatStore,
             inboxStore: InboxStore(
@@ -1051,11 +1062,30 @@ final class AppContainer {
             while !Task.isCancelled {
                 if let nativeClient = nativeGatewayClient {
                     connectorLatencyMs = await nativeClient.measureLatency()
+                } else if let apiClient {
+                    // Relay mode has no nativeGatewayClient, so latency was
+                    // pinned to nil and the Connection row never updated even
+                    // while the relay was healthy. Time a cheap authenticated
+                    // round-trip instead.
+                    connectorLatencyMs = await Self.measureRelayLatency(apiClient: apiClient)
                 } else {
                     connectorLatencyMs = nil
                 }
                 try? await Task.sleep(for: .seconds(3))
             }
+        }
+    }
+
+    /// Times an authenticated GET against the relay so Settings > Connection
+    /// shows real latency in relay mode.
+    private static func measureRelayLatency(apiClient: RelayAPIClient) async -> Int? {
+        let started = Date()
+        do {
+            let _: RelayHealthPong = try await apiClient.get(path: "health")
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            return max(ms, 0)
+        } catch {
+            return nil
         }
     }
 

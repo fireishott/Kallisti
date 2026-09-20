@@ -606,6 +606,12 @@ final class ChatStore {
     // getter now reads from the local cache; the setter updates both.
     private var _cachedConnectionStatus: ConnectionStatus = .disconnected
 
+    /// True once this session has completed a verified connect on ANY
+    /// transport. Native-gateway mode answers via NativeKallistiClient, but
+    /// relay mode has no native client, so the chat pill fell back to `false`
+    /// and showed a permanent yellow "Connecting..." while chat worked.
+    private(set) var hasEverConnected = false
+
     /// Connection status, overridden by an in-flight gateway restart: the
     /// underlying transport's status is meaningless while the gateway is
     /// being replaced, and the UI must say so instead of flapping.
@@ -616,6 +622,11 @@ final class ChatStore {
 
     func updateConnectionStatus(_ status: ConnectionStatus) {
         _cachedConnectionStatus = status
+        // Relay-mode clients (LiveHeraldClient) expose no `hasConnectedOnce`,
+        // so ChatScreen's indicator read `nil ?? false` and painted a
+        // permanent yellow "Connecting..." pill even while chat worked.
+        // Track the first verified connect here, where BOTH transports report.
+        if status == .connected { hasEverConnected = true }
         // Build 94: only write back when the value actually differs. Writing
         // back unconditionally re-entered the client's didSet ->
         // onConnectionStatusChanged -> handler -> updateConnectionStatus cycle
@@ -3730,7 +3741,10 @@ final class ChatStore {
         // Previously this only did local teardown — the server job kept running
         // to completion, and its output landed in the conversation on the next
         // poll, appearing as a duplicate or ghost reply.
-        let jobIDs = Array(activeStreams.keys)
+        // Only an explicit Stop is allowed to cancel a server job. Navigation
+        // and session restoration intentionally detach local observation while
+        // leaving the relay job alive for the original conversation.
+        let jobIDs = interruptServerTurn ? Array(activeStreams.keys) : []
         if !jobIDs.isEmpty {
             let client = heraldClient
             Task {
@@ -3752,9 +3766,19 @@ final class ChatStore {
         chatLiveActivity.endActivity()
         ttsService?.stop()
         streamingPhase = .idle  // D3: A cancelled stream is not reconnecting
-        // Durable outbox: any in-flight item is cancelled by user intent —
-        // never auto-resubmitted.
-        cancelInFlightOutboxItems()
+        // Durable outbox: only a real user Stop tap may fail in-flight items.
+        //
+        // Navigation / restore / notification-route callers pass
+        // `interruptServerTurn: false` to mean "stop watching, leave the
+        // server turn alone" (Build 128.50). Cancelling the outbox there
+        // marked a perfectly healthy in-flight message as .failed — the red
+        // RETRY dot — while its reply was still streaming in, and it also
+        // flipped the outbox item to .cancelled so the result could never be
+        // matched back. Keep the item in flight and let the poll/refresh path
+        // settle it; only an explicit Stop abandons the turn.
+        if interruptServerTurn {
+            cancelInFlightOutboxItems()
+        }
         sendPhase = .idle
         sendPhaseOwner = nil
 

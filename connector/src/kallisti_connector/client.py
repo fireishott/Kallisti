@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import platform as platform_module
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 
 logger = logging.getLogger("herald.connector")
@@ -253,6 +255,7 @@ def _cached_context_window(hermes_home: Path, model_name: str, base_url: str | N
     return None
 from .git_diff import capture_diff, capture_snapshot
 from .tui_gateway_executor import TuiGatewayExecutor
+from .api_executor import HeraldAPIExecutor, HeraldAPIExecutorSettings
 from .herald_runner import ConnectorHeraldSettings, HeraldCLIExecutor, StreamEvent
 from .mcp_registration import (
     inspect_native_mcp_registration,
@@ -370,6 +373,117 @@ def _provider_base_url(config: dict, provider: str | None) -> str | None:
     if isinstance(model_section, dict) and model_section.get("base_url"):
         return model_section["base_url"]
     return None
+
+
+def _validate_yaml_text(content: str) -> None:
+    """Validate a YAML document, tolerating either YAML library.
+
+    The connector environment ships ruamel.yaml but PyYAML is optional.
+    Importing ``yaml`` unguarded raised ModuleNotFoundError, which the relay
+    surfaced as a 422 "invalid YAML" on a perfectly valid config.yaml.
+    """
+    try:
+        import yaml as _yaml  # type: ignore
+
+        _yaml.safe_load(content)
+        return
+    except ImportError:
+        pass
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"invalid YAML: {error}") from error
+
+    try:
+        from ruamel.yaml import YAML  # type: ignore
+
+        YAML(typ="safe").load(content)
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"invalid YAML: {error}") from error
+
+
+def _read_custom_provider_cache_models(hermes_home: Path, config: dict) -> list[dict]:
+    """Models for a LOCAL/custom provider, from provider_models_cache.json.
+
+    models_dev_cache.json only covers hosted gateway providers and has no
+    entry for a self-hosted or custom base_url (e.g. a local 9router on
+    http://127.0.0.1:20128/v1). That made the iOS model picker show only the
+    one model named in config.yaml while the provider actually advertised 37.
+
+    Hermes caches those under a fingerprint key of the form
+    ``custom:<base_url>#<hash>``, so match on the base_url prefix.
+    """
+    cache_path = hermes_home / "provider_models_cache.json"
+    if not cache_path.is_file():
+        return []
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(cache, dict):
+        return []
+
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        return []
+    provider_id = model_cfg.get("provider")
+    base_url = (model_cfg.get("base_url") or "").strip()
+
+    # The provider block carries the real base_url when the top-level
+    # model.base_url is blank (the 9router case).
+    providers = config.get("providers")
+    provider_entry: dict = {}
+    if isinstance(providers, dict) and provider_id in providers:
+        candidate = providers.get(provider_id)
+        if isinstance(candidate, dict):
+            provider_entry = candidate
+            if not base_url:
+                base_url = (candidate.get("base_url") or "").strip()
+
+    if not base_url:
+        return []
+
+    matched_key = None
+    for key in cache:
+        if not isinstance(key, str):
+            continue
+        if base_url in key:
+            matched_key = key
+            break
+    if matched_key is None:
+        return []
+
+    entry = cache.get(matched_key)
+    if not isinstance(entry, dict):
+        return []
+    cached_models = entry.get("models")
+    if not isinstance(cached_models, list):
+        return []
+
+    default_model = model_cfg.get("default") or provider_entry.get("default_model")
+    provider_name = provider_entry.get("name") or str(provider_id or matched_key)
+
+    results: list[dict] = []
+    for item in cached_models:
+        # Cache stores bare model-id strings; tolerate dicts too.
+        if isinstance(item, dict):
+            model_id = item.get("id") or item.get("name")
+        else:
+            model_id = item
+        if not model_id:
+            continue
+        model_id = str(model_id)
+        # Deliberately NOT filtered by the provider's configured `models`
+        # list: that list names only the default, and filtering by it was
+        # what hid the other 36 models. Dedupe happens by (name, provider)
+        # in the caller, matching _read_dynamic_catalog_models behaviour.
+        results.append({
+            "name": model_id,
+            "provider": str(provider_id or matched_key),
+            "providerName": str(provider_name),
+            "contextWindow": None,
+            "isProviderDefault": model_id == default_model,
+        })
+    return results
 
 
 def _read_dynamic_catalog_models(hermes_home: Path, config: dict) -> list[dict]:
@@ -1197,6 +1311,15 @@ class HeraldConnector:
                         self._active_jobs[job_id] = task
                         task.add_done_callback(lambda _t, jid=job_id: self._active_jobs.pop(jid, None))
                         continue
+                    if message_type == "note.run.execute":
+                        note_run = message["run"]
+                        run_id = note_run.get("id", "unknown")
+                        task = asyncio.create_task(self._handle_note_run_enqueue(note_run, enqueue))
+                        self._active_jobs[f"note:{run_id}"] = task
+                        task.add_done_callback(
+                            lambda _t, rid=run_id: self._active_jobs.pop(f"note:{rid}", None)
+                        )
+                        continue
                     if message_type == "rpc.request":
                         response = await self._handle_rpc_request(message)
                         enqueue(response)
@@ -1228,6 +1351,348 @@ class HeraldConnector:
         # Use a ref so the inner class can access the instance
         self_ref = self
         await self._handle_job(_WS(), job)
+
+    async def _handle_note_run_enqueue(self, run: dict, enqueue) -> None:
+        """Run a note enrichment run through the shared send queue."""
+        class _WS:
+            async def send(self, payload):
+                parsed = json.loads(payload) if isinstance(payload, str) else payload
+                enqueue(parsed)
+
+        await self._handle_note_run(_WS(), run)
+
+    async def _handle_note_run(self, websocket, run: dict) -> None:
+        """Execute a note enrichment run, streaming note.run.* events.
+
+        Same shape as the message-job path: attachments are staged to disk and
+        handed over as paths (the gateway attaches local images itself when the
+        model takes native image input, and describes them via auxiliary.vision
+        otherwise), progress streams back so the note UI stays live, and the
+        terminal message carries the EnrichmentResult the relay persists as the
+        note's enriched revision.
+        """
+        from .note_contract import EnrichmentRequest, V1_COMMAND_ALLOWLIST
+
+        run_id = run.get("id", "unknown")
+        attempt = run.get("attempt", 0)
+        started_at = time.monotonic()
+        timeout_seconds = float(run.get("timeoutSeconds") or 420)
+        staging_root = self.state_store.state_dir / "attachment_staging" / f"note-{run_id}"
+
+        async def emit(payload: dict) -> None:
+            payload.setdefault("runId", run_id)
+            await websocket.send(json.dumps(payload))
+
+        async def fail(message: str) -> None:
+            await emit({
+                "type": "note.run.failed",
+                "error": message,
+                "attempt": attempt,
+                "durationMs": int((time.monotonic() - started_at) * 1000),
+            })
+
+        try:
+            await emit({"type": "note.run.started", "phase": "starting", "attempt": attempt})
+
+            req = EnrichmentRequest.from_dict({
+                "noteId": run.get("noteId", ""),
+                "clientRunId": run.get("clientRunId", ""),
+                "sourceDrawingRevision": run.get("sourceDrawingRevision", 0),
+                "sourceTextRevision": run.get("sourceTextRevision", 0),
+                "recognizedText": run.get("recognizedText", ""),
+                "directives": run.get("directives", []) or [],
+                "locale": run.get("locale", "en-US"),
+                "timezone": run.get("timezone", "America/New_York"),
+            })
+            allowed_directives = [
+                directive for directive in req.directives
+                if directive.command.lower() in V1_COMMAND_ALLOWLIST
+            ]
+            system_prompt = self._build_note_enrichment_prompt(req, allowed_directives)
+
+            user_content = self._build_note_run_user_content(
+                run,
+                recognized_text=req.recognized_text,
+                staging_root=staging_root,
+            )
+            history = [RuntimeConversationMessage(role="system", text=system_prompt)]
+
+            state = self.state_store.load()
+            runtime = await self.runtime_adapter_for_state_async(state)
+            final_text = ""
+            usage: dict | None = None
+
+            stream_sender = getattr(runtime, "send_text_message_streaming", None)
+            if run.get("responseMode") == "streaming" and getattr(runtime, "supports_streaming", False) and stream_sender is not None:
+                stream_events = 0
+                async with asyncio.timeout(timeout_seconds):
+                    async for event in stream_sender(
+                        **self._note_run_turn_kwargs(
+                            stream_sender,
+                            latest_user_message=user_content,
+                            history=history,
+                            session_id=None,
+                            attachments=None,
+                            model=run.get("enrichmentModel"),
+                        )
+                    ):
+                        stream_events += 1
+                        if event.type in ("text_delta", "reasoning_delta", "tool_started",
+                                          "tool_completed", "tool_activity"):
+                            payload: dict = {
+                                "type": "note.run.progress",
+                                "kind": event.type,
+                                "attempt": attempt,
+                                "sourceSeq": stream_events,
+                            }
+                            if event.type in ("text_delta", "reasoning_delta"):
+                                payload["delta"] = event.data
+                            if getattr(event, "label", None):
+                                payload["label"] = event.label
+                            await emit(payload)
+                        elif event.type == "finish":
+                            final_text = event.output or final_text
+                            usage = event.usage
+                        elif event.type == "error":
+                            raise RuntimeError(event.data or "Runtime error during note enrichment.")
+                        elif event.type == "stream_interrupted":
+                            raise RuntimeError("Stream interrupted before completion.")
+            else:
+                result = await asyncio.to_thread(
+                    runtime.send_text_message,
+                    **self._note_run_turn_kwargs(
+                        runtime.send_text_message,
+                        latest_user_message=user_content,
+                        history=history,
+                        session_id=None,
+                        model=run.get("enrichmentModel"),
+                    )
+                )
+                final_text = result.text
+
+            result_payload = self._coerce_enrichment_result(
+                final_text,
+                fallback_title=run.get("title") or "",
+            )
+            await emit({
+                "type": "note.run.result",
+                "result": result_payload,
+                "usage": usage,
+                "attempt": attempt,
+                "durationMs": int((time.monotonic() - started_at) * 1000),
+            })
+            logger.info(
+                "Note run %s completed in %.1fs (title=%r, sections=%d)",
+                run_id, time.monotonic() - started_at,
+                result_payload.get("title"), len(result_payload.get("sections") or []),
+            )
+        except asyncio.TimeoutError:
+            await fail(f"Note enrichment timed out after {int(timeout_seconds)}s.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            logger.error("Note run %s failed: %s", run_id, error, exc_info=True)
+            await fail(str(error) or error.__class__.__name__)
+        finally:
+            import shutil
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+    @staticmethod
+    def _note_run_turn_kwargs(callable_obj, **candidates) -> dict:
+        """Drop keyword arguments the runtime adapter does not accept.
+
+        The CLI adapter predates per-turn model selection; passing ``model`` to
+        it would raise TypeError instead of ignoring it, so only supported
+        keywords reach the call.
+        """
+        try:
+            parameters = inspect.signature(callable_obj).parameters
+        except (TypeError, ValueError):
+            return {k: v for k, v in candidates.items() if v is not None}
+        accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+        if accepts_kwargs:
+            return {k: v for k, v in candidates.items() if v is not None}
+        return {k: v for k, v in candidates.items() if k in parameters and v is not None}
+
+    def _build_note_run_user_content(
+        self,
+        run: dict,
+        *,
+        recognized_text: str,
+        staging_root: Path,
+    ) -> str:
+        """Build the note-enrichment user message, staging attachments to disk.
+
+        Attachment bytes arrive base64 over the socket. They are written under
+        the run's staging directory and referenced by path, which is what the
+        gateway needs to attach or describe an image. Absent images are stated
+        explicitly so the model never invents a reading of a drawing it cannot
+        see.
+        """
+        staged: list[dict] = []
+        staging_root.mkdir(parents=True, exist_ok=True)
+        attachments = run.get("attachments") or []
+        for index, attachment in enumerate(attachments, start=1):
+            if not isinstance(attachment, dict):
+                continue
+            filename = self._sanitize_attachment_filename(
+                attachment.get("filename") or f"attachment-{index}"
+            )
+            mime_type = str(attachment.get("mimeType") or "application/octet-stream")
+            data_b64 = attachment.get("data")
+            if attachment.get("missing") or not data_b64:
+                staged.append({"filename": filename, "mimeType": mime_type, "path": None})
+                continue
+            try:
+                raw = base64.b64decode(str(data_b64))
+            except Exception:  # noqa: BLE001
+                staged.append({"filename": filename, "mimeType": mime_type, "path": None})
+                continue
+            path = staging_root / filename
+            path.write_bytes(raw)
+            staged.append({"filename": filename, "mimeType": mime_type, "path": str(path)})
+
+        def _kind(entry: dict) -> str:
+            if entry["filename"].lower().startswith("drawing"):
+                return "drawing"
+            if str(entry["mimeType"]).startswith("image/"):
+                return "photo"
+            if str(entry["mimeType"]).startswith("text/"):
+                return "text"
+            if entry["mimeType"] == "application/pdf":
+                return "pdf"
+            return "file"
+
+        title = (run.get("title") or "").strip()
+        lines: list[str] = []
+        if title:
+            lines.append(f"Note title: {title}")
+        lines.append("Recognized text (noisy on-device OCR draft - use it ONLY to disambiguate")
+        lines.append("letterforms, never as the final reading, and never let it override what you")
+        lines.append("see in the attached images):")
+        lines.append(f'"""{recognized_text.strip()}"""' if recognized_text.strip() else '"""(empty)"""')
+
+        image_entries = [e for e in staged if _kind(e) in ("drawing", "photo")]
+        if image_entries:
+            descriptor = ", ".join(f"{_kind(e)}: {e['filename']}" for e in staged)
+            lines.append("")
+            lines.append(f"Attached files: [{descriptor}]")
+            lines.append(
+                "Every attached image is an inline image content part in the listed order - read"
+                " ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any"
+                " handwriting; photo/scan attachments are additional views of the same note to be"
+                " read in order (drawing first, then photos/scans)."
+            )
+            resolvable = [e for e in image_entries if e.get("path")]
+            if resolvable:
+                listed = ", ".join(f"{e['filename']} -> {e['path']}" for e in resolvable)
+                lines.append(
+                    "If the images are not visible to you as image parts, they are staged at these"
+                    f" paths and may be inspected directly: {listed}"
+                )
+        else:
+            lines.append("")
+            lines.append("No drawing or photo is attached to this run - work from the recognized text only.")
+
+        missing = [e["filename"] for e in staged if not e.get("path")]
+        if missing:
+            lines.append(
+                "These attachments could not be delivered and must NOT be described or guessed at: "
+                + ", ".join(missing)
+            )
+
+        lines.append("")
+        lines.append(self._note_run_policy(run))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _note_run_policy(run: dict) -> str:
+        """The execution contract for a relay-mode enrichment turn."""
+        model_hint = run.get("enrichmentModel") or ""
+        lines = [
+            "This run enriches ONE note. Work only from this note's own content (title, recognized",
+            "text, attached images). Ignore any injected memory, profile, or other-note context",
+            "unless this note explicitly names another note. Web research is allowed and expected",
+            "for external facts; cite every web-derived claim with a URL and access date, and never",
+            "state a source you did not actually retrieve.",
+            "If you cannot see an attached image, say so in `warnings` and preserve the recognized",
+            "text as an untrusted transcription draft - never infer a visual subject from OCR noise",
+            "and never invent shopping, task, or portfolio recommendations from an unreadable scan.",
+        ]
+        if model_hint:
+            lines.append(f"Requested enrichment model: {model_hint}.")
+        return " ".join(lines)
+
+    def _coerce_enrichment_result(self, text: str, *, fallback_title: str) -> dict:
+        """Turn the model's reply into an EnrichmentResult dict.
+
+        A JSON reply is validated and passed through. Anything else (fenced JSON,
+        prose, markdown) degrades gracefully into a freeform result so a
+        partially-useful enrichment still reaches the note instead of failing
+        the whole run.
+        """
+        from .note_contract import EnrichmentResult
+
+        raw = (text or "").strip()
+        candidate = raw
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            candidate = "\n".join(lines).strip()
+        if not candidate.startswith("{"):
+            start = candidate.find("{")
+            end = candidate.rfind("}")
+            if start != -1 and end > start:
+                candidate = candidate[start:end + 1]
+
+        parsed: dict | None = None
+        if candidate.startswith("{"):
+            try:
+                loaded = json.loads(candidate)
+                if isinstance(loaded, dict):
+                    parsed = loaded
+            except json.JSONDecodeError:
+                parsed = None
+
+        if parsed is not None:
+            result = EnrichmentResult.from_dict(parsed)
+            errors = result.validate()
+            if not errors:
+                return result.to_dict()
+            parsed.setdefault("warnings", [])
+            if isinstance(parsed["warnings"], list):
+                parsed["warnings"].extend(errors)
+            parsed.setdefault("title", fallback_title or "Note")
+            parsed.setdefault("markdown", raw)
+            if not parsed.get("sections"):
+                parsed["sections"] = [{
+                    "kind": "freeform",
+                    "title": parsed.get("title") or "Note",
+                    "markdown": parsed.get("markdown") or raw,
+                }]
+            return EnrichmentResult.from_dict(parsed).to_dict()
+
+        title = fallback_title.strip()
+        if not title:
+            for line in raw.splitlines():
+                stripped = line.strip().lstrip("#").strip()
+                if stripped:
+                    title = stripped[:80]
+                    break
+        title = title or "Enriched note"
+        body = raw or "(the model returned no content)"
+        return EnrichmentResult.from_dict({
+            "schemaVersion": 1,
+            "title": title,
+            "markdown": body,
+            "sections": [{"kind": "freeform", "title": title, "markdown": body}],
+            "commandResults": [],
+            "citations": [],
+            "warnings": ["The enrichment model did not return the structured JSON schema."],
+        }).to_dict()
 
     async def _handle_job(self, websocket, job: dict) -> None:
         state = self.state_store.load()
@@ -2474,6 +2939,12 @@ class HeraldConnector:
                 result = self._rpc_auxiliary_list()
             elif method == "auxiliary.set":
                 result = self._rpc_auxiliary_set(params)
+            elif method == "gateway.status":
+                result = await self._rpc_gateway_status()
+            elif method == "gateway.logs":
+                result = await self._rpc_gateway_logs(params)
+            elif method == "gateway.update_check":
+                result = await self._rpc_gateway_update_check()
             elif method == "profiles.list":
                 result = await self._rpc_profiles_list()
             elif method == "profile.set":
@@ -2492,6 +2963,14 @@ class HeraldConnector:
                 result = await self._rpc_memories_list()
             elif method == "tools.list":
                 result = await self._rpc_tools_list()
+            elif method == "config.get":
+                result = await self._rpc_config_get()
+            elif method == "config.set":
+                result = await self._rpc_config_set(params)
+            elif method == "config.validate":
+                result = await self._rpc_config_validate(params)
+            elif method == "canvas.processes":
+                result = await self._rpc_canvas_processes()
             elif method == "note.enrich":
                 result = await self._rpc_note_enrich(params)
             elif method == "session.generateTitle":
@@ -2703,6 +3182,7 @@ class HeraldConnector:
                 config = {}
 
         dynamic_models = _read_dynamic_catalog_models(hermes_home, config)
+        dynamic_models += _read_custom_provider_cache_models(hermes_home, config)
         seen = {(m["name"], m["provider"]) for m in models}
         for m in dynamic_models:
             key = (m["name"], m["provider"])
@@ -2820,6 +3300,77 @@ class HeraldConnector:
         "profile_describer",
         "curator",
     ]
+
+    async def _rpc_gateway_status(self) -> dict:
+        """Minimal paired-host telemetry for relay-mode Settings."""
+        config = await self._rpc_config_get()
+        return {
+            "connected": True,
+            "model": config.get("model"),
+            "provider": config.get("provider"),
+            "availableProviders": config.get("providers", []),
+            "activeSessionCount": 0,
+            "usageAvailable": False,
+            "hermesHome": str(self._resolve_hermes_home()),
+        }
+
+    async def _rpc_gateway_logs(self, params: dict) -> dict:
+        """Tail the requested paired-host journal unit without facade auth."""
+        source = str(params.get("source") or "hermes-gateway")
+        profile = os.path.basename(str(self._resolve_hermes_home()).rstrip("/")) or "default"
+        units = {
+            "connector": "hermes-mobile-connector.service",
+            "hermes-gateway": f"hermes-gateway-{profile}.service",
+            "hermes-agent": f"hermes-agent-{profile}.service",
+        }
+        if source not in units:
+            raise RuntimeError(f"Invalid log source: {source}")
+        lines = max(1, min(int(params.get("lines") or 200), 2000))
+        level = str(params.get("level") or "all").lower()
+        priority = {"debug": "7", "info": "6", "warning": "4", "error": "3"}.get(level, "7")
+        # Linux hosts use the user journal. On macOS (Curtis's MBP) there is
+        # no journalctl; the connector/relay run as LaunchAgents with regular
+        # file logs. The old unconditional subprocess raised ENOENT and the
+        # relay returned 500, producing Gateway Logs → Not Found in iOS.
+        if shutil.which("journalctl"):
+            proc = await asyncio.create_subprocess_exec(
+                "journalctl", "--user", "-u", units[source], "-n", str(lines), "-p", priority,
+                "-o", "short-iso", "--no-pager", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            raw_lines = [line for line in stdout.decode("utf-8", "replace").splitlines() if line]
+        else:
+            home = self._resolve_hermes_home()
+            paths = {
+                "connector": Path.home() / ".hermes-mobile/logs/connector.stderr.log",
+                "hermes-gateway": home / "logs/gateway.log",
+                "hermes-agent": home / "logs/agent.log",
+            }
+            try:
+                raw_lines = paths[source].read_text(errors="replace").splitlines()[-lines:]
+            except OSError as error:
+                raw_lines = [f"Unable to read {paths[source].name}: {error}"]
+        now = datetime.now(timezone.utc).isoformat()
+        return {"lines": [
+            {"timestamp": now, "level": level, "message": line, "source": source}
+            for line in raw_lines
+        ]}
+
+    async def _rpc_gateway_update_check(self) -> dict:
+        """Run the host Hermes update check through the paired connector."""
+        hermes = self._resolve_hermes_home() / "hermes-agent" / "venv" / "bin" / "hermes"
+        if not hermes.is_file():
+            hermes = Path("hermes")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(hermes), "update", "--check", stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            message = stdout.decode("utf-8", "replace").strip() or "Update check complete"
+            return {"status": "complete", "message": message}
+        except Exception as exc:
+            return {"status": "failed", "message": f"Update check failed: {exc}"}
 
     def _aux_config_path(self) -> Path:
         home = os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")
@@ -3365,6 +3916,85 @@ class HeraldConnector:
             return {"tools": tools}
         except Exception:  # noqa: BLE001
             return {"tools": []}
+
+    async def _rpc_config_get(self) -> dict:
+        """Return the live Hermes config.yaml text.
+
+        Relay-mode clients have no native gateway session, so the Config
+        Editor's /v1/config call must be answerable over the connector RPC
+        channel the relay already holds open. Mirrors the connector HTTP
+        facade's config_get contract (path/size/mtime/content).
+        """
+        hermes_home = self._resolve_hermes_home()
+        path = hermes_home / "config.yaml"
+        if not path.is_file():
+            raise RuntimeError("config.yaml not found")
+        content = path.read_text(encoding="utf-8")
+        return {
+            "path": str(path),
+            "size": len(content.encode("utf-8")),
+            "mtime": path.stat().st_mtime,
+            "content": content,
+        }
+
+    async def _rpc_config_set(self, params: dict) -> dict:
+        """Validate, back up, and atomically write config.yaml.
+
+        Same safety contract as the connector facade's config_put: YAML is
+        validated before the live file is touched, the current file is backed
+        up, and the write is tmp+rename. Does NOT restart the gateway.
+        """
+        import shutil
+        import time as _time
+
+        content = params.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("content is required")
+
+        _validate_yaml_text(content)
+
+        hermes_home = self._resolve_hermes_home()
+        path = hermes_home / "config.yaml"
+        if not path.is_file():
+            raise RuntimeError("config.yaml not found")
+
+        backup = path.with_name(f"config.yaml.bak.{int(_time.time())}")
+        tmp = path.with_name(f"config.yaml.tmp.{os.getpid()}")
+        try:
+            shutil.copy2(path, backup)
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as error:
+            raise RuntimeError(f"write failed: {error}") from error
+
+        return {
+            "ok": True,
+            "path": str(path),
+            "size": len(content.encode("utf-8")),
+            "backup": str(backup),
+        }
+
+    async def _rpc_config_validate(self, params: dict) -> dict:
+        """Validate YAML without writing (Config Editor's validate button)."""
+        content = params.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("content is required")
+        _validate_yaml_text(content)
+        return {"valid": True}
+
+    async def _rpc_canvas_processes(self) -> dict:
+        """Snapshot of tracked background processes for the Canvas Live tab.
+
+        The relay proxies /v1/canvas/processes[/stream] over this RPC; the
+        registry itself lives here in the connector.
+        """
+        try:
+            from .background_processes import get_registry
+
+            rows = get_registry().list_snapshots()
+        except Exception:  # noqa: BLE001
+            rows = []
+        return {"processes": rows}
 
     async def _rpc_note_enrich(self, params: dict) -> dict:
         """Handle a note enrichment request.
@@ -4169,7 +4799,32 @@ You MUST return a JSON object with exactly these fields:
         config = state.runtime_config
         api_url = (config.api_server_url if config else None) or os.getenv("HERMES_API_SERVER_URL")
         api_key = (config.api_server_key if config else None) or os.getenv("HERMES_API_SERVER_KEY")
-        logger.info("Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=%s", api_url, "set" if api_key else "unset")
+
+        # Use the warm gateway api_server when we have a key. The previous
+        # code read and logged these values and then discarded them, always
+        # returning the CLI adapter — a fresh `hermes` subprocess per turn
+        # whose 60-90s cold start made latency swing wildly and overran the
+        # relay's job deadline. The api_server path is one persistent process.
+        if api_key:
+            executor = HeraldAPIExecutor(
+                HeraldAPIExecutorSettings.from_env(
+                    base_url=api_url,
+                    api_key=api_key,
+                )
+            )
+            adapter = HeraldAPIRuntimeAdapter(executor)
+            self._health_cache = (now, adapter)
+            self._active_adapter_mode = "api_server"
+            logger.info(
+                "Runtime adapter: HeraldAPI (streaming+reasoning) — api_server_url=%s",
+                executor.settings.base_url,
+            )
+            return adapter
+
+        logger.info(
+            "Runtime adapter: HeraldCLI (no streaming) — api_server_url=%s, api_server_key=unset",
+            api_url,
+        )
         cli_adapter = HeraldRuntimeAdapter(self.executor_for_state(state))
         self._active_adapter_mode = "openai_v1_fallback"
         return cli_adapter
@@ -4179,11 +4834,21 @@ You MUST return a JSON object with exactly these fields:
 
         The TUI gateway supports progressive streaming.  The CLI subprocess
         path does not — it only returns a single complete response after
-        the process exits.
+        the process exits.  The api_server (OpenAI-compatible
+        /v1/chat/completions) path also streams: HeraldAPIExecutor emits
+        text_delta/reasoning_delta from the SSE response, so advertising
+        False here made the relay request responseMode="complete" and the
+        app showed no streaming, no reasoning, and no thinking bubble.
         """
         if os.getenv("HERALD_TRANSPORT", "chat_completions") == "tui_ws":
             return True
-        return False
+        # Warm api_server path streams too (see HeraldAPIExecutor).
+        config = state.runtime_config
+        api_key = (
+            (config.api_server_key if config else None)
+            or os.getenv("HERMES_API_SERVER_KEY")
+        )
+        return bool(api_key)
 
     def apply_runtime_environment(self, state: ConnectorState) -> None:
         if state.runtime_config is not None and state.runtime_config.hermes_home:
