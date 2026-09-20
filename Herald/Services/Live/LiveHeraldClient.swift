@@ -430,6 +430,32 @@ final class LiveHeraldClient: HeraldClientProtocol {
     }
 
     func sendStreaming(message content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID, continuationContext: String? = nil) -> AsyncStream<StreamingUpdate> {
+        sendStreamingInternal(
+            message: content,
+            attachments: attachments,
+            clientMessageID: clientMessageID,
+            continuationContext: continuationContext,
+            conversationIDOverride: nil
+        )
+    }
+
+    /// Streaming send that targets an EXPLICIT conversation instead of
+    /// `currentConversation`. Required by note enrichment, whose turns belong
+    /// to the note's own session: routing them through `currentConversation`
+    /// posted note prompts into whichever chat the user had open, and left the
+    /// note with no session of its own (so `generateSessionTitle(noteId)` hit
+    /// `GET /v1/sessions/{noteId}` and 404'd, killing smart naming).
+    ///
+    /// `currentConversation` is deliberately never read OR written on the
+    /// override path - an enrichment turn must not adopt or rebind the chat's
+    /// selected conversation as a side effect.
+    private func sendStreamingInternal(
+        message content: String,
+        attachments: [PendingAttachment] = [],
+        clientMessageID: UUID,
+        continuationContext: String? = nil,
+        conversationIDOverride: UUID?
+    ) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             Task { @MainActor [weak self] in
                 guard let self else {
@@ -443,7 +469,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         text: content,
                         attachments: attachments,
                         clientMessageID: clientMessageID,
-                        continuationContext: continuationContext
+                        continuationContext: continuationContext,
+                        conversationIDOverride: conversationIDOverride
                     )
                     let response: MessageResponse = try await self.performAuthorizedRequest { [self] token in
                         try await self.apiClient.post(
@@ -463,13 +490,21 @@ final class LiveHeraldClient: HeraldClientProtocol {
                     // turns.  Keep the selected conversation authoritative until
                     // an explicit GET /sessions/{id}/conversation reconciles it.
                     let acceptedConversation = self.mapConversation(response.conversation)
-                    if self.currentConversation == nil {
-                        self.currentConversation = acceptedConversation
-                    } else if self.currentConversation?.id != acceptedConversation.id {
-                        Self.logger.error(
-                            "Ignoring POST acknowledgement for a different conversation (selected=\(self.currentConversation?.id.uuidString ?? "nil"), ack=\(acceptedConversation.id.uuidString))"
-                        )
+                    if conversationIDOverride == nil {
+                        // Chat path: keep the selected conversation authoritative
+                        // until an explicit GET reconciles it (see comment above).
+                        if self.currentConversation == nil {
+                            self.currentConversation = acceptedConversation
+                        } else if self.currentConversation?.id != acceptedConversation.id {
+                            Self.logger.error(
+                                "Ignoring POST acknowledgement for a different conversation (selected=\(self.currentConversation?.id.uuidString ?? "nil"), ack=\(acceptedConversation.id.uuidString))"
+                            )
+                        }
                     }
+                    // Override path (note enrichment): never adopt or rebind
+                    // `currentConversation`. Doing so flipped the user's open chat
+                    // to the note's session and made the note prompt appear in
+                    // chat history.
                     self.connectionStatus = .connected
 
                     Self.logger.info("POST /messages replyState: \(response.replyState.rawValue) existingState: \(response.existingState?.rawValue ?? "nil") jobId: \(response.jobId?.uuidString ?? "nil")")
@@ -693,6 +728,24 @@ final class LiveHeraldClient: HeraldClientProtocol {
     ///   `false` means the session could not be established — the caller must
     ///   not proceed with message submission.
     func ensureConversation(id: UUID) async -> Bool {
+        await ensureConversation(id: id, adoptAsCurrent: true)
+    }
+
+    /// - Parameter adoptAsCurrent: When false, the conversation is created
+    ///   server-side but `currentConversation` is left untouched. Note
+    ///   enrichment uses this: adopting the note's session as the "current"
+    ///   one is what swapped the user's open chat to the note and pushed note
+    ///   prompts into chat history.
+    func ensureConversation(id: UUID, adoptAsCurrent: Bool) async -> Bool {
+        await ensureConversationDetailed(id: id, adoptAsCurrent: adoptAsCurrent).hasSession
+    }
+
+    /// Same as `ensureConversation(id:adoptAsCurrent:)` but also reports whether
+    /// the server CREATED the row on this call. Callers use `created` to do
+    /// one-time setup (e.g. naming a note's session) exactly once instead of on
+    /// every sync. `hasSession` is true for an already-existing row, so it must
+    /// never be used as a "newly created" signal.
+    func ensureConversationDetailed(id: UUID, adoptAsCurrent: Bool) async -> (hasSession: Bool, created: Bool) {
         struct EnsureResponse: Decodable {
             let conversationId: String?
             let sessionId: String?
@@ -720,17 +773,17 @@ final class LiveHeraldClient: HeraldClientProtocol {
                 // back to minting a fresh UUID that the connector has no
                 // binding for. We only know the id here — refresh the full
                 // conversation in a follow-up call (ChatStore already does this).
-                if currentConversation == nil || currentConversation?.id != id {
+                if adoptAsCurrent, currentConversation == nil || currentConversation?.id != id {
                     currentConversation = Conversation(
                         id: id,
                         title: currentConversation?.title ?? "New Chat"
                     )
                 }
             }
-            return hasSession
+            return (hasSession, response.created ?? false)
         } catch {
             Self.logger.error("ensureConversation failed: \(error.localizedDescription) — first message will be blocked")
-            return false
+            return (false, false)
         }
     }
 
@@ -793,7 +846,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
         text: String,
         attachments: [PendingAttachment],
         clientMessageID: UUID,
-        continuationContext: String? = nil
+        continuationContext: String? = nil,
+        conversationIDOverride: UUID? = nil
     ) throws -> MessageCreateBody {
         let payloads: [AttachmentPayload]? = attachments.isEmpty ? nil : attachments.map { att in
             AttachmentPayload(
@@ -811,7 +865,12 @@ final class LiveHeraldClient: HeraldClientProtocol {
         // Hermes session.  If currentConversation isn't set yet, use
         // a fresh UUID that the connector will bind on its side.
         let resolvedConversationId: UUID
-        if let id = currentConversation?.id {
+        if let override = conversationIDOverride {
+            // Note enrichment targets the note's OWN conversation id and must
+            // never fall back to `currentConversation` - that is what posted
+            // note prompts into whatever chat was open.
+            resolvedConversationId = override
+        } else if let id = currentConversation?.id {
             resolvedConversationId = id
         } else {
             resolvedConversationId = UUID()
@@ -1611,12 +1670,59 @@ extension LiveHeraldClient {
             hasAttachments: !attachments.isEmpty
         )
 
-        return sendStreaming(
-            message: prompt,
-            attachments: attachments,
-            clientMessageID: clientMessageID,
-            continuationContext: nil
-        )
+        return AsyncStream { continuation in
+            Task { @MainActor [weak self] in
+                guard let self else { continuation.finish(); return }
+
+                // The note's conversation must exist as a real server session
+                // BEFORE the turn runs. Without this, the note has no session
+                // row, so the later smart-title call
+                // `POST /v1/sessions/{noteId}/generate-title` 404s and untitled
+                // notes never get named. Failed or not, always attempt the send:
+                // a missing row is the naming problem, not the enrichment one.
+                // adoptAsCurrent: false - creating the note's session must not
+                // rebind the chat's selected conversation.
+                let ensureResult = await self.ensureConversationDetailed(id: conversationID, adoptAsCurrent: false)
+
+                // Name the note's session after the note, but ONLY when the row
+                // was just created. `/conversations/ensure` hardcodes "New Chat",
+                // so without this an unnamed stray row appears in the sidebar per
+                // note. `hasSession` is true for pre-existing rows too, so keying
+                // off it would re-PATCH the title on every sync and clobber a
+                // smarter title generated later. Best-effort: never block enrichment.
+                if ensureResult.created, let sessionTitle = Self.noteSessionTitle(title) {
+                    _ = try? await self.renameSession(id: conversationID, title: sessionTitle)
+                }
+
+                // NOTE: deliberately calls the override-aware internal path, not
+                // `sendStreaming`. The public `sendStreaming` targets
+                // `currentConversation`, which put note prompts into whichever
+                // chat the user had open.
+                let stream = self.sendStreamingInternal(
+                    message: prompt,
+                    attachments: attachments,
+                    clientMessageID: clientMessageID,
+                    continuationContext: nil,
+                    conversationIDOverride: conversationID
+                )
+                for await update in stream {
+                    continuation.yield(update)
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    /// Title for a note's session. Returns nil for an empty/placeholder title so
+    /// the caller leaves the server's default alone rather than PATCHing a
+    /// meaningless name. Mirrors how native mode names a note session from the
+    /// note's own title.
+    static func noteSessionTitle(_ title: String) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "Untitled Note", trimmed != "New Chat" else {
+            return nil
+        }
+        return trimmed
     }
 
     /// Wraps the note body in an enrichment instruction. The note text is
