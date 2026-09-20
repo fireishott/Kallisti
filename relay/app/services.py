@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time as _time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
@@ -1529,12 +1529,29 @@ def list_message_jobs_for_conversation(db: Session, *, conversation_id: str) -> 
     )
 
 
+def _iso_utc(value) -> str | None:
+    """Serialize a datetime as ISO-8601 with a `T` separator and UTC offset.
+
+    A raw datetime handed to FastAPI's jsonable_encoder renders as ISO `T`,
+    but the SSE path stringifies payloads with json default=str, which calls
+    str(datetime) and produces a SPACE separator. The iOS client's date
+    decoder only accepts the `T` form, so the SSE `done` event failed to
+    decode and the phone showed \"The data couldn't be read because it is
+    missing.\" Emitting one canonical format here fixes both paths.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.isoformat(timespec="microseconds") + "Z"
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def serialize_message(message: Message, *, job: MessageJob | None = None) -> dict:
     payload = {
         "id": message.id,
         "role": message.role,
         "text": message.text,
-        "timestamp": message.created_at,
+        "timestamp": _iso_utc(message.created_at),
         "deliveryStatus": default_message_delivery_status(message),
     }
     if message.client_message_id:
@@ -1576,7 +1593,7 @@ def serialize_conversation(conversation: Conversation, messages: list[Message], 
     result = {
         "id": conversation.id,
         "title": conversation.title,
-        "updatedAt": conversation.updated_at,
+        "updatedAt": _iso_utc(conversation.updated_at),
         "source": conversation.source,
         "isPinned": conversation.is_pinned,
         "isArchived": conversation.is_archived,
@@ -1980,6 +1997,24 @@ def claim_next_note_run(
     return db.get(NoteRun, run.id)
 
 
+def renew_note_run_lease(db: Session, *, run_id: str) -> NoteRun | None:
+    """Extend a claimed note run's lease.
+
+    Enrichment is one long turn (drawing read + optional web research), so any
+    progress/heartbeat from the host renews the lease; only silence past the
+    lease makes the run eligible for requeue.
+    """
+    run = db.get(NoteRun, run_id)
+    if run is None or run.status in ("completed", "failed", "cancelled"):
+        return None
+
+    now = utcnow()
+    run.lease_expires_at = now + timedelta(seconds=_NOTE_RUN_LEASE_SECONDS)
+    run.updated_at = now
+    db.commit()
+    return run
+
+
 def complete_note_run(
     db: Session,
     *,
@@ -1987,11 +2022,18 @@ def complete_note_run(
     result: dict,
     source_drawing_revision: int,
     source_text_revision: int,
-) -> EnrichedNoteRevision:
-    """Complete a note run and apply the revision fence."""
+) -> EnrichedNoteRevision | None:
+    """Complete a note run and apply the revision fence.
+
+    Returns None when the run already reached a terminal state (cancelled or
+    failed) — a late result must never resurrect a run the user stopped.
+    """
     run = db.get(NoteRun, run_id)
     if run is None:
         raise RuntimeError(f"Note run {run_id} not found")
+
+    if run.status in ("cancelled", "failed"):
+        return None
 
     now = utcnow()
     run.status = "completed"
@@ -2051,15 +2093,23 @@ def append_note_run_event(
     attempt: int,
     source_seq: int | None = None,
 ) -> NoteRunEvent | None:
-    """Append an event to the note run event log."""
+    """Append an event to the note run event log.
+
+    Terminal types are exempt from the status guard so the journal always ends
+    with the reason the run stopped.
+    """
     run = db.get(NoteRun, run_id)
     if run is None:
         return None
 
-    if run.status in ("completed", "failed", "cancelled"):
+    if run.status in ("completed", "failed", "cancelled") and event_type not in (
+        "completed",
+        "failed",
+        "cancelled",
+    ):
         return None
 
-    if run.attempt != attempt:
+    if attempt is not None and run.attempt != attempt:
         return None
 
     # Get next seq

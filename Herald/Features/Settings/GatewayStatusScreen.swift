@@ -218,31 +218,73 @@ struct GatewayStatusScreen: View {
     }
 
     private func fetchTelemetryInner() async {
-        guard let nativeClient = container.nativeGatewayClient else {
-            errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
+        if let nativeClient = container.nativeGatewayClient {
+            do {
+                snapshot = try await nativeClient.featureClient.gatewayStatus()
+                publishSnapshot()
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
+
+        // Relay mode has no NativeGatewayClient. Ask the paired connector
+        // through the relay instead of presenting a misleading unavailable card.
+        let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString
+            ?? pairingStore.pairedRelayConfiguration?.baseURLString
+        guard let relayBase else {
+            errorMessage = "No relay configured. Add your relay URL in Settings."
             return
         }
-        do {
-            let featureClient = nativeClient.featureClient
-            snapshot = try await featureClient.gatewayStatus()
-
-            // Update shared state for Control Center
-            if let s = snapshot {
-                GatewayState.shared.update(
-                    connected: container.nativeGatewayClient?.connectionStatus == .connected,
-                    activeJobs: s.activeSessionCount,
-                    model: s.model,
-                    version: nil,
-                    uptimeSeconds: nil,
-                    cpuPercent: nil,
-                    memoryUsedGb: nil,
-                    memoryTotalGb: nil,
-                    alertCount: 0
-                )
+        struct Response: Decodable {
+            struct Data: Decodable {
+                let connected: Bool?
+                let model: String?
+                let provider: String?
+                let availableProviders: [String]?
+                let activeSessionCount: Int?
+                let usageAvailable: Bool?
+                let hermesHome: String?
             }
+            let data: Data
+        }
+        do {
+            let client = RelayAPIClient { relayBase }
+            let response: Response = try await client.get(
+                path: "gw/status", accessToken: await sessionStore.currentAccessToken()
+            )
+            let data = response.data
+            snapshot = NativeGatewayFeatureClient.GatewayStatusSnapshot(
+                model: data.model,
+                provider: data.provider,
+                availableProviders: data.availableProviders ?? [],
+                activeSessionCount: data.activeSessionCount ?? 0,
+                batteryAvailable: false,
+                batteryPercent: nil,
+                batteryPlugged: false,
+                hermesHome: data.hermesHome,
+                usageAvailable: data.usageAvailable ?? false
+            )
+            publishSnapshot()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func publishSnapshot() {
+        guard let s = snapshot else { return }
+        GatewayState.shared.update(
+            connected: container.nativeGatewayClient?.connectionStatus == .connected || container.nativeGatewayClient == nil,
+            activeJobs: s.activeSessionCount,
+            model: s.model,
+            version: nil,
+            uptimeSeconds: nil,
+            cpuPercent: nil,
+            memoryUsedGb: nil,
+            memoryTotalGb: nil,
+            alertCount: 0
+        )
     }
 
     private func startAutoRefresh() {

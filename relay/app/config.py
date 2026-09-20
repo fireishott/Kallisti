@@ -49,6 +49,13 @@ class Settings:
     connector_idle_poll_interval_seconds: float = 0.1
     connector_sensor_ack_timeout_seconds: float = 3.0
     connector_rpc_timeout_seconds: float = 30.0
+    # ── Notes enrichment runs (Phase 3) ───────────────────────────────
+    # Enrichment is a long agent turn (drawing read + optional web research),
+    # so it gets its own ceiling instead of job's 180s.
+    max_note_run_duration_seconds: int = 420
+    note_run_staging_dir: str | None = None  # derived from DATABASE_URL when unset
+    note_run_max_attachment_bytes: int = 12 * 1024 * 1024
+    note_run_max_attachments: int = 8
     talk_delegate_timeout_seconds: float = 90.0
     sse_keepalive_seconds: int = 30
     connector_setup_secret: str | None = None
@@ -103,6 +110,10 @@ class Settings:
             connector_idle_poll_interval_seconds=float(os.getenv("CONNECTOR_IDLE_POLL_INTERVAL_SECONDS", "0.1")),
             connector_sensor_ack_timeout_seconds=float(os.getenv("CONNECTOR_SENSOR_ACK_TIMEOUT_SECONDS", "3.0")),
             connector_rpc_timeout_seconds=float(os.getenv("CONNECTOR_RPC_TIMEOUT_SECONDS", "30.0")),
+            max_note_run_duration_seconds=int(os.getenv("MAX_NOTE_RUN_DURATION_SECONDS", "420")),
+            note_run_staging_dir=os.getenv("NOTE_RUN_STAGING_DIR") or None,
+            note_run_max_attachment_bytes=int(os.getenv("NOTE_RUN_MAX_ATTACHMENT_BYTES", str(12 * 1024 * 1024))),
+            note_run_max_attachments=int(os.getenv("NOTE_RUN_MAX_ATTACHMENTS", "8")),
             talk_delegate_timeout_seconds=float(os.getenv("TALK_DELEGATE_TIMEOUT_SECONDS", "90.0")),
             connector_setup_secret=os.getenv("CONNECTOR_SETUP_SECRET") or None,
             apns_key_path=os.getenv("APNS_KEY_PATH") or None,

@@ -246,6 +246,32 @@ class Database:
             if "reasoning_effort" not in job_columns:
                 _exec_safe("ALTER TABLE message_jobs ADD COLUMN reasoning_effort TEXT")
 
+            # --- note_runs: enrichment execution input (Phase 3 completion) ---
+            # The tables shipped with the contract but the run row only carried
+            # directives, so the connector had nothing to execute against.
+            if "note_runs" in table_names:
+                note_run_columns = {c["name"] for c in inspect(self.engine).get_columns("note_runs")}
+                if "recognized_text" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN recognized_text TEXT")
+                if "request_payload" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN request_payload JSON")
+                if "updated_at" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN updated_at DATETIME")
+                if "host_id" not in note_run_columns:
+                    _exec_safe("ALTER TABLE note_runs ADD COLUMN host_id TEXT")
+                _exec_safe(
+                    "CREATE INDEX IF NOT EXISTS ix_note_runs_user_status "
+                    "ON note_runs (user_id, status, created_at)"
+                )
+                _exec_safe(
+                    "CREATE INDEX IF NOT EXISTS ix_note_runs_lease "
+                    "ON note_runs (status, lease_expires_at)"
+                )
+                _exec_safe(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_note_run_events_run_seq "
+                    "ON note_run_events (run_id, seq)"
+                )
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         db = self.session_factory()

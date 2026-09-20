@@ -302,8 +302,26 @@ final class RelayAPIClient {
         return try await sendRequest(request)
     }
 
-    // MARK: - Gateway (non-/v1) requests
+    /// PUT to a `/v1` API route.
+    ///
+    /// Needed by the relay-backed Config Editor: GET/PUT /v1/config are the
+    /// write/read pair, and only GET had a method on this client.
+    func put<Body: Encodable, T: Decodable>(
+        path: String,
+        body: Body,
+        accessToken: String? = nil
+    ) async throws -> T {
+        let requestBody = try encoder.encode(body)
+        let request = try makeRequest(
+            path: path,
+            method: "PUT",
+            accessToken: accessToken,
+            body: requestBody
+        )
+        return try await sendRequest(request)
+    }
 
+    // MARK: - Gateway (non-/v1) requests
     /// POST to a gateway-control endpoint mounted at the host root (`/gw/…`),
     /// not under the `/v1` API prefix.
     func postGateway<Body: Encodable, T: Decodable>(
@@ -789,5 +807,87 @@ extension RelayAPIClient {
             throw ClientError.requestFailed(plainTextReason(from: data) ?? "Attachment request failed with status \(httpResponse.statusCode).")
         }
         return (data, httpResponse.mimeType)
+    }
+}
+
+// MARK: - Relay-backed config.yaml access
+
+/// Minimal payload for GET /v1/health, used to time relay latency.
+struct RelayHealthPong: Decodable {
+    let status: String?
+    let database: Bool?
+}
+
+/// Relay-backed access to the host's `~/.hermes/config.yaml`.
+///
+/// In relay mode there is no `nativeGatewayClient`, so the Config Editor's
+/// native path bails before it ever makes a request and the screen shows
+/// "Native gateway unavailable" even when the host is online. These routes
+/// proxy through the relay to the connector over the same RPC channel that
+/// carries models, skills and cron, so the editor works in both modes.
+struct RelayConfigService {
+    enum ServiceError: LocalizedError {
+        case notConnected
+
+        var errorDescription: String? {
+            switch self {
+            case .notConnected: "No gateway transport is connected."
+            }
+        }
+    }
+
+    struct Document: Decodable {
+        let path: String
+        let size: Int?
+        let content: String
+    }
+
+    struct SaveResult: Decodable {
+        let ok: Bool?
+        let path: String?
+        let backup: String?
+    }
+
+    private struct ValidateResult: Decodable {
+        let valid: Bool?
+    }
+
+    private struct ContentBody: Encodable {
+        let content: String
+    }
+
+    private let apiClient: RelayAPIClient
+    private let accessTokenProvider: @MainActor () async -> String?
+
+    init(
+        apiClient: RelayAPIClient,
+        accessTokenProvider: @escaping @MainActor () async -> String?
+    ) {
+        self.apiClient = apiClient
+        self.accessTokenProvider = accessTokenProvider
+    }
+
+    func configDocument() async throws -> Document {
+        let token = await accessTokenProvider()
+        return try await apiClient.get(path: "config", accessToken: token)
+    }
+
+    func saveConfigDocument(_ content: String) async throws -> SaveResult {
+        let token = await accessTokenProvider()
+        return try await apiClient.put(
+            path: "config",
+            body: ContentBody(content: content),
+            accessToken: token
+        )
+    }
+
+    func validateConfigDocument(_ content: String) async throws -> Bool {
+        let token = await accessTokenProvider()
+        let result: ValidateResult = try await apiClient.post(
+            path: "config/validate",
+            body: ContentBody(content: content),
+            accessToken: token
+        )
+        return result.valid ?? true
     }
 }

@@ -843,6 +843,9 @@ struct SettingsScreen: View {
             struct UpdateStatus: Decodable {
                 let status: String?
                 let message: String?
+                let available: Bool?
+                let current: String?
+                let error: String?
             }
             do {
                 let status: UpdateStatus = try await client.postGateway(
@@ -850,9 +853,19 @@ struct SettingsScreen: View {
                     body: EmptyRequest(),
                     accessToken: token ?? ""
                 )
-                updateCheckResult = status.message ?? status.status ?? "Update check complete"
+                // The self-hosted relay cannot always reach the public update
+                // manifest. That is not a Kallisti connectivity failure, so
+                // show the installed version/status instead of a scary red
+                // `Check failed: Reload...` row.
+                if status.available == true {
+                    updateCheckResult = "Update available"
+                } else if let error = status.error, !error.isEmpty {
+                    updateCheckResult = status.current.map { "Current: \($0)" } ?? "Update source unavailable"
+                } else {
+                    updateCheckResult = status.message ?? status.current ?? status.status ?? "Up to date"
+                }
             } catch {
-                updateCheckResult = "Check failed: \(error.localizedDescription)"
+                updateCheckResult = "Update check unavailable"
             }
         }
 

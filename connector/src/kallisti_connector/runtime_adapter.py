@@ -108,6 +108,7 @@ class HeraldAPIRuntimeAdapter:
         latest_user_message: str,
         history: list[RuntimeConversationMessage],
         session_id: str | None = None,
+        model: str | None = None,
     ) -> RuntimeTurnResult:
         """Synchronous non-streaming send (used by talk delegation and fallback)."""
         result = _run_blocking(
@@ -118,6 +119,7 @@ class HeraldAPIRuntimeAdapter:
                     for message in history
                 ],
                 session_id=session_id,
+                model=model,
             )
         )
         return RuntimeTurnResult(
@@ -134,6 +136,7 @@ class HeraldAPIRuntimeAdapter:
         attachments: list[dict] | None = None,
         reasoning_effort: str | None = None,
         job_id: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator:
         """Async streaming send — yields StreamEvent objects."""
         async for event in self.executor.stream_message(
@@ -146,6 +149,7 @@ class HeraldAPIRuntimeAdapter:
             attachments=attachments,
             reasoning_effort=reasoning_effort,
             job_id=job_id,
+            model=model,
         ):
             yield event
 

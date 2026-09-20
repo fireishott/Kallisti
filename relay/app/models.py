@@ -436,12 +436,19 @@ class NoteRun(Base):
     source_drawing_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     source_text_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_directives: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Immutable execution input: the OCR text the run was submitted against,
+    # the enrichment model/provider the app asked for, locale/timezone, and
+    # the staged attachment metadata (never the bytes).
+    recognized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    host_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
