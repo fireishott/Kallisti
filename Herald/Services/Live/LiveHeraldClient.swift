@@ -1445,7 +1445,9 @@ extension LiveHeraldClient {
             clientMessageId: clientMessageID,
             attachments: nil,
             reasoningEffort: effort?.rawValue,
-            continuationContext: nil
+            continuationContext: nil,
+            // Chat sends never pin a model: the gateway keeps its default.
+            model: nil
         )
         struct MessageResponse: Decodable {
             let message: RelayMessage?
