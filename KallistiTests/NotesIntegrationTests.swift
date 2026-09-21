@@ -406,12 +406,26 @@ struct NotesIntegrationTests {
         #expect(cases.contains(.enriched))
     }
 
-    @Test("Visual-only note enrichment stays grounded and does not research by default")
-    func testVisualOnlyEnrichmentPolicyIsGrounded() {
-        let policy = NotesSyncEngine.enrichmentPolicy()
-        #expect(policy.contains("Do not invent a topic"))
-        #expect(policy.contains("Do not research by default"))
-        #expect(policy.contains("only when the note explicitly requests research"))
-        #expect(policy.lowercased().contains("do not invent citations"))
+    @Test("Enrichment contract fulfills the note, then transcribes it, and stays grounded")
+    func testEnrichmentPolicyFulfillsTheNote() {
+        let policy = NotesSyncEngine.enrichmentPolicy(inlineAttachments: false)
+        #expect(policy.contains("FULFILL THE NOTE"))
+        #expect(policy.contains("ANSWER IT"))
+        #expect(policy.contains("has no answer recorded"))
+        #expect(policy.contains("WHAT THE NOTE SAYS"))
+        #expect(policy.contains("Enrichment complete."))
+        #expect(policy.lowercased().contains("fabricated studies"))
+        #expect(policy.lowercased().contains("never take an action outside this note"))
+
+        // The answer contract rides BOTH transports; only the attachment
+        // contract is transport-specific.
+        let inline = NotesSyncEngine.enrichmentPolicy(inlineAttachments: true)
+        #expect(inline.contains("image pixels"))
+        #expect(!inline.contains("does NOT arrive inline"))
+        #expect(inline.contains("FULFILL THE NOTE"))
+
+        let staged = NotesSyncEngine.enrichmentPolicy(inlineAttachments: false)
+        #expect(staged.contains("vision_analyze"))
+        #expect(staged.contains("FULFILL THE NOTE"))
     }
 }
