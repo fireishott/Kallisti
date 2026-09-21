@@ -404,7 +404,7 @@ struct DocumentPickerView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [
-            .image, .plainText, .sourceCode, .json, .html, .xml, .yaml,
+            .image, .pdf, .plainText, .sourceCode, .json, .html, .xml, .yaml,
         ], asCopy: true)
         picker.allowsMultipleSelection = allowsMultipleSelection
         picker.delegate = context.coordinator

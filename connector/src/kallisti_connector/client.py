@@ -2387,6 +2387,12 @@ class HeraldConnector:
                 lines.append(
                     f"- Image attachment available at {file_path}. If you need to inspect it, use vision_analyze with image_url: {file_path}"
                 )
+            elif mime_type == "application/pdf":
+                lines.append(
+                    f"- PDF attachment available at {file_path}. Read it with read_file "
+                    f"(it extracts the PDF text layer). If it is a scan with no text layer, "
+                    f"fall back to the ocr-and-documents skill."
+                )
             elif self._is_text_like_attachment(mime_type):
                 lines.append(
                     f"- Text attachment available at {file_path}. Read it with read_file if you need its contents."
