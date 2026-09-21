@@ -1876,6 +1876,9 @@ class HeraldConnector:
                     session_id=job.get("sessionId"),
                     attachments=job.get("attachments"),
                     reasoning_effort=job.get("reasoningEffort"),
+                    # A note's enrichment can pin its model (relay sets this from
+                    # the app's request); None = the gateway's default model.
+                    model=job.get("model"),
                 ):
                     if event.type == "text_delta":
                         accumulated_text += event.data

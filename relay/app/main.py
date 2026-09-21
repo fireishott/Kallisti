@@ -1004,6 +1004,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if job.reasoning_effort:
             job_data["reasoningEffort"] = job.reasoning_effort
+        # Note enrichment: a pinned model rides the job envelope so the
+        # connector requests that model from the gateway api_server instead of
+        # its default. Absent = the gateway default (unchanged chat behavior).
+        if getattr(job, "model", None):
+            job_data["model"] = job.model
         # Build 22: select streaming mode when the connector advertises support.
         # When streaming is unavailable, fall back to complete mode truthfully.
         connector_session = connector_session_for_user(user_id) if user_id else None
@@ -3138,6 +3143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_message_id=user_message.id,
             session_id_snapshot=conversation.herald_session_id,
             reasoning_effort=payload.reasoningEffort,
+            model=payload.model,
         )
 
         if request_settings.herald_adapter == "connector":
