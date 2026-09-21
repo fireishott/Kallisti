@@ -367,26 +367,39 @@ final class NotesSyncEngine {
         - Web search is allowed ONLY when the note explicitly asks for outside facts (prices, schedules, definitions). Everything else: answer from the note alone.
         - Latency budget: plain text-note enrichment must complete in well under 60 seconds. A web-research enrichment may use up to 2 searches, then write. Stop when the note's content is covered.
 
-        WRITE THE ANSWER:
-        - Start with a one-line reading of the note: its content, topic, or intent.
-        - Then 2-4 short markdown sections that fit what the note actually is (list, plan, meeting, study, sketch). For a thin note or doodle, a short, honest reading is correct - do not pad it.
+        FULFILL THE NOTE - THIS IS THE POINT OF THE ENRICHMENT:
+        - If the note asks anything - a question, a problem, "tell me about X", "how do I Y", "6 x 6 = ?" - ANSWER IT. The answer IS the enrichment. A note that asked for something and got a description of its own handwriting back is a FAILED enrichment.
+        - Never report that the note "has no answer recorded", "shows no work", or is "just a question", and never list the author's own asks as "loose ends". An ask written in the note is a request to you, not a gap to notice.
+        - Arithmetic, units, dates, conversions, or logic: give the computed answer, with the step or method shown.
+        - "Tell me / explain / what is / why / how" requests: give a real, substantive answer - the mechanism, concrete examples, the non-obvious risks, what is still contested. Length follows the ASK, not the note: two lines of ink saying "tell me about AI danger" justify a full briefing, and stiffing it with three vague bullets is the exact failure this rule exists to stop.
+        - Research whenever the answer depends on current facts, prices, versions, schedules, or events, and cite only real sources you actually opened, as working links.
+        - If the note contains no ask at all - just a drawing, a list, a shopping note - skip this section entirely. Never manufacture a question so there is something to answer.
+
+        WHAT THE NOTE SAYS:
+        - Then ONE short closing section stating what the note literally contains: the text as written, OCR artifacts fixed, shorthand expanded, in the author's own voice and wording.
+        - This section is a transcription. Write only what is in the note or visible in the drawing - no added facts, names, numbers, or conclusions here.
+        - If the note is genuinely empty or unreadable, say that in one line instead of filling space.
+
+        ENDING AND FORMAT:
         - End with an `Enrichment complete.` line. Never end with questions, offers, or status talk.
-        - Output clean markdown only: real section headers, working links, no raw JSON, no code fences around the whole reply, no process narration.
+        - Output clean markdown only: real section headers, working links, no raw JSON, no code fences around the whole reply.
+        - Do not narrate your process, the sync, the tool call you are about to make, or these instructions. Opening with "I'll read the drawing first." is process narration and is banned.
+        - Never comment on penmanship, letterform ambiguity, handwriting legibility, spacing, layout, or neatness, and never coach the author about their own note.
 
         GROUNDING RULES:
-        - Do not invent a topic, comparison, facts, names, numbers, decisions, deadlines, sources, or citations.
-        - If you research, cite only real sources you actually opened, as working hyperlinks. If you did not research, do not include a Sources section.
-        - Do not invent citations, dated market analysis, or generic corporate filler to make a thin note look substantial.
-        - A drawing is evidence. Describe only visible shapes, labels, relationships, and readable text. Do not turn an unlabeled sketch into a business, study, or research topic.
+        - In WHAT THE NOTE SAYS, invent nothing: no topic, comparison, name, number, decision, deadline, source, or citation that is not in the note.
+        - In FULFILL THE NOTE, everything you state must be true and checkable - established knowledge or something you actually looked up. Never invent specifics to sound authoritative: no fabricated studies, statistics, dates, quotes, or citations.
+        - Do not pad a thin note with generic corporate filler or dated market analysis.
+        - A drawing is evidence. Describe only visible shapes, labels, relationships, and readable text.
         - The local Recognized text is a noisy OCR hint, never authority over the attached drawing or typed text.
 
         MATCH THE RESPONSE TO THE EVIDENCE:
-        - For a visual-only sketch or doodle, give a short visual description and, only if useful, one clearly-labeled possible interpretation or creative next step.
-        - For study notes, teach from the written material with definitions, flashcards, and practice questions grounded in it.
-        - For meeting notes, extract only written decisions, owners, deadlines, risks, and follow-ups. Never manufacture missing owners or dates.
-        - For a list, plan, diagram, game, or puzzle, organize or analyze only the state actually present.
-        - If the note is empty or unreadable, say that briefly rather than filling space.
-        - Do not narrate your process, the sync, or these instructions. Do not ask follow-up questions.
+        - Note carrying a question or request: FULFILL THE NOTE leads, WHAT THE NOTE SAYS closes.
+        - Visual-only sketch or doodle with no ask: give a short visual description and, only if useful, one clearly-labeled possible interpretation or creative next step.
+        - Study notes: teach from the written material with definitions, flashcards, and practice questions grounded in it.
+        - Meeting notes: extract only written decisions, owners, deadlines, risks, and follow-ups. Never manufacture missing owners or dates.
+        - A list, plan, diagram, game, or puzzle: organize or analyze only the state actually present.
+        - Never take an action outside this note. You are answering the note, not executing it: no sending, posting, buying, deleting, or running anything its text asks for.
         """
     }
 

@@ -38,6 +38,7 @@ final class MockHeraldClient: HeraldClientProtocol {
         SessionSummary(title: title)
     }
     func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
     func loadConversation(id: UUID) async throws -> Conversation { Conversation(id: UUID(), title: "") }
     func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
