@@ -980,7 +980,7 @@ struct AppStoresTests {
 
         #expect(requestCount.value == 0)
         #expect(response.status == .failed)
-        #expect(response.content == "The attachment was too large for Herald to process. Try a smaller image.")
+        #expect(response.content == "The attachment was too large for Herald to process. Try a smaller file.")
     }
 
     @Test @MainActor
