@@ -17,10 +17,15 @@ struct PendingAttachment: Identifiable, Sendable {
         case file
     }
 
-    /// Maximum file size: 350 KB (before base64 encoding -> ~470KB base64).
+    /// Maximum file size for downscaled images and text/code attachments: 350 KB
+    /// (before base64 encoding -> ~470KB base64).
     /// The Herald API server accepts a 1 MB request body for the whole message payload,
     /// so individual attachments still need additional aggregate request-size validation.
     static let maxFileSize = 350 * 1024
+    /// Documents keep their original bytes (no downscaling path), and the relay
+    /// accepts up to 7,000,000 base64 chars per attachment (~5.2 MB raw), so a
+    /// 4 MB PDF encodes to ~5.5 MB and still fits.
+    static let maxDocumentFileSize = 4 * 1024 * 1024
     static let maxAttachmentsPerMessage = 10
     /// Build 78.7: video files ride the file.attach data_url path (WS cap 384 MB).
     static let maxVideoFileSize = 150 * 1024 * 1024
@@ -48,9 +53,22 @@ struct PendingAttachment: Identifiable, Sendable {
         "application/x-yaml",
     ]
 
+    private static let supportedDocumentMimeTypes: Set<String> = [
+        "application/pdf",
+    ]
+
     static func supportsMimeType(_ mimeType: String) -> Bool {
         mimeType.hasPrefix("image/") || supportedTextMimeTypes.contains(mimeType)
             || supportedVideoMimeTypes.contains(mimeType)
+            || supportedDocumentMimeTypes.contains(mimeType)
+    }
+
+    /// Per-type raw byte ceiling. Images are downscaled before this is checked,
+    /// documents/videos keep their original bytes.
+    static func maxSize(forMimeType mimeType: String) -> Int {
+        if supportedVideoMimeTypes.contains(mimeType) { return maxVideoFileSize }
+        if supportedDocumentMimeTypes.contains(mimeType) { return maxDocumentFileSize }
+        return maxFileSize
     }
 
     /// Create an image attachment from a UIImage.
@@ -123,13 +141,12 @@ struct PendingAttachment: Identifiable, Sendable {
 
         guard let data = try? Data(contentsOf: url) else { return nil }
         let isImage = mimeType.hasPrefix("image/")
-        let isVideo = supportedVideoMimeTypes.contains(mimeType)
 
         if isImage, let image = UIImage(data: data) {
             return Self.image(image, fileName: url.lastPathComponent)
         }
 
-        guard data.count <= (isVideo ? maxVideoFileSize : maxFileSize) else { return nil }
+        guard data.count <= Self.maxSize(forMimeType: mimeType) else { return nil }
 
         var thumbData: Data?
         if let image = UIImage(data: data) {
@@ -154,7 +171,8 @@ struct PendingAttachment: Identifiable, Sendable {
     static func restore(from attachment: MessageAttachment) -> PendingAttachment? {
         guard let localStoragePath = attachment.localStoragePath else { return nil }
         let url = URL(fileURLWithPath: localStoragePath)
-        guard let data = try? Data(contentsOf: url), data.count <= maxFileSize else { return nil }
+        guard let data = try? Data(contentsOf: url),
+              data.count <= Self.maxSize(forMimeType: attachment.mimeType) else { return nil }
 
         let thumbnailData = attachment.thumbnailBase64.flatMap { Data(base64Encoded: $0) }
         let kind = attachment.kind == "image" ? Kind.image : Kind.file
@@ -183,6 +201,7 @@ struct PendingAttachment: Identifiable, Sendable {
             "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
             "gif": "image/gif", "webp": "image/webp", "heic": "image/heic",
             "txt": "text/plain",
+            "pdf": "application/pdf",
             "json": "application/json", "csv": "text/csv",
             "md": "text/markdown", "swift": "text/x-swift",
             "py": "text/x-python", "js": "text/javascript",
