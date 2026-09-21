@@ -1117,6 +1117,7 @@ def create_message_job(
     user_message_id: str,
     session_id_snapshot: str | None,
     reasoning_effort: str | None = None,
+    model: str | None = None,
 ) -> MessageJob:
     job = MessageJob(
         user_id=user_id,
@@ -1126,6 +1127,7 @@ def create_message_job(
         status="queued",
         retryable=True,
         reasoning_effort=reasoning_effort,
+        model=model,
     )
     db.add(job)
     db.commit()

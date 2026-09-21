@@ -197,6 +197,7 @@ struct AppStoresTests {
 
     @MainActor
     fileprivate final class RecordingHeraldClient: HeraldClientProtocol {
+        func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         var sendCallCount = 0
@@ -473,6 +474,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStorePreservesStreamingArtifactsAfterConversationRefresh() async throws {
         final class StreamingArtifactClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -575,6 +577,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStorePreservesStreamingPlaceholderDuringConversationRefresh() async throws {
         final class PlaceholderRefreshClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -641,6 +644,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStoreKeepsAcceptedMessagePendingUntilTerminalResultArrives() async throws {
         final class PendingUntilFinishedClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -708,6 +712,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStoreRefreshesConversationWhenStreamingFailsAfterJobAccepted() async throws {
         final class StreamingFailureClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var loadConversationCallCount = 0
@@ -981,6 +986,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStoreRetriesAttachmentOnlyMessageWithRestoredAttachments() async throws {
         final class AttachmentRetryClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var lastMessage: String?
@@ -1064,6 +1070,7 @@ struct AppStoresTests {
     @Test @MainActor
     func chatStorePreservesUserAttachmentPreviewMetadataAfterRefresh() async throws {
         final class AttachmentRoundTripClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -2772,6 +2779,7 @@ struct NotificationReplyTests {
     @MainActor
     func titleOwnership_UserRenamePreventsAutoTitle() async throws {
         final class TitleTrackingClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleCallCount = 0
@@ -2845,6 +2853,7 @@ struct NotificationReplyTests {
         // must never fire its own generateSessionTitle RPC during a normal
         // online turn — that would be the second racing generator.
         final class NoTitleRPCClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleCallCount = 0
@@ -2916,6 +2925,7 @@ struct NotificationReplyTests {
         // B39 T4: the client no longer calls generateSessionTitle when online.
         // The local truncation fallback only fires when offline (disconnected).
         final class FailingTitleClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .disconnected  // B39: offline-only fallback
             var currentConversation: Conversation?
             var renameSessionCallCount = 0
@@ -2991,6 +3001,7 @@ struct NotificationReplyTests {
         // The server handles title generation (B38 P1-1 + B39 T2).  Even with
         // a default title ("New Chat"), the client stays silent.
         final class RetryTitleClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             var generateTitleAttempts = 0
@@ -3061,6 +3072,7 @@ struct NotificationReplyTests {
         // B39 T4: the local truncation fallback only fires when offline.
         // This test verifies that the offline title persists in the cache.
         final class PersistTitleClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .disconnected  // B39: offline-only
             var currentConversation: Conversation?
 

@@ -289,6 +289,13 @@ class MessageJob(Base):
     diff_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Note enrichment / per-turn model override: the model the app pinned for
+    # this turn (nil = the gateway's default model). `provider` is the app's
+    # provider id when it picked one, so the relay can hand the connector a
+    # fully-qualified "provider/model" id. Carried through to the connector's
+    # job envelope so the enrichment model setting is not decoration.
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

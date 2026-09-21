@@ -190,6 +190,55 @@ def test_sse_completed_job_fast_path_returns_done_with_usage_and_message(tmp_pat
 
 
 # --------------------------------------------------------------------------
+# Test: a note's pinned enrichment model rides the job envelope
+# --------------------------------------------------------------------------
+
+def test_pinned_model_rides_the_job_envelope(tmp_path):
+    """A note sync pins the app's enrichment model; the connector must receive it
+    on the claimed job envelope so it can ask the gateway for that model rather
+    than the default. Chat (no pinned model) must not grow a `model` key."""
+    with build_client(tmp_path) as client:
+        credential, access_token = setup_environment(
+            client, installation_id="aaaa1111-bbbb-cccc-dddd-eeeeeeee0009"
+        )
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {credential}"},
+        ) as websocket:
+            websocket.send_json(HELLO_PAYLOAD)
+            assert websocket.receive_json()["type"] == "ready"
+
+            def post_message(payload):
+                holder: dict = {}
+
+                def run():
+                    holder["r"] = client.post(
+                        "/v1/messages",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=payload,
+                    )
+
+                thread = Thread(target=run)
+                thread.start()
+                job = websocket.receive_json()["job"]
+                websocket.send_json({
+                    "type": "job.result",
+                    "jobId": job["id"],
+                    "text": "ack",
+                    "sessionId": f"sess-{job['id'][:8]}",
+                })
+                thread.join(timeout=5)
+                return job
+
+            pinned = post_message({"text": "note sync with pinned model", "model": "cx/gpt-5.6-terra"})
+            assert pinned.get("model") == "cx/gpt-5.6-terra"
+
+            plain = post_message({"text": "plain chat send"})
+            assert "model" not in plain
+
+
+# --------------------------------------------------------------------------
 # Test: Failed-job fast-path
 # --------------------------------------------------------------------------
 

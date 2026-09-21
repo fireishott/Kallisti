@@ -55,6 +55,13 @@ class Database:
             except Exception:
                 pass
 
+        # NOTE: the message_jobs.model / .provider adds live in the sqlite
+        # migration block below (single code path). Do not add a second
+        # `ALTER TABLE message_jobs ADD COLUMN model` anywhere in this
+        # function: the Inspector caches get_columns() per table name, so a
+        # duplicate add reads the pre-ALTER column list and raises
+        # "duplicate column name", which aborts startup entirely.
+
         # Herald rebrand migration: rename hermes_hosts table and columns
         if "hermes_hosts" in table_names and "herald_hosts" not in table_names:
             _exec_safe("ALTER TABLE hermes_hosts RENAME TO herald_hosts")
@@ -161,6 +168,15 @@ class Database:
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "delivery_status" not in message_columns:
                 connection.execute(text("ALTER TABLE messages ADD COLUMN delivery_status TEXT"))
+
+            # --- message_jobs.model / .provider: per-turn model override ---
+            # Existing rows predate the columns and are NULL = host default,
+            # which is exactly the behaviour before the columns existed.
+            message_job_columns = {column["name"] for column in inspector.get_columns("message_jobs")}
+            if "model" not in message_job_columns:
+                connection.execute(text("ALTER TABLE message_jobs ADD COLUMN model TEXT"))
+            if "provider" not in message_job_columns:
+                connection.execute(text("ALTER TABLE message_jobs ADD COLUMN provider TEXT"))
             connection.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_messages_user_client_message_id "

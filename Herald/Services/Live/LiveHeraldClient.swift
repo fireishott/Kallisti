@@ -247,6 +247,10 @@ final class LiveHeraldClient: HeraldClientProtocol {
         /// point, but stores only `cleanText` (the original user prompt) in the
         /// canonical user message.  Never displayed in transcripts or notifications.
         let continuationContext: String?
+        /// Note enrichment: the model that runs this turn. nil (every chat
+        /// send) omits the key entirely, so the gateway keeps its default
+        /// model and the chat wire body is unchanged.
+        let model: String?
     }
 
     /// Build 108 Workstream E: structured client context for model input construction.
@@ -454,7 +458,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
         attachments: [PendingAttachment] = [],
         clientMessageID: UUID,
         continuationContext: String? = nil,
-        conversationIDOverride: UUID?
+        conversationIDOverride: UUID?,
+        model: String? = nil
     ) -> AsyncStream<StreamingUpdate> {
         AsyncStream { continuation in
             Task { @MainActor [weak self] in
@@ -470,7 +475,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
                         attachments: attachments,
                         clientMessageID: clientMessageID,
                         continuationContext: continuationContext,
-                        conversationIDOverride: conversationIDOverride
+                        conversationIDOverride: conversationIDOverride,
+                        model: model
                     )
                     let response: MessageResponse = try await self.performAuthorizedRequest { [self] token in
                         try await self.apiClient.post(
@@ -856,7 +862,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
         attachments: [PendingAttachment],
         clientMessageID: UUID,
         continuationContext: String? = nil,
-        conversationIDOverride: UUID? = nil
+        conversationIDOverride: UUID? = nil,
+        model: String? = nil
     ) throws -> MessageCreateBody {
         let payloads: [AttachmentPayload]? = attachments.isEmpty ? nil : attachments.map { att in
             AttachmentPayload(
@@ -899,7 +906,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             clientMessageId: clientMessageID,
             attachments: payloads,
             reasoningEffort: effort?.rawValue,
-            continuationContext: continuationContext
+            continuationContext: continuationContext,
+            model: model
         )
         try validateRequestBodySize(for: body)
         return body
@@ -1716,7 +1724,12 @@ extension LiveHeraldClient {
                     attachments: attachments,
                     clientMessageID: clientMessageID,
                     continuationContext: nil,
-                    conversationIDOverride: conversationID
+                    conversationIDOverride: conversationID,
+                    // The app's enrichment model setting, actually honored on
+                    // the relay path: the relay stores it on the job and the
+                    // connector asks the gateway for that model. nil falls back
+                    // to the gateway default.
+                    model: enrichmentModelName
                 )
                 for await update in stream {
                     continuation.yield(update)

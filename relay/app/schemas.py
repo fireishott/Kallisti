@@ -185,6 +185,9 @@ class MessageCreateRequest(BaseModel):
     clientMessageId: UUID | None = None
     attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
     reasoningEffort: str | None = None
+    # Note enrichment: pin the model that runs this turn. nil keeps the
+    # gateway's default model (chat never sets it).
+    model: str | None = Field(default=None, max_length=128)
 
     @field_validator("reasoningEffort")
     @classmethod

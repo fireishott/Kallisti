@@ -118,6 +118,7 @@ struct OutboxDurableTests {
         defer { ChatStore.watchdogTimeout = origWatchdog; ChatStore.absoluteJobDeadline = origDeadline }
 
         final class SlowStreamClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             let order = OrderBox()
@@ -189,6 +190,7 @@ struct OutboxDurableTests {
     @Test("pre-ack polling keeps exactly one live thinking placeholder")
     func preAckPollingKeepsSingleLivePlaceholder() async throws {
         final class DelayedAckClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
 
@@ -252,6 +254,7 @@ struct OutboxDurableTests {
     @Test("follow-up submits immediately after prior stream finishes")
     func followUpDoesNotWaitForCancelledTaskState() async throws {
         final class ImmediateStreamClient: HeraldClientProtocol {
+            func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
             var connectionStatus: ConnectionStatus = .connected
             var currentConversation: Conversation?
             let order = OrderBox()
@@ -621,6 +624,7 @@ struct OutboxDurableTests {
     /// stream. `getJobStatus` is configurable per test.
     @MainActor
     private final class HungStreamClient: HeraldClientProtocol {
+        func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         let order = OrderBox()
@@ -676,6 +680,7 @@ struct OutboxDurableTests {
     /// test drives recoverStalledStream to prove the resume path keeps the
     /// stream alive instead of declaring a stall.
     private final class ResumeAwareClient: HeraldClientProtocol {
+        func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
         var connectionStatus: ConnectionStatus = .connected
         var currentConversation: Conversation?
         var resumeCalls = 0
@@ -897,6 +902,7 @@ struct OutboxDurableTests {
 /// Minimal client with a scripted job-status response, for recovery tests.
 @MainActor
 private final class JobStatusClient: HeraldClientProtocol {
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
     var connectionStatus: ConnectionStatus = .connected
     var currentConversation: Conversation?
     private let jobID: UUID
@@ -958,6 +964,7 @@ private final class JobStatusClient: HeraldClientProtocol {
 // propagated into the outbox record (and the negative-path test can omit
 // the message entirely to verify the safe-condition guard).
 private final class TerminalAssistantClient: HeraldClientProtocol {
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String { "" }
     var connectionStatus: ConnectionStatus = .connected
     var currentConversation: Conversation?
     private let jobID: UUID
