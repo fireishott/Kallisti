@@ -4,7 +4,14 @@ import os
 @MainActor
 final class LiveHeraldClient: HeraldClientProtocol {
     private static let logger = Logger(subsystem: "net.fihonline.herald", category: "LiveHeraldClient")
-    private static let maxRequestBodyBytes = 1_000_000
+    /// Ceiling for one encoded /v1/messages body. It must sit ABOVE every cap the
+    /// attachment pipeline itself enforces, or the picker accepts a file and this
+    /// check throws it away with an error that blames the user's file.
+    /// Worst legitimate case: 4 attachments (the relay's `attachments` max_length)
+    /// of `PendingAttachment.maxDocumentFileSize` (4 MB), which base64-encodes to
+    /// ~5.6 M characters each, plus thumbnails and JSON overhead. The relay's own
+    /// per-attachment field is 7,000,000 base64 chars.
+    private static let maxRequestBodyBytes = 24_000_000
     private struct ConversationResponse: Decodable {
         let conversation: RelayConversation
     }
@@ -1096,7 +1103,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
             let rawError = donePayload?.error ?? ""
             let text: String
             if rawError.contains("413") || rawError.lowercased().contains("too large") {
-                text = "The attachment was too large for Herald to process. Try a smaller image."
+                text = "The attachment was too large for Herald to process. Try a smaller file."
             } else if rawError.isEmpty {
                 text = "Kallisti could not process this message."
             } else {
@@ -1122,7 +1129,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         let encoded = try RelayCoders.makeEncoder().encode(body)
         guard encoded.count <= Self.maxRequestBodyBytes else {
             throw RelayAPIClient.ClientError.requestFailed(
-                "The attachment was too large for Herald to process. Try a smaller image."
+                "The attachment was too large for Herald to process. Try a smaller file."
             )
         }
     }
@@ -1143,7 +1150,7 @@ final class LiveHeraldClient: HeraldClientProtocol {
         }
 
         if rawError.contains("413") || rawError.lowercased().contains("too large") {
-            return "The attachment was too large for Herald to process. Try a smaller image."
+            return "The attachment was too large for Herald to process. Try a smaller file."
         }
         if rawError.isEmpty {
             return "Kallisti relay is unavailable right now."
