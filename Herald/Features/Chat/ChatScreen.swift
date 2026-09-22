@@ -208,11 +208,19 @@ struct ChatScreen: View {
             && container.nativeGatewayClient != nil
     }
 
+    /// Stable key for a draft while the relay has not yet acknowledged a conversation.
+    /// A new UUID in each Binding getter/setter loses every keystroke on the next render.
+    @State private var draftFallbackConversationID = UUID()
+
+    private var draftConversationID: UUID {
+        chatStore.conversation?.id ?? draftFallbackConversationID
+    }
+
     /// Backed by ChatStore so the draft survives view recreation during reconnects.
     private var messageTextBinding: Binding<String> {
         Binding(
-            get: { chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID()) },
-            set: { chatStore.saveDraft($0, for: chatStore.conversation?.id ?? UUID()) }
+            get: { chatStore.loadDraft(for: draftConversationID) },
+            set: { chatStore.saveDraft($0, for: draftConversationID) }
         )
     }
     @State private var showClearConfirmation = false
@@ -342,7 +350,7 @@ struct ChatScreen: View {
                         // nothing." Now it preempts: interrupt the running
                         // turn, then submit the new direction immediately.
                         // Draft is frozen and cleared exactly as before.
-                        let frozenText = chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID())
+                        let frozenText = chatStore.loadDraft(for: draftConversationID)
                         let frozenAttachments = pendingAttachments
                         let conversationID = chatStore.conversation?.id
                         if chatStore.isStreaming || chatStore.isServerTurnActive {
@@ -1795,7 +1803,7 @@ struct ChatScreen: View {
     // MARK: - Actions
 
     private func sendMessage() {
-        let content = chatStore.loadDraft(for: chatStore.conversation?.id ?? UUID()).trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = chatStore.loadDraft(for: draftConversationID).trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard !content.isEmpty || !attachments.isEmpty else { return }
 
