@@ -173,6 +173,39 @@ class HeraldAPIExecutor:
 
     # ── streaming ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _tool_progress_event(payload: dict, *, session_id: str | None) -> "StreamEvent | None":
+        """Map one ``hermes.tool.progress`` frame onto a tool StreamEvent.
+
+        The gateway sends status=running with the tool name, emoji and an
+        argument preview (``agent.display.build_tool_preview``), then
+        status=completed with the same toolCallId. ``event.data`` carries the
+        JSON the connector's job path forwards: the relay maps it onto the
+        dotted keys the iOS client decodes (tool_call_id / name / args / emoji).
+        """
+        tool_call_id = str(payload.get("toolCallId") or payload.get("tool_call_id") or "")
+        tool = str(payload.get("tool") or payload.get("name") or "tool")
+        status = str(payload.get("status") or "running").lower()
+        if status in ("completed", "complete", "failed", "error"):
+            return StreamEvent(
+                type="tool_completed",
+                data=json.dumps({"toolCallId": tool_call_id, "name": tool}),
+                label=tool,
+                session_id=session_id,
+            )
+        preview = str(payload.get("label") or payload.get("args") or tool)
+        return StreamEvent(
+            type="tool_started",
+            data=json.dumps({
+                "toolCallId": tool_call_id,
+                "name": tool,
+                "argsPreview": preview,
+                "emoji": payload.get("emoji") or "",
+            }),
+            label=preview,
+            session_id=session_id,
+        )
+
     async def stream_message(
         self,
         *,
@@ -219,7 +252,11 @@ class HeraldAPIExecutor:
                     resolved_session = (
                         response.headers.get("X-Hermes-Session-Id") or session_id
                     )
+                    sse_event = ""
                     async for raw_line in response.aiter_lines():
+                        if raw_line.startswith("event:"):
+                            sse_event = raw_line[6:].strip()
+                            continue
                         if not raw_line.startswith("data:"):
                             continue
                         chunk = raw_line[5:].strip()
@@ -228,6 +265,20 @@ class HeraldAPIExecutor:
                         try:
                             event = json.loads(chunk)
                         except json.JSONDecodeError:
+                            continue
+
+                        # The gateway writes tool lifecycle as a NAMED SSE frame
+                        # ("event: hermes.tool.progress") whose payload has no
+                        # choices[]. The delta loop below therefore dropped every
+                        # tool frame, which is why job_events held zero tool rows
+                        # and the app could never render tool activity.
+                        frame_event, sse_event = sse_event, ""
+                        if frame_event == "hermes.tool.progress" or (
+                            not event.get("choices") and "toolCallId" in event
+                        ):
+                            tool_event = self._tool_progress_event(event, session_id=resolved_session)
+                            if tool_event is not None:
+                                yield tool_event
                             continue
 
                         if isinstance(event.get("usage"), dict):

@@ -254,6 +254,24 @@ def decode_b64url_field(value: str, *, field_name: str) -> bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64url field: {field_name}.") from error
 
 
+def _summarize_validation_errors(exc: RequestValidationError) -> str:
+    """Field, type and reason only - never the rejected input.
+
+    Pydantic echoes the offending ``input`` for every error it reports, and
+    ``/v1/messages`` carries base64 attachment payloads, so the raw
+    ``str(exc.errors())`` shipped ~1.6 MB of image data back to the client.
+    The iOS client then substring-matched that blob for "413" and rendered
+    "The attachment was too large for Herald to process." for what was really
+    an attachment-count rejection. Keep this summary small and input-free.
+    """
+    parts: list[str] = []
+    for error in exc.errors()[:8]:
+        location = ".".join(str(part) for part in (error.get("loc") or ())) or "body"
+        reason = error.get("msg") or error.get("type") or "invalid"
+        parts.append(f"{location}: {reason}")
+    return "; ".join(parts) or "Request validation failed."
+
+
 @dataclass
 class ConnectorSession:
     websocket: WebSocket
@@ -344,10 +362,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def _log_validation_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
         request_id = getattr(request.state, "request_id", None)
+        summary = _summarize_validation_errors(exc)
         logging.getLogger("herald.relay").warning(
-            "422 validation error on %s %s: %s", request.method, request.url.path, exc.errors()
+            "422 validation error on %s %s: %s", request.method, request.url.path, summary
         )
-        return _error_response(422, "VALIDATION_ERROR", str(exc.errors()), request_id)
+        return _error_response(422, "VALIDATION_ERROR", summary, request_id)
 
     @app.exception_handler(HTTPException)
     async def _structured_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
@@ -3343,8 +3362,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id: str,
         request: Request,
         after: int = 0,
-        auth: AuthContext = Depends(get_auth_context),
-        db: Session = Depends(get_db),
+        # Do not retain request/auth sessions for the life of the SSE response.
+        # Generator dependencies default to request scope, and every open
+        # /events stream was therefore pinning TWO SQLite connections (one from
+        # authentication and one from this route) until the phone disconnected.
+        # A handful of long-lived streams exhausted the 5+10 connection pool and
+        # killed active event delivery with QueuePool timeouts.
+        auth: AuthContext = Depends(get_auth_context, scope="function"),
+        db: Session = Depends(get_db, scope="function"),
     ):
         from .models import MessageJob
 
@@ -3504,17 +3529,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     yield emit_db_event(evt)
                                 return
 
-                    # Check if job became terminal (safety net for direct-push path)
-                    with database.session() as check_db:
-                        current_job = get_message_job(check_db, job_id=job_id)
-                        if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
-                            # Drain any remaining events from DB, then emit terminal frame
-                            with database.session() as drain_db:
-                                remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
-                            for evt in remaining:
-                                yield emit_db_event(evt)
-                            yield build_terminal_event(current_job.status, current_job)
-                            return
+                    # A direct push includes the terminal `done` event, which
+                    # returns above. Polling job state after a nonterminal direct
+                    # event races the connector: it can synthesize `done` here
+                    # while the real terminal event is still queued, delivering
+                    # duplicate terminal frames to iOS. Only the legacy DB-wake
+                    # route needs this safety-net reconciliation.
+                    if not isinstance(item, dict):
+                        with database.session() as check_db:
+                            current_job = get_message_job(check_db, job_id=job_id)
+                            if current_job is not None and current_job.status in ("completed", "failed", "cancelled"):
+                                # Drain any remaining events from DB, then emit terminal frame
+                                with database.session() as drain_db:
+                                    remaining = get_job_events_after(drain_db, job_id, after_seq=last_seq)
+                                for evt in remaining:
+                                    yield emit_db_event(evt)
+                                yield build_terminal_event(current_job.status, current_job)
+                                return
             finally:
                 await unsubscribe_job_events(job_id, wake_queue)
 
@@ -3878,6 +3909,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         "tool_call_id": incoming.get("toolCallId") or incoming.get("tool_call_id"),
                                         "name": incoming.get("name"),
                                         "args": incoming.get("args"),
+                                        "emoji": incoming.get("emoji"),
                                         "output": incoming.get("output"),
                                         "is_error": incoming.get("isError"),
                                         "duration_ms": incoming.get("durationMs"),
@@ -4011,8 +4043,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 in_flight_job_id = None
                                 break
 
-                            await websocket.close(code=4400)
-                            return
+                            # Unrecognised frame while a job is claimed is NOT
+                            # fatal. The connector multiplexes RPC responses,
+                            # sensor acks and note-run events onto this socket,
+                            # and stale job.* traffic for a previous job lands
+                            # here routinely. Closing 4400 killed the host
+                            # socket mid-turn: the relay published
+                            # `reconnecting`, the phone showed "Stream stalled",
+                            # the connector reconnected in 1.0s without owning
+                            # the job and the reply was never delivered.
+                            logger.warning(
+                                "host WS: ignoring unrecognised %s while job %s is claimed",
+                                message_type,
+                                in_flight_job_id,
+                            )
+                            continue
                     finally:
                         session = connector_session_for_user(user_id)
                         if session is not None and session.connection_nonce == connection_nonce:
@@ -4256,8 +4301,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         return
                     continue
 
-                await websocket.close(code=4400)
-                return
+                # Same rule while idle. An unrecognised frame (a new event type
+                # from a newer connector, or a stray job frame) must not cost
+                # the socket: reconnecting drops the host and every in-flight
+                # turn with it.
+                logger.warning(
+                    "host WS: ignoring unrecognised idle message type %r",
+                    incoming.get("type"),
+                )
+                continue
         except HTTPException:
             await websocket.close(code=4401)
             return

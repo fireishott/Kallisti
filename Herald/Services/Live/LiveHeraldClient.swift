@@ -1102,9 +1102,9 @@ final class LiveHeraldClient: HeraldClientProtocol {
         if donePayload?.status == "failed" {
             let rawError = donePayload?.error ?? ""
             let text: String
-            if rawError.contains("413") || rawError.lowercased().contains("too large") {
-                text = "The attachment was too large for Herald to process. Try a smaller file."
-            } else if rawError.isEmpty {
+            // Terminal SSE errors do not carry an HTTP status. Do not guess
+            // that a file was too large from arbitrary error text.
+            if rawError.isEmpty {
                 text = "Kallisti could not process this message."
             } else {
                 // Strip URLs and technical details for a cleaner message
@@ -1149,7 +1149,8 @@ final class LiveHeraldClient: HeraldClientProtocol {
             rawError = error.localizedDescription
         }
 
-        if rawError.contains("413") || rawError.lowercased().contains("too large") {
+        if let clientError = error as? RelayAPIClient.ClientError,
+           clientError.isAttachmentTooLarge {
             return "The attachment was too large for Herald to process. Try a smaller file."
         }
         if rawError.isEmpty {

@@ -1915,6 +1915,31 @@ class HeraldConnector:
                         }
                         if hasattr(event, "label") and event.label:
                             payload["label"] = event.label
+                        # Tool identity rides event.data as JSON. The relay maps
+                        # toolCallId/name/args/emoji onto the dotted keys the iOS
+                        # client decodes, so forwarding only the label left every
+                        # tool row id-less and generic in the app.
+                        if event.data:
+                            try:
+                                extra = json.loads(event.data)
+                            except (TypeError, ValueError):
+                                extra = None
+                            if isinstance(extra, dict):
+                                if extra.get("toolCallId"):
+                                    payload["toolCallId"] = extra["toolCallId"]
+                                if extra.get("name"):
+                                    payload["name"] = extra["name"]
+                                preview = extra.get("argsPreview") or extra.get("args")
+                                if preview:
+                                    payload["args"] = preview
+                                if extra.get("emoji"):
+                                    payload["emoji"] = extra["emoji"]
+                                if extra.get("output"):
+                                    payload["output"] = extra["output"]
+                                if extra.get("isError") is not None:
+                                    payload["isError"] = extra["isError"]
+                                if extra.get("durationMs") is not None:
+                                    payload["durationMs"] = extra["durationMs"]
                         await websocket.send(json.dumps(payload))
                     elif event.type == "finish":
                         session_id = event.session_id

@@ -183,7 +183,12 @@ class MessageCreateRequest(BaseModel):
     conversationId: UUID | None = None
     text: str = Field(default="")
     clientMessageId: UUID | None = None
-    attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
+    # 10, not 4: the composer (PendingAttachment.maxAttachmentsPerMessage) and
+    # the connector's inbound staging both allow 10. A lower cap here rejects the
+    # WHOLE message with a 422 - no job, no stored attachment - so an 8-photo send
+    # from the iPad died before the connector ever saw it, and the client then
+    # rendered its own "attachment too large" copy off that validation string.
+    attachments: list[AttachmentPayload] | None = Field(default=None, max_length=10)
     reasoningEffort: str | None = None
     # Note enrichment: pin the model that runs this turn. nil keeps the
     # gateway's default model (chat never sets it).
