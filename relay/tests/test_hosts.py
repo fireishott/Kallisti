@@ -1116,6 +1116,104 @@ def test_clear_conversation_creates_fresh(tmp_path):
         assert len(current["messages"]) == 0
 
 
+def test_host_socket_survives_unrecognised_messages_mid_job(tmp_path):
+    """Regression: the relay closed the host socket with 4400 on any message it did
+    not recognise inside the claimed-job loop. The connector multiplexes RPC
+    responses and sensor acks onto that same socket, and the app polls its panels
+    while a turn runs, so one rpc.response mid-turn dropped the connection: the
+    connector reconnected in 1.0s, the new socket did not own the job, and the
+    reply was never persisted. Symptom was a stalled stream and a lost answer."""
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        pairing_code = create_phone_pairing_code(client, connector_data["connectorCredential"])
+        access_token = redeem_phone(
+            client,
+            pairing_code["displayCode"],
+            "99999966-6666-6666-6666-666666666666",
+        )["auth"]["accessToken"]
+
+        def post_message(text: str) -> tuple[dict, Thread]:
+            holder: dict = {}
+
+            def _post() -> None:
+                holder["payload"] = client.post(
+                    "/v1/messages",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json={"text": text},
+                )
+
+            thread = Thread(target=_post)
+            thread.start()
+            return holder, thread
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(
+                {
+                    "type": "hello",
+                    "connector": {
+                        "platform": "macos",
+                        "hostname": "test-host",
+                        "connectorVersion": "0.1.0",
+                        "heraldCommand": "/usr/local/bin/hermes",
+                        "heraldVersion": "hermes 1.2.3",
+                        "displayName": "Home Mac mini",
+                    },
+                }
+            )
+            assert websocket.receive_json()["type"] == "ready"
+
+            holder, thread = post_message("Summarise the attached handbook")
+            first_job = websocket.receive_json()
+            assert first_job["type"] == "job.execute"
+            job_id = first_job["job"]["id"]
+
+            # These are the messages that used to kill the socket mid-turn.
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": "unknown-request",
+                    "success": True,
+                    "result": {},
+                }
+            )
+            websocket.send_json(
+                {"type": "sensor.ack", "deliveryId": "unknown-delivery", "deliveryState": "delivered"}
+            )
+            websocket.send_json({"type": "brand.new.message.type", "jobId": job_id})
+
+            # The turn must still complete on this same socket.
+            websocket.send_json(
+                {
+                    "type": "job.result",
+                    "jobId": job_id,
+                    "text": "Still here",
+                    "sessionId": "session-keepalive",
+                }
+            )
+            thread.join(timeout=5)
+            assert holder["payload"].status_code == 202
+
+            # And an unrecognised message while idle must not drop it either.
+            websocket.send_json({"type": "another.unknown.type"})
+
+            holder2, thread2 = post_message("Second turn")
+            second_job = websocket.receive_json()
+            assert second_job["type"] == "job.execute"
+            websocket.send_json(
+                {
+                    "type": "job.result",
+                    "jobId": second_job["job"]["id"],
+                    "text": "Second reply",
+                    "sessionId": "session-keepalive",
+                }
+            )
+            thread2.join(timeout=5)
+            assert holder2["payload"].status_code == 202
+
+
 def test_clear_conversation_when_none_exists(tmp_path):
     with build_client(tmp_path) as client:
         connector_data = setup_connector(client)

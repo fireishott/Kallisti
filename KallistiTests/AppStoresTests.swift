@@ -935,7 +935,7 @@ struct AppStoresTests {
     }
 
     @Test @MainActor
-    func liveHeraldClientRejectsOversizedAggregateAttachmentPayloadBeforeSending() async throws {
+    func liveHeraldClientSendsAggregateAttachmentPayloadUnderTheRequestCeiling() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -960,6 +960,63 @@ struct AppStoresTests {
             let url = tempDirectory.appendingPathComponent("oversized-\(index)-\(UUID().uuidString).txt")
             try oversizedData.write(to: url)
             attachments.append(try #require(PendingAttachment.file(at: url)))
+        }
+
+        let apiClient = RelayAPIClient(
+            baseURLProvider: { "https://relay.example.com/v1" },
+            session: session
+        )
+        let heraldClient = LiveHeraldClient(
+            apiClient: apiClient,
+            accessTokenProvider: { "token" },
+            allowDemoFallback: false
+        )
+
+        let response = await heraldClient.send(
+            message: "Here are several attachments",
+            attachments: attachments,
+            clientMessageID: UUID()
+        )
+
+        // 4 x 300 KB is the picker's own aggregate (~1.6 MB encoded). The 1 MB
+        // request cap used to refuse this client-side: no request was made and the
+        // user got a "too large" banner for files the picker had just accepted.
+        #expect(requestCount.value >= 1)
+        #expect(!response.content.contains("too large"))
+    }
+
+    @Test @MainActor
+    func liveHeraldClientRejectsPayloadOverTheRequestCeilingBeforeSending() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let requestCount = MutableBox(0)
+
+        StubURLProtocol.requestHandler = { request in
+            requestCount.value += 1
+            let url = try #require(request.url)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, #"{"data":{"conversation":{"id":"00000000-0000-0000-0000-000000000000","title":"Herald","updatedAt":"2026-04-05T18:00:00Z","messages":[]}}}"#.data(using: .utf8)!)
+        }
+
+        defer {
+            StubURLProtocol.requestHandler = nil
+        }
+
+        // Constructed directly: every picker path caps below the ceiling (a 4 MB
+        // document is the largest single attachment the composer will stage), so
+        // only a hand-built payload can prove the guard still fires. 4 x 5 MB
+        // base64-encodes to ~27.9 M characters, over the 24 MB body ceiling.
+        let oversizedData = Data(repeating: 0x41, count: 5 * 1024 * 1024)
+        let attachments: [PendingAttachment] = (0 ..< 4).map { index in
+            PendingAttachment(
+                kind: .file,
+                fileName: "oversized-\(index).bin",
+                mimeType: "application/octet-stream",
+                data: oversizedData,
+                localStoragePath: nil,
+                thumbnailData: nil
+            )
         }
 
         let apiClient = RelayAPIClient(

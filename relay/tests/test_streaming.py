@@ -375,17 +375,20 @@ def test_live_streaming_progress_events_flow_through_event_bus(tmp_path):
         events = parse_sse_events(sse_holder["r"].text)
         event_types = [e[0] for e in events]
 
-        assert "tool_activity" in event_types
-        assert "text_delta" in event_types
+        # The iOS client switches on dotted SSE names. Durable connector
+        # events keep underscore kinds, while the relay maps only at the wire
+        # boundary. This test must assert the client-facing contract.
+        assert "tool.progress" in event_types
+        assert "text.delta" in event_types
         assert "done" in event_types
 
-        # Verify tool_activity payload
-        tool_events = [(t, d) for t, d in events if t == "tool_activity"]
+        # Verify tool progress payload
+        tool_events = [(t, d) for t, d in events if t == "tool.progress"]
         assert len(tool_events) == 1
         assert tool_events[0][1]["label"] == "Searching files..."
 
         # Verify text_delta payloads (no coalescing — each delta is a separate event)
-        text_events = [(t, d) for t, d in events if t == "text_delta"]
+        text_events = [(t, d) for t, d in events if t == "text.delta"]
         assert len(text_events) == 2
         combined_delta = "".join(d["delta"] for _, d in text_events)
         assert combined_delta == "Here is the answer."

@@ -254,6 +254,16 @@ final class RelayAPIClient {
             }
             return nil
         }
+
+        /// Only an HTTP 413 is evidence that Herald rejected an attachment for
+        /// size. Error text is untrusted: it can contain validation details or
+        /// base64 input, and digit-sniffing it misclassified unrelated failures.
+        var isAttachmentTooLarge: Bool {
+            if case let .serverError(_, _, _, status) = self {
+                return status == 413
+            }
+            return false
+        }
     }
 
     private let baseURLProvider: @MainActor () -> String
