@@ -704,6 +704,26 @@ final class ChatStore {
         let manifest = outboxStore.load()
         outboxItems = manifest.items
         outboxNextSequence = manifest.nextSequence
+        pruneStaleOutboxItems()
+    }
+
+    /// Drops queued and failed outbox items older than 24 hours.
+    ///
+    /// Items only drain while their conversation is open, so a message left
+    /// queued in an old chat sat forever and would fire the moment that chat
+    /// was reopened - a stale message sent weeks late. Anything this old is no
+    /// longer something the user expects to go out.
+    private func pruneStaleOutboxItems() {
+        let cutoff = Date.now.addingTimeInterval(-24 * 60 * 60)
+        let stale = outboxItems.filter {
+            ($0.state == .queued || $0.state == .retryableFailure) && $0.createdAt < cutoff
+        }
+        guard !stale.isEmpty else { return }
+        for item in stale { outboxStore.removeStagedAttachments(for: item) }
+        let staleIDs = Set(stale.map(\.clientMessageID))
+        outboxItems.removeAll { staleIDs.contains($0.clientMessageID) }
+        persistOutbox()
+        appendLog(level: .info, "Outbox: dropped \(stale.count) stale queued/failed message(s) older than 24h")
     }
 
     func loadConversationIfNeeded() async {
@@ -4429,6 +4449,19 @@ final class ChatStore {
     }
 
     private func hasPendingDuplicateMessage(_ content: String, attachments: [PendingAttachment]) -> Bool {
+        // The outbox is the source of truth for "already waiting to send".
+        // The transcript check below misses a queued item whose optimistic
+        // row was replaced by a history reload, which let a resend stack a
+        // second identical queued record ("2 messages queued", one bubble).
+        if attachments.isEmpty, let conversationID = conversation?.id,
+           outboxItems.contains(where: {
+               $0.conversationID == conversationID
+                   && ($0.state == .queued || $0.isInFlight)
+                   && $0.attachmentRefs.isEmpty
+                   && $0.cleanText == content
+           }) {
+            return true
+        }
         guard let messages = conversation?.messages else { return false }
         let attSig = attachmentSignature(for: attachments.map { MessageAttachment(from: $0) })
         let now = Date()

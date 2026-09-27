@@ -274,6 +274,7 @@ C9F0A1B2D3E4F5A6B7C8D9E1 /* ClarifyCardView.swift in Sources */ = {isa = PBXBuil
 		C4DE32D07DFB54258F4B7ECA /* PairingServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4516A72DA5AF533B7C547F57 /* PairingServiceProtocol.swift */; };
 		C5A91A5A80224B0D5CBCD608 /* MockPairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E3E9CD875309C160B15FB7 /* MockPairingService.swift */; };
 		C61E7ED4B4A1701375308CAE /* TalkTurnClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD1CFB386F902E262624380 /* TalkTurnClient.swift */; };
+		AEE865C42630F2D8C507760D /* DSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F76DB7BA0EDFC7FB9C4973 /* DSHClient.swift */; };
 		C6444C364AD438CEE8E7A84F /* B21FollowUpOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14C1E1C81DA838D002614C1 /* B21FollowUpOrderTests.swift */; };
 		C7A56425E0D7567A99AEDBFA /* PCMPlaybackQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 376F3C46A00109C8437ECCAC /* PCMPlaybackQueue.swift */; };
 		C7E3356800BDB08590E24935 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C382C287A04B063179F255B2 /* ChatInputBar.swift */; };
@@ -959,6 +960,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 		FE863F3296A2748FD9FAD626 /* VoiceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceState.swift; sourceTree = "<group>"; };
 		FEDA79420C236E3DE93E9073 /* GatewayDTOs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDTOs.swift; sourceTree = "<group>"; };
 		FFD1CFB386F902E262624380 /* TalkTurnClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkTurnClient.swift; sourceTree = "<group>"; };
+		D2F76DB7BA0EDFC7FB9C4973 /* DSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSHClient.swift; sourceTree = "<group>"; };
 		FFDB6498238FCB0CFD3C359B /* PermissionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsStore.swift; sourceTree = "<group>"; };
 		79892DD1C06E425598466C2D /* InFlightCheckpointStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InFlightCheckpointStoreTests.swift; sourceTree = "<group>"; };
 		34BEB676C9B547798EDAF79C /* DraftPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftPersistenceTests.swift; sourceTree = "<group>"; };
@@ -1111,6 +1113,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				F6423EAA6221083F645AE41F /* SpeechTextRenderer.swift */,
 				240E891E5866FFBD31C659DA /* TalkAudioCapture.swift */,
 				FFD1CFB386F902E262624380 /* TalkTurnClient.swift */,
+				D2F76DB7BA0EDFC7FB9C4973 /* DSHClient.swift */,
 				D5DAD3F0A6CE98189CBCF9AE /* ToolNameSanitizer.swift */,
 				FD3E52CD9E61F44EE499B062 /* VisionHandwritingRecognizer.swift */,
 			);
@@ -2442,6 +2445,7 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				B3535DE4630B7EABE51A4FBF /* TalkModeScreen.swift in Sources */,
 				45FF4288AB4DAA520750BC59 /* TalkStore.swift in Sources */,
 				C61E7ED4B4A1701375308CAE /* TalkTurnClient.swift in Sources */,
+				AEE865C42630F2D8C507760D /* DSHClient.swift in Sources */,
 				67CCA908D5C400ACFE4D4DC1 /* Theme.swift in Sources */,
 				DBFAD86C18EE467EADAF9E36 /* ThemeManager.swift in Sources */,
 				BF942BCD8A7D4333C646CD72 /* ThinkingBlockView.swift in Sources */,
@@ -2651,10 +2655,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2672,10 +2676,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2694,11 +2698,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2730,12 +2734,12 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				OTHER_SWIFT_FLAGS = "-Xfrontend -strict-concurrency=minimal";
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2752,10 +2756,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -2771,10 +2775,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiIntents/KallistiIntents.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiIntents/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2872,10 +2876,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2893,10 +2897,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiNotificationService/KallistiNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiNotificationService/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2914,10 +2918,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWidgets/KallistiWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWidgets/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2936,11 +2940,11 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = KallistiControls/KallistiControls.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiControls/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2958,10 +2962,10 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = KallistiWatch/KallistiWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				INFOPLIST_FILE = KallistiWatch/Info.plist;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.fihonline.kallisti.watchkitapp;
 				PRODUCT_NAME = KallistiWatch;
 				SDKROOT = watchos;
@@ -2996,12 +3000,12 @@ A2B2C3D4E5F60718293A4B5D /* ClarifyCardView.swift */ = {isa = PBXFileReference; 
 				OTHER_SWIFT_FLAGS = "-Xfrontend -strict-concurrency=minimal";
 				CODE_SIGN_ENTITLEMENTS = Herald/Kallisti.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 135.70;
+				CURRENT_PROJECT_VERSION = 135.76;
 				DEVELOPMENT_TEAM = 58U7UPFS53;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Herald/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kallisti;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",

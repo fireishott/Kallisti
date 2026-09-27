@@ -1,0 +1,1008 @@
+import Foundation
+
+/// Native DeepSeek Harness client.
+///
+/// Talks to the DSH phone API (`dsh-phone-api`) directly over HTTP + SSE:
+///
+///     POST /phone/v1/session   create a Session (agent preset)
+///     POST /phone/v1/prompt    admit a prompt
+///     GET  /phone/v1/follow    SSE stream of SessionFollowFrame
+///     GET  /phone/v1/sessions  list
+///     GET  /phone/v1/page      history page
+///     POST /phone/v1/cancel    cancel the active turn
+///
+/// This replaces the Herald relay + connector for the DSH path: the app speaks
+/// to DSH itself, and nothing in the request path touches Hermes.
+///
+/// Streaming order matters. The follow stream is opened and its opening snapshot
+/// consumed BEFORE the prompt is admitted, so the snapshot is the pre-turn state
+/// and every later frame belongs to our turn. Prompting first would race the
+/// snapshot against the reply and could replay old history as live deltas.
+@MainActor
+final class DSHClient: HeraldClientProtocol {
+
+    // MARK: - Transport
+
+    /// Base URL of the DSH phone API, e.g.
+    /// `https://host.ts.net/dsh` — the `/phone/v1/...` routes are appended.
+    private let baseURLProvider: @MainActor () -> String
+    private let token: String
+
+    private var session: URLSession
+    private let decoder = JSONDecoder()
+
+    // MARK: - Protocol state
+
+    var connectionStatus: ConnectionStatus = .disconnected
+    private(set) var currentConversation: Conversation?
+
+    /// Local conversation UUID -> DSH sessionId. DSH mints its own ids
+    /// (`session-<uuid>`), so the app's stable local UUID is the map key.
+    private var nativeIdByConversation: [UUID: String] = [:]
+    private var conversationByNativeId: [String: UUID] = [:]
+
+    /// In-flight turns, keyed by the local job UUID the UI sees.
+    private var activeStreams: [UUID: Task<Void, Never>] = [:]
+    private var currentJobID: UUID?
+    private var pendingStreamTask: Task<Void, Never>?
+    /// Model picked before a session exists; applied when the session is created.
+    private var pendingModelSelection: (provider: String, model: String)?
+    private var pendingClarify: PendingClarify?
+
+    /// Token usage reported by the most recent turn.
+    private var lastUsage: TokenUsage?
+
+    var supportsServerTurnInterrupt: Bool { true }
+    var deliversAttachmentsInline: Bool { false }
+
+    // MARK: - Init
+
+    init(
+        baseURLProvider: @escaping @MainActor () -> String,
+        token: String,
+        secureStore: Any? = nil
+    ) {
+        self.baseURLProvider = baseURLProvider
+        self.token = token
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 3600
+        cfg.waitsForConnectivity = true
+        self.session = URLSession(configuration: cfg)
+    }
+
+    // MARK: - URL helpers
+
+    private var base: String {
+        baseURLProvider().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func url(_ path: String) -> URL? {
+        URL(string: "\(base)/phone/v1/\(path)")
+    }
+
+    private func request(_ path: String, method: String = "GET") -> URLRequest? {
+        guard let u = url(path) else { return nil }
+        var r = URLRequest(url: u)
+        r.httpMethod = method
+        r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if method == "POST" { r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        return r
+    }
+
+    private struct ServerError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    @discardableResult
+    private func send(_ req: URLRequest?) async throws -> Data {
+        guard let req else { throw ServerError(message: "Invalid DSH base URL: \(base)") }
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw ServerError(message: "No HTTP response from DSH")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            struct ErrBody: Decodable { let error: String }
+            if let e = try? decoder.decode(ErrBody.self, from: data) {
+                throw ServerError(message: http.statusCode == 422 ? e.error : "DSH \(http.statusCode): \(e.error)")
+            }
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError(message: "DSH \(http.statusCode): \(body.prefix(200))")
+        }
+        return data
+    }
+
+    // MARK: - Wire types
+
+    private struct HealthBody: Decodable { let ok: Bool; let backend: String? }
+    private struct CreateBody: Decodable { let sessionId: String; let agentPreset: String? }
+    private struct PromptBody: Decodable { let accepted: Bool; let requestId: String? }
+    private struct SessionRow: Decodable {
+        let sessionId: String
+        let updatedAt: Double?
+        let running: Bool?
+        let blank: Bool?
+        let cwd: String?
+        let projections: Projections?
+    }
+    /// DSH publishes per-session projections; `title` is the model-generated
+    /// session name and `contextPressure` carries the window size. Reading the
+    /// title here is what stops the list showing bare workspace folder names.
+    private struct Projections: Decodable {
+        let values: Values?
+        struct Values: Decodable {
+            let title: String?
+            let contextPressure: ContextPressure?
+        }
+        struct ContextPressure: Decodable {
+            let projectedTokens: Double?
+            let contextWindow: Double?
+        }
+    }
+    private struct SessionListBody: Decodable { let items: [SessionRow] }
+    private struct PageBody: Decodable { let hasMore: Bool; let records: [JSONValue] }
+    private struct CancelBody: Decodable { let accepted: Bool }
+
+    /// Minimal dynamic JSON so we can walk DSH's frame union without modelling
+    /// every variant up front.
+    enum JSONValue: Decodable {
+        case string(String), number(Double), bool(Bool), null
+        case array([JSONValue])
+        case object([String: JSONValue])
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if c.decodeNil() { self = .null; return }
+            if let v = try? c.decode(Bool.self) { self = .bool(v); return }
+            if let v = try? c.decode(Double.self) { self = .number(v); return }
+            if let v = try? c.decode(String.self) { self = .string(v); return }
+            if let v = try? c.decode([JSONValue].self) { self = .array(v); return }
+            self = .object((try? c.decode([String: JSONValue].self)) ?? [:])
+        }
+
+        subscript(key: String) -> JSONValue? {
+            if case .object(let o) = self { return o[key] }
+            return nil
+        }
+        var stringValue: String? { if case .string(let s) = self { return s }; return nil }
+        var doubleValue: Double? { if case .number(let n) = self { return n }; return nil }
+        var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
+        var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
+        var objectValue: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
+    }
+
+    // MARK: - Connection
+
+    func connect() async {
+        connectionStatus = .connecting
+        do {
+            let req = request("health")
+            let data = try await send(req)
+            let body = try decoder.decode(HealthBody.self, from: data)
+            guard body.ok else {
+                connectionStatus = .error
+                return
+            }
+            connectionStatus = .connected
+        } catch {
+            connectionStatus = .disconnected
+        }
+    }
+
+    func disconnect() async {
+        for (_, task) in activeStreams { task.cancel() }
+        activeStreams.removeAll()
+        connectionStatus = .disconnected
+    }
+
+    /// Host row for Settings → Infrastructure in DSH mode.
+    ///
+    /// Without this the store falls through to the relay path and reports the
+    /// Hermes gateway's version and model even though the app is talking to
+    /// DSH — the row would name a backend that is not serving the request.
+    func hostStatus() async -> HeraldHostStatus? {
+        do {
+            _ = try await send(request("health"))
+            let models = try? await fetchModelCatalog()
+            return HeraldHostStatus(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000002") ?? UUID(),
+                displayName: "DeepSeek Harness",
+                hostname: nil,
+                platform: "dsh",
+                connectorVersion: "dsh-phone-api",
+                heraldCommand: nil,
+                heraldVersion: "DeepSeek Harness",
+                heraldModel: models?.defaultModel ?? models?.defaultProvider,
+                lastSeenAt: .now,
+                lastConnectedAt: .now,
+                isOnline: true
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private struct ModelCatalogBody: Decodable {
+        let defaultProvider: String?
+        let defaultModel: String?
+        let groups: [Group]?
+        struct Group: Decodable {
+            let id: String
+            let name: String?
+            let models: [Entry]?
+        }
+        struct Entry: Decodable {
+            let id: String
+            let name: String?
+        }
+    }
+
+    /// One pickable model row: `provider` is the DSH provider route id.
+    struct ModelRow: Sendable {
+        let provider: String
+        let providerName: String
+        let model: String
+    }
+
+    /// DSH model catalog plus the selection that the NEXT turn will use:
+    /// the current session's pending/last selection, else the host default.
+    func modelCatalog() async throws -> (models: [ModelRow], activeProvider: String?, activeModel: String?) {
+        let cat = try await fetchModelCatalog()
+        let rows = (cat.groups ?? []).flatMap { g in
+            (g.models ?? []).map { ModelRow(provider: g.id, providerName: g.name ?? g.id, model: $0.id) }
+        }
+        if let pending = pendingModelSelection {
+            return (rows, pending.provider, pending.model)
+        }
+        if let conv = currentConversation, let native = nativeIdByConversation[conv.id],
+           let sel = try? await sessionModelSelection(sessionId: native) {
+            return (rows, sel.provider, sel.model)
+        }
+        return (rows, cat.defaultProvider, cat.defaultModel)
+    }
+
+    /// Selects the model for the current session. Before the first send there
+    /// is no DSH session, so the choice is held and applied at creation.
+    func selectModel(provider: String, model: String) async throws {
+        if let conv = currentConversation, let native = nativeIdByConversation[conv.id] {
+            _ = try await sendWithBody("model", ["sessionId": native, "provider": provider, "model": model])
+            pendingModelSelection = nil
+        } else {
+            pendingModelSelection = (provider, model)
+        }
+    }
+
+    private struct SelectionRow: Decodable {
+        let sessionId: String
+        let projections: SelectionProjections?
+        struct SelectionProjections: Decodable {
+            let values: Values?
+            struct Values: Decodable { let modelSelection: ModelSelectionValue? }
+        }
+        struct ModelSelectionValue: Decodable {
+            let next: Pick?
+            let lastUsed: Pick?
+        }
+        struct Pick: Decodable { let provider: String; let model: String }
+    }
+
+    private func sessionModelSelection(sessionId: String) async throws -> (provider: String, model: String)? {
+        struct Body: Decodable { let items: [SelectionRow] }
+        let body = try decoder.decode(Body.self, from: try await send(request("sessions")))
+        guard let row = body.items.first(where: { $0.sessionId == sessionId }),
+              let sel = row.projections?.values?.modelSelection,
+              let pick = sel.next ?? sel.lastUsed else { return nil }
+        return (pick.provider, pick.model)
+    }
+
+    /// One skill row as the Skills browser needs it.
+    struct SkillRow: Sendable {
+        let name: String
+        let description: String
+        let path: String
+    }
+
+    private struct SkillListBody: Decodable {
+        let skills: [Entry]
+        struct Entry: Decodable {
+            let name: String
+            let description: String?
+            let path: String?
+        }
+    }
+
+    private struct SkillDetailBody: Decodable {
+        let name: String
+        let description: String?
+        let path: String?
+        let content: String?
+    }
+
+    /// Skill catalog for this harness. The host lists skills per Session scope,
+    /// so the endpoint resolves the preset's layer rather than the global one.
+    func listSkills() async throws -> [SkillRow] {
+        let data = try await send(request("skills"))
+        let body = try decoder.decode(SkillListBody.self, from: data)
+        return body.skills.map { SkillRow(name: $0.name, description: $0.description ?? "", path: $0.path ?? "") }
+    }
+
+    func skillDetail(name: String) async throws -> (name: String, description: String, path: String, content: String) {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        let data = try await send(request("skill?name=\(encoded)"))
+        let body = try decoder.decode(SkillDetailBody.self, from: data)
+        return (body.name, body.description ?? "", body.path ?? "", body.content ?? "")
+    }
+
+    // MARK: - Config (DSH profile patch layer)
+
+    struct ConfigDocument: Decodable, Sendable {
+        let path: String
+        let size: Int?
+        let content: String
+    }
+
+    struct ConfigSaveResult: Decodable, Sendable {
+        let ok: Bool?
+        let path: String?
+        let backup: String?
+    }
+
+    /// DSH's editable config: `~/.dsh/profiles/web/cordis.patch.yml`, the
+    /// layer DSH's own Settings writes. DSH reloads it live on save.
+    func configDocument() async throws -> ConfigDocument {
+        try decoder.decode(ConfigDocument.self, from: try await send(request("config")))
+    }
+
+    func validateConfigDocument(_ content: String) async throws {
+        _ = try await sendWithBody("config/validate", ["content": content])
+    }
+
+    func saveConfigDocument(_ content: String) async throws -> ConfigSaveResult {
+        guard var req = request("config", method: "PUT") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["content": content])
+        return try decoder.decode(ConfigSaveResult.self, from: try await send(req))
+    }
+
+    private func fetchModelCatalog() async throws -> ModelCatalogBody {
+        let data = try await send(request("models"))
+        return try decoder.decode(ModelCatalogBody.self, from: data)
+    }
+
+    func reconnectIfNeeded() async {
+        do {
+            _ = try await send(request("health"))
+            connectionStatus = .connected
+        } catch {
+            connectionStatus = .reconnecting
+            await connect()
+        }
+    }
+
+    func resumeActiveSessionIfNeeded() async -> Bool {
+        guard let job = currentJobID, activeStreams[job] != nil else { return false }
+        return true
+    }
+
+    func activeSessionKeys() async -> Set<String> {
+        guard let conv = currentConversation,
+              let native = nativeIdByConversation[conv.id],
+              currentJobID != nil else { return [] }
+        return [native]
+    }
+
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+
+    func isServerTurnAwaitingUserInput() async -> Bool { pendingClarify != nil }
+
+    func fetchPendingClarify() async -> PendingClarify? { pendingClarify }
+
+    func respondToClarify(requestID: String, answer: String) async throws {
+        // DSH surfaces clarify through the session inbox; answering is a prompt
+        // steer on the same session.
+        pendingClarify = nil
+        guard let conv = currentConversation, let native = nativeIdByConversation[conv.id] else {
+            throw ServerError(message: "No active session to answer on")
+        }
+        try await prompt(sessionId: native, text: answer, mode: "steer")
+    }
+
+    // MARK: - Conversation
+
+    func loadConversation() async -> Conversation {
+        if let c = currentConversation { return c }
+        let c = Conversation(title: "New chat")
+        currentConversation = c
+        return c
+    }
+
+    func loadConversation(id: UUID) async throws -> Conversation {
+        guard let native = nativeIdByConversation[id] else { return Conversation(id: id, title: "Chat") }
+        let page = try await fetchPage(sessionId: native, maxMessages: 200)
+        var messages: [Message] = []
+        for record in page.records {
+            if let m = Self.message(fromWireEvent: record) { messages.append(m) }
+        }
+        let conv = Conversation(
+            id: id,
+            title: currentConversation?.title ?? "Chat",
+            messages: messages,
+            lastActivity: .now,
+            latestUsage: lastUsage,
+            contextPercent: nil,
+            sessionKey: native
+        )
+        currentConversation = conv
+        return conv
+    }
+
+    func clearConversation() async throws -> Conversation {
+        currentJobID = nil
+        let c = Conversation(title: "New chat")
+        currentConversation = c
+        return c
+    }
+
+    func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
+        await loadConversation()
+    }
+
+    func adoptConversation(id: UUID, title: String) {
+        currentConversation = Conversation(id: id, title: title)
+    }
+
+    func ensureConversation(id: UUID) async -> Bool {
+        if nativeIdByConversation[id] != nil { return true }
+        do {
+            let created = try await createSession(title: "Chat", conversationID: id)
+            return !created.title.isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    // MARK: - Sessions
+
+    func listSessions(limit: Int, offset: Int, allDevices: Bool) async throws -> SessionListResponse {
+        let data = try await send(request("sessions"))
+        let body = try decoder.decode(SessionListBody.self, from: data)
+        let summaries = body.items.map { row -> SessionSummary in
+            let local = conversationByNativeId[row.sessionId] ?? Self.stableUUID(from: row.sessionId)
+            conversationByNativeId[row.sessionId] = local
+            // Prefer DSH's model-generated title; the workspace folder name is
+            // only a last resort for a session that has not been named yet.
+            let title = row.projections?.values?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedTitle: String = {
+                if let t = title, !t.isEmpty { return t }
+                if let cwd = row.cwd, !cwd.isEmpty { return (cwd as NSString).lastPathComponent }
+                return "Chat"
+            }()
+            return SessionSummary(
+                id: local,
+                title: resolvedTitle,
+                previewText: "",
+                lastActivity: row.updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) } ?? .now,
+                source: "dsh",
+                isPinned: false,
+                isArchived: false,
+                sessionKey: row.sessionId,
+                hasActivity: row.running ?? false
+            )
+        }
+        return SessionListResponse(sessions: Array(summaries.dropFirst(offset).prefix(limit)), total: summaries.count)
+    }
+
+    func searchSessions(query: String, allDevices: Bool) async throws -> [SessionSummary] {
+        let all = try await listSessions(limit: 500, offset: 0, allDevices: allDevices)
+        guard !query.isEmpty else { return all.sessions }
+        return all.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    func createSession(title: String) async throws -> SessionSummary {
+        try await createSession(title: title, conversationID: nil)
+    }
+
+    func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
+        let local = conversationID ?? UUID()
+        let body = try JSONSerialization.data(withJSONObject: ["agentPreset": "ignyte"])
+        guard var req = request("session", method: "POST") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        req.httpBody = body
+        let data = try await send(req)
+        let created = try decoder.decode(CreateBody.self, from: data)
+        nativeIdByConversation[local] = created.sessionId
+        conversationByNativeId[created.sessionId] = local
+        currentConversation = Conversation(id: local, title: title, sessionKey: created.sessionId)
+        if let pick = pendingModelSelection {
+            // Best effort: a failed apply leaves the host default, which the
+            // picker then reports truthfully on its next load.
+            _ = try? await sendWithBody("model", ["sessionId": created.sessionId, "provider": pick.provider, "model": pick.model])
+            pendingModelSelection = nil
+        }
+        return SessionSummary(
+            id: local,
+            title: title,
+            previewText: "",
+            lastActivity: .now,
+            source: "dsh",
+            isPinned: false,
+            isArchived: false,
+            sessionKey: created.sessionId,
+            hasActivity: false
+        )
+    }
+
+    func deleteSession(id: UUID) async throws {
+        nativeIdByConversation.removeValue(forKey: id)
+        if currentConversation?.id == id { currentConversation = nil }
+    }
+
+    func deleteNoteSession(conversationID: UUID, gatewaySessionKey: String?) async throws {
+        nativeIdByConversation.removeValue(forKey: conversationID)
+    }
+
+    func archiveSession(id: UUID) async throws {}
+    func togglePinSession(id: UUID) async throws -> SessionSummary {
+        throw ServerError(message: "Pinning is not supported on the DSH transport")
+    }
+
+    func renameSession(id: UUID, title: String) async throws -> SessionSummary {
+        if let conv = currentConversation, conv.id == id {
+            currentConversation?.title = title
+        }
+        return SessionSummary(
+            id: id, title: title, previewText: "", lastActivity: .now,
+            source: "dsh", isPinned: false, isArchived: false,
+            sessionKey: nativeIdByConversation[id], hasActivity: false
+        )
+    }
+
+    func generateSessionTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        // DSH titles sessions itself; derive a short label from the prompt.
+        let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Chat" : String(trimmed.prefix(40))
+    }
+
+    func generateCreativeTitle(sessionId: UUID, userMessage: String, assistantMessage: String) async throws -> String {
+        try await generateSessionTitle(sessionId: sessionId, userMessage: userMessage, assistantMessage: assistantMessage)
+    }
+
+    func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool {
+        guard !sessionKey.isEmpty else { return false }
+        nativeIdByConversation[conversationID] = sessionKey
+        conversationByNativeId[sessionKey] = conversationID
+        return true
+    }
+
+    func nativeSessionKey(for conversationID: UUID) async -> String? {
+        nativeIdByConversation[conversationID]
+    }
+
+    // MARK: - Sending
+
+    func send(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) async -> Message {
+        var final: Message?
+        for await update in sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID, continuationContext: continuationContext) {
+            if case .finished(let m, _, _, _) = update { final = m }
+            if case .failed(let reason, _, _) = update {
+                return Message(id: clientMessageID, clientMessageID: clientMessageID,
+                               sender: .herald, content: reason, status: .failed)
+            }
+        }
+        return final ?? Message(id: clientMessageID, clientMessageID: clientMessageID,
+                                sender: .herald, content: "", status: .sent)
+    }
+
+    func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
+        if nativeIdByConversation[conversationID] == nil {
+            _ = try await createSession(title: "Chat", conversationID: conversationID)
+        }
+        return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
+    }
+
+    func sendNoteMessage(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String) async -> Message {
+        await send(message: text, attachments: attachments, clientMessageID: clientMessageID, continuationContext: nil)
+    }
+
+    func sendNoteMessageStreaming(text: String, attachments: [PendingAttachment], clientMessageID: UUID, conversationID: UUID, title: String, enrichmentModelName: String?, enrichmentProvider: String?, thinkingAsReasoning: Bool) -> AsyncStream<StreamingUpdate> {
+        sendStreaming(message: text, attachments: attachments, clientMessageID: clientMessageID, continuationContext: nil)
+    }
+
+    // MARK: - Streaming
+
+    func sendStreaming(message: String, attachments: [PendingAttachment], clientMessageID: UUID, continuationContext: String?) -> AsyncStream<StreamingUpdate> {
+        AsyncStream { continuation in
+            let task = Task { @MainActor in
+                await self.runTurn(
+                    message: message,
+                    attachments: attachments,
+                    clientMessageID: clientMessageID,
+                    continuation: continuation
+                )
+            }
+            pendingStreamTask = task
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runTurn(
+        message: String,
+        attachments: [PendingAttachment],
+        clientMessageID: UUID,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async {
+        let jobID = UUID()
+        currentJobID = jobID
+        // Key the task by the same id the UI cancels with; it used to be stored
+        // under a second random UUID, so cancelJob(jobID:) never found it and
+        // the finished entry was never removed.
+        if let t = pendingStreamTask { activeStreams[jobID] = t; pendingStreamTask = nil }
+        continuation.yield(.messageSent(jobID: jobID))
+        continuation.yield(.started(phase: "thinking"))
+
+        do {
+            // 1. Resolve the session (create on first send).
+            let conversationID = currentConversation?.id ?? UUID()
+            if currentConversation == nil {
+                currentConversation = Conversation(id: conversationID, title: "Chat")
+            }
+            var nativeId = nativeIdByConversation[conversationID]
+            if nativeId == nil {
+                let created = try await createSession(title: currentConversation?.title ?? "Chat", conversationID: conversationID)
+                nativeId = created.sessionKey
+            }
+            guard let sessionId = nativeId else {
+                continuation.yield(.failed("Could not create a DSH session"))
+                continuation.finish()
+                return
+            }
+
+            // 2. Open follow FIRST so its opening snapshot is the pre-turn state.
+            let stream = try await openFollow(sessionId: sessionId)
+
+            // 3. Admit the prompt.
+            try await prompt(sessionId: sessionId, text: message, mode: "queue")
+
+            // 4. Consume frames until our turn commits.
+            try await consume(
+                stream: stream,
+                sessionId: sessionId,
+                clientMessageID: clientMessageID,
+                continuation: continuation
+            )
+        } catch is CancellationError {
+            continuation.yield(.cancelled)
+            continuation.finish()
+        } catch {
+            continuation.yield(.failed(error.localizedDescription))
+            continuation.finish()
+        }
+        activeStreams[jobID] = nil
+        currentJobID = nil
+    }
+
+    private func prompt(sessionId: String, text: String, mode: String) async throws {
+        guard var req = request("prompt", method: "POST") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "sessionId": sessionId,
+            "text": text,
+            "mode": mode,
+        ])
+        _ = try await send(req)
+    }
+
+    /// Opens the SSE follow stream and returns the byte stream, after the HTTP
+    /// response headers are known good.
+    private func openFollow(sessionId: String) async throws -> URLSession.AsyncBytes {
+        guard let u = url("follow?sessionId=\(sessionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionId)") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        var req = URLRequest(url: u)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 3600
+        let (bytes, resp) = try await session.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw ServerError(message: "DSH follow failed (HTTP \(code))")
+        }
+        return bytes
+    }
+
+    private func consume(
+        stream: URLSession.AsyncBytes,
+        sessionId: String,
+        clientMessageID: UUID,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) async throws {
+        var textBuffer = ""
+        var reasoningBuffer = ""
+        var tools: [String: ToolActivity] = [:]
+        var usage: TokenUsage?
+        var sawSnapshot = false
+        var committed = false
+        // A turn is several model steps: every tool-calling step records its own
+        // `assistant/message`. Finishing on the first one ended the turn at the
+        // tool call ("2 tools used", no answer) and let the next queued prompt
+        // go out while DSH was still working. Keep the latest message with text
+        // and finish only on this turn's `turn/end`.
+        var ourTurn: Int?
+        var lastAssistantText: String?
+
+        // Track the highest seq we have seen so the opening snapshot's history
+        // is never re-emitted as live deltas.
+        var snapshotMaxSeq = -1
+
+        for try await line in stream.lines {
+            if Task.isCancelled { throw CancellationError() }
+            guard line.hasPrefix("data: ") else { continue }
+            let payload = String(line.dropFirst(6))
+            guard let data = payload.data(using: .utf8),
+                  let frame = try? decoder.decode(JSONValue.self, from: data) else { continue }
+
+            let type = frame["type"]?.stringValue ?? ""
+
+            if type == "snapshot" {
+                sawSnapshot = true
+                if let records = frame["records"]?.arrayValue {
+                    for r in records {
+                        if let seq = r["event"]?["seq"]?.doubleValue { snapshotMaxSeq = max(snapshotMaxSeq, Int(seq)) }
+                    }
+                }
+                continuation.yield(.heartbeat(phase: "streaming"))
+                continue
+            }
+
+            if type == "assistant-stream" {
+                guard sawSnapshot else { continue }
+                guard let f = frame["frame"] else { continue }
+                let kind = f["type"]?.stringValue ?? ""
+                if kind == "chunk", let chunk = f["chunk"] {
+                    let ck = chunk["type"]?.stringValue ?? ""
+                    switch ck {
+                    case "text-delta":
+                        if let t = chunk["text"]?.stringValue, !t.isEmpty {
+                            textBuffer += t
+                            continuation.yield(.textDelta(t))
+                        }
+                    case "reasoning-delta":
+                        if let t = chunk["text"]?.stringValue, !t.isEmpty {
+                            reasoningBuffer += t
+                            continuation.yield(.reasoningDelta(t))
+                        }
+                    case "tool-call-delta":
+                        let id = chunk["id"]?.stringValue ?? UUID().uuidString
+                        let name = chunk["name"]?.stringValue
+                        if tools[id] == nil {
+                            let a = ToolActivity(label: name ?? "tool", toolCallID: id, name: name)
+                            tools[id] = a
+                            continuation.yield(.toolStarted(a))
+                        }
+                        if let args = chunk["argumentsDelta"]?.stringValue, !args.isEmpty {
+                            continuation.yield(.toolOutput(toolCallID: id, chunk: args))
+                        }
+                    case "usage":
+                        if let u = chunk["usage"] { usage = Self.usage(from: u) }
+                    default:
+                        break
+                    }
+                }
+                continue
+            }
+
+            if type == "event" {
+                guard sawSnapshot, let ev = frame["event"] else { continue }
+                let seq = ev["seq"]?.doubleValue.map { Int($0) } ?? -1
+                if seq >= 0 && seq <= snapshotMaxSeq { continue }
+                let evType = ev["type"]?.stringValue ?? ""
+                let evData = ev["data"]
+
+                switch evType {
+                case "turn/start":
+                    // The first turn opened after the snapshot is ours; a turn
+                    // already running at snapshot time has seq <= snapshotMaxSeq.
+                    if ourTurn == nil, let t = evData?["turn"]?.doubleValue { ourTurn = Int(t) }
+
+                case "tool/call":
+                    let id = evData?["callId"]?.stringValue ?? UUID().uuidString
+                    let name = evData?["name"]?.stringValue ?? "tool"
+                    let args = evData?["arguments"]?.stringValue
+                    let a = ToolActivity(label: name, toolCallID: id, name: name,
+                                         argsPreview: args.map { String($0.prefix(400)) })
+                    tools[id] = a
+                    continuation.yield(.toolStarted(a))
+
+                case "tool/result":
+                    let id = evData?["message"]?["content"]?.arrayValue?.first?["toolCallId"]?.stringValue
+                        ?? evData?["callId"]?.stringValue
+                        ?? ""
+                    let isError = (evData?["error"] != nil)
+                    var preview: String?
+                    if let blocks = evData?["message"]?["content"]?.arrayValue {
+                        var acc = ""
+                        for b in blocks {
+                            if let inner = b["content"]?.arrayValue {
+                                for x in inner { if let t = x["text"]?.stringValue { acc += t } }
+                            }
+                        }
+                        if !acc.isEmpty { preview = String(acc.prefix(600)) }
+                    }
+                    if var existing = tools[id] {
+                        existing.isActive = false
+                        existing.isError = isError
+                        existing.resultPreview = preview
+                        existing.finishedAt = .now
+                        tools[id] = existing
+                    }
+                    continuation.yield(.toolCompleted(
+                        toolCallID: id,
+                        resultPreview: preview,
+                        isError: isError,
+                        durationMs: nil
+                    ))
+
+                case "assistant/message":
+                    let msg = evData?["message"]
+                    if let t = Self.text(fromContentBlocks: msg?["content"]), !t.isEmpty {
+                        lastAssistantText = t
+                    }
+                    if let u = evData?["usage"] { usage = Self.usage(from: u) }
+
+                case "turn/end":
+                    if let t = evData?["turn"]?.doubleValue, let ours = ourTurn, Int(t) != ours { break }
+                    let kind = evData?["reason"]?["kind"]?.stringValue ?? "completed"
+                    lastUsage = usage
+                    if kind == "aborted" {
+                        continuation.yield(.cancelled)
+                        continuation.finish()
+                        return
+                    }
+                    if kind == "error" {
+                        let reason = evData?["reason"]?["error"]?["message"]?.stringValue ?? "DSH turn failed"
+                        continuation.yield(.failed(reason))
+                        continuation.finish()
+                        return
+                    }
+                    let text = lastAssistantText ?? (textBuffer.isEmpty ? "(no content)" : textBuffer)
+                    let finalMessage = Message(
+                        id: UUID(), clientMessageID: clientMessageID,
+                        sender: .herald, content: text, status: .sent
+                    )
+                    if var conv = currentConversation {
+                        conv.messages.append(finalMessage)
+                        conv.lastActivity = .now
+                        conv.latestUsage = usage
+                        currentConversation = conv
+                    }
+                    continuation.yield(.finished(finalMessage, usage, nil, nil))
+                    committed = true
+                    // The follow stream never closes by itself; leaving it open
+                    // leaked one socket and one Task per turn.
+                    continuation.finish()
+                    return
+
+                default:
+                    break
+                }
+                continue
+            }
+
+            if type == "error" {
+                continuation.yield(.failed(frame["message"]?.stringValue ?? "DSH stream error"))
+                continuation.finish()
+                return
+            }
+        }
+
+        if !committed {
+            let text = lastAssistantText ?? (textBuffer.isEmpty ? "(stream ended with no content)" : textBuffer)
+            let finalMessage = Message(
+                id: UUID(), clientMessageID: clientMessageID,
+                sender: .herald, content: text, status: .sent
+            )
+            continuation.yield(.finished(finalMessage, usage, nil, nil))
+        }
+        continuation.finish()
+    }
+
+    // MARK: - Cancel
+
+    func cancelJob(jobID: UUID) async throws {
+        activeStreams[jobID]?.cancel()
+        activeStreams[jobID] = nil
+        if let conv = currentConversation, let native = nativeIdByConversation[conv.id] {
+            _ = try? await sendWithBody("cancel", ["sessionId": native])
+        }
+    }
+
+    func interruptSession() async -> Bool {
+        guard let conv = currentConversation, let native = nativeIdByConversation[conv.id] else { return false }
+        if let job = currentJobID, let task = activeStreams[job] { task.cancel() }
+        do {
+            _ = try await sendWithBody("cancel", ["sessionId": native])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    private func sendWithBody(_ path: String, _ body: [String: Any]) async throws -> Data {
+        guard var req = request(path, method: "POST") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await send(req)
+    }
+
+    // MARK: - History
+
+    private func fetchPage(sessionId: String, maxMessages: Int) async throws -> PageBody {
+        let encoded = sessionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionId
+        let data = try await send(request("page?sessionId=\(encoded)&maxMessages=\(maxMessages)"))
+        return try decoder.decode(PageBody.self, from: data)
+    }
+
+    // MARK: - Decoding helpers
+
+    private static func text(fromContentBlocks blocks: JSONValue?) -> String? {
+        guard let arr = blocks?.arrayValue else { return nil }
+        var out = ""
+        for b in arr {
+            if b["type"]?.stringValue == "text", let t = b["text"]?.stringValue { out += t }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private static func usage(from v: JSONValue) -> TokenUsage? {
+        guard let input = v["inputTokens"]?.doubleValue,
+              let output = v["outputTokens"]?.doubleValue else { return nil }
+        let total = v["totalTokens"]?.doubleValue ?? (input + output)
+        return TokenUsage(promptTokens: Int(input), completionTokens: Int(output), totalTokens: Int(total))
+    }
+
+    /// A DSH sessionId is `session-<uuid>`; recover the UUID when possible so a
+    /// session list row keeps a stable local identity across launches.
+    static func stableUUID(from sessionId: String) -> UUID {
+        let stripped = sessionId.hasPrefix("session-") ? String(sessionId.dropFirst("session-".count)) : sessionId
+        return UUID(uuidString: stripped) ?? UUID()
+    }
+
+    /// Rebuild a displayable message from a durable session event.
+    ///
+    /// DSH injects prompt context as `user/message` events carrying a NON-user
+    /// `source.kind` — `agent-instructions` (the AGENTS.md `<system-reminder>`),
+    /// `plugin` with `form: snapshot` (runtime context), and `skill-catalog`
+    /// with `form: catalog` (the `<available_skills>` list). Rendering those
+    /// puts the prompt itself in the transcript. Only `kind: user` is a real
+    /// turn; assistant rows must come from the model, not from a tool result.
+    static func message(fromWireEvent record: JSONValue) -> Message? {
+        guard let ev = record["event"], let type = ev["type"]?.stringValue else { return nil }
+        let data = ev["data"]
+        let time = ev["time"]?.doubleValue.map { Date(timeIntervalSince1970: $0 / 1000) } ?? .now
+        switch type {
+        case "user/message":
+            guard data?["source"]?["kind"]?.stringValue == "user" else { return nil }
+            guard let text = text(fromContentBlocks: data?["content"]),
+                  !text.hasPrefix("<system-reminder>") else { return nil }
+            return Message(id: UUID(), clientMessageID: nil, sender: .user,
+                           content: text, timestamp: time, status: .sent)
+
+        case "assistant/message":
+            guard data?["message"]?["source"]?["kind"]?.stringValue == "model" else { return nil }
+            guard let text = text(fromContentBlocks: data?["message"]?["content"]),
+                  !text.hasPrefix("<system-reminder>") else { return nil }
+            return Message(id: UUID(), clientMessageID: nil, sender: .herald,
+                           content: text, timestamp: time, status: .sent)
+
+        default:
+            return nil
+        }
+    }
+}

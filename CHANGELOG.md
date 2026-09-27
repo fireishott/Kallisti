@@ -5,6 +5,124 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-27
+
+Build 135.76. **Kallisti is now backend agnostic: BYOB, Bring Your Own Backend.**
+The app no longer assumes one agent stack. It speaks to whatever you run, through
+a transport chosen at build time, and nothing host-specific ships in the source.
+
+### Added
+
+- **BYOB transports.** Three interchangeable backends behind one client protocol:
+  - **DeepSeek Harness (DSH)** - new. Direct HTTP + SSE to a `dsh-phone-api`
+    plugin running inside DSH. No relay, no connector in the request path.
+  - **Relay** - the Kallisti relay + connector, for agents fronted by an
+    OpenAI-compatible API server.
+  - **Native gateway** - direct WebSocket to an agent gateway.
+- **DSH model picker.** The picker lists the DSH catalog and switches the model
+  per session. The pill shows the model the next turn will actually use.
+- **DSH Config Editor.** In DSH mode Settings edits DSH's own profile patch
+  (`~/.dsh/profiles/web/cordis.patch.yml`) instead of an unrelated config file.
+  Saves are validated server-side (must be a YAML list of loader entries),
+  backed up (last 20 kept), and applied live by DSH - no restart step.
+- **DSH skills browser, host status, and chat history** served from DSH.
+- **Build-time backend config.** `Config/DSH.example.xcconfig` documents the two
+  values a DSH build needs (token, base URL). Copy it to the gitignored
+  `Config/DSH.local.xcconfig`. With no values the app builds for relay/native.
+
+### Changed
+
+- **Agent-agnostic branding (135.70).** User-facing strings say "Agent" rather
+  than naming a backend. Wire contracts (RPC targets, headers, role aliases,
+  unit names) are unchanged.
+- **Nightly signing passwords moved to the Keychain.** `scripts/nightly-build.sh`
+  reads them from generic-password items instead of the script.
+- **Notes enrichment fulfils the note (135.61).** A note that asks a question
+  gets an answer, not a description of its own handwriting.
+
+### Fixed
+
+- **Replies cut off at "N tools used" (DSH).** A turn is several model steps and
+  each tool-calling step writes its own assistant message. The client finished on
+  the first one, dropping the real answer and releasing the next queued prompt
+  early. It now finishes on the turn's `turn/end`, keeps the last text answer, and
+  maps aborted/error endings to cancel/fail.
+- **Leaked streams (DSH).** The follow stream is closed at turn end, and the turn
+  task is keyed by the same id Stop uses, so Stop actually cancels it.
+- **Gateway Logs "data couldn't be read because it is missing."** The screen
+  decoded a second `data` envelope the client had already unwrapped. "View All"
+  now requests 2000 lines.
+- **Duplicate queued messages.** The duplicate check only looked at on-screen
+  rows; a history reload replaced the queued row and a resend stacked a second
+  identical item ("2 messages queued", one bubble). It now checks the outbox.
+- **Stale queue backlog.** Queued/failed items only drain while their chat is
+  open, so old chats could fire weeks-old messages on reopen. Items older than
+  24 hours are dropped at launch.
+- **Tool activity missing in relay mode (135.64).** The connector ignored the
+  gateway's named `hermes.tool.progress` SSE frames; tool start/finish, id, name,
+  args and emoji now reach the app.
+- **Relay 422s no longer echo rejected input** into logs (field, type, reason only).
+- **PDF / attachment sends (135.62-135.63).** `.pdf` allowed in the picker with a
+  4 MB document cap; the client body cap was 1 MB and silently discarded every
+  allowed document before any request was made.
+- **Composer draft lost before conversation acknowledgement** (drafts keyed by a
+  per-render UUID).
+- **Relay notes enrichment (135.58-135.60).** Works in relay mode, no longer leaks
+  note prompts into the open chat, note sessions are marked and hidden from the
+  chat list, untitled notes are smart-named again, no stale "Thought" card.
+- **Build-number drift.** App `Info.plist` and project versions reconciled.
+- **Fork-on-reply (135.47).** Replying to an old chat resumes its session instead
+  of forking an empty thread.
+- **Parked clarify questions (135.45-135.46).** The watchdog finds a clarify
+  prompt even while a tool is in flight or the stream has dropped.
+- **APNs environment (135.70).** Debug builds registered as production while
+  holding a sandbox token (`BadDeviceToken`). Now checks the receipt file exists.
+
+### Security
+
+- No credentials, hostnames, or device identifiers in source. The DSH token and
+  base URL are build-time values from an untracked xcconfig.
+- Removed editor backup copies (`*.bak*`) from the tree and ignored them.
+- Test fixtures and docs use neutral placeholder hosts and paths.
+
+## [0.3.3] - 2026-08-29
+
+Builds 135.11-135.41.
+
+### Added
+
+- Markdown composer toolbar (bold, italic, code, bullet, link) (135.41).
+- Skill detail loads the real `SKILL.md`; Skills and Cron show an error with
+  Retry instead of a bare warning icon; Cron rich editor (135.40-135.41).
+- Creative titles for sketch and doodle notes (135.40).
+- Note toolbar undo/redo, expanded ink canvas, response-ready alert toggle,
+  persistent notification conversation routing (135.36-135.37).
+- Live background-task viewer in the Canvas Live tab (135.17).
+- In-app memory footprint logger for leak diagnosis (135.12).
+
+### Changed
+
+- Notes enrichment overhaul: inline image pixels restored, turn-contract prompt,
+  180 s watchdog, live thought stream (135.39).
+- Settings rows are full-width tap targets; restart asks for confirmation (135.38).
+- Notes checkpoint system removed entirely (135.18) - it was the cause of
+  instant-close and device heat on large notes.
+
+### Fixed
+
+- Notes instant-close on open: `revisions.json` embedded the full drawing per
+  revision (100 MB+). Now metadata-only, migrated on load, capped at 30, with a
+  pre-flight shrink for already-bloated files (135.13, 135.20, 135.22).
+- Chats flying off screen and a dead jump-to-latest arrow (135.15).
+- Dead Send/Edit/Delete buttons in the queue sheet (135.16).
+- Camera Use Photo/Retake froze the app (135.19).
+- Color palette vanishing while the canvas re-rendered (135.21).
+- Enriched tab crashes from nested scroll views and canvas teardown (135.33-135.34).
+- New-chat content bleeding into the previous chat; widget rebrand; black PDF
+  previews; video preview orientation (135.29).
+- Live Activity stuck on "Responding", stale sweep, widget timer cap (135.31, 135.40).
+- Duplicate attachment bubble (135.40).
+
 ## [0.3.2] - 2026-08-22
 
 Current build release (build 135.10). Private beta build.
@@ -72,7 +190,7 @@ Current build release (build 132.0). Private beta build.
   arriving. The endpoint now removes the device's token from the registry,
   and the native-gateway path calls it when the toggle is switched off.
 
-## [0.3.1] - 2026-08-20
+## [0.3.0] - 2026-08-20
 
 Current build release (build 131.23). Private beta build.
 
@@ -455,343 +573,3 @@ distributed to TestFlight testers.
 ### Attribution
 
 - Built from the earlier Herald mobile client foundation under the repository's MIT license history.
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-20 13:28 PT | a2eea3b4 | test entry - nightly pipeline setup
-- 2026-08-20 14:13 PT | 76b703ed | 132.1: thought bubble reset on new note, ALL note attachments (photos/scans/files) included in enrichment prompt, OCR reading-order sort + per-stroke groundwork
-- 2026-08-20 15:22 PT | ff4d6310 | 132.2: fix notes ruled lines stopping short on right side in portrait - bounds KVO self-heal in PencilCanvasRepresentable; dev-signed direct install on CDF iPad + CDF iPhone
-- 2026-08-20 15:47 PT | a81d2b0f | 132.3: launch-surface flap fix (never re-show after connected), smart completion notifications (real reply text in push+inbox via session history), inbox select-all + bulk dismiss, in-app banner suppression
-- 2026-08-20 15:58 PT | 43d4762a | 132.4: retire launch surface once connected + activeModel known - model refresh no longer holds cold start on Connected, <model>
-- 2026-08-20 19:25 PT | a3f04936 | 133.0: context-aware note enrichment - model reads drawing/attachments as source of truth, enriches by note type (study/meeting/shopping/personal/doodle), web research + hyperlinks enabled, callback isolation maintained
-- 2026-08-20 21:00 PT | bc64423f | Bug 1: enrichment 2x->4x drawing render; Bug 5: composer keyboard after Settings->Chat; driver scale + status resync. 133.1 installed both devices
-- 2026-08-20 22:02 PT | 16b5b2f8 | 133.2: enrichment renders markdown (clickable hyperlinks + inline images when model emits them); writing pad sidebar resize (132.2 bounds observer) ships to devices; connector note.enrich prompt synced with hyperlink+inline-image rules
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-
-## [Nightly] - 2026-08-29
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-- 2026-08-29 09:10 PT | 1b0a3213 | 135.36: note toolbar undo/redo and expanded ink canvas; persistent notification conversation routing; response-ready alert toggle; drawing enrichment guardrails; notification media fallback. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a192cb83 | 135.37: force APNs re-registration when Response Ready Alerts changes so per-device suppression reaches connector. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a30ff583 | 135.38: settings full-row tap targets, full changelog, restart confirmation; ChatStore ends Live Activity on cross-client reconcile. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 12:09 PT | 061c12b1 | notes enrichment fix (135.39): gateway image_input_mode=native restores inline pixels after upstream 08-28 text-mode regression; enrichment prompt rewritten as turn contract (no tool discovery, <60s budget, forced completion line); watchdog 120->180s; thinking.delta surfaced as live thought stream for notes; tool progress visible again; connector prompt synced. Model replay: TCU v NC note 150s->11.3s, correct read
-- 2026-08-29 17:03 PT | 87df4a3e | 135.40: fix duplicate attachment bubble ([screenshot] stripped in fingerprint + history directives); Skills/Cron error state with Retry instead of bare yellow triangle; Cron rich editor (name/schedule/prompt); Live Activity stale sweep + widget timer cap
-- 2026-08-29 21:18 PT | 87df4a3e | LLM artistic-creation naming: vibe+subject titles for sketch/doodle/drawing notes (generateCreativeTitle + enrichmentReadsArtistic routing)
-- 2026-08-29 22:36 PT | a49f6a90 | 135.41: markdown composer toolbar (bold/italic/code/bullet/link); SkillDetailView loads real SKILL.md content via /v1/skills/{name} with error+Retry; SkillsStore prefers REST catalog over native gateway partial data
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-- 2026-08-29 09:10 PT | 1b0a3213 | 135.36: note toolbar undo/redo and expanded ink canvas; persistent notification conversation routing; response-ready alert toggle; drawing enrichment guardrails; notification media fallback. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a192cb83 | 135.37: force APNs re-registration when Response Ready Alerts changes so per-device suppression reaches connector. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a30ff583 | 135.38: settings full-row tap targets, full changelog, restart confirmation; ChatStore ends Live Activity on cross-client reconcile. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 12:09 PT | 061c12b1 | notes enrichment fix (135.39): gateway image_input_mode=native restores inline pixels after upstream 08-28 text-mode regression; enrichment prompt rewritten as turn contract (no tool discovery, <60s budget, forced completion line); watchdog 120->180s; thinking.delta surfaced as live thought stream for notes; tool progress visible again; connector prompt synced. Model replay: TCU v NC note 150s->11.3s, correct read
-- 2026-08-29 17:03 PT | 87df4a3e | 135.40: fix duplicate attachment bubble ([screenshot] stripped in fingerprint + history directives); Skills/Cron error state with Retry instead of bare yellow triangle; Cron rich editor (name/schedule/prompt); Live Activity stale sweep + widget timer cap
-- 2026-08-29 21:18 PT | 87df4a3e | LLM artistic-creation naming: vibe+subject titles for sketch/doodle/drawing notes (generateCreativeTitle + enrichmentReadsArtistic routing)
-- 2026-08-29 22:36 PT | a49f6a90 | 135.41: markdown composer toolbar (bold/italic/code/bullet/link); SkillDetailView loads real SKILL.md content via /v1/skills/{name} with error+Retry; SkillsStore prefers REST catalog over native gateway partial data
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-- 2026-08-29 09:10 PT | 1b0a3213 | 135.36: note toolbar undo/redo and expanded ink canvas; persistent notification conversation routing; response-ready alert toggle; drawing enrichment guardrails; notification media fallback. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a192cb83 | 135.37: force APNs re-registration when Response Ready Alerts changes so per-device suppression reaches connector. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a30ff583 | 135.38: settings full-row tap targets, full changelog, restart confirmation; ChatStore ends Live Activity on cross-client reconcile. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 12:09 PT | 061c12b1 | notes enrichment fix (135.39): gateway image_input_mode=native restores inline pixels after upstream 08-28 text-mode regression; enrichment prompt rewritten as turn contract (no tool discovery, <60s budget, forced completion line); watchdog 120->180s; thinking.delta surfaced as live thought stream for notes; tool progress visible again; connector prompt synced. Model replay: TCU v NC note 150s->11.3s, correct read
-- 2026-08-29 17:03 PT | 87df4a3e | 135.40: fix duplicate attachment bubble ([screenshot] stripped in fingerprint + history directives); Skills/Cron error state with Retry instead of bare yellow triangle; Cron rich editor (name/schedule/prompt); Live Activity stale sweep + widget timer cap
-- 2026-08-29 21:18 PT | 87df4a3e | LLM artistic-creation naming: vibe+subject titles for sketch/doodle/drawing notes (generateCreativeTitle + enrichmentReadsArtistic routing)
-- 2026-08-29 22:36 PT | a49f6a90 | 135.41: markdown composer toolbar (bold/italic/code/bullet/link); SkillDetailView loads real SKILL.md content via /v1/skills/{name} with error+Retry; SkillsStore prefers REST catalog over native gateway partial data
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-- 2026-08-29 09:10 PT | 1b0a3213 | 135.36: note toolbar undo/redo and expanded ink canvas; persistent notification conversation routing; response-ready alert toggle; drawing enrichment guardrails; notification media fallback. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a192cb83 | 135.37: force APNs re-registration when Response Ready Alerts changes so per-device suppression reaches connector. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a30ff583 | 135.38: settings full-row tap targets, full changelog, restart confirmation; ChatStore ends Live Activity on cross-client reconcile. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 12:09 PT | 061c12b1 | notes enrichment fix (135.39): gateway image_input_mode=native restores inline pixels after upstream 08-28 text-mode regression; enrichment prompt rewritten as turn contract (no tool discovery, <60s budget, forced completion line); watchdog 120->180s; thinking.delta surfaced as live thought stream for notes; tool progress visible again; connector prompt synced. Model replay: TCU v NC note 150s->11.3s, correct read
-- 2026-08-29 17:03 PT | 87df4a3e | 135.40: fix duplicate attachment bubble ([screenshot] stripped in fingerprint + history directives); Skills/Cron error state with Retry instead of bare yellow triangle; Cron rich editor (name/schedule/prompt); Live Activity stale sweep + widget timer cap
-- 2026-08-29 21:18 PT | 87df4a3e | LLM artistic-creation naming: vibe+subject titles for sketch/doodle/drawing notes (generateCreativeTitle + enrichmentReadsArtistic routing)
-- 2026-08-29 22:36 PT | a49f6a90 | 135.41: markdown composer toolbar (bold/italic/code/bullet/link); SkillDetailView loads real SKILL.md content via /v1/skills/{name} with error+Retry; SkillsStore prefers REST catalog over native gateway partial data
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-- 2026-08-21 07:08 PT | e8463a52 | nightly 133.3 installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 08:11 PT | e8463a52 | 133.4: notes ink auto-scales to fit column when sidebar present (was clipping at right edge)
-- 2026-08-21 08:22 PT | 1cba468b | 1cba468b 133.4: autoscale v2 - contentSize=target/zoom coordinate math fix, paper spans content coords, left anchor (installed both devices)
-- 2026-08-21 11:22 PT | e3b2943a | 133.5 UAT: phantom new-chat ghost fixes (probe outbox before requeue, cap server-turn watch 75s, label remote turns, stable new-chat id) installed on iPad A16 + iPhone 15 Pro (dev-signed direct push)
-- 2026-08-21 11:37 PT | 7809a097 | 135.5 TESTFLIGHT RELEASE: promoted nightly->main (e0782af5), phantom new-chat ghost fixes, delivery UUID 5cab2423, VALID
-- 2026-08-22 11:19 PT | 233bd523 | 135.10: fix connect() zombie-hang watchdog (device sleep silently suspends URLRequest, isConnecting latched forever -> permanent Connecting screen until force-quit); fix PencilCanvasRepresentable updateUIView churn corrupting the open color/attribute popover during reasoning-stream re-renders (blank gray void bug)
-- 2026-08-22 12:16 PT | d52ca286 | 135.11: break checkpoint write/re-render feedback loop (re-entrancy latch + throttle + no redundant state writes) + memory-warning/willTerminate safety save
-- 2026-08-22 13:01 PT | 2d38d3e3 | 135.12: memory-leak diagnostics + OCR churn reduction - in-app phys_footprint logger (30s + memory-warning), cap recognition render at 2000px longest side (was unbounded 4x full-canvas), skip OCR when drawing content unchanged
-- 2026-08-22 13:15 PT | 46885045 | 135.13: FIX instant-close - removed the 135.11 didReceiveMemoryWarning observer that called persistDrawing+OCR render at the moment iOS demanded free memory (guaranteed Jetsam kill); willTerminate now writes blob directly without OCR; observers removed on disappear
-- 2026-08-22 13:38 PT | 6039888f | 135.14: FIX checkpoint ballooning - pruneOldCheckpoints was never called, so every snapshot (5min auto + backgrounding + restore + manual) copied FULL drawing + ALL attachment blobs (multi-MB screen recordings) into a new bundle that accumulated unbounded = disk-write storm + memory pressure. Now prunes to latest 10 after every snapshot.
-- 2026-08-22 13:53 PT | 94f4b7f5 | 135.15: FIX chats flying off screen - userScrollTimer was declared but never scheduled, so any accidental drag left isUserScrolling=true forever (streaming piled up off-screen, Jump-to-Latest arrow blocked). Drag end now schedules a 2.5s grace timer that releases scroll ownership so auto-follow resumes and the arrow always works.
-- 2026-08-22 14:08 PT | 13005c05 | 135.16: FIX Queue sheet row buttons dead - .contentShape(Rectangle()) + .onTapGesture on the row container swallowed every tap so Send/Edit/Delete buttons inside never fired. Switched to simultaneousGesture so the row actions receive taps.
-- 2026-08-22 14:36 PT | 7c661569 | 135.17: stop checkpoint from melting long-note devices (metadata-only snapshots - no attachment blob copies) + live background-task viewer in Canvas Live tab (SSE process stream + Stop button)
-- 2026-08-22 14:49 PT | 62a3a93d | 135.18: REMOVE entire checkpoint system from notes (auto loop, backgrounding snapshots, manual UI, restore, Settings picker) - was causing instant-close on opening saved notes and device melt
-- 2026-08-22 15:10 PT | 7ec0a399 | 135.19: FIX camera dead buttons - Use Photo/Retake left fullScreenCover presented (showCamera never reset + system picker never dismissed); app froze until force-quit
-- 2026-08-22 15:26 PT | ec4141aa | 135.20: FIX notes instant-close - revisions.json embedded FULL drawing blob per revision (100MB+); note-open loaded/decoded the whole file -> 3GB Jetsam kill. Now metadata-only + migrate-on-load + cap 30 revisions
-- 2026-08-22 15:28 PT | ba890482 | 135.21: FIX custom color picker (PKToolPicker attribute palette) vanishing - updateUIView forced becomeFirstResponder/setVisible on every parent re-render while the palette popover was open; now never touches responder/visibility when picker is visible
-- 2026-08-22 15:33 PT | 0759c546 | 135.22: FIX notes instant-close for the bloated legacy notes - pre-flight migration shrinks oversized revisions.json (huge embedded drawingData blobs) BEFORE decoding so note-open never loads 100-300MB into memory
-- 2026-08-28 17:09 PT | 257f5c3a | notes enrichment image visibility (vision prompt relax + content-first title + enrich-sourced smart title) + Live Activity terminal choke-point (stuck Responding fix)
-- 2026-08-29 09:10 PT | 1b0a3213 | 135.36: note toolbar undo/redo and expanded ink canvas; persistent notification conversation routing; response-ready alert toggle; drawing enrichment guardrails; notification media fallback. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a192cb83 | 135.37: force APNs re-registration when Response Ready Alerts changes so per-device suppression reaches connector. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 09:13 PT | a30ff583 | 135.38: settings full-row tap targets, full changelog, restart confirmation; ChatStore ends Live Activity on cross-client reconcile. Direct-installed to CDF iPad A16 and CDF iPhone 15 Pro for UAT.
-- 2026-08-29 12:09 PT | 061c12b1 | notes enrichment fix (135.39): gateway image_input_mode=native restores inline pixels after upstream 08-28 text-mode regression; enrichment prompt rewritten as turn contract (no tool discovery, <60s budget, forced completion line); watchdog 120->180s; thinking.delta surfaced as live thought stream for notes; tool progress visible again; connector prompt synced. Model replay: TCU v NC note 150s->11.3s, correct read
-- 2026-08-29 17:03 PT | 87df4a3e | 135.40: fix duplicate attachment bubble ([screenshot] stripped in fingerprint + history directives); Skills/Cron error state with Retry instead of bare yellow triangle; Cron rich editor (name/schedule/prompt); Live Activity stale sweep + widget timer cap
-- 2026-08-29 21:18 PT | 87df4a3e | LLM artistic-creation naming: vibe+subject titles for sketch/doodle/drawing notes (generateCreativeTitle + enrichmentReadsArtistic routing)
-- 2026-08-29 22:36 PT | a49f6a90 | 135.41: markdown composer toolbar (bold/italic/code/bullet/link); SkillDetailView loads real SKILL.md content via /v1/skills/{name} with error+Retry; SkillsStore prefers REST catalog over native gateway partial data
-- 2026-08-31 19:09 PT | 3530a8fd | 135.47: fork-on-reply fix - on definitive probe failure try session.resume (stored key, then short id) before creating a brand-new session, re-point idMap; reply to old chat keeps full history instead of forking empty thread. Bump 135.46->135.47. Direct-installed CDF iPad A16 + CDF iPhone 15 Pro.

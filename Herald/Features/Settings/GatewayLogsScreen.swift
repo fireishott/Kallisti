@@ -301,18 +301,19 @@ struct GatewayLogsScreen: View {
             let token = await sessionStore.currentAccessToken()
             let client = RelayAPIClient { relayBase }
 
-            struct Response: Decodable {
-                struct Data: Decodable {
-                    let lines: [LogLine]
-                }
-                let data: Data
+            // RelayAPIClient.get already unwraps the relay's outer
+            // `{data: ...}` envelope, so the DTO is the connector payload
+            // itself. A second `data` wrapper here decoded every 200 as
+            // "The data couldn't be read because it is missing."
+            struct Payload: Decodable {
+                let lines: [LogLine]
             }
             // Build 107: include source parameter to select which logs to fetch
-            let response: Response = try await client.get(
-                path: "gw/logs?lines=200&level=\(selectedLevel)&source=\(selectedSource)",
+            let payload: Payload = try await client.get(
+                path: "gw/logs?lines=\(viewAllLines ? 2000 : 200)&level=\(selectedLevel)&source=\(selectedSource)",
                 accessToken: token
             )
-            logLines = response.data.lines
+            logLines = payload.lines
         } catch let error as RelayAPIClient.ClientError {
             switch error {
             case .serverError(let code, _, _, let status):
@@ -439,7 +440,7 @@ struct GatewayLogsScreen: View {
                     guard !Task.isCancelled else { break }
                     // Parse log line from SSE data
                     if let data = sseEvent.data.data(using: .utf8),
-                       let line = try? JSONDecoder().decode(LogLine.self, from: data) {
+                       let line = try? RelayCoders.makeDecoder().decode(LogLine.self, from: data) {
                         await MainActor.run {
                             logLines.append(line)
                             liveIngestedCount += 1

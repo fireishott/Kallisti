@@ -106,3 +106,5 @@ build-*/
 
 # Build dirs (b85+)
 build*/
+# Editor/agent backup copies - never track.
+*.bak*

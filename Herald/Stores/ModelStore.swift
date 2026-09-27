@@ -70,6 +70,13 @@ final class ModelStore {
     /// Native gateway feature client provider (nil when running legacy mode).
     private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
 
+    /// DSH transport. When set, the catalog and switches go to DeepSeek
+    /// Harness. Without it DSH mode fell through to the relay, so the pill
+    /// showed a Hermes model and a pick rewrote Hermes config while DSH kept
+    /// answering on its own default.
+    var dshCatalogProvider: (@MainActor () async throws -> (models: [HeraldModel], active: ActiveModel?))?
+    var dshSwitchProvider: (@MainActor (_ name: String, _ provider: String) async throws -> Void)?
+
     init(
         apiClient: RelayAPIClient?,
         accessTokenProvider: @escaping () async -> String?,
@@ -115,6 +122,21 @@ final class ModelStore {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+
+        if let dshCatalogProvider {
+            let genAtEntry = switchGeneration
+            do {
+                let result = try await dshCatalogProvider()
+                models = result.models
+                if genAtEntry == switchGeneration, let active = result.active {
+                    activeModel = active
+                }
+                lastLoadedAt = .now
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
 
         // NATIVE path: model.options over the gateway socket.
         if let featureClient = nativeFeatureClientProvider() {
@@ -254,6 +276,12 @@ final class ModelStore {
     /// LEGACY path: `POST /v1/model` via relay, falling back to
     /// `POST /gw/model/switch`.
     func switchModel(to name: String, provider: String, global: Bool = false) async throws {
+        if let dshSwitchProvider {
+            switchGeneration &+= 1
+            try await dshSwitchProvider(name, provider)
+            activeModel = ActiveModel(name: name, provider: provider, contextWindow: nil)
+            return
+        }
         if let featureClient = nativeFeatureClientProvider() {
             do {
                 // Build 60: bump generation BEFORE slash.exec so any in-flight

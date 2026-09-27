@@ -5,15 +5,30 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.2-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
+  <img src="https://img.shields.io/badge/version-0.4.0-C8CCD2?style=flat-square&labelColor=0C0C10" alt="version"/>
   <img src="https://img.shields.io/badge/iOS-18+-C8CCD2?style=flat-square&labelColor=0C0C10" alt="iOS 18+"/>
   <img src="https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6.2"/>
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
+  <img src="https://img.shields.io/badge/backend-BYOB-C8CCD2?style=flat-square&labelColor=0C0C10" alt="BYOB"/>
 </p>
 
-Kallisti is a self-hosted iPhone and iPad client for a personal AI agent. It connects to an agent gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
+Kallisti is a self-hosted iPhone and iPad client for a personal AI agent. It is **backend agnostic: BYOB, Bring Your Own Backend.** Kallisti is the phone; you choose the brain.
 
-There is no hosted vendor backend. You bring your own agent gateway, connector, and TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The source is open under MIT and free to build yourself.
+There is no hosted vendor backend. You bring your own agent, your own models, and your own TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The source is open under MIT and free to build yourself.
+
+## BYOB: Bring Your Own Backend
+
+Kallisti talks to your agent through one client protocol with interchangeable transports. Pick the one that matches what you run:
+
+| Backend | Transport | What you run |
+|---|---|---|
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Direct HTTP + SSE | DSH with the `dsh-phone-api` plugin |
+| Any OpenAI-compatible agent API | Kallisti relay + connector | The relay and connector in this repo, in front of your agent's API server |
+| Agent gateway (e.g. [Hermes Agent](https://github.com/NousResearch/hermes-agent)) | Native WebSocket | The gateway, plus the optional connector for push and media |
+
+Models are whatever your backend routes to: hosted APIs, a local router, or on-device inference. The model picker, skills browser, config editor, and logs read from the backend you connected, never a hardcoded one.
+
+The transport is chosen at build time. Host-specific values never live in source: a DSH build reads its token and base URL from an untracked `Config/DSH.local.xcconfig` (see [`Config/DSH.example.xcconfig`](Config/DSH.example.xcconfig)); leave it out and the app builds for the relay and native-gateway transports.
 
 ## Status
 
@@ -23,7 +38,8 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 ## Highlights
 
-- Native WebSocket chat with durable session and outbox recovery
+- **BYOB** - DeepSeek Harness, relay + connector, or native gateway; your models, your host
+- Streaming chat with durable session and outbox recovery
 - Streaming Markdown, code blocks, tool activity, and reasoning status
 - **Embedded TUI terminal mode** - run a real agent TUI inside the app over a PTY bridge, with touch scroll, session resume, and live tool timers
 - One-time pairing-code sign-in with native gateway mode
@@ -42,7 +58,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 - Streaming Markdown chat with syntax-highlighted code blocks
 - Real-time tool activity and reasoning status
-- Session history, model selection, and profile selection
+- Session history, per-session model selection from your backend's catalog, and profile selection
 - Durable outbox with deadline-aware recovery
 - Draft text persists across reconnect and view recreation
 - One live thinking placeholder per active turn
@@ -88,7 +104,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - Manual reset connection
 - Gateway logs, restart, and software update checks
 - Realtime connector latency readout in Settings
-- Config editor with YAML validation, Save & Restart, and line-numbered editing
+- Config editor for the connected backend: DSH profile patch (applied live) or the agent config (Save & Restart), with server-side YAML validation and backups
 
 ## In development
 
@@ -102,19 +118,21 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 ```text
 Kallisti iOS
-  -> agent gateway WebSocket (chat, sessions, models, profiles)
-  -> Kallisti connector (push, sensors, authenticated media, terminal bridge)
-  -> optional public reverse proxy for remote access
+  ├─ DSH transport     -> DeepSeek Harness /phone/v1 (HTTP + SSE)
+  ├─ Relay transport   -> Kallisti relay -> connector -> your agent's API server
+  └─ Native transport  -> agent gateway WebSocket
+       + optional Kallisti connector (push, sensors, authenticated media, terminal bridge)
+       + your TLS endpoint or tailnet for remote access
 ```
 
-The gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, authenticated media delivery, and the TUI terminal PTY bridge. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
+Each transport implements the same client protocol, so chat, streaming, tool activity, sessions, models, and settings behave the same whichever backend you bring. In native mode the gateway WebSocket carries chat and session traffic. The connector adds mobile services: APNs push registration, Live Activities, sensor synchronization, authenticated media delivery, and the TUI terminal PTY bridge. For remote access, operators place a TLS reverse proxy (for example Caddy) in front of the gateway and connector.
 
 Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MODES.md), production architecture in [docs/PRODUCTION_ARCHITECTURE.md](docs/PRODUCTION_ARCHITECTURE.md), and the threat model in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Requirements
 
 - iOS 18 or newer
-- A running agent gateway (developed against [Hermes Agent](https://github.com/NousResearch/hermes-agent))
+- A backend you run: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), an OpenAI-compatible agent API behind the relay, or an agent gateway such as [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - Python 3.11 or newer for the optional connector
 - Xcode 16 or newer and an Apple Developer account only if you build from source
 
@@ -146,7 +164,13 @@ cd Kallisti
 open Herald.xcodeproj
 ```
 
-Select the `Kallisti` scheme, choose your Apple Developer team, configure your gateway URL, and build to a simulator or registered device. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+Select the `Kallisti` scheme, choose your Apple Developer team, and build to a simulator or registered device. For a DeepSeek Harness build, copy `Config/DSH.example.xcconfig` to `Config/DSH.local.xcconfig`, fill in your token and base URL, and pass it to the build:
+
+```bash
+xcodebuild -project Herald.xcodeproj -scheme Kallisti -xcconfig Config/DSH.local.xcconfig build
+```
+
+Never commit the `.local.xcconfig`; it is gitignored. Detailed build notes are in [docs/BUILDING.md](docs/BUILDING.md) and configuration options in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### Sign in on device
 
@@ -206,7 +230,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-Kallisti is built to work with [Hermes Agent](https://github.com/NousResearch/hermes-agent) and incorporates earlier work from the Herald mobile client under the repository's MIT license history.
+Kallisti works with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and [Hermes Agent](https://github.com/NousResearch/hermes-agent), and incorporates earlier work from the Herald mobile client under the repository's MIT license history.
 
 ## Development team
 

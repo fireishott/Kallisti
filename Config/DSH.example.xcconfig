@@ -1,0 +1,12 @@
+// Copy to Config/DSH.local.xcconfig (gitignored) and fill in, then build with
+//   xcodebuild ... -xcconfig Config/DSH.local.xcconfig
+// Leave both empty to build the relay / native-gateway transport instead.
+//
+// Note: `//` starts an xcconfig comment, so write URLs as https:/$()/host.
+
+// Bearer token your dsh-phone-api plugin expects.
+KALLISTI_DSH_TOKEN =
+
+// DSH phone API base, used when no server URL is set in the app.
+// Example: https:/$()/your-host.example.ts.net/dsh
+KALLISTI_DSH_BASE_URL =

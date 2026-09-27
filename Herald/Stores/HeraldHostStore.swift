@@ -21,6 +21,9 @@ final class KallistiHostStore {
     private let accessTokenProvider: @MainActor () async -> String?
     /// Native gateway feature client provider (nil when running legacy mode).
     private let nativeFeatureClientProvider: @MainActor () -> NativeGatewayFeatureClient?
+    /// DSH host-info provider. Non-nil when the app runs on the DSH transport,
+    /// so Infrastructure describes the backend actually serving requests.
+    var dshInfoProvider: (@MainActor () async -> HeraldHostStatus?)?
 
     init(
         hostService: any KallistiHostServiceProtocol,
@@ -65,6 +68,38 @@ final class KallistiHostStore {
 
         isLoading = true
         defer { isLoading = false }
+
+        // DSH path: the app is talking to DeepSeek Harness, so the host row must
+        // describe DSH. Without this branch the store falls through to the relay
+        // path below and reports the Hermes gateway's version and model while
+        // DSH is actually serving the request.
+        if let dshInfoProvider {
+            if let status = await dshInfoProvider() {
+                consecutiveFailures = 0
+                currentHost = status
+                lastErrorMessage = nil
+                onHostChanged?()
+                return
+            }
+            consecutiveFailures += 1
+            if let ch = currentHost {
+                currentHost = HeraldHostStatus(
+                    id: ch.id,
+                    displayName: ch.displayName,
+                    hostname: ch.hostname,
+                    platform: ch.platform,
+                    connectorVersion: ch.connectorVersion,
+                    heraldCommand: ch.heraldCommand,
+                    heraldVersion: ch.heraldVersion,
+                    heraldModel: ch.heraldModel,
+                    lastSeenAt: ch.lastSeenAt,
+                    lastConnectedAt: ch.lastConnectedAt,
+                    isOnline: false
+                )
+                onHostChanged?()
+            }
+            return
+        }
 
         // NATIVE path: the connector REST facade (/hosts/current) rejects
         // native bearer tokens. Build the host row from gateway config.get.

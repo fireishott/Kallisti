@@ -1,7 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// Build 128.41+: view and edit the Hermes config.yaml from Settings.
+/// Build 128.41+: view and edit the host config from Settings.
+/// DSH mode edits DSH's profile patch (~/.dsh/profiles/web/cordis.patch.yml);
+/// relay/native modes edit the Hermes config.yaml.
 /// Fetches via GET /v1/config (connector facade), validates + saves via
 /// PUT /v1/config (connector backs up the live file before writing).
 ///
@@ -14,7 +16,7 @@ struct ConfigEditorScreen: View {
     @Environment(AppContainer.self) private var container
 
     @State private var content = ""
-    @State private var path = "~/.hermes/config.yaml"
+    @State private var path = ""
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var isValidationRunning = false
@@ -35,7 +37,7 @@ struct ConfigEditorScreen: View {
             Design.Colors.background.ignoresSafeArea()
 
             if isLoading {
-                ProgressView("Loading config.yaml\u{2026}")
+                ProgressView(container.dshClient != nil ? "Loading DSH config\u{2026}" : "Loading config.yaml\u{2026}")
                     .foregroundStyle(Design.Colors.secondaryForeground)
             } else if let error = errorMessage, content.isEmpty {
                 VStack(spacing: Design.Spacing.md) {
@@ -148,8 +150,12 @@ struct ConfigEditorScreen: View {
             Button("Save") {
                 Task { await save() }
             }
-            Button("Save & Restart Gateway") {
-                Task { await saveAndRestart() }
+            // DSH reloads its profile patch live, so there is no restart
+            // step. The Hermes restart would bounce a gateway DSH does not use.
+            if container.dshClient == nil {
+                Button("Save & Restart Gateway") {
+                    Task { await saveAndRestart() }
+                }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -297,6 +303,19 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isLoading = false }
 
+        // DSH mode: edit DSH's own config, never Hermes'. The relay/native
+        // paths below read ~/.hermes/config.yaml, which DSH does not use.
+        if let dsh = container.dshClient {
+            do {
+                let doc = try await dsh.configDocument()
+                content = doc.content
+                path = doc.path
+            } catch {
+                errorMessage = "Couldn't fetch the DSH config: \(error.localizedDescription)"
+            }
+            return
+        }
+
         // Relay mode has no nativeGatewayClient, but the host is still
         // reachable through the relay. Fall back to the relay-backed config
         // routes instead of failing the screen outright.
@@ -331,7 +350,9 @@ struct ConfigEditorScreen: View {
         defer { isValidationRunning = false }
 
         do {
-            if let nativeClient = container.nativeGatewayClient {
+            if let dsh = container.dshClient {
+                try await dsh.validateConfigDocument(content)
+            } else if let nativeClient = container.nativeGatewayClient {
                 _ = try await nativeClient.featureClient.validateConfigDocument(content)
             } else if let relayConfig = container.relayConfigService {
                 _ = try await relayConfig.validateConfigDocument(content)
@@ -354,13 +375,14 @@ struct ConfigEditorScreen: View {
         validationError = nil
         defer { isSaving = false }
 
-        guard container.nativeGatewayClient != nil || container.relayConfigService != nil else {
+        guard container.dshClient != nil || container.nativeGatewayClient != nil || container.relayConfigService != nil else {
             errorMessage = "Native gateway unavailable. Check that Kallisti is connected."
             return
         }
         do {
             let backup = try await saveConfigContent()
-            savedMessage = backup.map { "Saved. Backup: \($0)" } ?? "Saved."
+            let suffix = container.dshClient != nil ? " DSH reloads it live." : ""
+            savedMessage = (backup.map { "Saved. Backup: \($0)." } ?? "Saved.") + suffix
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -369,6 +391,9 @@ struct ConfigEditorScreen: View {
     /// Persists config.yaml through whichever transport is active.
     /// Returns the host-side backup path when the host reports one.
     private func saveConfigContent() async throws -> String? {
+        if let dsh = container.dshClient {
+            return try await dsh.saveConfigDocument(content).backup
+        }
         if let nativeClient = container.nativeGatewayClient {
             return try await nativeClient.featureClient.saveConfigDocument(content)
         }

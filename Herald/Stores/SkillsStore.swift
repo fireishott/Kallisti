@@ -45,6 +45,11 @@ final class SkillsStore {
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
     private let nativeFeatureClientProvider: () -> NativeGatewayFeatureClient?
+    /// DSH skill transport. Non-nil when the app runs on the DSH path, which has
+    /// no relay and no native gateway — without this the browser falls through
+    /// to "Not connected to a relay." and the Skills screen renders empty.
+    var dshSkillsProvider: (() async throws -> [HeraldSkill])?
+    var dshSkillDetailProvider: ((String) async throws -> SkillDetail)?
 
     init(apiClient: RelayAPIClient?, accessTokenProvider: @escaping () async -> String?, nativeFeatureClientProvider: @escaping () -> NativeGatewayFeatureClient? = { nil }) {
         self.apiClient = apiClient
@@ -73,13 +78,11 @@ final class SkillsStore {
         defer { isLoading = false }
 
         do {
-            // Build 135.41: prefer the REST /v1/skills catalog (real name +
-            // description + path from the connector) over the native gateway
-            // path. The gateway's skills.manage(action:"list") returns only
-            // {category: [names]} — no descriptions, no paths — which made the
-            // iOS Skills browser show category names as descriptions and
-            // empty detail shells.
-            if let apiClient, let token = await accessTokenProvider() {
+            // DSH path first: the relay and native gateway are both absent, so
+            // without this the screen reports "Not connected to a relay."
+            if let dshSkillsProvider {
+                skills = try await dshSkillsProvider()
+            } else if let apiClient, let token = await accessTokenProvider() {
                 let response: SkillCatalogResponse = try await apiClient.get(path: "skills", accessToken: token)
                 skills = response.skills
             } else if let nativeFeatureClient = nativeFeatureClientProvider() {
@@ -105,6 +108,9 @@ final class SkillsStore {
     /// /v1/skills/{name} endpoint (falls back to native gateway if REST is
     /// unavailable). Returns the parsed detail or throws.
     func loadDetail(name: String) async throws -> SkillDetail {
+        if let dshSkillDetailProvider {
+            return try await dshSkillDetailProvider(name)
+        }
         if let apiClient, let token = await accessTokenProvider() {
             do {
                 let envelope: SkillDetailEnvelope = try await apiClient.get(path: "skills/\(name)", accessToken: token)

@@ -1,6 +1,32 @@
 # Connection Modes
 
-Hermes iOS supports three first-class connection modes. Each preserves the same underlying architecture (iOS → relay HTTP/SSE → connector WebSocket → local Hermes), but differs in reachability, push delivery, and what the UX promises.
+Kallisti is backend agnostic (**BYOB, Bring Your Own Backend**). Three transports implement the same client protocol; pick the one that matches the agent you run.
+
+| Transport | Talks to | Chosen by |
+| --- | --- | --- |
+| DeepSeek Harness (DSH) | DSH `/phone/v1` over HTTP + SSE | A build with `Config/DSH.local.xcconfig` values |
+| Relay | Kallisti relay -> connector -> your agent's API server | Default when no DSH values are set |
+| Native gateway | Agent gateway WebSocket | `useNativeGateway` |
+
+## DeepSeek Harness (DSH)
+
+The app talks to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) directly. No relay or connector sits in the request path.
+
+**Server side:** install the `dsh-phone-api` plugin from [`integrations/dsh-phone-api`](../integrations/dsh-phone-api) into your DSH web profile and set `KALLISTI_DSH_TOKEN` in the environment DSH runs under. Mount the DSH web server at `/dsh` behind your TLS endpoint or tailnet (for example `tailscale serve --set-path /dsh http://127.0.0.1:3080`).
+
+**App side:** copy `Config/DSH.example.xcconfig` to `Config/DSH.local.xcconfig`, set the same token and your base URL, and build with `-xcconfig Config/DSH.local.xcconfig`. The app derives the DSH URL from the server URL in Settings (`<host>/v1` -> `<host>/dsh`) and falls back to the build-time base URL.
+
+**Routes:** `health`, `models`, `model` (per-session selection), `sessions`, `session`, `prompt`, `follow` (SSE), `cancel`, `page` (history), `skills`, `skill`, `config`, `config/validate`.
+
+**Turn lifecycle:** a DSH turn is several model steps. The client finishes a reply on the turn's `turn/end` event, not on the first `assistant/message`, which is only the tool-calling step when tools run.
+
+**Config Editor:** edits the DSH web profile patch. DSH reloads it live on save; saves are validated and backed up server-side.
+
+**Push:** DSH mode has no APNs path yet. Replies arrive while the app is foregrounded.
+
+## Relay modes
+
+The relay transport runs iOS -> relay HTTP/SSE -> connector WebSocket -> your agent. It has three deployment shapes that differ in reachability, push delivery, and what the UX promises.
 
 | Mode | Default? | Reachability | Official push | Honesty bar |
 | --- | --- | --- | --- | --- |
@@ -10,7 +36,7 @@ Hermes iOS supports three first-class connection modes. Each preserves the same 
 
 ## Managed Relay
 
-Hermes-operated relay reachable from any network. Default path for users who don't want to self-host. When `APP_HOSTED_RELAY_ENABLED=true` + `APP_HOSTED_RELAY_URL` are configured in the build, the managed option appears in onboarding and settings.
+Operator-run relay reachable from any network. Default path for users who don't want to self-host. When `APP_HOSTED_RELAY_ENABLED=true` + `APP_HOSTED_RELAY_URL` are configured in the build, the managed option appears in onboarding and settings.
 
 **Push:** When `APP_PUSH_TRANSPORT=relay` and `APP_PUSH_BROKER_URL` are set, the app attests itself via App Attest against the broker before the broker issues an opaque `relayHandle` + `sendGrant`. Only those opaque handles leave the broker; raw APNs tokens never reach the relay.
 

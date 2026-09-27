@@ -70,6 +70,50 @@ final class AppContainer {
         }
         return "production"
     }
+
+    // MARK: - DSH transport
+
+    /// Build-time DSH settings, injected from a local, untracked xcconfig
+    /// (`Config/DSH.local.xcconfig`, see `Config/DSH.example.xcconfig`) into
+    /// Info.plist. Nothing host- or user-specific lives in source; an empty
+    /// value means "not configured".
+    private static func buildSetting(_ key: String) -> String? {
+        guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String else { return nil }
+        let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An unset build setting can arrive as the literal `$(NAME)`.
+        return t.isEmpty || t.hasPrefix("$(") ? nil : t
+    }
+
+    /// Bearer token for the `dsh-phone-api` surface.
+    static var dshToken: String? { buildSetting("KallistiDSHToken") }
+
+    /// Whether the app talks to DeepSeek Harness directly instead of the
+    /// relay. On only when a DSH token was provided at build time; the
+    /// `useDSH` default can still turn it off without a rebuild.
+    static var dshEnabled: Bool {
+        guard dshToken != nil else { return false }
+        if UserDefaults.standard.object(forKey: "useDSH") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "useDSH")
+    }
+
+    /// Path the DSH phone API is mounted at on the backend host.
+    static let dshMountPath = "/dsh"
+
+    /// Derives the DSH base URL from the configured server URL.
+    ///
+    /// The relay lives at `<host>/v1`; the DSH phone API is mounted at
+    /// `<host>/dsh`. Stripping a trailing `/v1` (and any trailing slash) keeps
+    /// a single user-facing "where's my server" field. With no server URL
+    /// configured, the build-time `KallistiDSHBaseURL` is used.
+    static func resolveDSHBaseURL(from relayBaseURLString: String?) -> String {
+        guard var s = relayBaseURLString?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !s.isEmpty else {
+            return buildSetting("KallistiDSHBaseURL") ?? ""
+        }
+        while s.hasSuffix("/") { s.removeLast() }
+        if s.hasSuffix("/v1") { s.removeLast(3) }
+        return s + dshMountPath
+    }
     private static let sharedDefaultContainer = AppContainer.makeDefault()
 
     let router = TabRouter()
@@ -139,6 +183,9 @@ final class AppContainer {
     // Build 70: aux model service hoisted from Settings so the Infrastructure
     // section loads at connection time, not when Settings first appears.
     var auxService: AuxModelService?
+    /// Non-nil when the app runs on the DSH transport. Settings screens that
+    /// have a DSH equivalent (Config Editor) use it instead of Hermes paths.
+    var dshClient: DSHClient?
 
     // Notification routing: stores a pending route while initialization is incomplete
     struct PendingNotificationRoute: Sendable {
@@ -522,8 +569,29 @@ final class AppContainer {
         )
 
         let heraldClient: any HeraldClientProtocol
+        // Set by the DSH branch so the Infrastructure rows describe the backend
+        // actually serving requests instead of falling through to the relay.
+        var dshClientForHostStatus: DSHClient?
         if usesMockPairingService {
             heraldClient = MockHeraldClient()
+        } else if Self.dshEnabled {
+            // DSH is the default transport: the app talks to the DeepSeek
+            // Harness phone API directly, with no relay or connector in the
+            // path. Base URL is derived from the same relay setting the other
+            // paths read, so onboarding and Settings keep working unchanged —
+            // the DSH surface is the sibling `/dsh` mount on that same host.
+            let dshClient = DSHClient(
+                baseURLProvider: { @MainActor in
+                    Self.resolveDSHBaseURL(
+                        from: activePairingStore?.pairedRelayConfiguration?.baseURLString
+                        ?? settingsStore.settings.relayConfiguration.activeBaseURLString
+                    )
+                },
+                token: Self.dshToken ?? ""
+            )
+            Task { @MainActor in await dshClient.connect() }
+            dshClientForHostStatus = dshClient
+            heraldClient = dshClient
         } else if UserDefaults.standard.bool(forKey: "useNativeGateway") {
             // Not hardcoded: derived from the same relay-URL setting the
             // legacy connector path already uses (settingsStore.settings
@@ -594,6 +662,12 @@ final class AppContainer {
             )
             liveClient.reasoningEffortProvider = { settingsStore.settings.reasoningEffort }
             heraldClient = liveClient
+        }
+
+        // DSH mode: point Infrastructure at DSH so Settings cannot name a
+        // backend that is not serving the request.
+        if let dsh = dshClientForHostStatus {
+            hostStore.dshInfoProvider = { @MainActor in await dsh.hostStatus() }
         }
 
         let liveLocationService = LiveLocationService()
@@ -836,9 +910,41 @@ final class AppContainer {
             secureStore: secureStore
         )
 
+        // DSH mode wiring. The Skills browser reads the harness catalog, and the
+        // auxiliary-model panel is left unset: this deployment has no per-task
+        // aux models, so showing the relay's would advertise Hermes model routes
+        // that DSH never calls.
+        if let dsh = dshClientForHostStatus {
+            container.dshClient = dsh
+            container.modelStore.dshCatalogProvider = {
+                let cat = try await dsh.modelCatalog()
+                let models = cat.models.map {
+                    ModelStore.HeraldModel(name: $0.model, provider: $0.provider, providerName: $0.providerName,
+                                           contextWindow: nil, isProviderDefault: nil)
+                }
+                let active = cat.activeModel.map {
+                    ModelStore.ActiveModel(name: $0, provider: cat.activeProvider, contextWindow: nil)
+                }
+                return (models, active)
+            }
+            container.modelStore.dshSwitchProvider = { name, provider in
+                try await dsh.selectModel(provider: provider, model: name)
+            }
+            container.skillsStore.dshSkillsProvider = {
+                try await dsh.listSkills().map {
+                    SkillsStore.HeraldSkill(name: $0.name, description: $0.description, path: $0.path)
+                }
+            }
+            container.skillsStore.dshSkillDetailProvider = { name in
+                let d = try await dsh.skillDetail(name: name)
+                return SkillsStore.SkillDetail(name: d.name, path: d.path, description: d.description, content: d.content)
+            }
+        }
+
         // Build 70: hoist the aux model service so Infrastructure loads at
         // connection time (Settings previously created it lazily on appear).
-        if let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
+        if dshClientForHostStatus == nil,
+           let relayBase = settingsStore.settings.relayConfiguration.activeBaseURLString {
             container.auxService = AuxModelService(
                 apiClient: RelayAPIClient { relayBase },
                 accessTokenProvider: { await sessionStore.currentAccessToken() },

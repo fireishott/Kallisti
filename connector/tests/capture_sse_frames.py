@@ -45,10 +45,10 @@ from kallisti_connector.stream_contract import (  # noqa: E402
 )
 
 
+# Local evidence directory; set KALLISTI_EVIDENCE_ROOT to point at yours.
 EVIDENCE_ROOT = Path(
-    "/Users/you/Hermes-iOS-Builds/evidence/"
-    "20260802T020221Z-build108-phase3/contracts"
-)
+    os.environ.get("KALLISTI_EVIDENCE_ROOT", "evidence/contracts")
+).expanduser()
 
 # Sanitized fixture UUIDs — DO NOT use real user / device / host ids.
 JOB_ID = "11111111-2222-3333-4444-555555555555"

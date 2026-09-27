@@ -5,7 +5,14 @@
 # exports, re-signs, builds UAT IPA. NEVER uploads to TestFlight/ASC (main owns that).
 set -euo pipefail
 
-PW=***REMOVED***
+# Passwords come from generic-password items in the login keychain, never from
+# this file. Seed once per Mac (values are never echoed):
+#   security add-generic-password -U -a "$USER" -s kallisti-nightly-login -w
+#   security add-generic-password -U -a "$USER" -s kallisti-nightly-signing -w
+PW=$(security find-generic-password -a "$USER" -s kallisti-nightly-login -w 2>/dev/null) \
+  || { echo "ABORT: keychain item kallisti-nightly-login missing (see header)"; exit 3; }
+SIGN_PW=$(security find-generic-password -a "$USER" -s kallisti-nightly-signing -w 2>/dev/null) \
+  || { echo "ABORT: keychain item kallisti-nightly-signing missing (see header)"; exit 3; }
 LOG=~/Herald/releases/daily-log.md
 cd ~/Herald
 
@@ -33,17 +40,12 @@ fi
 if [ -f "$LOG" ]; then
   ENTRIES=$(grep -c '^- ' "$LOG" || true)
   if [ "$ENTRIES" -gt 0 ]; then
-    echo "--- reconciling $ENTRIES daily fix entries ---"
-    # Append daily fixes to CHANGELOG under a NIGHTLY section
-    cat >> CHANGELOG.md <<'EOF'
-
-## [Nightly] - $(date '+%Y-%m-%d')
-
-### Fixed (daily reconciliation)
-
-EOF
-    grep '^- ' "$LOG" >> CHANGELOG.md
-    echo "--- daily log appended to CHANGELOG ---"
+    # The daily log is an operator record (timestamps, device names, install
+    # notes) and stays LOCAL. It is not appended to the public CHANGELOG, which
+    # is curated per release. The previous heredoc was quoted, so it wrote a
+    # literal "$(date ...)" heading, and it appended after the oldest release,
+    # duplicating entries and leaking device names on every run.
+    echo "--- $ENTRIES daily log entries kept local in $LOG (curate into CHANGELOG at release) ---"
   fi
 fi
 
@@ -95,8 +97,8 @@ echo "--- archive (unsigned) ---"
 rm -rf /tmp/Kallisti_nightly.xcarchive /tmp/nightly_export /tmp/nightly_payload
 security unlock-keychain -p "$PW" ~/Library/Keychains/login.keychain-db
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" ~/Library/Keychains/login.keychain-db
-security unlock-keychain -p ***REMOVED*** ~/Library/Keychains/kallisti_signing.keychain-db
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ***REMOVED*** ~/Library/Keychains/kallisti_signing.keychain-db
+security unlock-keychain -p "$SIGN_PW" ~/Library/Keychains/kallisti_signing.keychain-db
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$SIGN_PW" ~/Library/Keychains/kallisti_signing.keychain-db
 
 xcodebuild -project Herald.xcodeproj -scheme Kallisti \
   -destination "generic/platform=iOS" -configuration Release \
