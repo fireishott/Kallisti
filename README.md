@@ -11,9 +11,9 @@
   <img src="https://img.shields.io/badge/license-MIT-C8CCD2?style=flat-square&labelColor=0C0C10" alt="MIT"/>
 </p>
 
-Kallisti is a self-hosted iPhone and iPad client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It connects to a Hermes gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
+Kallisti is a self-hosted iPhone and iPad client for a personal AI agent. It connects to an agent gateway over a native WebSocket for chat, sessions, models, and profiles, and uses the optional Kallisti connector for mobile services: push notifications, Live Activities, authenticated media, and optional sensor synchronization.
 
-There is no hosted vendor backend. You bring your own Hermes gateway, connector, and TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The source is open under MIT and free to build yourself.
+There is no hosted vendor backend. You bring your own agent gateway, connector, and TLS endpoint. Conversations, credentials, and media stay on infrastructure you control. The source is open under MIT and free to build yourself.
 
 ## Status
 
@@ -25,7 +25,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 - Native WebSocket chat with durable session and outbox recovery
 - Streaming Markdown, code blocks, tool activity, and reasoning status
-- **Embedded TUI terminal mode** - run a real Hermes TUI inside the app over a PTY bridge, with touch scroll, session resume, and live tool timers
+- **Embedded TUI terminal mode** - run a real agent TUI inside the app over a PTY bridge, with touch scroll, session resume, and live tool timers
 - One-time pairing-code sign-in with native gateway mode
 - Authenticated inline rendering for agent-generated images
 - Push notifications with per-device routing and an in-app inbox
@@ -59,7 +59,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 ### Notes (iPad)
 
 - Handwriting with Apple Pencil on ruled paper
-- OCR and AI enrichment through Hermes when you sync
+- OCR and AI enrichment through the agent when you sync
 - Each note syncs as its own session; every edit appends to that session
 - Manual sync button with a live progress bar, or timed sync from 2 minutes to 24 hours
 - Live reasoning bubble during sync so you know what the agent is actually doing
@@ -69,7 +69,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - Agent responses with local `MEDIA:` paths render inline as authenticated images
 - Native image uploads stage through the gateway before prompt submission
 - Historical images stay accessible after gateway restarts
-- Media serving is restricted to configured Hermes media roots
+- Media serving is restricted to configured agent media roots
 - Aspect-fit thumbnails for consistent chat layout
 
 ### Mobile
@@ -102,7 +102,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 ```text
 Kallisti iOS
-  -> Hermes gateway WebSocket (chat, sessions, models, profiles)
+  -> agent gateway WebSocket (chat, sessions, models, profiles)
   -> Kallisti connector (push, sensors, authenticated media, terminal bridge)
   -> optional public reverse proxy for remote access
 ```
@@ -114,7 +114,7 @@ Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MO
 ## Requirements
 
 - iOS 18 or newer
-- A running [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateway
+- A running agent gateway (developed against [Hermes Agent](https://github.com/NousResearch/hermes-agent))
 - Python 3.11 or newer for the optional connector
 - Xcode 16 or newer and an Apple Developer account only if you build from source
 
@@ -122,9 +122,9 @@ Connection modes are documented in [docs/CONNECTION_MODES.md](docs/CONNECTION_MO
 
 ### TestFlight beta
 
-Kallisti is in private beta. Once you have a TestFlight invite, install Kallisti, pair it with your Hermes gateway, and you are set. No Apple Developer account or Xcode setup is needed for the beta path.
+Kallisti is in private beta. Once you have a TestFlight invite, install Kallisti, pair it with your agent gateway, and you are set. No Apple Developer account or Xcode setup is needed for the beta path.
 
-If you want push notifications, HealthKit synchronization, Live Activities, authenticated media delivery, or the TUI terminal, run the optional connector on your Hermes host:
+If you want push notifications, HealthKit synchronization, Live Activities, authenticated media delivery, or the TUI terminal, run the optional connector on your agent host:
 
 ```bash
 cd connector
@@ -151,7 +151,7 @@ Select the `Kallisti` scheme, choose your Apple Developer team, configure your g
 ### Sign in on device
 
 1. Launch Kallisti and choose the native gateway mode.
-2. Generate a one-time pairing code from your Hermes host.
+2. Generate a one-time pairing code from your agent host.
 3. Enter the code in the app. The code is never persisted on the device.
 
 ## Push notifications
@@ -165,7 +165,7 @@ See [docs/PUSH_RELAY.md](docs/PUSH_RELAY.md) for the relay and push broker archi
 Agent responses can include local `MEDIA:` paths. In native mode, Kallisti converts supported paths to the authenticated `/v1/native/media` route. The connector:
 
 - validates gateway cookie sessions, native bearer tokens, or persisted paired-device tokens;
-- serves only supported image files under configured Hermes media roots;
+- serves only supported image files under configured agent media roots;
 - rejects traversal, unsupported types, missing files, and files over 10 MB;
 - returns private cache headers and never exposes arbitrary filesystem paths.
 
