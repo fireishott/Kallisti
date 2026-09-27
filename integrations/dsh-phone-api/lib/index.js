@@ -17,7 +17,7 @@ try {
 } catch (e) { yamlLib = null }
 
 const name = 'dsh-phone-api'
-const inject = ['webServer', 'sessionController', 'sessionSkillCatalog', 'fs']
+const inject = ['webServer', 'sessionController', 'sessionSkillCatalog', 'fs', 'attachments']
 
 // Shared secret the app sends as a bearer token. Set it in the environment DSH
 // runs under; with no token every request is rejected.
@@ -229,14 +229,31 @@ function apply(ctx) {
       const sid = body.sessionId
       if (!sid) return fail(res, 400, 'sessionId required')
       const text = String(body.text || '')
-      if (!text.trim()) return fail(res, 400, 'text required')
+      const images = Array.isArray(body.images) ? body.images : []
+      if (!text.trim() && images.length === 0) return fail(res, 400, 'text or image required')
+      if (images.length > 20) return fail(res, 400, 'at most 20 images are allowed')
+      const content = text.trim() ? [{ type: 'text', text }] : []
+      for (const image of images) {
+        if (!image || typeof image.data !== 'string' || typeof image.mimeType !== 'string') {
+          return fail(res, 400, 'each image requires base64 data and mimeType')
+        }
+        if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mimeType)) {
+          return fail(res, 400, 'unsupported image mimeType')
+        }
+        let raw
+        try { raw = Buffer.from(image.data, 'base64') } catch (_) { return fail(res, 400, 'invalid image base64') }
+        if (raw.length === 0 || raw.toString('base64') !== image.data || raw.length > 20 * 1024 * 1024) {
+          return fail(res, 400, 'invalid or oversized image')
+        }
+        content.push({ type: 'image', data: image.data, mediaType: image.mimeType })
+      }
       const reqId = 'phone-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
       await sc.prompt(
         {
           requestId: reqId,
           sessionId: sid,
           mode: body.mode === 'steer' ? 'steer' : 'queue',
-          content: [{ type: 'text', text }],
+          content,
         },
         new AbortController().signal,
       )

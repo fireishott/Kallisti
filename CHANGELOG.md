@@ -42,6 +42,22 @@ a transport chosen at build time, and nothing host-specific ships in the source.
 
 ### Fixed
 
+- **Images are now actually sent on the DSH transport.** The DSH client accepted
+  attachments in its signature and then dropped them, so an image turn ran the
+  model on the caption alone. Images are admitted as real prompt content parts
+  through `dsh-phone-api`, which validates and persists them with DSH's own
+  attachment store (`saveImages`) before the turn starts. Non-image attachments
+  raise a clear error instead of vanishing.
+- **An attached image no longer dead-ends on a text-only model (DSH).** DSH
+  refuses an image prompt when the session's current model does not declare image
+  input (`MODEL_DOES_NOT_SUPPORT_IMAGES`), and the only recovery was knowing
+  which configured model can see. The new `dsh-auto-vision` plugin wraps
+  `sessionController.prompt`, and on that refusal - or a rate-limited vision
+  route - selects the next vision-capable model from the live catalog and admits
+  the prompt again. Retries only cover admission errors, so no turn is ever run
+  twice. Verified by `scripts/verify_dsh_vision.py`, which starts a session on a
+  text-only model, sends an image, and asserts the reply both completed and read
+  the image.
 - **Replies cut off at "N tools used" (DSH).** A turn is several model steps and
   each tool-calling step writes its own assistant message. The client finished on
   the first one, dropping the real answer and releasing the next queued prompt

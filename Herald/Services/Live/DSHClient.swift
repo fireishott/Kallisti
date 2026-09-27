@@ -665,7 +665,7 @@ final class DSHClient: HeraldClientProtocol {
             let stream = try await openFollow(sessionId: sessionId)
 
             // 3. Admit the prompt.
-            try await prompt(sessionId: sessionId, text: message, mode: "queue")
+            try await prompt(sessionId: sessionId, text: message, mode: "queue", attachments: attachments)
 
             // 4. Consume frames until our turn commits.
             try await consume(
@@ -685,14 +685,25 @@ final class DSHClient: HeraldClientProtocol {
         currentJobID = nil
     }
 
-    private func prompt(sessionId: String, text: String, mode: String) async throws {
+    private func prompt(sessionId: String, text: String, mode: String, attachments: [PendingAttachment] = []) async throws {
         guard var req = request("prompt", method: "POST") else {
             throw ServerError(message: "Invalid DSH base URL")
+        }
+        let images: [[String: Any]] = attachments.compactMap { attachment in
+            guard attachment.kind == .image else { return nil }
+            return [
+                "data": attachment.base64Data,
+                "mimeType": attachment.mimeType,
+            ]
+        }
+        guard images.count == attachments.count else {
+            throw ServerError(message: "The DSH transport currently supports image attachments only")
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "sessionId": sessionId,
             "text": text,
             "mode": mode,
+            "images": images,
         ])
         _ = try await send(req)
     }
