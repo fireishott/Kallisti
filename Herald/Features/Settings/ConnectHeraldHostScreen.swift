@@ -259,13 +259,13 @@ struct ConnectKallistiHostScreen: View {
     private var statusSubtitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes agent is ready"
+            return "Your Agent is ready"
         case .offline:
-            return "Waiting for the Hermes connector to come online"
+            return "Waiting for the Agent connector to come online"
         case .unreachable:
             return hostStore.lastErrorMessage ?? "We couldn't refresh host status from the relay."
         case .notConnected:
-            return "Set up the connector on your Hermes host"
+            return "Set up the connector on your Agent host"
         }
     }
 }

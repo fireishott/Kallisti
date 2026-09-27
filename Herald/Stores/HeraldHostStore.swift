@@ -84,7 +84,7 @@ final class KallistiHostStore {
                 currentHost = HeraldHostStatus(
                     id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
                     displayName: info.model.map { "\(info.provider ?? "hermes")/\($0)" }
-                        ?? (info.provider ?? "Hermes Host"),
+                        ?? (info.provider ?? "Agent Host"),
                     hostname: nil,
                     platform: "native",
                     connectorVersion: connectorVersion,

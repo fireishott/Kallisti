@@ -1682,7 +1682,7 @@ struct ChatScreen: View {
             ProgressView()
                 .scaleEffect(0.6)
                 .tint(Design.Colors.warning)
-            Text("Hermes is restarting — your message will send when it's back.")
+            Text("Agent is restarting — your message will send when it's back.")
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.warning)
             Spacer()
@@ -1745,9 +1745,9 @@ struct ChatScreen: View {
     private var connectionBannerTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Hermes host online"
+            return "Agent host online"
         case .offline:
-            return "Hermes host offline"
+            return "Agent host offline"
         case .unreachable:
             switch settingsStore.settings.relayConfiguration.connectionMode {
             case .tailscale:
@@ -1756,14 +1756,14 @@ struct ChatScreen: View {
                 return "Relay URL unreachable"
             }
         case .notConnected:
-            return "No Hermes host connected"
+            return "No Agent host connected"
         }
     }
 
     private var connectionBannerMessage: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes host is connected."
+            return "Your Agent host is connected."
         case .offline:
             return settingsStore.settings.relayConfiguration.connectionMode.hostOfflineMessage
         case .unreachable:

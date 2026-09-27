@@ -208,7 +208,7 @@ struct HeraldSelectorSheet: View {
                 emptyState(
                     icon: "cpu",
                     message: modelStore.errorMessage ?? "No models available",
-                    hint: "Model list comes from the Hermes host — make sure it's online."
+                    hint: "Model list comes from the Agent host — make sure it's online."
                 )
             } else {
                 List {
@@ -297,7 +297,7 @@ struct HeraldSelectorSheet: View {
                 emptyState(
                     icon: "brain.head.profile",
                     message: profileStore.errorMessage ?? "No profiles available",
-                    hint: "Profiles are configured on the Hermes host. Create one with 'hermes profile create <name>'."
+                    hint: "Profiles are configured on the Agent host. Create one with 'hermes profile create <name>'."
                 )
             } else {
                 List {

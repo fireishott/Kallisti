@@ -128,7 +128,7 @@ enum TerminalSessionMode: Equatable {
 
 final class NativeTerminalModel: ObservableObject {
     @Published var isConnected = false
-    @Published var statusText = "connecting to hermes..."
+    @Published var statusText = "connecting to agent..."
     /// Build 128.91: touch mode toggle. Default false = touch select
     /// (allowMouseReporting true: taps forward to the app as mouse events
     /// when the app requests them). When true = touch scroll, the terminal

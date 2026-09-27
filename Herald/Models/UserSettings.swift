@@ -118,9 +118,9 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var shortDescription: String {
         switch self {
         case .tailscale:
-            return "Private tailnet reachability for a local Hermes relay."
+            return "Private tailnet reachability for a local Agent relay."
         case .selfHostedRelay:
-            return "Bring your own public Hermes relay URL."
+            return "Bring your own public Agent relay URL."
         }
     }
 
@@ -153,9 +153,9 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
     var notConnectedMessage: String {
         switch self {
         case .tailscale:
-            return "Pair a Hermes host on your tailnet before sending messages."
+            return "Pair an Agent host on your tailnet before sending messages."
         case .selfHostedRelay:
-            return "Pair a Hermes host with this self-hosted relay before sending messages."
+            return "Pair an Agent host with this self-hosted relay before sending messages."
         }
     }
 
@@ -191,7 +191,7 @@ enum RelayConnectionMode: String, Codable, CaseIterable, Hashable, Sendable {
         case .tailscale:
             return "Use your tailnet URL — e.g. https://my-mac.tail-scale.ts.net/v1 — or run `tailscale serve` to proxy a local relay."
         case .selfHostedRelay:
-            return "Point this at your public Hermes relay — e.g. https://relay.example.com/v1."
+            return "Point this at your public Agent relay — e.g. https://relay.example.com/v1."
         }
     }
 

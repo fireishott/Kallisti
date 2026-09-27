@@ -1437,7 +1437,7 @@ def fail_message_job(
         db,
         job=job,
         role="system",
-        text=f"Hermes could not process this message: {error_text}",
+        text=f"Agent could not process this message: {error_text}",
         delivery_status="delivered",
     )
     user_message.delivery_status = "failed"

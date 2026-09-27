@@ -85,7 +85,7 @@ enum TalkTurnError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .hermesError(let msg):
-            "Hermes error: \(msg)"
+            "Agent error: \(msg)"
         }
     }
 }

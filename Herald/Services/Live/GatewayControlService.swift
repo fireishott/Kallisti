@@ -414,7 +414,7 @@ final class GatewayControlService {
             return health.hermesReady == true
         } catch let RelayAPIClient.ClientError.serverError(_, _, _, status) where status == 404 {
             throw GatewayControlError.verificationUnavailable(
-                message: "The restart was accepted, but this connector cannot report restart status. Check the Hermes gateway logs on the host."
+                message: "The restart was accepted, but this connector cannot report restart status. Check the Agent gateway logs on the host."
             )
         } catch {
             // Gateway is mid-restart — health probes fail until it comes back.

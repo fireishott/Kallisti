@@ -1048,12 +1048,12 @@ final class ChatStore {
             if !conversationHasRestartNotice() {
                 conversation?.messages.append(Message(
                     sender: .system,
-                    content: "Hermes is restarting — your message will be sent when it is back online.",
+                    content: "Agent is restarting — your message will be sent when it is back online.",
                     status: .delivered
                 ))
                 cacheModifiedConversation()
             }
-            appendLog(level: .warn, "Message queued — Hermes gateway restart in progress")
+            appendLog(level: .warn, "Message queued — Agent gateway restart in progress")
         }
         onConversationChanged?()
         return record
@@ -2181,8 +2181,8 @@ final class ChatStore {
                 switch elapsedSecs {
                 case 0..<30:    stallText = "Waiting for host... \(elapsedSecs)s"
                 case 30..<90:   stallText = "Host is slow to respond... \(elapsedSecs)s"
-                case 90..<180:  stallText = "Still waiting... \(elapsedSecs)s - Hermes is being patient"
-                default:        stallText = "Reconnecting to Hermes... \(elapsedSecs)s elapsed"
+                case 90..<180:  stallText = "Still waiting... \(elapsedSecs)s - Agent is being patient"
+                default:        stallText = "Reconnecting to Agent... \(elapsedSecs)s elapsed"
                 }
                 conversation?.messages[idx].toolActivity = stallText
                 lastStallMessage = stallText
@@ -3695,7 +3695,7 @@ final class ChatStore {
         }
         pendingMessageSentAt = nil
 
-        appendLog(level: .warn, "Hermes gateway restart — streaming and polling suspended")
+        appendLog(level: .warn, "Agent gateway restart — streaming and polling suspended")
         if let conversation {
             persistence.saveConversationCache(conversation)
             onConversationChanged?()
@@ -3710,7 +3710,7 @@ final class ChatStore {
     func resumeAfterRestart() async {
         restartInProgress = false
         streamingPhase = .idle
-        appendLog(level: .info, "Hermes gateway restart settled — sending resumed")
+        appendLog(level: .info, "Agent gateway restart settled — sending resumed")
 
         // Drain the durable outbox: submit queued items for the current
         // conversation FIFO. Items for other conversations stay durably

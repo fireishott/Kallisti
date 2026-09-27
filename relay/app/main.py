@@ -858,7 +858,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         session = connector_session_for_user(user_id)
         if session is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is offline.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent host is offline.")
 
         request_id = str(uuid.uuid4())
         waiter: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
@@ -877,13 +877,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as error:
             clear_connector_session(user_id, session.connection_nonce)
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hermes host is unavailable.") from error
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent host is unavailable.") from error
 
         try:
             return await asyncio.wait_for(waiter, timeout_seconds or settings.connector_rpc_timeout_seconds)
         except asyncio.TimeoutError as error:
             app.state.connector_rpc_waiters.pop(request_id, None)
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Hermes host did not respond in time.") from error
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Agent host did not respond in time.") from error
 
     async def forward_sensor_payload(
         *,
@@ -1404,7 +1404,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # restart, idle reap, or the send loop stalling during a long
             # turn) empties connector_session_for_user() for a moment, and
             # the old code reported that as "offline" — which the iOS app
-            # renders as the "Hermes host offline" banner even though
+            # renders as the "Agent host offline" banner even though
             # herald_host_is_online() (last_seen_at + active job) was true
             # the whole time. Read the same authoritative predicate the rest
             # of the relay uses.
@@ -2042,7 +2042,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def canvas_processes(
         auth: AuthContext = Depends(get_auth_context),
     ) -> dict:
-        """Proxy the tracked-process snapshot to the connected Hermes host."""
+        """Proxy the tracked-process snapshot to the connected Agent host."""
         try:
             result = await send_connector_rpc(
                 auth.user.id, method="canvas.processes", timeout_seconds=10.0,
@@ -2150,7 +2150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Connect a Hermes host before starting talk mode.",
+                    "blockedReason": "Connect an Agent host before starting talk mode.",
                     "host": host_data,
                 }
             )
@@ -2160,7 +2160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "ready": False,
                     "hostOnline": False,
                     "configured": False,
-                    "blockedReason": "Your Hermes host is offline.",
+                    "blockedReason": "Your Agent host is offline.",
                     "host": host_data,
                 }
             )
@@ -2189,7 +2189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> JSONResponse:
         host = current_herald_host_for_user(db, user_id=auth.user.id)
         if host is None or not herald_host_is_online(db, host=host, settings=request_settings):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Hermes host must be online to start talk mode.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your Agent host must be online to start talk mode.")
 
         voice_session, relay_tool_token = create_voice_session(
             db,
@@ -3766,7 +3766,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     current_job.lease_expires_at
                                     and utcnow() >= normalize_datetime(current_job.lease_expires_at)
                                 ):
-                                    fail_stuck_job("Hermes host stopped responding.")
+                                    fail_stuck_job("Agent host stopped responding.")
                                     await websocket.close(code=1011)
                                     return
 
@@ -4010,7 +4010,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         db,
                                         job_id=claimed_job.id,
                                         connection_nonce=connection_nonce,
-                                        error_text=incoming.get("error", "Hermes connector failed."),
+                                        error_text=incoming.get("error", "Agent connector failed."),
                                         retryable=bool(incoming.get("retryable", False)),
                                     )
                                     if failed is None:
@@ -4125,7 +4125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     current_run.lease_expires_at
                                     and utcnow() >= normalize_datetime(current_run.lease_expires_at)
                                 ):
-                                    _terminal_note_run("Hermes host stopped responding.", "failed")
+                                    _terminal_note_run("Agent host stopped responding.", "failed")
                                     break
 
                             try:
@@ -4532,7 +4532,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def gw_restart_hermes(
             auth: AuthContext = Depends(get_auth_context),
         ) -> dict:
-            """Restart Hermes agent only."""
+            """Restart Agent only."""
             result = await app.state.gateway_controller.restart(target="hermes")
             return success(result)
 
@@ -4550,7 +4550,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def gw_update_check_relay_alias(
             auth: AuthContext = Depends(get_auth_context),
         ) -> dict:
-            """Check the paired Hermes host for updates in relay mode."""
+            """Check the paired Agent host for updates in relay mode."""
             result = await send_connector_rpc(
                 auth.user.id, method="gateway.update_check", timeout_seconds=120.0,
             )

@@ -507,7 +507,7 @@ enum NativeAuthError: Error {
 extension NativeAuthError: LocalizedError {
     /// Without this, NSError's fallback ("The operation couldn't be
     /// completed. (Kallisti.NativeAuthError error N.)") is what reaches
-    /// OnboardingFlowView's "Hermes sign-in failed: ..." message.
+    /// OnboardingFlowView's "Agent sign-in failed: ..." message.
     var errorDescription: String? {
         switch self {
         case .listenerSetupFailed:
@@ -529,7 +529,7 @@ extension NativeAuthError: LocalizedError {
         case .authSessionFailed(let reason):
             return reason
         case .connectFailedAfterLogin:
-            return "Signed in, but couldn't reach the gateway. Check that your Hermes host is running and reachable, then retry."
+            return "Signed in, but couldn't reach the gateway. Check that your Agent host is running and reachable, then retry."
         case .tokenRefreshFailed:
             return "Couldn't refresh the gateway session."
         case .invalidCredentials:

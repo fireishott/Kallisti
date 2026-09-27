@@ -415,7 +415,7 @@ private struct WelcomeStepView: View {
 
             // Brand mark + serif display. Herald 2.1 leads with the seal and an
             // editorial serif wordmark; the old 64pt uppercase mono lockup read
-            // as a terminal banner and still said "Hermes on iOS".
+            // as a terminal banner and still said "Agent on iOS".
             VStack(alignment: .leading, spacing: Design.Spacing.md) {
                 KallistiSealMark(size: 88)
                     .padding(.bottom, Design.Spacing.xxs)
@@ -431,7 +431,7 @@ private struct WelcomeStepView: View {
                     .foregroundStyle(Design.Colors.foreground.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("A native iOS client for the Hermes Agent framework.")
+                Text("A native iOS client for the Agent framework.")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .fixedSize(horizontal: false, vertical: true)
@@ -489,7 +489,7 @@ private struct RelayStepView: View {
                     .textCase(.uppercase)
                     .foregroundStyle(Design.Colors.foreground)
 
-                Text("where your Hermes is reachable.")
+                Text("where your Agent is reachable.")
                     .font(Design.Typography.editorialItalicSmall)
                     .foregroundStyle(Design.Colors.foreground.opacity(0.85))
             }

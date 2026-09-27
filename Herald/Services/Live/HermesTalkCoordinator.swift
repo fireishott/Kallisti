@@ -318,8 +318,8 @@ final class HermesTalkCoordinator {
             }
         } catch {
             flushTask?.cancel()
-            logger.error("Hermes turn failed: \(error.localizedDescription, privacy: .public)")
-            state = .failed("Hermes unavailable")
+            logger.error("Agent turn failed: \(error.localizedDescription, privacy: .public)")
+            state = .failed("Agent unavailable")
             notifyState()
             return
         }

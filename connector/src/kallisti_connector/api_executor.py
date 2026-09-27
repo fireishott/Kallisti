@@ -163,7 +163,7 @@ class HeraldAPIExecutor:
             text = (choices[0].get("message") or {}).get("content") or ""
         text = text.strip()
         if not text:
-            raise RuntimeError("Hermes API server returned an empty response.")
+            raise RuntimeError("Agent API server returned an empty response.")
 
         return HeraldChatResult(
             text=text,
@@ -304,7 +304,7 @@ class HeraldAPIExecutor:
         except httpx.HTTPStatusError as error:
             yield StreamEvent(
                 type="error",
-                data=f"Hermes API server returned HTTP {error.response.status_code}.",
+                data=f"Agent API server returned HTTP {error.response.status_code}.",
                 error_category="upstream_http_error",
                 session_id=resolved_session,
             )
@@ -322,7 +322,7 @@ class HeraldAPIExecutor:
         if not terminal_text:
             yield StreamEvent(
                 type="error",
-                data="Hermes API server streamed no content.",
+                data="Agent API server streamed no content.",
                 error_category="empty_response",
                 session_id=resolved_session,
             )

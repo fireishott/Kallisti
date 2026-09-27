@@ -56,12 +56,19 @@ final class AppContainer {
     /// The relay delivers to the environment stored on the registration,
     /// so registering a devicectl build as production gets APNs
     /// `BadEnvironmentKeyInToken` (and vice versa).
+    ///
+    /// `appStoreReceiptURL` is never nil and always has path components, so
+    /// the URL alone cannot distinguish the two — a Debug build installed
+    /// from Xcode still vends a URL while holding a SANDBOX token. Only the
+    /// receipt's existence on disk proves it is a real App Store install.
+    /// Reading it as "production" unless the file exists misreports every
+    /// sideloaded build and gets `BadDeviceToken` on the production host.
     static var apnsEnvironment: String {
-        if let receiptURL = Bundle.main.appStoreReceiptURL,
-           !receiptURL.pathComponents.isEmpty {
-            return "production"
+        guard let receiptURL = Bundle.main.appStoreReceiptURL,
+              FileManager.default.fileExists(atPath: receiptURL.path) else {
+            return "development"
         }
-        return "development"
+        return "production"
     }
     private static let sharedDefaultContainer = AppContainer.makeDefault()
 

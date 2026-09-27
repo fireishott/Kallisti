@@ -79,7 +79,7 @@ struct GatewayStatusScreen: View {
                 detail: connectionDetail()
             )
             statusCard(
-                label: "Hermes",
+                label: "Agent",
                 isOnline: s.model != nil,
                 detail: s.model ?? "No model"
             )

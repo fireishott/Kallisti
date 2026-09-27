@@ -30,7 +30,7 @@ struct GatewayLogsScreen: View {
 
     private let levels = ["all", "debug", "info", "warning", "error"]
     // Build 107: source picker for selecting which logs to view
-    private let sources = [("connector", "Connector"), ("hermes-gateway", "Hermes Gateway"), ("hermes-agent", "Hermes Agent")]
+    private let sources = [("connector", "Connector"), ("hermes-gateway", "Agent Gateway"), ("hermes-agent", "Agent")]
 
     private var filteredLogs: [LogLine] {
         if searchText.isEmpty { return logLines }

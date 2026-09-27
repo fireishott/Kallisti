@@ -82,7 +82,7 @@ struct PermissionCard: View {
                 Text("Background Sync")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
-                Text("Stream heart rate, steps and activity to Hermes while the app is in the background.")
+                Text("Stream heart rate, steps and activity to the Agent while the app is in the background.")
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .fixedSize(horizontal: false, vertical: true)

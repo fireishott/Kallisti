@@ -154,12 +154,12 @@ struct SettingsScreen: View {
         // .awaitingConfirmation state; Cancel is a pure state reset with
         // zero network calls.
         .alert(
-            "Restart Hermes Agent?",
+            "Restart Agent?",
             isPresented: restartConfirmationBinding,
             presenting: awaitingPreflight
         ) { preflight in
             Button("Cancel", role: .cancel) { cancelHermesRestart() }
-            Button("Restart Hermes", role: .destructive) {
+            Button("Restart Agent", role: .destructive) {
                 Task { await confirmHermesRestart(preflight: preflight) }
             }
         } message: { preflight in
@@ -167,7 +167,7 @@ struct SettingsScreen: View {
                 Text("Profile: \(preflight.profile)")
                 Text("Service unit: \(preflight.unit)")
                 if preflight.activeRequestCount > 0 {
-                    Text("Hermes is handling \(preflight.activeRequestCount) active request\(preflight.activeRequestCount == 1 ? "" : "s"). Restarting will interrupt them.")
+                    Text("Agent is handling \(preflight.activeRequestCount) active request\(preflight.activeRequestCount == 1 ? "" : "s"). Restarting will interrupt them.")
                 }
                 Text("Active chat, voice, tool activity, and streams will be interrupted.")
                 if let notice = stalePreflightNotice {
@@ -278,7 +278,7 @@ struct SettingsScreen: View {
                                 .foregroundStyle(hostStatusRowColor)
                                 .frame(width: 20, alignment: .center)
 
-                            Text("Hermes Host")
+                            Text("Agent Host")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
 
@@ -546,7 +546,7 @@ struct SettingsScreen: View {
     private var hostStatusRowValue: String {
         switch hostStore.connectionState {
         case .online, .offline:
-            return hostStore.currentHost?.resolvedDisplayName ?? "Hermes Host"
+            return hostStore.currentHost?.resolvedDisplayName ?? "Agent Host"
         case .unreachable:
             return "Status unavailable"
         case .notConnected:
@@ -695,7 +695,7 @@ struct SettingsScreen: View {
                             Text("New version available")
                                 .font(Design.Typography.callout)
                                 .foregroundStyle(Design.Colors.foreground)
-                            Text("Hermes Agent \(latest)")
+                            Text("Agent \(latest)")
                                 .font(Design.Typography.caption)
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
@@ -1024,7 +1024,7 @@ struct SettingsScreen: View {
         case "connector":
             return "Restarting the connector will drop the relay, voice, WebSocket, Live Activities, and any in-flight jobs for a few seconds. Continue?"
         case "hermes":
-            return "Restarting Hermes will interrupt any active chat, voice, tool, or stream. Continue?"
+            return "Restarting the Agent will interrupt any active chat, voice, tool, or stream. Continue?"
         default:
             return "Restarting \(target) will briefly interrupt the gateway. Continue?"
         }
@@ -1138,7 +1138,7 @@ struct SettingsScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(isHermesRestartBusy)
-        .accessibilityIdentifier("settings.restartHermes")
+        .accessibilityIdentifier("settings.restartAgent")
     }
 
     @ViewBuilder
@@ -1169,7 +1169,7 @@ struct SettingsScreen: View {
     private var restartRowLabel: String {
         switch restartState {
         case .idle, .awaitingConfirmation, .healthy, .failed:
-            return "Restart Hermes Agent"
+            return "Restart Agent"
         case .loadingPreflight:
             return "Loading…"
         case .inProgress:
@@ -1232,10 +1232,10 @@ struct SettingsScreen: View {
     private func phaseDisplayLabel(_ phase: RestartPhase?) -> String {
         switch phase {
         case .accepted: return "Queued…"
-        case .stopping: return "Stopping Hermes…"
-        case .starting: return "Starting Hermes…"
-        case .verifying: return "Verifying Hermes…"
-        case .healthy: return "Hermes is ready"
+        case .stopping: return "Stopping Agent…"
+        case .starting: return "Starting Agent…"
+        case .verifying: return "Verifying Agent…"
+        case .healthy: return "Agent is ready"
         case .failed: return "Restart failed"
         case nil: return "Restarting…"
         }
@@ -1247,7 +1247,7 @@ struct SettingsScreen: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Design.Colors.success)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hermes is ready")
+                Text("Agent is ready")
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
                 Text("Conversation, models, and logs reloaded.")
@@ -1401,7 +1401,7 @@ struct SettingsScreen: View {
         await chatStore.reloadConversationAfterRestart()
         await modelStore.loadModels(force: true)
         await hostStore.refresh()
-        chatStore.appendLog(level: .info, "Hermes gateway restart verified healthy — state reloaded")
+        chatStore.appendLog(level: .info, "Agent gateway restart verified healthy — state reloaded")
 
         // Auto-clear the ready card after a moment.
         try? await Task.sleep(for: .seconds(4))
@@ -1465,7 +1465,7 @@ struct SettingsScreen: View {
                         .frame(width: 20, alignment: .center)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Hermes Host")
+                        Text("Agent Host")
                             .font(Design.Typography.callout)
                             .foregroundStyle(Design.Colors.foreground)
                         if let host = hostStore.currentHost {
@@ -1499,7 +1499,7 @@ struct SettingsScreen: View {
                 settingsRow(
                     icon: "brain.head.profile",
                     iconColor: .purple,
-                    title: "Hermes Agent",
+                    title: "Agent",
                     value: hostStore.currentHost?.heraldVersion ?? "—"
                 )
 
