@@ -423,8 +423,10 @@ final class DSHClient: HeraldClientProtocol {
         guard let native = nativeIdByConversation[id] else { return Conversation(id: id, title: "Chat") }
         let page = try await fetchPage(sessionId: native, maxMessages: 200)
         var messages: [Message] = []
+        var model: String?
         for record in page.records {
-            if let m = Self.message(fromWireEvent: record) { messages.append(m) }
+            if let m = Self.modelName(fromEvent: record["event"]) { model = m }
+            if let m = Self.message(fromWireEvent: record, model: model) { messages.append(m) }
         }
         let conv = Conversation(
             id: id,
@@ -745,6 +747,8 @@ final class DSHClient: HeraldClientProtocol {
         // and finish only on this turn's `turn/end`.
         var ourTurn: Int?
         var lastAssistantText: String?
+        // Model the turn ran on, for a readable failure message.
+        var turnModel: String?
 
         // Track the highest seq we have seen so the opening snapshot's history
         // is never re-emitted as live deltas.
@@ -764,6 +768,7 @@ final class DSHClient: HeraldClientProtocol {
                 if let records = frame["records"]?.arrayValue {
                     for r in records {
                         if let seq = r["event"]?["seq"]?.doubleValue { snapshotMaxSeq = max(snapshotMaxSeq, Int(seq)) }
+                        if let m = Self.modelName(fromEvent: r["event"]) { turnModel = m }
                     }
                 }
                 continuation.yield(.heartbeat(phase: "streaming"))
@@ -813,6 +818,7 @@ final class DSHClient: HeraldClientProtocol {
                 if seq >= 0 && seq <= snapshotMaxSeq { continue }
                 let evType = ev["type"]?.stringValue ?? ""
                 let evData = ev["data"]
+                if let m = Self.modelName(fromEvent: ev) { turnModel = m }
 
                 switch evType {
                 case "turn/start":
@@ -875,8 +881,13 @@ final class DSHClient: HeraldClientProtocol {
                         return
                     }
                     if kind == "error" {
-                        let reason = evData?["reason"]?["error"]?["message"]?.stringValue ?? "DSH turn failed"
-                        continuation.yield(.failed(reason))
+                        let raw = evData?["reason"]?["error"]?["message"]?.stringValue ?? "DSH turn failed"
+                        let code = evData?["reason"]?["error"]?["code"]?.stringValue
+                        continuation.yield(.failed(
+                            Self.readableTurnError(raw, model: turnModel),
+                            category: Self.errorCategory(code: code, message: raw),
+                            action: ChatStore.serverTerminalFailureAction
+                        ))
                         continuation.finish()
                         return
                     }
@@ -971,6 +982,48 @@ final class DSHClient: HeraldClientProtocol {
         return out.isEmpty ? nil : out
     }
 
+    /// Model id carried by a `model/selection` or `request/context` event.
+    static func modelName(fromEvent ev: JSONValue?) -> String? {
+        guard let ev, let type = ev["type"]?.stringValue,
+              type == "model/selection" || type == "request/context" else { return nil }
+        return ev["data"]?["model"]?.stringValue
+    }
+
+    /// Map a DSH failure code to the app's error categories. Only codes with
+    /// a better generic message are mapped; everything else keeps the text.
+    static func errorCategory(code: String?, message: String) -> String {
+        switch code {
+        // TIMEOUT is not mapped: the app's "timeout" copy blames the phone's
+        // connection, and a DSH TIMEOUT is the model provider timing out.
+        case "RATE_LIMIT": return "rate_limited"
+        case "CONTEXT_OVERFLOW", "CONTEXT_LENGTH": return "context_exceeded"
+        default: return "server_error"
+        }
+    }
+
+    /// Turn a raw provider error into one readable line. DSH reports e.g.
+    /// `503: {"message":"[anthropic-compatible-<id>/minimax-m3] [404]: 404 page
+    /// not found (reset after 2m)"}` - the user needs the model and the cause.
+    static func readableTurnError(_ raw: String, model: String?) -> String {
+        var s = raw
+        // Unwrap `NNN: {"message": "..."}`.
+        if let brace = s.firstIndex(of: "{"),
+           let data = String(s[brace...]).data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let inner = (obj["message"] as? String) ?? ((obj["error"] as? [String: Any])?["message"] as? String) {
+            s = inner
+        }
+        // Drop the `[provider-route/model]` prefix and `(reset after ...)` tail.
+        s = s.replacingOccurrences(of: #"^\[[^\]]*/[^\]]*\]\s*"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\s*\(reset after [^)]*\)"#, with: "", options: .regularExpression)
+        // `[404]: 404 page not found` -> `404 page not found`.
+        s = s.replacingOccurrences(of: #"^\[\d{3}\]:\s*"#, with: "", options: .regularExpression)
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { s = "the provider returned an error" }
+        let who = model.map { "\($0) failed" } ?? "The model failed"
+        return "\(who): \(s). Switch models and retry."
+    }
+
     private static func usage(from v: JSONValue) -> TokenUsage? {
         guard let input = v["inputTokens"]?.doubleValue,
               let output = v["outputTokens"]?.doubleValue else { return nil }
@@ -993,7 +1046,7 @@ final class DSHClient: HeraldClientProtocol {
     /// with `form: catalog` (the `<available_skills>` list). Rendering those
     /// puts the prompt itself in the transcript. Only `kind: user` is a real
     /// turn; assistant rows must come from the model, not from a tool result.
-    static func message(fromWireEvent record: JSONValue) -> Message? {
+    static func message(fromWireEvent record: JSONValue, model: String? = nil) -> Message? {
         guard let ev = record["event"], let type = ev["type"]?.stringValue else { return nil }
         let data = ev["data"]
         let time = ev["time"]?.doubleValue.map { Date(timeIntervalSince1970: $0 / 1000) } ?? .now
@@ -1011,6 +1064,16 @@ final class DSHClient: HeraldClientProtocol {
                   !text.hasPrefix("<system-reminder>") else { return nil }
             return Message(id: UUID(), clientMessageID: nil, sender: .herald,
                            content: text, timestamp: time, status: .sent)
+
+        case "turn/end":
+            // A turn that ended in error has no assistant row; without this the
+            // user's message sits unanswered in history with no explanation.
+            guard data?["reason"]?["kind"]?.stringValue == "error" else { return nil }
+            let raw = data?["reason"]?["error"]?["message"]?.stringValue ?? "DSH turn failed"
+            let code = data?["reason"]?["error"]?["code"]?.stringValue
+            return Message(id: UUID(), clientMessageID: nil, sender: .system,
+                           content: readableTurnError(raw, model: model), timestamp: time,
+                           status: .failed, errorCategory: errorCategory(code: code, message: raw))
 
         default:
             return nil

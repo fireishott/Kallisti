@@ -484,3 +484,52 @@ private final class StubTicketURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+// MARK: - DSH turn errors
+//
+// A DSH turn that ends in error must surface as a visible failure, not
+// "Waiting for host..." plus a silent resend. Fixtures are the exact wire
+// shapes DSH recorded for a failed MiniMax M3 turn sent from the phone.
+@MainActor
+struct DSHTurnErrorTests {
+    let rawError = #"503: {"message":"[anthropic-compatible-1c25165c-1b1f-4db8-afc3-2f7c70834693/minimax-m3] [404]: 404 page not found (reset after 1m 45s)"}"#
+
+    @Test func readableErrorNamesModelAndCause() {
+        #expect(DSHClient.readableTurnError(rawError, model: "MM/minimax-m3")
+                == "MM/minimax-m3 failed: 404 page not found. Switch models and retry.")
+        #expect(DSHClient.readableTurnError("boom", model: nil)
+                == "The model failed: boom. Switch models and retry.")
+    }
+
+    @Test func categoryIsNeverNil() {
+        #expect(DSHClient.errorCategory(code: "SERVER", message: rawError) == "server_error")
+        #expect(DSHClient.errorCategory(code: "RATE_LIMIT", message: "") == "rate_limited")
+        #expect(DSHClient.errorCategory(code: nil, message: "") == "server_error")
+    }
+
+    @Test func modelNameFromSelectionEvent() throws {
+        let ev = try JSONDecoder().decode(DSHClient.JSONValue.self, from: Data(
+            #"{"type":"model/selection","seq":3,"data":{"provider":"ninerouter","model":"MM/minimax-m3"}}"#.utf8))
+        #expect(DSHClient.modelName(fromEvent: ev) == "MM/minimax-m3")
+    }
+
+    @Test func historyRendersErroredTurn() throws {
+        let obj: [String: Any] = ["type": "event", "event": [
+            "type": "turn/end", "seq": 34, "time": 1790548888464,
+            "data": ["turn": 1, "reason": ["kind": "error", "error": ["message": rawError, "code": "SERVER"]]],
+        ]]
+        let json = String(data: try JSONSerialization.data(withJSONObject: obj), encoding: .utf8)!
+        let record = try JSONDecoder().decode(DSHClient.JSONValue.self, from: Data(json.utf8))
+        let m = try #require(DSHClient.message(fromWireEvent: record, model: "MM/minimax-m3"))
+        #expect(m.sender == .system)
+        #expect(m.status == .failed)
+        #expect(m.errorCategory == "server_error")
+        #expect(m.content.contains("404 page not found"))
+    }
+
+    @Test func completedTurnEndNotRendered() throws {
+        let record = try JSONDecoder().decode(DSHClient.JSONValue.self, from: Data(
+            #"{"type":"event","event":{"type":"turn/end","seq":9,"time":1,"data":{"turn":1,"reason":{"kind":"completed"}}}}"#.utf8))
+        #expect(DSHClient.message(fromWireEvent: record) == nil)
+    }
+}

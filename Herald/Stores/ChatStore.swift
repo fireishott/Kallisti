@@ -337,6 +337,10 @@ final class ChatStore {
     // no-progress window and still guarantees a terminal state.
     static var absoluteJobDeadline: Duration = .seconds(1200)
 
+    /// `.failed(action:)` value meaning the server already finished the turn
+    /// with an error. The job is over: show it, never poll or auto-resubmit.
+    static let serverTerminalFailureAction = "server_terminal"
+
     /// Timestamp of the last streaming progress signal. Updated on every
     /// textDelta, reasoningDelta, toolActivity, keepalive, and messageSent.
     /// The continuous watchdog checks this to detect mid-stream stalls.
@@ -2973,6 +2977,21 @@ final class ChatStore {
                     self.lastErrorCategory = effectiveCategory
                     self.lastErrorAction = action
 
+                    // The server ran the turn to a terminal error and already
+                    // retried it (DSH retries a model step 5x before ending the
+                    // turn). That is not a transport blip: the job is over, so
+                    // do not park the row on "Waiting for host..." and do not
+                    // auto-resubmit it. Treating it as transient re-sent the
+                    // same prompt every backoff tick and never showed the error.
+                    let serverTerminal = action == Self.serverTerminalFailureAction
+                    // The placeholder branch below skips replacing the row when
+                    // category is nil after acceptance; a terminal failure must
+                    // always carry a category so the error renders.
+                    let effectiveCategoryForRow = serverTerminal ? (effectiveCategory ?? "server_error") : effectiveCategory
+                    if serverTerminal {
+                        self.lastErrorCategory = effectiveCategoryForRow
+                    }
+
                     // Build 64: push the Live Activity to needsAttention BEFORE
                     // ending it so the Lock Screen / Dynamic Island briefly
                     // shows the warning state (per Apple HIG: an activity
@@ -3009,14 +3028,14 @@ final class ChatStore {
                         // the response arrives.  Leave the placeholder as-is
                         // (still streaming) so the .finished handler can
                         // replace it cleanly when the response lands.
-                        if acceptedJobID != nil && category == nil {
+                        if acceptedJobID != nil && category == nil && !serverTerminal {
                             self.appendLog(level: .info, "Transient fetch failure for job \(placeholderID.uuidString.prefix(8)) — waiting for reconnect")
                         } else {
                             self.conversation?.messages[idx] = Message(
                                 sender: .system,
                                 content: guidance,
                                 status: .failed,
-                                errorCategory: effectiveCategory
+                                errorCategory: effectiveCategoryForRow
                             )
                         }
                     }
@@ -3028,7 +3047,10 @@ final class ChatStore {
                     // leaves the job with the relay — the polling fallback below
                     // (or a later recovery pass) resolves it.
                     if let idx = self.outboxItems.firstIndex(where: { $0.clientMessageID == clientMessageID }) {
-                        if acceptedJobID == nil {
+                        if serverTerminal {
+                            // Manual RETRY re-enqueues fresh; never auto-resend.
+                            self.failOutboxItem(self.outboxItems[idx], state: .permanentFailure, error: guidance)
+                        } else if acceptedJobID == nil {
                             let item = self.outboxItems[idx]
                             self.failOutboxItem(
                                 item,
@@ -3042,9 +3064,13 @@ final class ChatStore {
                         }
                     }
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
-                        self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
+                        self.conversation?.messages[idx].status = (acceptedJobID == nil || serverTerminal) ? .failed : .sending
                     }
-                    if acceptedJobID != nil {
+                    if serverTerminal {
+                        needsPollingFallback = false
+                        self.pendingMessageSentAt = nil
+                        self.sendPhase = .failed(guidance)
+                    } else if acceptedJobID != nil {
                         needsPollingFallback = true
                         self.sendPhase = .restoringStream
                     } else {
