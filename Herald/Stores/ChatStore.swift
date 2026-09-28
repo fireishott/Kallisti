@@ -916,6 +916,14 @@ final class ChatStore {
     /// (submit the next eligible outbox item). Kept as the single entry point
     /// so callers (ChatScreen, retryMessage, tests) get the whole lifecycle.
     func sendMessage(_ content: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil, continuationContext: String? = nil) async {
+        // A parked question blocks the turn. Text typed in the main composer
+        // while the card is up is the answer - queueing it as a prompt left
+        // the tool call waiting forever behind a message it would never read.
+        if pendingClarify != nil, attachments.isEmpty, continuationContext == nil,
+           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            submitClarifyAnswer(content)
+            return
+        }
         guard let record = enqueueMessage(
             content,
             attachments: attachments,

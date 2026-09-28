@@ -55,7 +55,9 @@ struct AppRootView: View {
             terminalLegacyFailure = false
         }
         let nativeClient = container.nativeGatewayClient
-        let status = nativeClient?.connectionStatus
+        // DSH has no nativeGatewayClient; read its status instead so
+        // isRecovering reflects reality rather than always-false.
+        let status = nativeClient?.connectionStatus ?? container.dshClient?.connectionStatus
         // r2: first time this evaluates, freeze the relay state. Everything
         // after that uses the frozen value, so typing a relay URL during
         // onboarding can never flip the loading surface on.
@@ -171,7 +173,18 @@ struct AppRootView: View {
     /// the background. Requiring isLoading to finish made cold start hold on
     /// "Connected, <model>" for seconds after connect, reading as stuck.
     private var isAppReady: Bool {
-        let connected = container.nativeGatewayClient?.connectionStatus == .connected
+        // DSH transport: nativeGatewayClient is nil, so reading the
+        // connection status off it made `connected` permanently false and
+        // isAppReady permanently false. The launch surface then kept
+        // re-evaluating to true and its `allowsHitTesting` overlay swallowed
+        // every tap in the app - including the composer, which is why the
+        // keyboard never came up. The DSH client's own status is the truth.
+        let connected: Bool
+        if let dsh = container.dshClient {
+            connected = dsh.connectionStatus == .connected
+        } else {
+            connected = container.nativeGatewayClient?.connectionStatus == .connected
+        }
         let modelsReady = modelStore.activeModel != nil
         return connected && modelsReady
     }

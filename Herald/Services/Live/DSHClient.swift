@@ -176,18 +176,34 @@ final class DSHClient: HeraldClientProtocol {
 
     func connect() async {
         connectionStatus = .connecting
-        do {
-            let req = request("health")
-            let data = try await send(req)
-            let body = try decoder.decode(HealthBody.self, from: data)
-            guard body.ok else {
-                connectionStatus = .error
-                return
+        // Retry the health probe for a bounded window instead of giving up
+        // after a single attempt. A one-shot ping raced the phone's network
+        // bring-up: the probe failed, the status latched at .disconnected, and
+        // nothing ever re-probed - so the composer stayed read-only (no
+        // keyboard) on a harness that was actually healthy and reachable the
+        // whole time. ChatScreen's poll re-reads this value, so a later
+        // success still opens the composer without needing a relaunch.
+        var lastError: Error?
+        for attempt in 0..<5 {
+            if Task.isCancelled { return }
+            do {
+                let req = request("health")
+                let data = try await send(req)
+                let body = try decoder.decode(HealthBody.self, from: data)
+                if body.ok {
+                    connectionStatus = .connected
+                    return
+                }
+                lastError = ServerError(message: "DSH health reported not ok")
+            } catch {
+                lastError = error
             }
-            connectionStatus = .connected
-        } catch {
-            connectionStatus = .disconnected
+            // 0.4s, 0.8s, 1.6s, 3.2s - stays well inside a normal launch.
+            let delay = UInt64(400_000_000 * (1 << attempt))
+            try? await Task.sleep(nanoseconds: delay)
         }
+        _ = lastError
+        connectionStatus = .disconnected
     }
 
     func disconnect() async {
@@ -372,6 +388,18 @@ final class DSHClient: HeraldClientProtocol {
         return try decoder.decode(ModelCatalogBody.self, from: data)
     }
 
+    /// Round-trip time of an authenticated health probe, for Settings >
+    /// Connection. Nil when the harness is unreachable.
+    func measureLatency() async -> Int? {
+        let started = Date()
+        do {
+            _ = try await send(request("health"))
+            return max(Int(Date().timeIntervalSince(started) * 1000), 0)
+        } catch {
+            return nil
+        }
+    }
+
     func reconnectIfNeeded() async {
         do {
             _ = try await send(request("health"))
@@ -398,16 +426,37 @@ final class DSHClient: HeraldClientProtocol {
 
     func isServerTurnAwaitingUserInput() async -> Bool { pendingClarify != nil }
 
-    func fetchPendingClarify() async -> PendingClarify? { pendingClarify }
+    func fetchPendingClarify() async -> PendingClarify? {
+        // Live event path already surfaced it.
+        if let pending = pendingClarify { return pending }
+        // The follow stream can miss a tool/call while reconnecting; the phone
+        // API persists pending questions server-side, so poll it on watchdog
+        // probes and app foregrounding to re-surface the card.
+        guard let conv = currentConversation,
+              let native = nativeIdByConversation[conv.id] else { return nil }
+        guard let req = request("questions?sessionId=\(native.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? native)") else { return nil }
+        do {
+            let data = try await send(req)
+            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let questions = dict["questions"] as? [[String: Any]] else { return nil }
+            // Keep it so the answer is matched against the real options.
+            let recovered = Self.pendingClarify(fromQuestions: questions)
+            if let recovered { pendingClarify = recovered }
+            return recovered
+        } catch {
+            return nil
+        }
+    }
 
     func respondToClarify(requestID: String, answer: String) async throws {
-        // DSH surfaces clarify through the session inbox; answering is a prompt
-        // steer on the same session.
-        pendingClarify = nil
+        // DSH ask_user_question answers are submitted through the phone API's
+        // /answer endpoint so the result feeds back as the tool result, not as
+        // a steer prompt.
         guard let conv = currentConversation, let native = nativeIdByConversation[conv.id] else {
             throw ServerError(message: "No active session to answer on")
         }
-        try await prompt(sessionId: native, text: answer, mode: "steer")
+        try await submitAnswer(sessionId: native, questionID: requestID, answer: answer)
+        pendingClarify = nil
     }
 
     // MARK: - Conversation
@@ -753,6 +802,7 @@ final class DSHClient: HeraldClientProtocol {
         // Track the highest seq we have seen so the opening snapshot's history
         // is never re-emitted as live deltas.
         var snapshotMaxSeq = -1
+        var clarifyCallIDs: Set<String> = []
 
         for try await line in stream.lines {
             if Task.isCancelled { throw CancellationError() }
@@ -795,6 +845,11 @@ final class DSHClient: HeraldClientProtocol {
                     case "tool-call-delta":
                         let id = chunk["id"]?.stringValue ?? UUID().uuidString
                         let name = chunk["name"]?.stringValue
+                        // ask_user_question renders as the clarify card from its
+                        // tool/call event. Streaming it as a tool row dumped the
+                        // raw questions JSON into a stdout block under the card.
+                        if name == "ask_user_question" { clarifyCallIDs.insert(id) }
+                        if clarifyCallIDs.contains(id) { break }
                         if tools[id] == nil {
                             let a = ToolActivity(label: name ?? "tool", toolCallID: id, name: name)
                             tools[id] = a
@@ -830,15 +885,32 @@ final class DSHClient: HeraldClientProtocol {
                     let id = evData?["callId"]?.stringValue ?? UUID().uuidString
                     let name = evData?["name"]?.stringValue ?? "tool"
                     let args = evData?["arguments"]?.stringValue
-                    let a = ToolActivity(label: name, toolCallID: id, name: name,
-                                         argsPreview: args.map { String($0.prefix(400)) })
-                    tools[id] = a
-                    continuation.yield(.toolStarted(a))
+                    if name == "ask_user_question" { clarifyCallIDs.insert(id) }
+                    if name == "ask_user_question",
+                       let clarify = Self.pendingClarify(from: args, callId: id) {
+                        pendingClarify = clarify
+                        continuation.yield(.clarifyRequest(
+                            question: clarify.question,
+                            choices: clarify.choices,
+                            requestID: clarify.requestID,
+                            multiSelect: clarify.multiSelect
+                        ))
+                    } else {
+                        let a = ToolActivity(label: name, toolCallID: id, name: name,
+                                             argsPreview: args.map { String($0.prefix(400)) })
+                        tools[id] = a
+                        continuation.yield(.toolStarted(a))
+                    }
 
                 case "tool/result":
                     let id = evData?["message"]?["content"]?.arrayValue?.first?["toolCallId"]?.stringValue
                         ?? evData?["callId"]?.stringValue
                         ?? ""
+                    if clarifyCallIDs.contains(id) {
+                        // Answered (or timed out): the card is done either way.
+                        pendingClarify = nil
+                        continue
+                    }
                     let isError = (evData?["error"] != nil)
                     var preview: String?
                     if let blocks = evData?["message"]?["content"]?.arrayValue {
@@ -873,6 +945,9 @@ final class DSHClient: HeraldClientProtocol {
 
                 case "turn/end":
                     if let t = evData?["turn"]?.doubleValue, let ours = ourTurn, Int(t) != ours { break }
+                    // The parked clarify, if any, is no longer pending once the
+                    // turn ends (answered, timed out, or skipped).
+                    pendingClarify = nil
                     let kind = evData?["reason"]?["kind"]?.stringValue ?? "completed"
                     lastUsage = usage
                     if kind == "aborted" {
@@ -916,6 +991,7 @@ final class DSHClient: HeraldClientProtocol {
             }
 
             if type == "error" {
+                pendingClarify = nil
                 continuation.yield(.failed(frame["message"]?.stringValue ?? "DSH stream error"))
                 continuation.finish()
                 return
@@ -923,6 +999,7 @@ final class DSHClient: HeraldClientProtocol {
         }
 
         if !committed {
+            pendingClarify = nil
             let text = lastAssistantText ?? (textBuffer.isEmpty ? "(stream ended with no content)" : textBuffer)
             let finalMessage = Message(
                 id: UUID(), clientMessageID: clientMessageID,
@@ -931,6 +1008,44 @@ final class DSHClient: HeraldClientProtocol {
             continuation.yield(.finished(finalMessage, usage, nil, nil))
         }
         continuation.finish()
+    }
+
+    // MARK: - User questions
+
+    private func submitAnswer(sessionId: String, questionID: String, answer: String) async throws {
+        // Determine whether the answer matches one of the question's options.
+        let saved = pendingClarify
+        var selected: [String] = []
+        var custom: String? = nil
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pending = saved {
+            if let choices = pending.choices, choices.contains(trimmed) {
+                selected = [trimmed]
+            } else if let choices = pending.choices, let n = Int(trimmed), n >= 1, n <= choices.count {
+                // "2" typed against a numbered card means option 2.
+                selected = [choices[n - 1]]
+            } else {
+                custom = answer
+            }
+        } else {
+            custom = answer
+        }
+        var answerDict: [String: Any] = [
+            "id": questionID,
+            "selected": selected
+        ]
+        if let custom = custom {
+            answerDict["custom"] = custom
+        }
+        let body: [String: Any] = [
+            "sessionId": sessionId,
+            "answers": [answerDict]
+        ]
+        guard var req = request("answer", method: "POST") else {
+            throw ServerError(message: "Invalid DSH base URL")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        _ = try await send(req)
     }
 
     // MARK: - Cancel
@@ -1036,6 +1151,33 @@ final class DSHClient: HeraldClientProtocol {
     static func stableUUID(from sessionId: String) -> UUID {
         let stripped = sessionId.hasPrefix("session-") ? String(sessionId.dropFirst("session-".count)) : sessionId
         return UUID(uuidString: stripped) ?? UUID()
+    }
+
+    /// Build a PendingClarify from the first question in an ask_user_question
+    /// questions array. The common case is a single question; multiples are
+    /// reduced to the first one so the UI stays simple.
+    private static func pendingClarify(fromQuestions questions: [[String: Any]]) -> PendingClarify? {
+        guard let first = questions.first,
+              let id = first["id"] as? String,
+              let question = first["question"] as? String else { return nil }
+        let choices = (first["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String }
+        // Tool args say multi_select; the parked host request says multiSelect.
+        let multiSelect = (first["multi_select"] as? Bool) ?? (first["multiSelect"] as? Bool) ?? false
+        return PendingClarify(
+            question: question,
+            choices: choices?.isEmpty == false ? choices : nil,
+            requestID: id,
+            multiSelect: multiSelect
+        )
+    }
+
+    /// Parse the ask_user_question tool arguments string into a PendingClarify.
+    private static func pendingClarify(from arguments: String?, callId: String) -> PendingClarify? {
+        guard let arguments = arguments,
+              let data = arguments.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+              let questions = decoded["questions"] as? [[String: Any]] else { return nil }
+        return pendingClarify(fromQuestions: questions)
     }
 
     /// Rebuild a displayable message from a durable session event.

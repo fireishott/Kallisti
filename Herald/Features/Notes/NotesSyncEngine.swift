@@ -374,6 +374,8 @@ final class NotesSyncEngine {
         - "Tell me / explain / what is / why / how" requests: give a real, substantive answer - the mechanism, concrete examples, the non-obvious risks, what is still contested. Length follows the ASK, not the note: two lines of ink saying "tell me about AI danger" justify a full briefing, and stiffing it with three vague bullets is the exact failure this rule exists to stop.
         - Research whenever the answer depends on current facts, prices, versions, schedules, or events, and cite only real sources you actually opened, as working links.
         - If the note contains no ask at all - just a drawing, a list, a shopping note - skip this section entirely. Never manufacture a question so there is something to answer.
+        - Statements of state or need are still opportunities to be useful. If the note says something like "I am hungry", "I am bored", "I am tired", or "I have a headache", offer a few short, concrete, on-topic suggestions. For hunger: quick meal/snack ideas, a simple recipe, or a reminder to order food. For boredom: a short activity or creative prompt. For tiredness: rest, stretch, or caffeine guidance. Never perform an external action (order, send, post, buy, book), but do more than simply transcribe the statement.
+        - Incomplete or vague asks such as "what is?" should be met with a brief, friendly clarifying question so the user can finish their thought.
 
         WHAT THE NOTE SAYS:
         - Then ONE short closing section stating what the note literally contains: the text as written, OCR artifacts fixed, shorthand expanded, in the author's own voice and wording.
@@ -552,7 +554,7 @@ final class NotesSyncEngine {
             // vision_analyze, so enrichments were written from the on-device
             // OCR draft with invented visual detail.
             if client.deliversAttachmentsInline {
-                messageText += "Every attached image above is inline in this conversation in the listed order - read ALL of them, not just the drawing. The drawing is the SOURCE OF TRUTH for any handwriting; any photo/scan attachments are additional inline images of the same note that you must read in order (drawing first, then photos/scans). For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Build 135.39: the drawing IS delivered to you directly as pixels - do not hunt for vision tools, do not call tool_search, vision_analyze, or any skill lookup: none of that recovers images, every discovery call burns 20-60 seconds of the sync budget. If the attached images are visible to you inline (as image content parts), READ THEM DIRECTLY - that is the only way to see the actual handwriting. If you genuinely cannot see any attached drawing image, do not identify visual subjects or turn OCR fragments into a topic. State that visual analysis is unavailable and preserve the recognized text only as an untrusted transcription draft. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
+                messageText += "The attached images are visible to you as inline image content parts in the listed order - read ALL of them directly, drawing first, then any photo/scan attachments. The drawing is the SOURCE OF TRUTH for any handwriting. For each non-image file (PDF, txt, csv, etc.), read its contents from the file attachment. The Recognized text above is a NOISY on-device OCR draft: use it ONLY to disambiguate letterforms, never as the final reading, and never let it override what you see in the attached images. Do not call, ask for, or mention any vision tool; do not state that you cannot see the drawing or that a tool is unavailable. Simply read the inline images and answer. If the attached images are genuinely not visible, preserve the recognized text as an untrusted transcription draft only. Never create shopping, research, task, or portfolio recommendations from unreadable OCR alone.\n"
             } else {
                 messageText += Self.stagedAttachmentGuidance
             }
@@ -669,16 +671,17 @@ final class NotesSyncEngine {
         }
 
         // Notes fix: snapshot the live stream into the completed-card slot so
-        // a collapsible "Thought for Xs" survives the reset. Only succeed
-        // when the consumer actually saw real reasoning OR the user just
-        // wants the timing - a totally empty stream leaves the prior card
-        // untouched (no flicker on bookkeeping-only turns).
+        // a collapsible "Thought for Xs" survives the reset. If the model didn't
+        // emit any reasoning text, still show a completed thought card so the
+        // bubble doesn't vanish entirely.
         if !liveReasoning.isEmpty {
             lastCompletedReasoning = liveReasoning
+        } else if streamError == nil {
+            lastCompletedReasoning = "Enrichment complete."
+        }
+        if !liveReasoning.isEmpty || streamError == nil {
             lastCompletedAt = .now
             lastCompletedDuration = reasoningDuration
-            // Stamp the owner so the card can never be rendered over another
-            // note (a batch auto-sync runs this while the user sits in one note).
             lastCompletedNoteID = note.id
         }
 

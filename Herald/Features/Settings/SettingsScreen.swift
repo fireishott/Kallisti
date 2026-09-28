@@ -18,6 +18,8 @@ struct SettingsScreen: View {
     @State private var mimoAPIKey: String = ""
     // Build 70: aux service lives on the container (loaded at connection).
     private var auxService: AuxModelService? { container.auxService }
+    // Build 135.40: aux models are Hermes-only; DSH handles routing itself.
+    private var isDSHMode: Bool { container.dshClient != nil }
     @State private var showAPIKey: Bool = false
     @State private var isTestingTTS: Bool = false
     @State private var safariURL: URL?
@@ -43,8 +45,14 @@ struct SettingsScreen: View {
                 ScrollView(.vertical) {
                     VStack(spacing: Design.Spacing.lg) {
                         connectionSection
-                        relaySection
-                        gatewaySection
+                        // Relay + Gateway are Hermes-only surfaces. DSH talks to
+                        // the harness phone API directly, so these rows either
+                        // do nothing or report a backend that is not serving the
+                        // request. Infrastructure below is the DSH-aware view.
+                        if !isDSHMode {
+                            relaySection
+                            gatewaySection
+                        }
                         infrastructureSection
                         if settingsStore.availableEnvironments.count > 1 {
                             environmentSection
@@ -231,6 +239,15 @@ struct SettingsScreen: View {
         // shows the definitive state.
         if relayStatus == .connecting && hostStore.isHostOnline {
             return .connected
+        }
+        // DSH transport: the client's own connectionStatus IS the truth. It
+        // pings /phone/v1/health on connect() and sets .connected directly.
+        // hostStore is fed by the relay/pairing path, which DSH does not use,
+        // so isHostOnline stays false and this row would otherwise fall
+        // through to stale sessionStore bootstrap state and read
+        // "Connecting..." forever on a perfectly healthy DSH connection.
+        if isDSHMode {
+            return relayStatus
         }
         // Build 128.89 (settings "Error" flash): sessionStore.state.
         // connectionStatus is legacy bootstrap state. In native mode
@@ -1516,8 +1533,9 @@ struct SettingsScreen: View {
                         ?? "—"
                 )
 
-                // AUX Model Configuration — Build 30: always render the section
-                // so it never disappears because of a load error or empty response.
+                // AUX Model Configuration — Build 30: hide the section in DSH
+                // mode because DSH routes tasks itself; show it only for Hermes.
+                if !isDSHMode {
                 SettingsSectionView(title: "Auxiliary Models") {
                     if let aux = auxService {
                         if aux.tasks.isEmpty {
@@ -1592,6 +1610,7 @@ struct SettingsScreen: View {
                 }
 
                 sectionDivider
+                }
 
                 // Relay URL
                 settingsRow(

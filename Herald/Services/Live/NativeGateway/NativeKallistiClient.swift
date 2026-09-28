@@ -1731,7 +1731,14 @@ final class NativeKallistiClient: HeraldClientProtocol {
             // agent, etc.) so the history list only shows real chats. The
             // gateway's session.list RPC returns ALL sources (the deny-list
             // only filters kanban/tool for the `recent` command).
-            if let source = native.source?.lowercased(), source == "cron" {
+            if let source = native.source?.lowercased(), source == "cron" || source == "ios-note" {
+                continue
+            }
+            // Hide legacy note-enrichment sessions that were created before
+            // Build 135.85 tagged them with source "ios-note". Their titles are
+            // auto-generated from the enrichment prompt, so they are easy to
+            // recognize and should never have been in the chat list.
+            if isNoteEnrichmentSessionTitle(native.title) {
                 continue
             }
             // Build 53: honor the All Devices toggle client-side. The native
@@ -1833,7 +1840,8 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // this must be a for-loop, not compactMap (Swift 6 concurrency).
         var sessions: [SessionSummary] = []
         for native in decoded.sessions {
-            if let source = native.source?.lowercased(), source == "cron" { continue }
+            if let source = native.source?.lowercased(), source == "cron" || source == "ios-note" { continue }
+            if isNoteEnrichmentSessionTitle(native.title) { continue }
             if !allDevices {
                 let src = (native.source ?? "").lowercased()
                 if src != "ios" && src != "tui" { continue }
@@ -1868,7 +1876,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         try await createSession(title: title, conversationID: nil)
     }
 
-    func createSession(title: String, conversationID: UUID? = nil, modelName: String? = nil, provider: String? = nil) async throws -> SessionSummary {
+    func createSession(title: String, conversationID: UUID? = nil, modelName: String? = nil, provider: String? = nil, source: String = "ios") async throws -> SessionSummary {
         guard let client else { throw NativeGatewayClientError.notConnected }
         // LATENCY (build 36): session.create is part of the reconnect-path
         // chain (ensureConversation/ensureSessionForSwitch/_sendStreaming all
@@ -1886,7 +1894,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
         // note sessions run on the user's chosen provider (the gateway treats
         // model/provider as a PER-SESSION override, exactly like the desktop
         // composer pick).
-        var params: [String: String] = ["title": title, "source": "ios"]
+        var params: [String: String] = ["title": title, "source": source]
         if let modelName, !modelName.isEmpty {
             params["model"] = modelName
             if let provider, !provider.isEmpty {
@@ -2684,7 +2692,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
 
         if nativeSessionId == nil {
             do {
-                let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
+                let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider, source: "ios-note")
                 nativeSessionId = await idMap.nativeId(for: summary.id)
             } catch NativeGatewayClientError.transportClosed {
                 // The socket dropped mid-create (gateway restart, idle reap,
@@ -2694,7 +2702,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 Self.logger.warning("session.create failed with transportClosed - reconnecting and retrying once")
                 await reconnectIfNeeded()
                 do {
-                    let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
+                    let summary = try await createSession(title: sessionTitle ?? "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider, source: "ios-note")
                     nativeSessionId = await idMap.nativeId(for: summary.id)
                 } catch {
                     continuation.yield(.failed("Failed to create session: \(error)"))
@@ -2808,7 +2816,7 @@ final class NativeKallistiClient: HeraldClientProtocol {
                 staleSessionRetried = true
                 await idMap.remove(uuid: sessionUUID)
                 do {
-                    let summary = try await createSession(title: "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider)
+                    let summary = try await createSession(title: "New Chat", conversationID: sessionUUID, modelName: enrichmentModelName, provider: enrichmentProvider, source: "ios-note")
                     guard let freshSid = await idMap.nativeId(for: summary.id) else {
                         continuation.yield(.failed("No session ID"))
                         continuation.finish()
@@ -3662,4 +3670,25 @@ private struct PromptSubmitParams: Encodable {
         try container.encode(sessionId, forKey: .sessionId)
         try container.encode(text, forKey: .text)
     }
+}
+
+/// Heuristic to recognize native gateway note-enrichment sessions that were
+/// created before note sessions were tagged with source "ios-note". Their
+/// titles are auto-generated from the enrichment prompt, so they leak into
+/// the chat session list. These titles are intentionally never produced by
+/// real user chats.
+private func isNoteEnrichmentSessionTitle(_ title: String?) -> Bool {
+    guard let title = title, !title.isEmpty else { return false }
+    let lower = title.lowercased()
+    let markers = [
+        "note title:",
+        "## answers",
+        "**untitled note - enrich",
+        "i don't have a `vision_anal",
+        "notes enrichment",
+        "kallisti notes enrichment",
+        "you are enriching a handwritten note",
+        "untitled note this is a new note",
+    ]
+    return markers.contains { lower.hasPrefix($0) }
 }

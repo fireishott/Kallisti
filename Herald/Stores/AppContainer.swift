@@ -1173,7 +1173,12 @@ final class AppContainer {
         guard latencyMonitorTask == nil else { return }
         latencyMonitorTask = Task { @MainActor in
             while !Task.isCancelled {
-                if let nativeClient = nativeGatewayClient {
+                if let dsh = dshClient {
+                    // DSH transport: time the harness phone API itself. The
+                    // relay probe below would measure a backend that is not
+                    // serving requests, and fails outright with no relay.
+                    connectorLatencyMs = await dsh.measureLatency()
+                } else if let nativeClient = nativeGatewayClient {
                     connectorLatencyMs = await nativeClient.measureLatency()
                 } else if let apiClient {
                     // Relay mode has no nativeGatewayClient, so latency was
@@ -1275,6 +1280,35 @@ final class AppContainer {
         guard await sessionStore.currentAccessToken() != nil else {
             await pairingStore.clearLocalPairing()
             sessionStore.launchState = .unpaired
+            return
+        }
+
+        // DSH transport: the harness phone API is the backend and it has no
+        // device-registration / session-state API at all. The relay bootstrap
+        // below therefore always fails against a DSH deployment, and its
+        // failure sets launchState = .networkFailure, which parks the app on
+        // the "Connection Failed / Re-pair Device" screen even though the DSH
+        // client connected fine. Readiness here is the DSH client's own
+        // connectionStatus, so skip the relay bootstrap entirely and clear the
+        // stale relay error state the previous run persisted.
+        if Self.dshEnabled {
+            await permissionsStore.reloadCapabilities()
+            if let dsh = dshClient {
+                await dsh.connect()
+            }
+            if sessionStore.state.connectionStatus == .error {
+                sessionStore.state.connectionStatus = dshClient?.connectionStatus ?? .connected
+                sessionStore.state.syncStatus = .synced
+            }
+            sessionStore.launchState = .ready
+            notificationService?.registerCategories()
+            await hostStore.refresh()
+            lastKnownHostOnline = dshClient != nil
+            // The relay hostStatusStream never reports .connected in DSH
+            // mode, so the latency loop it normally starts never ran and
+            // Settings > Latency sat at a dash. Start it here directly.
+            startLatencyMonitoring()
+            isInitialized = true
             return
         }
 

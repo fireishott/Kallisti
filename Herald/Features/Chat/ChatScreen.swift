@@ -383,7 +383,16 @@ struct ChatScreen: View {
                     // the loading screen dismissed but the composer stayed
                     // locked, so the keyboard never came up. .connected /
                     // .degraded = socket is alive; everything else read-only.
-                    isEnabled: chatStore.connectionStatus == .connected
+                    //
+                    // DSH transport: there is no persistent socket to gate on,
+                    // and no "host offline" concept that should lock the
+                    // composer. DSH is request/response - typing is always
+                    // allowed and a send failure surfaces as an error bubble.
+                    // Gating on the relay connectionStatus here left the
+                    // composer permanently read-only (no keyboard) because
+                    // DSH's status lives on the DSH client, not the store.
+                    isEnabled: container.dshClient != nil
+                        || chatStore.connectionStatus == .connected
                         || chatStore.connectionStatus == .degraded
                 )
                 } // end rich-mode ChatInputBar gate (Build 128.78)
@@ -578,6 +587,15 @@ struct ChatScreen: View {
                     try? await Task.sleep(for: .seconds(10))
                     guard !Task.isCancelled else { break }
                     await hostStore.refresh()
+                    // Keep the composer gate in step with the LIVE client, not
+                    // just the one sample taken on appear. DSH's connect() is a
+                    // single /health ping with no retry, so a launch-time
+                    // hiccup left the store at .connecting forever and the
+                    // keyboard never came up - the iPad hit exactly this.
+                    let live = chatStore.heraldClient.connectionStatus
+                    if chatStore.connectionStatus != live {
+                        chatStore.updateConnectionStatus(live)
+                    }
                 }
             }
             .onDisappear {
