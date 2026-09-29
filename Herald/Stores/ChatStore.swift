@@ -383,6 +383,13 @@ final class ChatStore {
     /// instead of 10 minutes later (or never).
     private static let clarifyProbeInterval: TimeInterval = 20
 
+    /// Last clarify the user answered, and when. Probes and server snapshots
+    /// skip that request ID for `answeredClarifySuppressWindow` so a stale
+    /// cached copy cannot bring an answered card back.
+    private var answeredClarifyRequestID: String?
+    private var answeredClarifyAt: Date = .distantPast
+    private static let answeredClarifySuppressWindow: TimeInterval = 60
+
     /// Build 84 Option C-B (keep-awake re-arm): background task that keeps
     /// the process alive while a stream is in flight. Re-armed on every
     /// streaming progress event so iOS does not suspend the process (and
@@ -1576,6 +1583,11 @@ final class ChatStore {
         guard let pending = pendingClarify else { return }
         let requestID = pending.requestID
         pendingClarify = nil
+        // Suppress re-surfacing THIS question while the answer is in flight
+        // and briefly after: a watchdog probe racing the submit reads the
+        // client's still-cached copy and re-shows an already-answered card.
+        answeredClarifyRequestID = requestID
+        answeredClarifyAt = .now
         appendLog(level: .info, "Clarify answer submitted for request \(requestID.prefix(8))")
         Task { [weak self] in
             guard let self else { return }
@@ -1583,10 +1595,26 @@ final class ChatStore {
                 try await self.heraldClient.respondToClarify(requestID: requestID, answer: answer)
                 self.appendLog(level: .info, "Clarify respond accepted, turn unblocked")
             } catch {
+                // "No pending question" means the server already consumed an
+                // answer (or the turn moved on). Re-showing the card then
+                // invites tap after tap that each 404s - leave it cleared.
+                let text = error.localizedDescription.lowercased()
+                if text.contains("no pending question") || text.contains("404") {
+                    self.appendLog(level: .info, "Clarify already resolved server-side (\(requestID.prefix(8))); not re-showing card")
+                    return
+                }
+                self.answeredClarifyRequestID = nil
                 self.pendingClarify = pending
                 self.appendLog(level: .error, "Clarify respond failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// True when `pending` is the question the user just answered, so a probe
+    /// or snapshot must not re-show it.
+    private func isRecentlyAnsweredClarify(_ pending: PendingClarify) -> Bool {
+        guard let id = answeredClarifyRequestID, id == pending.requestID else { return false }
+        return Date.now.timeIntervalSince(answeredClarifyAt) < Self.answeredClarifySuppressWindow
     }
 
     /// Outbox state → .terminal with canonical identity, persisted.
@@ -1714,7 +1742,10 @@ final class ChatStore {
             endStreamingLiveActivityIfTurnFinished()
         case "failed":
             let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed"
-            failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
+            // A server-terminal failure (DSH already retried the model step)
+            // is manual-retry only; auto-resending replays the same failure.
+            failOutboxItem(item, state: .retryableFailure, error: error,
+                           retryAfter: status.errorAction == Self.serverTerminalFailureAction ? nil : backoffInterval(forAttempt: item.attemptCount))
             sendPhase = .failed(error)
             // Build 135.31: authoritative server-side failure discovered by the
             // settle probe. This path had no Live Activity end call, so a turn
@@ -1856,7 +1887,8 @@ final class ChatStore {
                 }
             case "failed":
                 let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
-                failOutboxItem(item, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: item.attemptCount))
+                failOutboxItem(item, state: .retryableFailure, error: error,
+                               retryAfter: status.errorAction == Self.serverTerminalFailureAction ? nil : backoffInterval(forAttempt: item.attemptCount))
             case "cancelled":
                 failOutboxItem(item, state: .cancelled, error: status.error ?? "Cancelled")
             default:
@@ -1961,7 +1993,8 @@ final class ChatStore {
                     settledAny = true
                 case "failed":
                     let error = status.error ?? status.errorCategory ?? "Kallisti reported the job failed while the app was away"
-                    failOutboxItem(probeItem, state: .retryableFailure, error: error, retryAfter: backoffInterval(forAttempt: probeItem.attemptCount))
+                    failOutboxItem(probeItem, state: .retryableFailure, error: error,
+                                   retryAfter: status.errorAction == Self.serverTerminalFailureAction ? nil : backoffInterval(forAttempt: probeItem.attemptCount))
                     settledAny = true
                 case "cancelled":
                     failOutboxItem(probeItem, state: .cancelled, error: status.error ?? "Cancelled")
@@ -4744,7 +4777,8 @@ final class ChatStore {
         guard Date.now.timeIntervalSince(lastClarifyProbeAt) >= Self.clarifyProbeInterval else { return false }
         lastClarifyProbeAt = .now
         guard let pending = await heraldClient.fetchPendingClarify(),
-              !pending.question.isEmpty else { return false }
+              !pending.question.isEmpty,
+              !isRecentlyAnsweredClarify(pending) else { return false }
         pendingClarify = pending
         appendLog(level: .info, "Clarify card surfaced from watchdog probe (request \(pending.requestID.prefix(8)))")
         // Settle any streaming placeholder row so the "Thinking... Ns"
@@ -4882,7 +4916,8 @@ final class ChatStore {
                     self.removeServerTurnPlaceholder()
                     if self.pendingClarify == nil,
                        let pending = await self.heraldClient.fetchPendingClarify(),
-                       !pending.question.isEmpty {
+                       !pending.question.isEmpty,
+                       !self.isRecentlyAnsweredClarify(pending) {
                         self.pendingClarify = pending
                         self.appendLog(level: .info, "Clarify card re-shown from server snapshot")
                     }

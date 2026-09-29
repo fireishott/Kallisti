@@ -533,3 +533,34 @@ struct DSHTurnErrorTests {
         #expect(DSHClient.message(fromWireEvent: record) == nil)
     }
 }
+
+// MARK: - DSH session identity (resume)
+//
+// Resuming a chat after a relaunch or from the session list must land in the
+// SAME DSH session. The session id is derived from the conversation UUID and
+// `stableUUID(from:)` must invert it, or a reopen forks a fresh session.
+@MainActor
+struct DSHSessionIdentityTests {
+    @Test func sessionIdRoundTripsThroughStableUUID() {
+        let conv = UUID()
+        let sid = DSHClient.sessionId(for: conv)
+        #expect(sid == "session-" + conv.uuidString.lowercased())
+        #expect(DSHClient.stableUUID(from: sid) == conv)
+    }
+
+    @Test func sessionIdIsDeterministic() {
+        let conv = UUID()
+        #expect(DSHClient.sessionId(for: conv) == DSHClient.sessionId(for: conv))
+    }
+
+    @Test func jobWireDecodesInterruptedAndCompleted() throws {
+        let done = try JSONDecoder().decode(DSHClient.JobWire.self, from: Data(
+            #"{"status":"completed","sessionId":"session-x","turn":2,"text":"hi","messageId":"m1","usage":{"inputTokens":5,"outputTokens":3}}"#.utf8))
+        #expect(done.status == "completed")
+        #expect(done.turn == 2)
+        #expect(done.text == "hi")
+        let cut = try JSONDecoder().decode(DSHClient.JobWire.self, from: Data(
+            #"{"status":"interrupted","sessionId":"session-x","turn":1,"text":null,"error":"The host restarted mid-turn (interrupted)."}"#.utf8))
+        #expect(cut.status == "interrupted")
+    }
+}

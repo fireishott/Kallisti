@@ -71,6 +71,52 @@ final class DSHClient: HeraldClientProtocol {
         self.session = URLSession(configuration: cfg)
     }
 
+    // MARK: - Session identity (fix B)
+
+    /// DSH session id for a local conversation. Kallisti mints DSH sessions
+    /// with an explicit id derived from the conversation UUID
+    /// (`session-<uuid>`), so the mapping is a pure function and survives an
+    /// app relaunch, a session-list reopen, or a DSH restart. The dictionary is
+    /// only a cache; sessions minted elsewhere (web GUI, older builds) map back
+    /// through `stableUUID(from:)`, which inverts this for every DSH id.
+    static func sessionId(for conversationID: UUID) -> String {
+        "session-\(conversationID.uuidString.lowercased())"
+    }
+
+    /// Resolvable DSH id for a conversation, without a network call. The
+    /// deterministic id is the fallback, so a relaunch or a list reopen never
+    /// loses the session - the old nil here is what forked a new session per
+    /// resume and dropped the chat's history.
+    private func nativeId(for conversationID: UUID) -> String? {
+        nativeIdByConversation[conversationID] ?? Self.sessionId(for: conversationID)
+    }
+
+    /// Resolve, and if needed create/resume, the DSH session for a
+    /// conversation. Explicit-id `session.create` adopts a live session,
+    /// resumes a persisted one, or creates it - so this is idempotent.
+    private var ensuredSessions: Set<String> = []
+
+    private func ensureSession(for conversationID: UUID) async throws -> String {
+        let sid = nativeIdByConversation[conversationID] ?? Self.sessionId(for: conversationID)
+        if ensuredSessions.contains(sid) { return sid }
+        let body: [String: Any] = ["agentPreset": "ignyte", "sessionId": sid]
+        let created = try decoder.decode(CreateBody.self, from: try await sendWithBody("session", body))
+        remember(conversationID, created.sessionId)
+        ensuredSessions.insert(created.sessionId)
+        if let pick = pendingModelSelection {
+            // Best effort: a failed apply leaves the host default, which the
+            // picker then reports truthfully on its next load.
+            _ = try? await sendWithBody("model", ["sessionId": created.sessionId, "provider": pick.provider, "model": pick.model])
+            pendingModelSelection = nil
+        }
+        return created.sessionId
+    }
+
+    private func remember(_ conversationID: UUID, _ sessionId: String) {
+        nativeIdByConversation[conversationID] = sessionId
+        conversationByNativeId[sessionId] = conversationID
+    }
+
     // MARK: - URL helpers
 
     private var base: String {
@@ -239,6 +285,50 @@ final class DSHClient: HeraldClientProtocol {
         }
     }
 
+    // MARK: - Host restart (Settings > Infrastructure)
+
+    struct RestartResult: Sendable {
+        let interruptedSessions: Int
+        let seconds: Int
+    }
+
+    private struct HealthDetail: Decodable { let ok: Bool; let startedAt: Double?; let pid: Int? }
+    private struct RestartAck: Decodable { let restarting: Bool; let interruptedSessions: Int?; let startedAt: Double? }
+
+    /// Restart DSH through its LaunchAgent (`launchctl kickstart -k`) and
+    /// wait until a NEW process answers. Proof is a changed `startedAt`, not
+    /// a 200 - the old process can answer health until it is killed.
+    func restartHost(timeout: TimeInterval = 90) async throws -> RestartResult {
+        let t0 = Date()
+        var before: Double?
+        if let d = try? await send(request("health")),
+           let h = try? decoder.decode(HealthDetail.self, from: d) { before = h.startedAt }
+        let ack = try decoder.decode(RestartAck.self, from: try await sendWithBody("restart", [:]))
+        guard ack.restarting else { throw ServerError(message: "DSH declined the restart") }
+        before = before ?? ack.startedAt
+        connectionStatus = .reconnecting
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        while Date().timeIntervalSince(t0) < timeout {
+            if let d = try? await send(request("health")),
+               let h = try? decoder.decode(HealthDetail.self, from: d), h.ok,
+               h.startedAt != nil, h.startedAt != before {
+                connectionStatus = .connected
+                return RestartResult(interruptedSessions: ack.interruptedSessions ?? 0,
+                                     seconds: Int(Date().timeIntervalSince(t0)))
+            }
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+        }
+        await reconnectIfNeeded()
+        throw ServerError(message: "DSH did not come back within \(Int(timeout))s. On the Mac run: dsh-restart")
+    }
+
+    /// Sessions with a turn running right now, for the restart confirmation.
+    func runningSessionCount() async -> Int {
+        guard let data = try? await send(request("sessions")),
+              let body = try? decoder.decode(SessionListBody.self, from: data) else { return 0 }
+        return body.items.filter { $0.running == true }.count
+    }
+
     private struct ModelCatalogBody: Decodable {
         let defaultProvider: String?
         let defaultModel: String?
@@ -271,7 +361,7 @@ final class DSHClient: HeraldClientProtocol {
         if let pending = pendingModelSelection {
             return (rows, pending.provider, pending.model)
         }
-        if let conv = currentConversation, let native = nativeIdByConversation[conv.id],
+        if let conv = currentConversation, let native = nativeId(for: conv.id),
            let sel = try? await sessionModelSelection(sessionId: native) {
             return (rows, sel.provider, sel.model)
         }
@@ -281,9 +371,12 @@ final class DSHClient: HeraldClientProtocol {
     /// Selects the model for the current session. Before the first send there
     /// is no DSH session, so the choice is held and applied at creation.
     func selectModel(provider: String, model: String) async throws {
-        if let conv = currentConversation, let native = nativeIdByConversation[conv.id] {
-            _ = try await sendWithBody("model", ["sessionId": native, "provider": provider, "model": model])
+        if let conv = currentConversation {
+            // Deterministic ids mean the session can be created right here,
+            // so the pick applies to THIS chat instead of waiting on a send.
             pendingModelSelection = nil
+            let native = try await ensureSession(for: conv.id)
+            _ = try await sendWithBody("model", ["sessionId": native, "provider": provider, "model": model])
         } else {
             pendingModelSelection = (provider, model)
         }
@@ -411,18 +504,101 @@ final class DSHClient: HeraldClientProtocol {
     }
 
     func resumeActiveSessionIfNeeded() async -> Bool {
-        guard let job = currentJobID, activeStreams[job] != nil else { return false }
-        return true
+        guard let job = currentJobID else { return false }
+        if activeStreams[job] != nil { return true }
+        // The local stream is gone (suspension) but the server may still be
+        // on it: ask instead of assuming, so the watchdog does not fail a live
+        // turn and trigger a resend.
+        guard let status = await fetchJob(clientMessageID: job) else { return false }
+        return status.status == "running" || status.status == "queued"
     }
 
     func activeSessionKeys() async -> Set<String> {
         guard let conv = currentConversation,
-              let native = nativeIdByConversation[conv.id],
+              let native = nativeId(for: conv.id),
               currentJobID != nil else { return [] }
         return [native]
     }
 
-    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? { nil }
+    // MARK: - Job status (fix A)
+
+    /// Wire shape of `GET /phone/v1/job`.
+    struct JobWire: Decodable {
+        let status: String
+        let sessionId: String?
+        let turn: Int?
+        let text: String?
+        let messageId: String?
+        let error: String?
+        let errorCode: String?
+        let usage: UsageWire?
+        struct UsageWire: Decodable {
+            let inputTokens: Double?
+            let outputTokens: Double?
+            let totalTokens: Double?
+        }
+    }
+
+    /// Authoritative state of one prompt. On DSH the job id IS the
+    /// clientMessageID (see `runTurn`), so a job can be resolved after a
+    /// relaunch or DSH restart with nothing but the outbox record.
+    /// Nil only when the host cannot be reached or has never seen the prompt.
+    func fetchJob(clientMessageID: UUID) async -> JobWire? {
+        var path = "job?clientMessageId=\(clientMessageID.uuidString.lowercased())"
+        if let conv = currentConversation, let sid = nativeId(for: conv.id),
+           let enc = sid.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&sessionId=\(enc)"
+        }
+        guard let data = try? await send(request(path)) else { return nil }
+        return try? decoder.decode(JobWire.self, from: data)
+    }
+
+    /// Maps DSH job states onto the relay vocabulary ChatStore settles on.
+    /// `interrupted` (host restart / crash mid-turn) maps to `cancelled`, NOT
+    /// `failed`: ChatStore auto-resends `failed` on a backoff, and resending a
+    /// turn the host killed is exactly the duplicate-reply storm this fixes.
+    /// The user gets a manual Retry instead.
+    func getJobStatus(_ jobId: UUID) async -> LiveHeraldClient.JobStatusResponse? {
+        guard let job = await fetchJob(clientMessageID: jobId) else { return nil }
+        let mapped: String
+        var error = job.error
+        switch job.status {
+        case "completed": mapped = "completed"
+        case "failed": mapped = "failed"
+        case "cancelled": mapped = "cancelled"
+        case "interrupted":
+            mapped = "cancelled"
+            error = "Interrupted: the host restarted mid-turn. Tap retry to run it again."
+        default: mapped = "running"
+        }
+        var message: Message?
+        if mapped == "completed" {
+            message = Message(
+                id: job.messageId.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                clientMessageID: jobId,
+                sender: .herald,
+                content: job.text ?? "",
+                status: .sent
+            )
+        }
+        let usage = job.usage.flatMap { u -> TokenUsage? in
+            guard let i = u.inputTokens, let o = u.outputTokens else { return nil }
+            return TokenUsage(promptTokens: Int(i), completionTokens: Int(o), totalTokens: Int(u.totalTokens ?? i + o))
+        }
+        return LiveHeraldClient.JobStatusResponse(
+            status: mapped,
+            conversationId: job.sessionId.map(Self.stableUUID(from:)),
+            message: message,
+            error: error,
+            usage: usage,
+            context: nil,
+            diff: nil,
+            attempt: nil,
+            lastSeq: nil,
+            errorCategory: mapped == "failed" ? Self.errorCategory(code: job.errorCode, message: job.error ?? "") : nil,
+            errorAction: mapped == "failed" ? ChatStore.serverTerminalFailureAction : nil
+        )
+    }
 
     func isServerTurnAwaitingUserInput() async -> Bool { pendingClarify != nil }
 
@@ -433,7 +609,7 @@ final class DSHClient: HeraldClientProtocol {
         // API persists pending questions server-side, so poll it on watchdog
         // probes and app foregrounding to re-surface the card.
         guard let conv = currentConversation,
-              let native = nativeIdByConversation[conv.id] else { return nil }
+              let native = nativeId(for: conv.id) else { return nil }
         guard let req = request("questions?sessionId=\(native.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? native)") else { return nil }
         do {
             let data = try await send(req)
@@ -452,7 +628,7 @@ final class DSHClient: HeraldClientProtocol {
         // DSH ask_user_question answers are submitted through the phone API's
         // /answer endpoint so the result feeds back as the tool result, not as
         // a steer prompt.
-        guard let conv = currentConversation, let native = nativeIdByConversation[conv.id] else {
+        guard let conv = currentConversation, let native = nativeId(for: conv.id) else {
             throw ServerError(message: "No active session to answer on")
         }
         try await submitAnswer(sessionId: native, questionID: requestID, answer: answer)
@@ -469,17 +645,24 @@ final class DSHClient: HeraldClientProtocol {
     }
 
     func loadConversation(id: UUID) async throws -> Conversation {
-        guard let native = nativeIdByConversation[id] else { return Conversation(id: id, title: "Chat") }
-        let page = try await fetchPage(sessionId: native, maxMessages: 200)
+        guard let native = nativeId(for: id) else { return Conversation(id: id, title: "Chat") }
+        let page: PageBody
+        do {
+            page = try await fetchPage(sessionId: native, maxMessages: 200)
+        } catch let e as ServerError where e.message.contains("not found") {
+            // A brand-new chat whose session is created on first send.
+            return Conversation(id: id, title: currentConversation?.title ?? "Chat", sessionKey: native)
+        }
         var messages: [Message] = []
         var model: String?
         for record in page.records {
             if let m = Self.modelName(fromEvent: record["event"]) { model = m }
             if let m = Self.message(fromWireEvent: record, model: model) { messages.append(m) }
         }
+        remember(id, native)
         let conv = Conversation(
             id: id,
-            title: currentConversation?.title ?? "Chat",
+            title: currentConversation?.id == id ? (currentConversation?.title ?? "Chat") : "Chat",
             messages: messages,
             lastActivity: .now,
             latestUsage: lastUsage,
@@ -506,13 +689,10 @@ final class DSHClient: HeraldClientProtocol {
     }
 
     func ensureConversation(id: UUID) async -> Bool {
-        if nativeIdByConversation[id] != nil { return true }
-        do {
-            let created = try await createSession(title: "Chat", conversationID: id)
-            return !created.title.isEmpty
-        } catch {
-            return false
-        }
+        // Create-or-resume the deterministic session. The old "mapping known
+        // -> true" short cut returned false after every relaunch, and the next
+        // send then minted a random new session: history gone, context gone.
+        (try? await ensureSession(for: id)) != nil
     }
 
     // MARK: - Sessions
@@ -522,7 +702,9 @@ final class DSHClient: HeraldClientProtocol {
         let body = try decoder.decode(SessionListBody.self, from: data)
         let summaries = body.items.map { row -> SessionSummary in
             let local = conversationByNativeId[row.sessionId] ?? Self.stableUUID(from: row.sessionId)
-            conversationByNativeId[row.sessionId] = local
+            // Record both directions. Only the reverse map was filled, so a
+            // chat opened from this list had no DSH id and forked a new one.
+            remember(local, row.sessionId)
             // Prefer DSH's model-generated title; the workspace folder name is
             // only a last resort for a session that has not been named yet.
             let title = row.projections?.values?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -558,22 +740,8 @@ final class DSHClient: HeraldClientProtocol {
 
     func createSession(title: String, conversationID: UUID?) async throws -> SessionSummary {
         let local = conversationID ?? UUID()
-        let body = try JSONSerialization.data(withJSONObject: ["agentPreset": "ignyte"])
-        guard var req = request("session", method: "POST") else {
-            throw ServerError(message: "Invalid DSH base URL")
-        }
-        req.httpBody = body
-        let data = try await send(req)
-        let created = try decoder.decode(CreateBody.self, from: data)
-        nativeIdByConversation[local] = created.sessionId
-        conversationByNativeId[created.sessionId] = local
-        currentConversation = Conversation(id: local, title: title, sessionKey: created.sessionId)
-        if let pick = pendingModelSelection {
-            // Best effort: a failed apply leaves the host default, which the
-            // picker then reports truthfully on its next load.
-            _ = try? await sendWithBody("model", ["sessionId": created.sessionId, "provider": pick.provider, "model": pick.model])
-            pendingModelSelection = nil
-        }
+        let sid = try await ensureSession(for: local)
+        currentConversation = Conversation(id: local, title: title, sessionKey: sid)
         return SessionSummary(
             id: local,
             title: title,
@@ -582,7 +750,7 @@ final class DSHClient: HeraldClientProtocol {
             source: "dsh",
             isPinned: false,
             isArchived: false,
-            sessionKey: created.sessionId,
+            sessionKey: sid,
             hasActivity: false
         )
     }
@@ -608,7 +776,7 @@ final class DSHClient: HeraldClientProtocol {
         return SessionSummary(
             id: id, title: title, previewText: "", lastActivity: .now,
             source: "dsh", isPinned: false, isArchived: false,
-            sessionKey: nativeIdByConversation[id], hasActivity: false
+            sessionKey: nativeId(for: id), hasActivity: false
         )
     }
 
@@ -624,13 +792,12 @@ final class DSHClient: HeraldClientProtocol {
 
     func resumeNoteSession(conversationID: UUID, sessionKey: String) async -> Bool {
         guard !sessionKey.isEmpty else { return false }
-        nativeIdByConversation[conversationID] = sessionKey
-        conversationByNativeId[sessionKey] = conversationID
+        remember(conversationID, sessionKey)
         return true
     }
 
     func nativeSessionKey(for conversationID: UUID) async -> String? {
-        nativeIdByConversation[conversationID]
+        nativeId(for: conversationID)
     }
 
     // MARK: - Sending
@@ -649,9 +816,7 @@ final class DSHClient: HeraldClientProtocol {
     }
 
     func sendMessage(_ text: String, conversationID: UUID, clientMessageID: UUID) async throws -> Message {
-        if nativeIdByConversation[conversationID] == nil {
-            _ = try await createSession(title: "Chat", conversationID: conversationID)
-        }
+        _ = try await ensureSession(for: conversationID)
         return await send(message: text, attachments: [], clientMessageID: clientMessageID, continuationContext: nil)
     }
 
@@ -686,45 +851,78 @@ final class DSHClient: HeraldClientProtocol {
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
     ) async {
-        let jobID = UUID()
+        // The job id IS the clientMessageID. A resend of the same message
+        // (outbox retry, relaunch recovery) therefore carries the same id,
+        // the phone API maps it to the same DSH prompt requestId, and DSH
+        // refuses to run it twice. It also lets getJobStatus(jobID) resolve
+        // the job from nothing but the outbox record.
+        let jobID = clientMessageID
         currentJobID = jobID
-        // Key the task by the same id the UI cancels with; it used to be stored
-        // under a second random UUID, so cancelJob(jobID:) never found it and
-        // the finished entry was never removed.
         if let t = pendingStreamTask { activeStreams[jobID] = t; pendingStreamTask = nil }
         continuation.yield(.messageSent(jobID: jobID))
         continuation.yield(.started(phase: "thinking"))
 
         do {
-            // 1. Resolve the session (create on first send).
+            // 1. Resolve the session. Deterministic id: create-or-resume.
             let conversationID = currentConversation?.id ?? UUID()
             if currentConversation == nil {
                 currentConversation = Conversation(id: conversationID, title: "Chat")
             }
-            var nativeId = nativeIdByConversation[conversationID]
-            if nativeId == nil {
-                let created = try await createSession(title: currentConversation?.title ?? "Chat", conversationID: conversationID)
-                nativeId = created.sessionKey
-            }
-            guard let sessionId = nativeId else {
-                continuation.yield(.failed("Could not create a DSH session"))
-                continuation.finish()
-                return
-            }
+            let sessionId = try await ensureSession(for: conversationID)
 
-            // 2. Open follow FIRST so its opening snapshot is the pre-turn state.
-            let stream = try await openFollow(sessionId: sessionId)
+            // 2. Open follow FIRST so its opening snapshot is the pre-turn
+            //    state. The phone API withholds headers until the snapshot is
+            //    in hand, so returning here means the snapshot exists.
+            var stream = try await openFollow(sessionId: sessionId)
 
-            // 3. Admit the prompt.
-            try await prompt(sessionId: sessionId, text: message, mode: "queue", attachments: attachments)
-
-            // 4. Consume frames until our turn commits.
-            try await consume(
-                stream: stream,
-                sessionId: sessionId,
-                clientMessageID: clientMessageID,
-                continuation: continuation
+            // 3. Admit the prompt. A duplicate (this message already queued,
+            //    running, or answered) is attached to, never re-run.
+            let admitted = try await prompt(
+                sessionId: sessionId, text: message, mode: "queue",
+                attachments: attachments, clientMessageID: clientMessageID
             )
+            var targetSession = sessionId
+            if admitted.duplicate, let other = admitted.sessionId, other != sessionId {
+                // Pre-135.87 builds put this message in another session.
+                // Follow it there instead of running it again here.
+                targetSession = other
+                stream = try await openFollow(sessionId: other)
+            }
+            let requestId = admitted.requestId ?? "kallisti-\(clientMessageID.uuidString.lowercased())"
+
+            // 4. Consume frames until OUR turn ends. A dropped stream (DSH
+            //    restart, network handoff) reconnects and re-derives state
+            //    from the snapshot instead of failing the turn.
+            var attempt = 0
+            var knownTurn: Int?
+            while true {
+                let outcome = try await consume(
+                    stream: stream,
+                    sessionId: targetSession,
+                    requestId: requestId,
+                    knownTurn: knownTurn,
+                    clientMessageID: clientMessageID,
+                    continuation: continuation
+                )
+                if outcome == .done { break }
+                attempt += 1
+                if Task.isCancelled { throw CancellationError() }
+                // Ask the host what happened before reconnecting blind.
+                if let job = await fetchJob(clientMessageID: clientMessageID) {
+                    if finishFromJob(job, clientMessageID: clientMessageID, continuation: continuation) { break }
+                    knownTurn = job.turn ?? knownTurn
+                }
+                if attempt > 6 {
+                    continuation.yield(.failed("Lost the DSH stream. The turn may still finish; pull to refresh."))
+                    continuation.finish()
+                    break
+                }
+                continuation.yield(.reconnecting)
+                try await Task.sleep(nanoseconds: UInt64(min(8, 1 << attempt)) * 500_000_000)
+                await reconnectIfNeeded()
+                guard let reopened = try? await openFollow(sessionId: targetSession) else { continue }
+                stream = reopened
+            }
         } catch is CancellationError {
             continuation.yield(.cancelled)
             continuation.finish()
@@ -733,10 +931,71 @@ final class DSHClient: HeraldClientProtocol {
             continuation.finish()
         }
         activeStreams[jobID] = nil
-        currentJobID = nil
+        if currentJobID == jobID { currentJobID = nil }
     }
 
-    private func prompt(sessionId: String, text: String, mode: String, attachments: [PendingAttachment] = []) async throws {
+    /// Settle a turn from `GET /job` when the stream cannot. Returns true
+    /// when the job is terminal and the continuation has been finished.
+    private func finishFromJob(
+        _ job: JobWire,
+        clientMessageID: UUID,
+        continuation: AsyncStream<StreamingUpdate>.Continuation
+    ) -> Bool {
+        switch job.status {
+        case "completed":
+            let final = Message(id: UUID(), clientMessageID: clientMessageID, sender: .herald,
+                                content: job.text ?? "(no content)", status: .sent)
+            if var conv = currentConversation {
+                conv.messages.append(final)
+                conv.lastActivity = .now
+                currentConversation = conv
+            }
+            continuation.yield(.finished(final, nil, nil, nil))
+            continuation.finish()
+            return true
+        case "failed":
+            continuation.yield(.failed(
+                Self.readableTurnError(job.error ?? "DSH turn failed", model: nil),
+                category: Self.errorCategory(code: job.errorCode, message: job.error ?? ""),
+                action: ChatStore.serverTerminalFailureAction
+            ))
+            continuation.finish()
+            return true
+        case "cancelled":
+            continuation.yield(.cancelled)
+            continuation.finish()
+            return true
+        case "interrupted":
+            // Terminal, and deliberately NOT auto-retried.
+            continuation.yield(.failed(
+                "Interrupted: the host restarted mid-turn. Tap retry to run it again.",
+                category: "upstream_interrupted",
+                action: ChatStore.serverTerminalFailureAction
+            ))
+            continuation.finish()
+            return true
+        default:
+            return false
+        }
+    }
+
+    private struct PromptAdmission: Decodable {
+        let accepted: Bool
+        let duplicate: Bool
+        let requestId: String?
+        let sessionId: String?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            accepted = (try? c.decode(Bool.self, forKey: .accepted)) ?? true
+            duplicate = (try? c.decode(Bool.self, forKey: .duplicate)) ?? false
+            requestId = try? c.decode(String.self, forKey: .requestId)
+            sessionId = try? c.decode(String.self, forKey: .sessionId)
+        }
+        enum CodingKeys: String, CodingKey { case accepted, duplicate, requestId, sessionId }
+    }
+
+    @discardableResult
+    private func prompt(sessionId: String, text: String, mode: String, attachments: [PendingAttachment] = [], clientMessageID: UUID? = nil) async throws -> PromptAdmission {
         guard var req = request("prompt", method: "POST") else {
             throw ServerError(message: "Invalid DSH base URL")
         }
@@ -750,13 +1009,15 @@ final class DSHClient: HeraldClientProtocol {
         guard images.count == attachments.count else {
             throw ServerError(message: "The DSH transport currently supports image attachments only")
         }
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "sessionId": sessionId,
             "text": text,
             "mode": mode,
             "images": images,
-        ])
-        _ = try await send(req)
+        ]
+        if let clientMessageID { body["clientMessageId"] = clientMessageID.uuidString.lowercased() }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try decoder.decode(PromptAdmission.self, from: try await send(req))
     }
 
     /// Opens the SSE follow stream and returns the byte stream, after the HTTP
@@ -777,24 +1038,40 @@ final class DSHClient: HeraldClientProtocol {
         return bytes
     }
 
+    enum ConsumeOutcome { case done, streamLost }
+
+    /// Consume one follow connection. Returns `.done` once the continuation
+    /// is finished, `.streamLost` when the socket ended first (the caller
+    /// asks `/job`, then reconnects - never fabricates a reply).
+    ///
+    /// Our turn is identified by `requestId`: DSH stamps it on the durable
+    /// user message as `source.rpcId`, and the turn that message was spliced
+    /// into is ours. The old rule - "the first turn/start after the snapshot"
+    /// - claimed whatever turn happened to run next (a queued earlier prompt,
+    /// a resend), which is how replies landed under the wrong message and a
+    /// finished turn left "Thinking..." up.
     private func consume(
         stream: URLSession.AsyncBytes,
         sessionId: String,
+        requestId: String,
+        knownTurn: Int? = nil,
         clientMessageID: UUID,
         continuation: AsyncStream<StreamingUpdate>.Continuation
-    ) async throws {
+    ) async throws -> ConsumeOutcome {
         var textBuffer = ""
         var reasoningBuffer = ""
         var tools: [String: ToolActivity] = [:]
         var usage: TokenUsage?
         var sawSnapshot = false
-        var committed = false
         // A turn is several model steps: every tool-calling step records its own
         // `assistant/message`. Finishing on the first one ended the turn at the
         // tool call ("2 tools used", no answer) and let the next queued prompt
         // go out while DSH was still working. Keep the latest message with text
         // and finish only on this turn's `turn/end`.
-        var ourTurn: Int?
+        var ourTurn: Int? = knownTurn
+        // Latest turn/start seen, snapshot included. Our user/message lands
+        // inside its own turn, so this names our turn when we see it.
+        var currentTurn: Int?
         var lastAssistantText: String?
         // Model the turn ran on, for a readable failure message.
         var turnModel: String?
@@ -804,6 +1081,7 @@ final class DSHClient: HeraldClientProtocol {
         var snapshotMaxSeq = -1
         var clarifyCallIDs: Set<String> = []
 
+        do {
         for try await line in stream.lines {
             if Task.isCancelled { throw CancellationError() }
             guard line.hasPrefix("data: ") else { continue }
@@ -817,8 +1095,37 @@ final class DSHClient: HeraldClientProtocol {
                 sawSnapshot = true
                 if let records = frame["records"]?.arrayValue {
                     for r in records {
-                        if let seq = r["event"]?["seq"]?.doubleValue { snapshotMaxSeq = max(snapshotMaxSeq, Int(seq)) }
-                        if let m = Self.modelName(fromEvent: r["event"]) { turnModel = m }
+                        guard let ev = r["event"] else { continue }
+                        if let seq = ev["seq"]?.doubleValue { snapshotMaxSeq = max(snapshotMaxSeq, Int(seq)) }
+                        if let m = Self.modelName(fromEvent: ev) { turnModel = m }
+                        // A reconnect lands mid-turn or after it: recover our
+                        // turn and anything it already said from history.
+                        let t = ev["type"]?.stringValue ?? ""
+                        let d = ev["data"]
+                        if t == "turn/start", let n = d?["turn"]?.doubleValue { currentTurn = Int(n) }
+                        if t == "user/message", d?["source"]?["rpcId"]?.stringValue == requestId { ourTurn = currentTurn }
+                        if ourTurn != nil, t == "assistant/message",
+                           d?["message"]?["source"]?["kind"]?.stringValue == "model",
+                           let txt = Self.text(fromContentBlocks: d?["message"]?["content"]), !txt.isEmpty {
+                            lastAssistantText = txt
+                        }
+                        if let ours = ourTurn, t == "turn/end", let n = d?["turn"]?.doubleValue, Int(n) == ours {
+                            // Finished while we were away. Settle from the
+                            // snapshot instead of waiting on a turn that ended.
+                            let kind = d?["reason"]?["kind"]?.stringValue ?? "completed"
+                            if kind == "completed" {
+                                let final = Message(id: UUID(), clientMessageID: clientMessageID, sender: .herald,
+                                                    content: lastAssistantText ?? "(no content)", status: .sent)
+                                if var conv = currentConversation {
+                                    conv.messages.append(final); conv.lastActivity = .now; currentConversation = conv
+                                }
+                                continuation.yield(.finished(final, usage, nil, nil))
+                                continuation.finish()
+                                return .done
+                            }
+                            // Error / abort / interrupt: let /job phrase it.
+                            return .streamLost
+                        }
                     }
                 }
                 continuation.yield(.heartbeat(phase: "streaming"))
@@ -827,6 +1134,10 @@ final class DSHClient: HeraldClientProtocol {
 
             if type == "assistant-stream" {
                 guard sawSnapshot else { continue }
+                // Live chunks carry no turn number. Only render them while
+                // the running turn is ours, so a queued earlier prompt's
+                // answer is never painted under this message.
+                guard let ours = ourTurn, currentTurn == ours else { continue }
                 guard let f = frame["frame"] else { continue }
                 let kind = f["type"]?.stringValue ?? ""
                 if kind == "chunk", let chunk = f["chunk"] {
@@ -875,11 +1186,17 @@ final class DSHClient: HeraldClientProtocol {
                 let evData = ev["data"]
                 if let m = Self.modelName(fromEvent: ev) { turnModel = m }
 
+                if evType == "turn/start", let t = evData?["turn"]?.doubleValue { currentTurn = Int(t) }
+                if evType == "user/message", evData?["source"]?["rpcId"]?.stringValue == requestId {
+                    ourTurn = currentTurn
+                    continuation.yield(.started(phase: "thinking"))
+                }
+                // Everything below belongs to a specific turn; ignore other
+                // turns' tools, messages, and endings entirely.
+                let evTurn = evData?["turn"]?.doubleValue.map { Int($0) } ?? currentTurn
+                guard let ours = ourTurn, evTurn == ours else { continue }
+
                 switch evType {
-                case "turn/start":
-                    // The first turn opened after the snapshot is ours; a turn
-                    // already running at snapshot time has seq <= snapshotMaxSeq.
-                    if ourTurn == nil, let t = evData?["turn"]?.doubleValue { ourTurn = Int(t) }
 
                 case "tool/call":
                     let id = evData?["callId"]?.stringValue ?? UUID().uuidString
@@ -944,7 +1261,6 @@ final class DSHClient: HeraldClientProtocol {
                     if let u = evData?["usage"] { usage = Self.usage(from: u) }
 
                 case "turn/end":
-                    if let t = evData?["turn"]?.doubleValue, let ours = ourTurn, Int(t) != ours { break }
                     // The parked clarify, if any, is no longer pending once the
                     // turn ends (answered, timed out, or skipped).
                     pendingClarify = nil
@@ -953,7 +1269,18 @@ final class DSHClient: HeraldClientProtocol {
                     if kind == "aborted" {
                         continuation.yield(.cancelled)
                         continuation.finish()
-                        return
+                        return .done
+                    }
+                    if kind != "completed" && kind != "error" {
+                        // interrupted (host restart) and friends: terminal,
+                        // manual retry only - never an automatic resend.
+                        continuation.yield(.failed(
+                            "Interrupted: the host restarted mid-turn. Tap retry to run it again.",
+                            category: "upstream_interrupted",
+                            action: ChatStore.serverTerminalFailureAction
+                        ))
+                        continuation.finish()
+                        return .done
                     }
                     if kind == "error" {
                         let raw = evData?["reason"]?["error"]?["message"]?.stringValue ?? "DSH turn failed"
@@ -964,7 +1291,7 @@ final class DSHClient: HeraldClientProtocol {
                             action: ChatStore.serverTerminalFailureAction
                         ))
                         continuation.finish()
-                        return
+                        return .done
                     }
                     let text = lastAssistantText ?? (textBuffer.isEmpty ? "(no content)" : textBuffer)
                     let finalMessage = Message(
@@ -978,11 +1305,10 @@ final class DSHClient: HeraldClientProtocol {
                         currentConversation = conv
                     }
                     continuation.yield(.finished(finalMessage, usage, nil, nil))
-                    committed = true
                     // The follow stream never closes by itself; leaving it open
                     // leaked one socket and one Task per turn.
                     continuation.finish()
-                    return
+                    return .done
 
                 default:
                     break
@@ -991,23 +1317,22 @@ final class DSHClient: HeraldClientProtocol {
             }
 
             if type == "error" {
-                pendingClarify = nil
-                continuation.yield(.failed(frame["message"]?.stringValue ?? "DSH stream error"))
-                continuation.finish()
-                return
+                // A follow-level error is a transport fault, not a verdict
+                // on the turn. Let the caller ask /job and reconnect.
+                return .streamLost
             }
         }
-
-        if !committed {
-            pendingClarify = nil
-            let text = lastAssistantText ?? (textBuffer.isEmpty ? "(stream ended with no content)" : textBuffer)
-            let finalMessage = Message(
-                id: UUID(), clientMessageID: clientMessageID,
-                sender: .herald, content: text, status: .sent
-            )
-            continuation.yield(.finished(finalMessage, usage, nil, nil))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            // Socket dropped (DSH restart, network handoff). The turn may
+            // still be running server-side.
+            return .streamLost
         }
-        continuation.finish()
+        // The stream ended before our turn did. Previously this fabricated a
+        // "finished" reply from partial text - a wrong answer marked done.
+        return .streamLost
     }
 
     // MARK: - User questions
@@ -1053,13 +1378,13 @@ final class DSHClient: HeraldClientProtocol {
     func cancelJob(jobID: UUID) async throws {
         activeStreams[jobID]?.cancel()
         activeStreams[jobID] = nil
-        if let conv = currentConversation, let native = nativeIdByConversation[conv.id] {
+        if let conv = currentConversation, let native = nativeId(for: conv.id) {
             _ = try? await sendWithBody("cancel", ["sessionId": native])
         }
     }
 
     func interruptSession() async -> Bool {
-        guard let conv = currentConversation, let native = nativeIdByConversation[conv.id] else { return false }
+        guard let conv = currentConversation, let native = nativeId(for: conv.id) else { return false }
         if let job = currentJobID, let task = activeStreams[job] { task.cancel() }
         do {
             _ = try await sendWithBody("cancel", ["sessionId": native])

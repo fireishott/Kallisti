@@ -202,6 +202,16 @@ struct SettingsScreen: View {
         } message: { target in
             Text(restartConfirmationMessage(for: target))
         }
+        .alert("Restart Agent?", isPresented: $isShowingDSHRestartConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restart", role: .destructive) {
+                Task { await restartDSHAgent() }
+            }
+        } message: {
+            Text(dshRunningTurns > 0
+                 ? "\(dshRunningTurns) turn\(dshRunningTurns == 1 ? " is" : "s are") running and will be interrupted. Interrupted turns are not re-sent automatically; you can retry them. DeepSeek Harness restarts through its LaunchAgent and is back in about 10 seconds."
+                 : "DeepSeek Harness restarts through its LaunchAgent and is back in about 10 seconds. No turns are running.")
+        }
     }
 
     // MARK: - Connection
@@ -373,6 +383,12 @@ struct SettingsScreen: View {
     }
 
     @State private var isRestartingGW = false
+    /// DSH agent restart (Infrastructure). `dshRunningTurns` is read when the
+    /// row is tapped so the confirmation names what the restart will cut off.
+    @State private var isShowingDSHRestartConfirmation = false
+    @State private var isRestartingDSH = false
+    @State private var dshRestartResult: String?
+    @State private var dshRunningTurns = 0
     @State private var gwRestartTarget: String?
     @State private var gwRestartResult: String?
     /// Build 135.38: target captured by the restart row's tap and shown in
@@ -1469,6 +1485,63 @@ struct SettingsScreen: View {
         )
     }
 
+    // MARK: - DSH agent restart
+
+    private var dshRestartRow: some View {
+        Button {
+            guard !isRestartingDSH else { return }
+            Task {
+                dshRunningTurns = await container.dshClient?.runningSessionCount() ?? 0
+                isShowingDSHRestartConfirmation = true
+            }
+        } label: {
+            HStack(spacing: Design.Spacing.sm) {
+                if isRestartingDSH {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.orange)
+                        .frame(width: 20)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.orange)
+                        .frame(width: 20, alignment: .center)
+                }
+                Text(isRestartingDSH ? "Restarting Agent…" : "Restart Agent")
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(isRestartingDSH ? Design.Colors.secondaryForeground : Design.Colors.foreground)
+                Spacer()
+                if let result = dshRestartResult {
+                    Text(result)
+                        .font(Design.Typography.caption)
+                        .foregroundStyle(result.hasPrefix("Failed") ? Design.Colors.danger : Design.Colors.success)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            .frame(minHeight: Design.Size.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRestartingDSH)
+    }
+
+    private func restartDSHAgent() async {
+        guard let client = container.dshClient else { return }
+        isRestartingDSH = true
+        dshRestartResult = nil
+        do {
+            let r = try await client.restartHost()
+            dshRestartResult = "Back in \(r.seconds)s"
+            await hostStore.refresh()
+        } catch {
+            dshRestartResult = "Failed: \(error.localizedDescription)"
+        }
+        isRestartingDSH = false
+        try? await Task.sleep(for: .seconds(6))
+        dshRestartResult = nil
+    }
+
     // MARK: - Infrastructure
 
     private var infrastructureSection: some View {
@@ -1532,6 +1605,11 @@ struct SettingsScreen: View {
                         ?? hostStore.currentHost?.heraldModel
                         ?? "—"
                 )
+
+                if isDSHMode {
+                    sectionDivider
+                    dshRestartRow
+                }
 
                 // AUX Model Configuration — Build 30: hide the section in DSH
                 // mode because DSH routes tasks itself; show it only for Hermes.
