@@ -32,7 +32,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.4.0</string>
 	<key>CFBundleVersion</key>
-	<string>135.93</string>
+	<string>135.94</string>
 	<key>INIntentsSupported</key>
 	<array>
 		<string>INSendMessageIntent</string>

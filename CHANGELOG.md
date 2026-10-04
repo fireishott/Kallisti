@@ -5,6 +5,78 @@ All notable Kallisti changes are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Builds 135.77 - 135.94 (2026-09-27 to 2026-10-03). DeepSeek Harness reliability:
+a chat keeps its session, a reply belongs to the message that asked for it, and a
+turn that fails says what failed.
+
+### Fixed
+
+- **The widget, intents, and notification bundles carry the app's version
+  (135.94).** Every extension still declared `CFBundleShortVersionString` 0.3.2
+  after the app moved to 0.4.0, which fails App Store validation. The extensions
+  now read `$(MARKETING_VERSION)`, the same way they already read
+  `$(CURRENT_PROJECT_VERSION)` for their build number, so a marketing-version bump
+  is one edit and cannot leave a bundle behind.
+
+- **A DSH chat no longer forks a new session (135.89).** The client minted a
+  fresh DSH session whenever its in-memory map was empty, so a relaunch, a
+  session-list reopen, or a DSH restart lost the chat's history. A session id is
+  now derived from the conversation UUID (`session-<uuid>`), which makes
+  resolving one a pure function and create-or-resume idempotent.
+- **A reply can no longer land under the wrong message (135.89).** The client
+  claimed the first turn that started after it took its snapshot - which was
+  whatever ran next, a queued earlier prompt or a resend. Turns are now matched
+  by the `requestId` DSH stamps on their own user message, and live chunks render
+  only while the running turn is ours. The same fix ends the "Thinking..." rows
+  that stayed up after their turn had already finished.
+- **A dropped stream no longer fabricates a reply (135.89).** When the follow
+  socket ended before our turn did, the client assembled a finished answer out
+  of whatever partial text it had. It now asks `GET /phone/v1/job` - the job id
+  is the client message id - and settles from the host's own state: text,
+  reasoning and usage on completion, a real error on failure, and `interrupted`
+  mapped to cancelled so a turn the host killed is never auto-resent.
+- **A failed DSH turn says what failed (135.77).** A provider error such as
+  `503: {"message":"[anthropic-compatible-x/minimax-m3] [404]: 404 page not
+  found"}` was invisible: the row sat on "Waiting for host..." while the outbox
+  re-sent the same prompt on every backoff tick. A terminal error now renders as
+  one readable line naming the model and the cause, and is never auto-resubmitted.
+  DSH retries a model step itself before it ends a turn.
+- **The composer is no longer read-only on DSH (135.86).** It was gated on the
+  relay store's connection status, which DSH never sets, so the keyboard never
+  came up. The gate now follows the DSH client, and that client retries its
+  health probe (0.4s, 0.8s, 1.6s, 3.2s) instead of latching `.disconnected`
+  after a single attempt that raced the phone's network bring-up. The launch
+  surface's readiness overlay was reading `nativeGatewayClient` - nil on DSH -
+  and swallowing every tap in the app.
+- **An answered clarify card stays answered (135.89).** A watchdog probe racing
+  the submit could re-show a question the user had already answered, inviting
+  taps that each 404'd.
+
+### Added
+
+- **Restart the agent from Settings (135.89).** Settings > Infrastructure
+  restarts DSH through its LaunchAgent and waits for a NEW process to answer.
+  Proof is a changed `startedAt`, not a `200`, because the old process can keep
+  answering health until it is killed. The confirmation names how many turns are
+  running and will be cut off.
+- **A prompt the host already has is attached to, never re-run (135.89).**
+  `prompt` reports `duplicate` and the client follows the message to the session
+  that already holds it. A turn started by a pre-135.87 build is picked up that
+  way instead of being run a second time.
+
+### Changed
+
+- **DSH mode hides the Hermes-only Settings rows (135.86).** Relay, Gateway, and
+  AUX model panels are Hermes surfaces. DSH routes tasks itself, so those rows
+  either did nothing or reported a backend that was not serving the request.
+- **Notes enrichment prompt (135.86).** The note prompt no longer briefs the
+  model on vision tools it cannot call and must not mention, and a statement of
+  state ("I am hungry", "I am tired") gets a few short concrete suggestions
+  instead of a transcription. A sync that produced no reasoning text still shows
+  a completed thought card rather than an empty bubble.
+
 ## [0.4.0] - 2026-09-27
 
 Build 135.76. **Kallisti is now backend agnostic: BYOB, Bring Your Own Backend.**

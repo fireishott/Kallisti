@@ -30,6 +30,15 @@ Models are whatever your backend routes to: hosted APIs, a local router, or on-d
 
 The transport is chosen at build time. Host-specific values never live in source: a DSH build reads its token and base URL from an untracked `Config/DSH.local.xcconfig` (see [`Config/DSH.example.xcconfig`](Config/DSH.example.xcconfig)); leave it out and the app builds for the relay and native-gateway transports.
 
+### Bundled DSH plugins
+
+A DeepSeek Harness build uses two small plugins from [`integrations/`](integrations):
+
+- [`dsh-phone-api`](integrations/dsh-phone-api) - the phone API the app talks to: health, models, per-session model selection, sessions, prompt admission, SSE follow, authoritative job state, history pages, skills, and the profile config the editor writes.
+- [`dsh-auto-vision`](integrations/dsh-auto-vision) - when a session's model cannot accept images, it re-admits the prompt on a vision-capable model from the live catalog. It retries admission errors only, so no turn is ever run twice.
+
+Install both into your DSH web profile and set `KALLISTI_DSH_TOKEN` in the environment DSH runs under; [`docs/CONNECTION_MODES.md`](docs/CONNECTION_MODES.md) has the install and mounting details.
+
 ## Status
 
 Kallisti is in **private beta**. TestFlight invites are being distributed to our beta testers now - if you are interested in joining, reach out through the [Discussions](https://github.com/fireishott/Kallisti/discussions) tab.
@@ -44,6 +53,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - **Embedded TUI terminal mode** - run a real agent TUI inside the app over a PTY bridge, with touch scroll, session resume, and live tool timers
 - One-time pairing-code sign-in with native gateway mode
 - Authenticated inline rendering for agent-generated images
+- Image turns that route themselves to a vision-capable model when the session's model cannot see (DSH)
 - Push notifications with per-device routing and an in-app inbox
 - Live Activities on the lockscreen with elapsed-time heartbeat
 - Widgets and notification-service extensions
@@ -60,6 +70,9 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - Real-time tool activity and reasoning status
 - Session history, per-session model selection from your backend's catalog, and profile selection
 - Durable outbox with deadline-aware recovery
+- DSH sessions derived from the conversation id, resumed idempotently, so a relaunch, a session-list reopen, or an agent restart keeps the chat's history
+- Each turn matched to the prompt that asked for it; a dropped stream settles from the agent's own job state instead of a partial answer
+- Failed turns render one readable line naming the model and the cause, and are never auto-resubmitted
 - Draft text persists across reconnect and view recreation
 - One live thinking placeholder per active turn
 - Opens to your last active conversation, or a fresh session on first launch
@@ -84,6 +97,8 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 
 - Agent responses with local `MEDIA:` paths render inline as authenticated images
 - Native image uploads stage through the gateway before prompt submission
+- On the DSH transport an image is admitted as real prompt content through `dsh-phone-api`, validated and persisted with DSH's own attachment store; a non-image attachment gets a clear error instead of vanishing
+- An image on a model that cannot see is re-admitted on a vision-capable model by `dsh-auto-vision`, so the turn never dead-ends on a text-only session
 - Historical images stay accessible after gateway restarts
 - Media serving is restricted to configured agent media roots
 - Aspect-fit thumbnails for consistent chat layout
@@ -103,6 +118,7 @@ The app is usable for daily driving. Chat, the embedded TUI terminal, and handwr
 - Connection status with real, truthful stages
 - Manual reset connection
 - Gateway logs, restart, and software update checks
+- Agent restart from Settings on the DSH transport: the LaunchAgent is kickstarted and the app waits for a new process to answer health, proving it by a changed start time rather than a `200`
 - Realtime connector latency readout in Settings
 - Config editor for the connected backend: DSH profile patch (applied live) or the agent config (Save & Restart), with server-side YAML validation and backups
 
@@ -174,9 +190,13 @@ Never commit the `.local.xcconfig`; it is gitignored. Detailed build notes are i
 
 ### Sign in on device
 
+Relay and native-gateway builds:
+
 1. Launch Kallisti and choose the native gateway mode.
 2. Generate a one-time pairing code from your agent host.
 3. Enter the code in the app. The code is never persisted on the device.
+
+A DSH build has no pairing step: the token and base URL come from `Config/DSH.local.xcconfig`, and the app pings DSH's health route on launch. If the first probe loses a race with the phone's network bring-up, the client retries a few times and the composer opens as soon as one succeeds - no relaunch needed.
 
 ## Push notifications
 

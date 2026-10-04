@@ -16,9 +16,15 @@ The app talks to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harn
 
 **App side:** copy `Config/DSH.example.xcconfig` to `Config/DSH.local.xcconfig`, set the same token and your base URL, and build with `-xcconfig Config/DSH.local.xcconfig`. The app derives the DSH URL from the server URL in Settings (`<host>/v1` -> `<host>/dsh`) and falls back to the build-time base URL.
 
-**Routes:** `health`, `models`, `model` (per-session selection), `sessions`, `session`, `prompt`, `follow` (SSE), `cancel`, `page` (history), `skills`, `skill`, `config`, `config/validate`.
+**Routes:** `health`, `models`, `model` (per-session selection), `sessions`, `session`, `prompt`, `follow` (SSE), `job`, `cancel`, `page` (history), `skills`, `skill`, `config`, `config/validate`, `restart`.
 
 **Turn lifecycle:** a DSH turn is several model steps. The client finishes a reply on the turn's `turn/end` event, not on the first `assistant/message`, which is only the tool-calling step when tools run.
+
+**Session identity:** Kallisti mints DSH sessions with an explicit id derived from the conversation UUID (`session-<uuid>`), so resolving a chat's session is a pure function and `session` is create-or-resume. Do not garbage-collect sessions by age: an id in a conversation that the host has dropped is recreated on the next send, and the history for that chat is expected to still exist.
+
+**Job state:** the job id the app tracks IS the client message id, so `job?clientMessageId=<uuid>` resolves a turn after a relaunch or a DSH restart. A dropped SSE stream is settled from this route, never from partial text. `prompt` reports `duplicate` for a message the host already queued, running, or answered; the client follows that message to its own session instead of re-running it.
+
+**Vision:** install `dsh-auto-vision` from [`integrations/dsh-auto-vision`](../integrations/dsh-auto-vision) as well. An image prompt is refused with `MODEL_DOES_NOT_SUPPORT_IMAGES` when the session's model declares no image input; the plugin then selects the next vision-capable model from the live catalog and admits the prompt again. Retries cover admission only, so a turn is never run twice.
 
 **Config Editor:** edits the DSH web profile patch. DSH reloads it live on save; saves are validated and backed up server-side.
 
