@@ -1308,6 +1308,10 @@ final class AppContainer {
             // mode, so the latency loop it normally starts never ran and
             // Settings > Latency sat at a dash. Start it here directly.
             startLatencyMonitoring()
+            // The relay bootstrap below is what used to carry the only push
+            // registration call, and this branch returns before it. Register
+            // here or a DSH build never stores its APNs token anywhere.
+            await registerStoredPushTokenIfNeeded()
             isInitialized = true
             return
         }
@@ -1799,6 +1803,41 @@ final class AppContainer {
 
     /// Registers the APNs device token with the relay so it can send silent push notifications.
     func registerPushTokenIfNeeded(_ token: String) async {
+        // DSH transport. The relay + connector pair that owned push on the
+        // legacy paths is not in the request path at all here, and
+        // nativeGatewayClient is nil, so without this branch a DSH build
+        // silently skips registration and Settings sits on "Not Registered"
+        // forever.
+        if let dsh = dshClient {
+            guard settingsStore.settings.notificationsEnabled else {
+                // Notifications off has to reach the server, not just the UI.
+                sessionStore.state.pushTokenRegistered = false
+                await dsh.deactivatePushToken()
+                return
+            }
+            let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedToken.isEmpty else { return }
+            let pushEnvironment = Self.apnsEnvironment
+            // Same dedup as the other branches: connection transitions,
+            // foregrounds and wakes all re-POST the same token.
+            if lastAcceptedDeviceToken == normalizedToken,
+               lastAcceptedDeviceEnvironment == pushEnvironment {
+                sessionStore.state.pushTokenRegistered = true
+                return
+            }
+            guard !pushRegistrationInFlight else { return }
+            pushRegistrationInFlight = true
+            defer { pushRegistrationInFlight = false }
+            let accepted = await dsh.registerPushToken(normalizedToken, pushEnvironment: pushEnvironment)
+            if accepted {
+                lastAcceptedDeviceToken = normalizedToken
+                lastAcceptedDeviceEnvironment = pushEnvironment
+            }
+            sessionStore.state.pushTokenRegistered = accepted
+            await notificationService?.markPushTokenRegistered(accepted)
+            return
+        }
+
         // Native gateway path: uses native-gateway bearer auth and the
         // connector facade URL, bypassing legacy pairing/apiClient entirely.
         if let nativeGatewayClient {

@@ -503,6 +503,51 @@ final class DSHClient: HeraldClientProtocol {
         }
     }
 
+
+    // MARK: - Push registration
+
+    private struct PushRegisterAck: Decodable {
+        let registered: Bool?
+        let environment: String?
+        let tokenKind: String?
+    }
+
+    /// Hand this device's APNs token to the harness so it can alert when a turn
+    /// goes terminal while the app is suspended.
+    ///
+    /// DSH exposes no device-registration API of its own, so the phone API owns
+    /// both halves of push: this call stores the token and the same service
+    /// fires the alert. `pushEnvironment` must describe the token iOS actually
+    /// issued, not the build flavour - a sandbox token sent to the production
+    /// host is rejected as BadDeviceToken.
+    func registerPushToken(_ token: String, pushEnvironment: String) async -> Bool {
+        let body: [String: Any] = [
+            "apnsToken": token,
+            "pushEnvironment": pushEnvironment,
+            "bundleId": Bundle.main.bundleIdentifier ?? "net.fihonline.kallisti",
+            "tokenKind": "device",
+            "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
+        ]
+        do {
+            let data = try await sendWithBody("push/register", body)
+            let ack = try decoder.decode(PushRegisterAck.self, from: data)
+            return ack.registered == true
+        } catch {
+            return false
+        }
+    }
+
+    /// Drop this install's registration. Used when the user turns notifications
+    /// off, so the server actually stops pushing instead of the client merely
+    /// declining to display what arrives.
+    func deactivatePushToken() async {
+        let body: [String: Any] = [
+            "installationId": AppContainer.sharedDefault().sessionStore.state.installationID.uuidString.lowercased(),
+            "tokenKind": "device",
+        ]
+        _ = try? await sendWithBody("push/deactivate", body)
+    }
+
     func resumeActiveSessionIfNeeded() async -> Bool {
         guard let job = currentJobID else { return false }
         if activeStreams[job] != nil { return true }
