@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { spawn, execFile } from 'node:child_process'
+import { createMediaHandler } from './media.js'
 
 // `yaml` is not installed beside this plugin. Resolve it through the running
 // DSH entry point so the parser is the exact one DSH's config editor uses,
@@ -325,6 +326,11 @@ function apply(ctx) {
 
   const route = (path, handler) =>
     disposers.push(server.register({ kind: 'exact', path, handler }))
+
+  // Kallisti turns assistant MEDIA directives into MessageAttachments and
+  // fetches this endpoint with its existing DSH bearer token.
+  const mediaHandler = createMediaHandler({ secret: TOKEN, token: TOKEN })
+  route('/phone/v1/media', (req, res) => mediaHandler(req, res))
 
   route('/phone/v1/health', async (req, res) => {
     if (!authed(req)) return fail(res, 401, 'unauthorized')

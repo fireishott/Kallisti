@@ -53,7 +53,8 @@ final class DSHClient: HeraldClientProtocol {
     private var lastUsage: TokenUsage?
 
     var supportsServerTurnInterrupt: Bool { true }
-    var deliversAttachmentsInline: Bool { false }
+    /// Assistant MEDIA directives are resolved to authenticated attachment cards.
+    var deliversAttachmentsInline: Bool { true }
 
     // MARK: - Init
 
@@ -125,6 +126,17 @@ final class DSHClient: HeraldClientProtocol {
 
     private func url(_ path: String) -> URL? {
         URL(string: "\(base)/phone/v1/\(path)")
+    }
+
+    /// DSH image delivery uses the phone API bearer token already held by this
+    /// client. AttachmentService fetches `mediaURL` with that bearer, so this
+    /// is a real Kallisti MessageAttachment rather than markdown pretending to
+    /// be an image.
+    private func mediaURL(for path: String) -> URL? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        guard var components = URLComponents(string: "\(base)/phone/v1/media") else { return nil }
+        components.queryItems = [URLQueryItem(name: "p", value: path)]
+        return components.url
     }
 
     private func request(_ path: String, method: String = "GET") -> URLRequest? {
@@ -618,12 +630,14 @@ final class DSHClient: HeraldClientProtocol {
         }
         var message: Message?
         if mapped == "completed" {
+            let resolved = Self.resolveAssistantMedia(in: job.text ?? "", mediaURLProvider: mediaURL(for:))
             message = Message(
                 id: job.messageId.flatMap(UUID.init(uuidString:)) ?? UUID(),
                 clientMessageID: jobId,
                 sender: .herald,
-                content: job.text ?? "",
-                status: .sent
+                content: resolved.text,
+                status: .sent,
+                attachments: resolved.attachments
             )
         }
         let usage = job.usage.flatMap { u -> TokenUsage? in
@@ -702,7 +716,7 @@ final class DSHClient: HeraldClientProtocol {
         var model: String?
         for record in page.records {
             if let m = Self.modelName(fromEvent: record["event"]) { model = m }
-            if let m = Self.message(fromWireEvent: record, model: model) { messages.append(m) }
+            if let m = Self.message(fromWireEvent: record, model: model, mediaURLProvider: mediaURL(for:)) { messages.append(m) }
         }
         remember(id, native)
         let conv = Conversation(
@@ -1339,9 +1353,11 @@ final class DSHClient: HeraldClientProtocol {
                         return .done
                     }
                     let text = lastAssistantText ?? (textBuffer.isEmpty ? "(no content)" : textBuffer)
+                    let resolved = Self.resolveAssistantMedia(in: text, mediaURLProvider: mediaURL(for:))
                     let finalMessage = Message(
                         id: UUID(), clientMessageID: clientMessageID,
-                        sender: .herald, content: text, status: .sent
+                        sender: .herald, content: resolved.text, status: .sent,
+                        attachments: resolved.attachments
                     )
                     if var conv = currentConversation {
                         conv.messages.append(finalMessage)
@@ -1467,6 +1483,52 @@ final class DSHClient: HeraldClientProtocol {
         return out.isEmpty ? nil : out
     }
 
+    /// Convert DSH's `MEDIA: /absolute/path/image.jpg` output convention into
+    /// the attachment records the Kallisti chat bubble actually renders. Only
+    /// image files are consumed here; unknown or non-image MEDIA lines remain
+    /// visible text instead of silently losing a file reference.
+    nonisolated static func resolveAssistantMedia(
+        in text: String,
+        mediaURLProvider: (String) -> URL?
+    ) -> (text: String, attachments: [MessageAttachment]) {
+        var retained: [String] = []
+        var attachments: [MessageAttachment] = []
+        let imageTypes: [String: String] = [
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp", "heic": "image/heic"
+        ]
+
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("MEDIA:") else {
+                retained.append(line)
+                continue
+            }
+            let raw = String(trimmed.dropFirst("MEDIA:".count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "`\"'"))
+            let ext = URL(fileURLWithPath: raw).pathExtension.lowercased()
+            guard raw.hasPrefix("/"), let mimeType = imageTypes[ext],
+                  let url = mediaURLProvider(raw) else {
+                retained.append(line)
+                continue
+            }
+            attachments.append(
+                MessageAttachment(
+                    kind: "image",
+                    fileName: (raw as NSString).lastPathComponent,
+                    mimeType: mimeType,
+                    mediaURL: url
+                )
+            )
+        }
+
+        return (
+            retained.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
+            attachments
+        )
+    }
+
     /// Model id carried by a `model/selection` or `request/context` event.
     static func modelName(fromEvent ev: JSONValue?) -> String? {
         guard let ev, let type = ev["type"]?.stringValue,
@@ -1558,7 +1620,11 @@ final class DSHClient: HeraldClientProtocol {
     /// with `form: catalog` (the `<available_skills>` list). Rendering those
     /// puts the prompt itself in the transcript. Only `kind: user` is a real
     /// turn; assistant rows must come from the model, not from a tool result.
-    static func message(fromWireEvent record: JSONValue, model: String? = nil) -> Message? {
+    static func message(
+        fromWireEvent record: JSONValue,
+        model: String? = nil,
+        mediaURLProvider: ((String) -> URL?)? = nil
+    ) -> Message? {
         guard let ev = record["event"], let type = ev["type"]?.stringValue else { return nil }
         let data = ev["data"]
         let time = ev["time"]?.doubleValue.map { Date(timeIntervalSince1970: $0 / 1000) } ?? .now
@@ -1574,8 +1640,15 @@ final class DSHClient: HeraldClientProtocol {
             guard data?["message"]?["source"]?["kind"]?.stringValue == "model" else { return nil }
             guard let text = text(fromContentBlocks: data?["message"]?["content"]),
                   !text.hasPrefix("<system-reminder>") else { return nil }
+            let resolved: (text: String, attachments: [MessageAttachment])
+            if let mediaURLProvider {
+                resolved = resolveAssistantMedia(in: text, mediaURLProvider: mediaURLProvider)
+            } else {
+                resolved = (text, [])
+            }
             return Message(id: UUID(), clientMessageID: nil, sender: .herald,
-                           content: text, timestamp: time, status: .sent)
+                           content: resolved.text, timestamp: time, status: .sent,
+                           attachments: resolved.attachments)
 
         case "turn/end":
             // A turn that ended in error has no assistant row; without this the
