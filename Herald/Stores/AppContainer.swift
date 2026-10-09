@@ -916,6 +916,9 @@ final class AppContainer {
         // that DSH never calls.
         if let dsh = dshClientForHostStatus {
             container.dshClient = dsh
+            // Inline assistant images resolve to /phone/v1/media on this same
+            // host and are fetched with the DSH bearer the client already holds.
+            container.attachmentService.dshMediaToken = Self.dshToken
             container.modelStore.dshCatalogProvider = {
                 let cat = try await dsh.modelCatalog()
                 let models = cat.models.map {

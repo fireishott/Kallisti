@@ -127,6 +127,41 @@ final class AttachmentService {
 
     func accessToken() async -> String? { await accessTokenProvider() }
 
+    /// Bearer for DSH's phone API media route (`/phone/v1/media`). Set by
+    /// AppContainer when the DSH transport is active; nil on relay and native
+    /// builds, where that route does not exist.
+    @ObservationIgnored var dshMediaToken: String?
+
+    /// ONE auth gate for every media fetch in the app. Inline images
+    /// (`AuthenticatedAsyncImage`) and the fullscreen Save-to-Photos path both go
+    /// through this, so the two can never disagree about which hosts get a
+    /// credential - the drift that silently 401'd one path while the other worked.
+    ///
+    /// DSH media takes the DSH bearer and nothing else; native/relay media takes
+    /// the gateway or relay token; external image hosts get no credential at all.
+    func authorizedRequest(for url: URL) async -> URLRequest {
+        var request = URLRequest(url: url)
+        if url.path.contains("/phone/v1/media") {
+            if let token = dshMediaToken, !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            return request
+        }
+        if Self.isInternalHost(url), let token = await accessToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    /// Our own native media route, LAN IPs, and `.local` names. Anything else is
+    /// an external image host and must never receive the credential.
+    nonisolated static func isInternalHost(_ url: URL) -> Bool {
+        if url.path.hasPrefix("/v1/native/") { return true }
+        guard let host = url.host else { return false }
+        return host.contains("192.168") || host.contains("10.") || host.contains("172.16.")
+            || host.hasSuffix(".local")
+    }
+
     private func cacheKey(for attachment: MessageAttachment) -> String? {
         guard let messageID = attachment.messageID, let index = attachment.remoteIndex else {
             return nil

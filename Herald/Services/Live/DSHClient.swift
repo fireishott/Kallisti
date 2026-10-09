@@ -1,5 +1,11 @@
 import Foundation
 
+/// Client-side twin of the parser's markdown image regex
+/// (Herald/Core/MarkdownParser.swift). This side has to recognize exactly the
+/// shape that parser renders, so the literal is duplicated rather than shared
+/// across the file boundary.
+nonisolated(unsafe) private let dshImagePattern = /!\[([^\]]*)\]\(([^)]+)\)/
+
 /// Native DeepSeek Harness client.
 ///
 /// Talks to the DSH phone API (`dsh-phone-api`) directly over HTTP + SSE:
@@ -53,7 +59,8 @@ final class DSHClient: HeraldClientProtocol {
     private var lastUsage: TokenUsage?
 
     var supportsServerTurnInterrupt: Bool { true }
-    /// Assistant MEDIA directives are resolved to authenticated attachment cards.
+    /// Assistant-produced images resolve to fetchable URLs rendered inline in
+    /// the reply, and non-image MEDIA files to attachment records.
     var deliversAttachmentsInline: Bool { true }
 
     // MARK: - Init
@@ -129,14 +136,26 @@ final class DSHClient: HeraldClientProtocol {
     }
 
     /// DSH image delivery uses the phone API bearer token already held by this
-    /// client. AttachmentService fetches `mediaURL` with that bearer, so this
-    /// is a real Kallisti MessageAttachment rather than markdown pretending to
-    /// be an image.
-    private func mediaURL(for path: String) -> URL? {
+    /// client, so the app fetches `/phone/v1/media` as an authenticated request.
+    /// AttachmentService attaches that bearer (see `authorizedRequest(for:)`).
+    ///
+    /// The path is encoded by hand instead of via URLComponents on purpose: the
+    /// result is embedded in `![alt](url)` and the client parser captures the
+    /// target with `[^)]+`, so a raw `)` or space in the path would truncate the
+    /// URL and the image would silently fall back to raw text.
+    private func mediaURLString(for path: String) -> String? {
         guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
-        guard var components = URLComponents(string: "\(base)/phone/v1/media") else { return nil }
-        components.queryItems = [URLQueryItem(name: "p", value: path)]
-        return components.url
+        let strict = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let encoded = path.addingPercentEncoding(withAllowedCharacters: strict) else { return nil }
+        return "\(base)/phone/v1/media?p=\(encoded)"
+    }
+
+    /// Attachment-shaped URL for the same endpoint (a plain URL, never embedded
+    /// in markdown, so no bracket or parenthesis hazard applies here).
+    private func mediaURL(for path: String) -> URL? {
+        guard let string = mediaURLString(for: path) else { return nil }
+        return URL(string: string)
     }
 
     private func request(_ path: String, method: String = "GET") -> URLRequest? {
@@ -1483,10 +1502,26 @@ final class DSHClient: HeraldClientProtocol {
         return out.isEmpty ? nil : out
     }
 
-    /// Convert DSH's `MEDIA: /absolute/path/image.jpg` output convention into
-    /// the attachment records the Kallisti chat bubble actually renders. Only
-    /// image files are consumed here; unknown or non-image MEDIA lines remain
-    /// visible text instead of silently losing a file reference.
+    /// Rewrite every media reference a DSH turn emits into a form the Kallisti
+    /// chat bubble actually renders.
+    ///
+    /// The DSH harness prompt tells the model to write images as
+    /// `![alt](<path/to/image.png>)`, so an absolute local path wrapped in angle
+    /// brackets is the normal case, not an edge case. The client parser then does
+    /// `URL(string: target)` and requires an http(s) scheme, which fails for
+    /// every local form:
+    ///
+    ///     ![alt](</home/x.jpg>)                    -> URL is nil    -> raw text
+    ///     ![alt](/home/x.jpg)                      -> scheme is nil -> raw text
+    ///     ![alt](https://.../phone/v1/media?p=...) -> a real inline image
+    ///
+    /// Local absolute paths therefore become the phone API's media URL (fetched
+    /// with the DSH bearer by AttachmentService), a bracketed http(s) target just
+    /// loses its brackets, and anything unresolvable is left exactly as it was so
+    /// a dead reference stays visible instead of disappearing.
+    ///
+    /// `MEDIA:` lines keep their existing contract: image files become attachment
+    /// records, non-images (PDF, video, archives) stay visible text.
     nonisolated static func resolveAssistantMedia(
         in text: String,
         mediaURLProvider: (String) -> URL?
@@ -1499,6 +1534,11 @@ final class DSHClient: HeraldClientProtocol {
         ]
 
         for line in text.components(separatedBy: .newlines) {
+            let withInlineMedia = inlineImageLine(line, mediaURLProvider: mediaURLProvider)
+            if withInlineMedia != line {
+                retained.append(withInlineMedia)
+                continue
+            }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.hasPrefix("MEDIA:") else {
                 retained.append(line)
@@ -1527,6 +1567,41 @@ final class DSHClient: HeraldClientProtocol {
             retained.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
             attachments
         )
+    }
+
+    /// Rewrite `![alt](target)` in one line so the target is a bare URL the parser
+    /// can turn into an image segment. Returns the line untouched when there is
+    /// nothing resolvable in it. Replacements run right to left so every captured
+    /// range stays valid while the string shrinks.
+    nonisolated static func inlineImageLine(
+        _ line: String,
+        mediaURLProvider: (String) -> URL?
+    ) -> String {
+        let matches = line.matches(of: dshImagePattern)
+        guard !matches.isEmpty else { return line }
+
+        var out = line
+        for match in matches.reversed() {
+            let alt = String(match.1)
+            let captured = String(match.2).trimmingCharacters(in: .whitespacesAndNewlines)
+            // The harness wraps local paths in angle brackets, and the parser's
+            // URL(string:) returns nil for the bracketed string, so unwrap it.
+            let target = captured.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+            let resolved: String?
+            if target.hasPrefix("/"), let url = mediaURLProvider(target) {
+                resolved = url.absoluteString
+            } else if let url = URL(string: target),
+                      url.scheme == "http" || url.scheme == "https" {
+                resolved = url.absoluteString
+            } else {
+                resolved = nil
+            }
+            // `)` or a space would truncate the parser's `[^)]+` capture, so a URL
+            // that still carries one stays visible text rather than half-rendering.
+            guard let bare = resolved, !bare.contains(")"), !bare.contains(" ") else { continue }
+            out.replaceSubrange(match.range, with: "![\(alt)](\(bare))")
+        }
+        return out
     }
 
     /// Model id carried by a `model/selection` or `request/context` event.

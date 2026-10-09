@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// An async image loader that injects the relay auth token for internal URLs.
+/// An async image loader that injects the right bearer for internal URLs.
 /// Drop-in replacement for `AsyncImage` when the image host requires
-/// `Authorization: Bearer <token>` (e.g. relay-served images).
+/// `Authorization: Bearer <token>` (relay-served, native, or DSH media).
+/// The credential decision lives in `AttachmentService.authorizedRequest(for:)`
+/// so this view and the fullscreen Save-to-Photos path cannot drift apart.
 struct AuthenticatedAsyncImage<Content: View>: View {
     let url: URL
     @ViewBuilder let content: (AsyncImagePhase) -> Content
@@ -15,21 +17,7 @@ struct AuthenticatedAsyncImage<Content: View>: View {
             .task(id: url) {
                 phase = .empty
                 do {
-                    var req = URLRequest(url: url)
-                    // Attach auth for LAN IPs, .local hosts, OR our own native media
-                    // endpoint (/v1/native/media) - which can be reached through a
-                    // public relay hostname (hermes-relay.fihonline.net) and needs
-                    // the native gateway bearer even though it is not a LAN host.
-                    // Avoids leaking the bearer token to arbitrary external image hosts.
-                    if url.path.hasPrefix("/v1/native/")
-                        || url.host?.contains("192.168") == true
-                        || url.host?.contains("10.") == true
-                        || url.host?.contains("172.16.") == true
-                        || url.host?.hasSuffix(".local") == true {
-                        if let token = await attachmentService.accessToken() {
-                            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                        }
-                    }
+                    let req = await attachmentService.authorizedRequest(for: url)
                     let (data, response) = try await URLSession.shared.data(for: req)
                     guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                         phase = .failure(URLError(.badServerResponse))

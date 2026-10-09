@@ -350,19 +350,10 @@ struct ImageViewerScreen: View {
                     return
                 }
 
-                // Build 78.6: the image URL requires the relay bearer token
-                // (same auth rules as AuthenticatedAsyncImage). A bare
-                // URLSession fetch returns 401 and the save fails.
-                var request = URLRequest(url: url)
-                if url.path.hasPrefix("/v1/native/")
-                    || url.host?.contains("192.168") == true
-                    || url.host?.contains("10.") == true
-                    || url.host?.contains("172.16.") == true
-                    || url.host?.hasSuffix(".local") == true {
-                    if let token = await attachmentService.accessToken() {
-                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
-                }
+                // Build 78.6: the image URL needs the same credential the inline
+                // view used. ONE gate (AttachmentService), so a bare URLSession
+                // fetch can never 401 here while the image renders on screen.
+                let request = await attachmentService.authorizedRequest(for: url)
                 let (data, _) = try await URLSession.shared.data(for: request)
                 guard let uiImage = UIImage(data: data) else {
                     withAnimation { saveError = "Invalid image data" }
