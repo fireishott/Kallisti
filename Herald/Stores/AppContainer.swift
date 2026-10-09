@@ -1280,9 +1280,13 @@ final class AppContainer {
         isInitializing = true
         defer { isInitializing = false }
 
+        // Build 135.103: a failed Keychain read used to call clearLocalPairing(),
+        // which destroyed a perfectly good pairing and bounced the user to
+        // onboarding with no explanation. Keep the pairing and surface it.
         guard await sessionStore.currentAccessToken() != nil else {
-            await pairingStore.clearLocalPairing()
-            sessionStore.launchState = .unpaired
+            Logger.app.error("initialize: no Keychain access token; keeping pairing, surfacing authFailure")
+            sessionStore.lastErrorMessage = "Could not read the stored session token. Re-pair if this persists."
+            sessionStore.launchState = .authFailure
             return
         }
 

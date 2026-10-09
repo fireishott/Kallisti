@@ -1379,6 +1379,7 @@ final class ChatStore {
             // Session could not be established — fail the user-visible
             // message rather than submitting to a non-existent session.
             let error = "Could not reach the Kallisti host to start a conversation. Check your connection and try again."
+            appendLog(level: .warn, "DIAG row-failed site=ensureConversation-exhausted error=\(error)")
             markOptimisticRowFailed(item, error: error)
             failOutboxItem(
                 item,
@@ -1449,6 +1450,7 @@ final class ChatStore {
                 // permanent (the user must change the input); transport and
                 // relay failures are retryable with backoff.
                 let error = response.content.isEmpty ? "Kallisti rejected the message" : response.content
+                appendLog(level: .warn, "DIAG row-failed site=send-response status=\(response.status) error=\(error)")
                 if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
                     conversation?.messages[idx].status = .failed
                 }
@@ -1540,6 +1542,7 @@ final class ChatStore {
             changed = true
         }
         if changed {
+            appendLog(level: .warn, "DIAG row-failed site=cancelInFlightOutboxItems (user stop or interrupt)")
             appendLog(level: .info, "Outbox: in-flight messages cancelled")
         }
     }
@@ -1547,6 +1550,7 @@ final class ChatStore {
     /// Mark the optimistic user row for `item` as failed and append a visible
     /// system error — used when submission could not even start.
     private func markOptimisticRowFailed(_ item: ChatOutboxRecord, error: String) {
+        appendLog(level: .warn, "DIAG row-failed site=markOptimisticRowFailed error=\(error)")
         if let idx = conversation?.messages.firstIndex(where: { $0.id == item.clientMessageID }) {
             conversation?.messages[idx].status = .failed
         }

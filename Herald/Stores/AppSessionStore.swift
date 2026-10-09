@@ -171,8 +171,15 @@ final class AppSessionStore {
     }
 
     private func persist(tokens: AuthTokens) async throws {
-        await secureStore.store(key: SecureKeys.accessToken, value: tokens.accessToken)
-        await secureStore.store(key: SecureKeys.refreshToken, value: tokens.refreshToken)
+        // Build 135.103: these results were discarded, so a failed Keychain write
+        // was completely silent - the pairing looked saved while the token was
+        // missing, and the next launch cleared the pairing.
+        let accessOK = await secureStore.store(key: SecureKeys.accessToken, value: tokens.accessToken)
+        let refreshOK = await secureStore.store(key: SecureKeys.refreshToken, value: tokens.refreshToken)
+        if !accessOK || !refreshOK {
+            Self.logger.error("Keychain token persist failed access=\(accessOK) refresh=\(refreshOK)")
+            lastErrorMessage = "Could not store the session token in the Keychain."
+        }
     }
 
     private func makeRegistrationRequest() -> DeviceRegistrationRequest {
