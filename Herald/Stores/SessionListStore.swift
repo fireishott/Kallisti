@@ -61,8 +61,18 @@ final class SessionListStore {
         }
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain {
+            // A cancelled URLSession request throws URLError.cancelled, NOT
+            // CancellationError, so cancellation that lands inside a request
+            // already in flight is only recognisable as NSURLErrorCancelled
+            // (-999). Its localizedDescription is the bare word "cancelled",
+            // which is exactly what the Error alert was showing. loadSessions
+            // cancels the previous load every time a forced refresh starts
+            // (turn completed, reconnect, 30s auto-tick, drawer appear), so on
+            // a healthy host this fired over and over. A superseded probe is
+            // not a failure.
             switch ns.code {
-            case NSURLErrorCannotConnectToHost,
+            case NSURLErrorCancelled,
+                 NSURLErrorCannotConnectToHost,
                  NSURLErrorNetworkConnectionLost,
                  NSURLErrorNotConnectedToInternet,
                  NSURLErrorTimedOut,
@@ -74,6 +84,15 @@ final class SessionListStore {
             }
         }
         return false
+    }
+
+    /// Report a failure through the "Error" alert unless it is one of the
+    /// self-resolving conditions above. Every catch in this store goes through
+    /// here, so a cancelled or transient failure cannot pop the alert no matter
+    /// which call site hit it.
+    private func surface(_ error: Error) {
+        if Self.isTransientConnectivityError(error) { return }
+        errorMessage = error.localizedDescription
     }
 
     /// Total session count from last fetch (for pagination).
@@ -205,10 +224,7 @@ final class SessionListStore {
             // The connection banner and status chip already communicate the
             // state; an alert on every reconnect is what made the app feel
             // amateurish. Only surface real (non-transport) failures.
-            if Self.isTransientConnectivityError(error) {
-                return
-            }
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 
@@ -225,8 +241,7 @@ final class SessionListStore {
             splitSessions(allSessions)
             saveCachedSessions()
         } catch {
-            if Self.isTransientConnectivityError(error) { return }
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 
@@ -247,7 +262,7 @@ final class SessionListStore {
                 searchResults = []
                 return
             }
-            errorMessage = error.localizedDescription
+            surface(error)
             searchResults = []
         }
     }
@@ -387,7 +402,7 @@ final class SessionListStore {
                 purgeSession(session)
                 return
             }
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 
@@ -416,7 +431,9 @@ final class SessionListStore {
             // Relay deletion failed, but local state is already updated.
             // The session won't reappear unless the relay re-lists it.
             // Show a brief warning rather than blocking the user.
-            errorMessage = "Removed locally — sync failed: \(error.localizedDescription)"
+            if !Self.isTransientConnectivityError(error) {
+                errorMessage = "Removed locally — sync failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -432,7 +449,7 @@ final class SessionListStore {
             archivedSessions.insert(archivedCopy, at: 0)
             saveCachedSessions()
         } catch {
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 
@@ -456,7 +473,7 @@ final class SessionListStore {
             }
             saveCachedSessions()
         } catch {
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 
@@ -474,7 +491,7 @@ final class SessionListStore {
             }
             saveCachedSessions()
         } catch {
-            errorMessage = error.localizedDescription
+            surface(error)
         }
     }
 

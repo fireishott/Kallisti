@@ -1639,10 +1639,21 @@ final class ChatStore {
         outboxStore.removeStagedAttachments(for: updated)
         // Mark the corresponding user message as delivered in the conversation
         // so the green checkmark dot appears.
+        // Build 135.105: match the row on every identity we hold, not just
+        // `clientMessageID`. A miss here left the row `.sending` while the
+        // outbox item went terminal, and the next poll-merge settle painted it
+        // red. Log the miss so it can never be silent again.
         if var conv = conversation,
-           let msgIdx = conv.messages.firstIndex(where: { $0.clientMessageID == updated.clientMessageID && $0.sender == .user }) {
+           let msgIdx = conv.messages.firstIndex(where: {
+               $0.sender == .user
+                   && ($0.clientMessageID == updated.clientMessageID
+                       || $0.id == updated.clientMessageID
+                       || $0.id == canonicalUserMessageID)
+           }) {
             conv.messages[msgIdx].status = .delivered
             conversation = conv
+        } else {
+            appendLog(level: .warn, "DIAG terminalize-outbox-item no user row stamped id=\(updated.clientMessageID.uuidString.prefix(8))")
         }
     }
 
@@ -4493,15 +4504,55 @@ final class ChatStore {
         for idx in conversation.messages.indices {
             let message = conversation.messages[idx]
             if message.sender == .user, message.status == .sending {
-                let record = outboxItems.first { $0.clientMessageID == message.id }
+                // Build 135.105: match the outbox record on BOTH identities.
+                // `message.id` is the row id; `message.clientMessageID` is the
+                // iOS-issued send identity. A row carrying only one of them used
+                // to miss its record entirely and be written off as failed.
+                let record = outboxItems.first {
+                    $0.clientMessageID == message.id || $0.clientMessageID == message.clientMessageID
+                }
                 let isLive = record.map { $0.isInFlight || $0.state == .queued || $0.state == .drafted } ?? false
-                if !isLive {
-                    conversation.messages[idx].status = .failed
-                    conversation.messages[idx].errorCategory = record?.lastError ?? "interrupted"
+                let rowTag = message.id.uuidString.prefix(8)
+                let stateName = record?.state.rawValue ?? "none"
+                if let record, record.state == .terminal {
+                    // The send SUCCEEDED: the outbox item is terminal but this row
+                    // never got its delivered stamp (terminalizeOutboxItem's lookup
+                    // missed it). This used to fall through to `.failed` and paint
+                    // the red Retry on a message whose reply was already arriving.
+                    appendLog(level: .warn, "DIAG settle-user-row healed to delivered (terminal record, row was .sending) id=\(rowTag)")
+                    conversation.messages[idx].status = .delivered
+                    conversation.messages[idx].errorCategory = nil
                     changed = true
+                } else if let record, record.state == .permanentFailure || record.state == .cancelled {
+                    conversation.messages[idx].status = .failed
+                    conversation.messages[idx].errorCategory = record.lastError ?? "interrupted"
+                    changed = true
+                } else if isLive || record?.state == .retryableFailure {
+                    // Genuinely in flight, or an automatic resubmit is pending.
+                    // A red row here would be a lie.
+                    if record?.state == .retryableFailure {
+                        appendLog(level: .warn, "DIAG settle-user-row left .sending (resubmit pending) id=\(rowTag)")
+                    }
+                } else {
+                    // No record at all, or a non-terminal state we do not own.
+                    // Only call it failed when NO turn is live in this
+                    // conversation: otherwise the send is still in flight and a
+                    // poll merge is racing it, which is the red-flash bug.
+                    let turnActive = isStreaming
+                        || !activeStreams.isEmpty
+                        || !pendingStreamPlaceholders.isEmpty
+                        || serverTurnPlaceholderID != nil
+                    if turnActive {
+                        appendLog(level: .warn, "DIAG settle-user-row left .sending (turn active, state=\(stateName)) id=\(rowTag)")
+                    } else {
+                        conversation.messages[idx].status = .failed
+                        conversation.messages[idx].errorCategory = record?.lastError ?? "interrupted"
+                        changed = true
+                    }
                 }
             }
             if message.isStreaming && !livePlaceholders.contains(message.id) {
+                appendLog(level: .warn, "DIAG settle-placeholder no live owner id=\(message.id.uuidString.prefix(8)) streamingPhase=\(streamingPhase) streams=\(activeStreams.count)")
                 conversation.messages[idx].isStreaming = false
                 let empty = conversation.messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     && conversation.messages[idx].reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -5644,6 +5695,7 @@ final class ChatStore {
                 if let jobID = activeStreams.first(where: { $0.value == message.id })?.key {
                     // Job exists but is not in activeStreams (already removed)
                     // This means the job has ended - safe to mark as empty_response
+                    appendLog(level: .warn, "DIAG merge-local-only marked empty_response id=\(message.id.uuidString.prefix(8))")
                     settled.status = .failed
                     settled.errorCategory = "empty_response"
                 }
