@@ -933,6 +933,29 @@ final class AppContainer {
             container.modelStore.dshSwitchProvider = { name, provider in
                 try await dsh.selectModel(provider: provider, model: name)
             }
+            // Cron reads the harness's real reminders. Without this the view
+            // fell through to the relay's /v1/cron, which reads Hermes'
+            // jobs.json and always answered `jobs: []` on a DSH backend.
+            container.cronStore.dshCronProvider = {
+                let rows = try await dsh.listSchedules()
+                let fractional = ISO8601DateFormatter()
+                fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let plain = ISO8601DateFormatter()
+                plain.formatOptions = [.withInternetDateTime]
+                return rows.map { row in
+                    let next = row.nextRun.flatMap { fractional.date(from: $0) ?? plain.date(from: $0) }
+                    return CronStore.CronJob(
+                        id: row.id,
+                        name: row.name,
+                        schedule: row.schedule,
+                        prompt: row.prompt,
+                        enabled: true,
+                        lastRun: nil,
+                        nextRun: next,
+                        lastResult: row.state
+                    )
+                }
+            }
             container.skillsStore.dshSkillsProvider = {
                 try await dsh.listSkills().map {
                     SkillsStore.HeraldSkill(name: $0.name, description: $0.description, path: $0.path)

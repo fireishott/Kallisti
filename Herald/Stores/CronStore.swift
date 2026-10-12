@@ -39,6 +39,28 @@ final class CronStore {
     private(set) var isLoading = false
     private(set) var errorMessage: String?
 
+    /// DSH schedule source. DSH has no global cron store, so the Cron view
+    /// cannot read the relay's `/v1/cron` on this backend: that route reads
+    /// Hermes' `~/.hermes/cron/jobs.json`, which DSH never writes, so the list
+    /// came back as a successful `jobs: []` and the view claimed "No Cron Jobs"
+    /// no matter how many reminders the harness actually held.
+    var dshCronProvider: (@MainActor () async throws -> [CronJob])?
+
+    /// Management operations that the DSH schedule model cannot express yet.
+    /// A DSH reminder is Session-scoped and has no enable flag or five-field
+    /// cron rule, so rather than silently writing to the wrong backend these
+    /// surface an explicit error.
+    enum CronStoreError: Error, LocalizedError {
+        case unsupportedOnDSH(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedOnDSH(let what):
+                return "\(what) is not supported on the DSH backend yet. DSH reminders are created by asking the agent to schedule one."
+            }
+        }
+    }
+
     private let apiClient: RelayAPIClient?
     private let accessTokenProvider: () async -> String?
     private let nativeFeatureClientProvider: () -> NativeGatewayFeatureClient?
@@ -55,7 +77,9 @@ final class CronStore {
         defer { isLoading = false }
 
         do {
-            if let nativeFeatureClient = nativeFeatureClientProvider() {
+            if let dshCronProvider {
+                jobs = try await dshCronProvider()
+            } else if let nativeFeatureClient = nativeFeatureClientProvider() {
                 jobs = try await nativeFeatureClient.managedCronJobs().map { CronJob(id: $0.id, name: $0.name, schedule: $0.schedule, prompt: $0.prompt, enabled: $0.enabled, lastRun: $0.lastRun, nextRun: $0.nextRun, lastResult: $0.lastResult) }
             } else {
                 guard let apiClient, let token = await accessTokenProvider() else {
@@ -76,6 +100,9 @@ final class CronStore {
     }
 
     func createJob(name: String, schedule: String, prompt: String) async throws {
+        if dshCronProvider != nil {
+            throw CronStoreError.unsupportedOnDSH("Creating a schedule")
+        }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let job = try await nativeFeatureClient.createManagedCronJob(name: name, schedule: schedule, prompt: prompt)
             jobs.append(CronJob(id: job.id, name: job.name, schedule: job.schedule, prompt: job.prompt, enabled: job.enabled, lastRun: job.lastRun, nextRun: job.nextRun, lastResult: job.lastResult))
@@ -87,6 +114,9 @@ final class CronStore {
     }
 
     func toggleJob(_ job: CronJob) async throws {
+        if dshCronProvider != nil {
+            throw CronStoreError.unsupportedOnDSH("Enabling or disabling a schedule")
+        }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let updated = try await nativeFeatureClient.updateManagedCronJob(id: job.id, enabled: !job.enabled)
             if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = CronJob(id: updated.id, name: updated.name, schedule: updated.schedule, prompt: updated.prompt, enabled: updated.enabled, lastRun: updated.lastRun, nextRun: updated.nextRun, lastResult: updated.lastResult) }
@@ -99,6 +129,9 @@ final class CronStore {
 
     /// Build 135.40: persist name/schedule/prompt edits from the rich editor.
     func updateJobContent(id: String, name: String, schedule: String, prompt: String) async throws {
+        if dshCronProvider != nil {
+            throw CronStoreError.unsupportedOnDSH("Editing a schedule")
+        }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             let updated = try await nativeFeatureClient.updateManagedCronJobContent(id: id, name: name, schedule: schedule, prompt: prompt)
             if let index = jobs.firstIndex(where: { $0.id == id }) {
@@ -113,6 +146,9 @@ final class CronStore {
     }
 
     func deleteJob(_ job: CronJob) async throws {
+        if dshCronProvider != nil {
+            throw CronStoreError.unsupportedOnDSH("Deleting a schedule")
+        }
         if let nativeFeatureClient = nativeFeatureClientProvider() {
             try await nativeFeatureClient.deleteManagedCronJob(id: job.id)
             jobs.removeAll { $0.id == job.id }

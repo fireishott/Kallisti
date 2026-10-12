@@ -53,6 +53,19 @@ final class DSHClient: HeraldClientProtocol {
     private var pendingStreamTask: Task<Void, Never>?
     /// Model picked before a session exists; applied when the session is created.
     private var pendingModelSelection: (provider: String, model: String)?
+    /// How long a successfully applied pick outranks a Session projection
+    /// that has not caught up yet. Bounded so a switch made elsewhere (web
+    /// GUI, another device) wins again once the projection settles.
+    private static let acknowledgedSelectionGrace: TimeInterval = 120
+
+    /// Last model selection this client successfully applied to a session.
+    /// DSH's catalog reports the host default until the Session's projection
+    /// commits a pick, so a catalog read that raced a switch answered with the
+    /// default and flipped the pill back off the model the user just chose.
+    /// Keep the acknowledged pick and prefer it over the default.
+    private var acknowledgedModelSelection: (provider: String, model: String)?
+    /// When that pick was acknowledged; see `acknowledgedSelectionGrace`.
+    private var acknowledgedModelSelectionAt: Date?
     private var pendingClarify: PendingClarify?
 
     /// Token usage reported by the most recent turn.
@@ -113,8 +126,18 @@ final class DSHClient: HeraldClientProtocol {
         ensuredSessions.insert(created.sessionId)
         if let pick = pendingModelSelection {
             // Best effort: a failed apply leaves the host default, which the
-            // picker then reports truthfully on its next load.
-            _ = try? await sendWithBody("model", ["sessionId": created.sessionId, "provider": pick.provider, "model": pick.model])
+            // picker then reports truthfully on its next load. A SUCCESSFUL
+            // apply is remembered, so the catalog read that follows session
+            // creation shows the pick rather than the host default while the
+            // projection is still catching up.
+            let applied = try? await sendWithBody(
+                "model",
+                ["sessionId": created.sessionId, "provider": pick.provider, "model": pick.model]
+            )
+            if applied != nil {
+                acknowledgedModelSelection = (pick.provider, pick.model)
+                acknowledgedModelSelectionAt = Date()
+            }
             pendingModelSelection = nil
         }
         return created.sessionId
@@ -384,19 +407,62 @@ final class DSHClient: HeraldClientProtocol {
 
     /// DSH model catalog plus the selection that the NEXT turn will use:
     /// the current session's pending/last selection, else the host default.
+    /// Which model the active pill should show.
+    ///
+    /// Precedence: an unapplied pick beats everything; then the Session's own
+    /// projection; an acknowledged pick overrides that projection only while it
+    /// is fresh and disagrees with it; the host default is the last resort.
+    ///
+    /// The disagreement window exists because DSH reports
+    /// `next ?? lastUsed`, and `lastUsed` is the PRE-switch model until the next
+    /// turn runs. A catalog read right after a switch therefore answered with
+    /// the old model and visibly reverted the pill.
+    nonisolated static func resolveActiveSelection(
+        pending: (provider: String, model: String)?,
+        session: (provider: String, model: String)?,
+        acknowledged: (provider: String, model: String)?,
+        acknowledgedAt: Date?,
+        now: Date,
+        grace: TimeInterval,
+        hostDefault: (provider: String?, model: String?)
+    ) -> (provider: String?, model: String?) {
+        if let pending = pending {
+            return (pending.provider, pending.model)
+        }
+        if let session = session {
+            if let acknowledged = acknowledged,
+               acknowledged.provider != session.provider || acknowledged.model != session.model,
+               let acknowledgedAt = acknowledgedAt,
+               now.timeIntervalSince(acknowledgedAt) < grace {
+                return (acknowledged.provider, acknowledged.model)
+            }
+            return (session.provider, session.model)
+        }
+        if let acknowledged = acknowledged {
+            return (acknowledged.provider, acknowledged.model)
+        }
+        return hostDefault
+    }
+
     func modelCatalog() async throws -> (models: [ModelRow], activeProvider: String?, activeModel: String?) {
         let cat = try await fetchModelCatalog()
         let rows = (cat.groups ?? []).flatMap { g in
             (g.models ?? []).map { ModelRow(provider: g.id, providerName: g.name ?? g.id, model: $0.id) }
         }
-        if let pending = pendingModelSelection {
-            return (rows, pending.provider, pending.model)
+        var session: (provider: String, model: String)?
+        if let conv = currentConversation, let native = nativeId(for: conv.id) {
+            session = try? await sessionModelSelection(sessionId: native)
         }
-        if let conv = currentConversation, let native = nativeId(for: conv.id),
-           let sel = try? await sessionModelSelection(sessionId: native) {
-            return (rows, sel.provider, sel.model)
-        }
-        return (rows, cat.defaultProvider, cat.defaultModel)
+        let active = Self.resolveActiveSelection(
+            pending: pendingModelSelection,
+            session: session,
+            acknowledged: acknowledgedModelSelection,
+            acknowledgedAt: acknowledgedModelSelectionAt,
+            now: Date(),
+            grace: Self.acknowledgedSelectionGrace,
+            hostDefault: (cat.defaultProvider, cat.defaultModel)
+        )
+        return (rows, active.provider, active.model)
     }
 
     /// Selects the model for the current session. Before the first send there
@@ -405,9 +471,15 @@ final class DSHClient: HeraldClientProtocol {
         if let conv = currentConversation {
             // Deterministic ids mean the session can be created right here,
             // so the pick applies to THIS chat instead of waiting on a send.
-            pendingModelSelection = nil
             let native = try await ensureSession(for: conv.id)
             _ = try await sendWithBody("model", ["sessionId": native, "provider": provider, "model": model])
+            // Record the pick only AFTER it landed. Clearing the pending pick
+            // first (the old order) discarded the selection outright when the
+            // apply failed, and left a window where the next catalog read
+            // answered with the host default and reverted the pill.
+            acknowledgedModelSelection = (provider, model)
+            acknowledgedModelSelectionAt = Date()
+            pendingModelSelection = nil
         } else {
             pendingModelSelection = (provider, model)
         }
@@ -434,6 +506,49 @@ final class DSHClient: HeraldClientProtocol {
               let sel = row.projections?.values?.modelSelection,
               let pick = sel.next ?? sel.lastUsed else { return nil }
         return (pick.provider, pick.model)
+    }
+
+    /// One DSH durable reminder, folded across Sessions by the phone API.
+    struct ScheduleRow: Sendable {
+        let id: String
+        let name: String
+        let schedule: String
+        let prompt: String
+        let nextRun: String?
+        let state: String?
+    }
+
+    private struct ScheduleBody: Decodable {
+        let jobs: [Job]?
+        struct Job: Decodable {
+            let id: String
+            let name: String?
+            let schedule: String?
+            let prompt: String?
+            let nextRun: String?
+            let lastResult: String?
+        }
+    }
+
+    /// DSH durable reminders. DSH keeps schedules inside each Session's event
+    /// log, not in a global cron store, so the phone API folds them and
+    /// reports the job shape the Cron view already renders. The relay's
+    /// `/v1/cron` reads Hermes' jobs.json and is always empty on this backend.
+    func listSchedules() async throws -> [ScheduleRow] {
+        let body = try decoder.decode(
+            ScheduleBody.self,
+            from: try await send(request("schedule"))
+        )
+        return (body.jobs ?? []).map {
+            ScheduleRow(
+                id: $0.id,
+                name: $0.name ?? "Reminder",
+                schedule: $0.schedule ?? "",
+                prompt: $0.prompt ?? "",
+                nextRun: $0.nextRun,
+                state: $0.lastResult
+            )
+        }
     }
 
     /// One skill row as the Skills browser needs it.
