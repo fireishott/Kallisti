@@ -100,9 +100,13 @@ security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" ~/Li
 security unlock-keychain -p "$SIGN_PW" ~/Library/Keychains/kallisti_signing.keychain-db
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$SIGN_PW" ~/Library/Keychains/kallisti_signing.keychain-db
 
+# The xcconfig must be passed explicitly: KallistiDSHToken lives only in
+# Config/DSH.local.xcconfig, and an undefined setting expands to an empty
+# string, which flips the app to the relay/Hermes transport silently.
 xcodebuild -project Herald.xcodeproj -scheme Kallisti \
   -destination "generic/platform=iOS" -configuration Release \
   -archivePath /tmp/Kallisti_nightly.xcarchive \
+  -xcconfig "$PWD/Config/DSH.local.xcconfig" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
   archive 2>&1 | tail -2
 
