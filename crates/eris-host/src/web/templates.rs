@@ -333,17 +333,20 @@ pub enum Nav {
     Settings,
     /// The audit trail.
     Activity,
+    /// The archive list, the create button, and the restore form.
+    Backups,
 }
 
 impl Nav {
-    /// Every entry, in display order. `/dashboard/backups` is not here: it has no
-    /// page yet, so it renders as an unavailable entry rather than a link.
-    pub const ALL: [Self; 5] = [
+    /// Every entry, in display order. Every one of them is a page now: the nav
+    /// has no placeholder left in it.
+    pub const ALL: [Self; 6] = [
         Self::Dashboard,
         Self::Sessions,
         Self::Devices,
         Self::Settings,
         Self::Activity,
+        Self::Backups,
     ];
 
     /// The path this section is served at.
@@ -355,6 +358,7 @@ impl Nav {
             Self::Devices => crate::admin::ROUTE_DEVICES,
             Self::Settings => crate::admin::ROUTE_SETTINGS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
+            Self::Backups => crate::admin::ROUTE_BACKUPS,
         }
     }
 
@@ -367,14 +371,17 @@ impl Nav {
             Self::Devices => "Devices",
             Self::Settings => "Settings",
             Self::Activity => "Activity",
+            Self::Backups => "Backups",
         }
     }
 }
 
 /// The top-bar navigation.
 ///
-/// Every entry is a link except `/dashboard/backups`, which has no page in this
-/// build and is rendered as a disabled entry with the word `soon` beside it.
+/// Every entry is a link to a page that exists, and the current one is marked
+/// with `aria-current="page"` as well as its colour. Nothing here is a disabled
+/// placeholder: the last one became a page, so the nav no longer promises a
+/// section the listener does not serve.
 fn nav_bar(current: Nav) -> Markup {
     html! {
         nav class="nav" aria-label="Sections" {
@@ -382,9 +389,6 @@ fn nav_bar(current: Nav) -> Markup {
                 a href=(entry.path()) aria-current=[(current == entry).then_some("page")] {
                     (entry.label())
                 }
-            }
-            span class="soon" aria-disabled="true" {
-                "Backups " span .tag { "soon" }
             }
         }
     }
@@ -1568,6 +1572,134 @@ pub fn activity_page(view: &ActivityView) -> Markup {
     shell("Activity", view.state, Some(Nav::Activity), body)
 }
 
+/// Everything the backups page needs.
+#[derive(Debug, Clone)]
+pub struct BackupsView {
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every archive in the archive directory, newest first, each verified.
+    pub rows: Vec<crate::web::backups::ArchiveRow>,
+    /// A success line from the redirect that followed a create or a restore.
+    pub notice: Option<String>,
+    /// A failure to show, when a create or a restore was refused.
+    pub error: Option<FormError>,
+}
+
+impl BackupsView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            state,
+            rows: Vec::new(),
+            notice: None,
+            error: None,
+        }
+    }
+}
+
+/// The backups page: the create button, the archive table, and the restore form
+/// that lives in each row.
+///
+/// The restore form asks for the filename twice - once hidden, once typed - and
+/// the typed value has to be the exact filename. That is not ceremony: a restore
+/// replaces the live database, and a button that could be hit by reflex is a
+/// button that eventually is.
+///
+/// The page also states the one consequence it cannot perform for the operator:
+/// the running daemon still holds the replaced database file open, so the new
+/// state only takes effect after a service restart. The route never restarts it.
+pub fn backups_page(view: &BackupsView) -> Markup {
+    let body = html! {
+        h1 { "Backups" }
+        p .lede {
+            "Every archive on this host, in one directory, with whether each one still verifies. "
+            "Creating one snapshots the live database rather than copying the file, so a backup "
+            "taken while the daemon runs is a complete one."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="create-heading" {
+            h2 id="create-heading" { "Create an archive" }
+            p .small {
+                "One file in the archive directory on this host, verified as it is written. It "
+                "carries the database, the session logs, and the two config files. The onboarding "
+                "passphrase is never inside one."
+            }
+            form method="post" action=(crate::admin::ROUTE_BACKUPS_CREATE) novalidate {
+                div .actions {
+                    button type="submit" { "Create a backup now" }
+                }
+            }
+        }
+        section .card aria-labelledby="archives-heading" {
+            h2 id="archives-heading" { "Archives" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "No archive exists yet. Create one now, and it will appear here with its size "
+                    "and whether every member verifies against its manifest."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Archive" }
+                            th scope="col" { "Written" }
+                            th scope="col" { "Size" }
+                            th scope="col" { "Verifies" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            @let confirm_id = format!("confirm-{}", row.name);
+                            tr {
+                                td .mono { (row.name) }
+                                td .mono { (row.modified) }
+                                td .mono { (row.bytes) " bytes" }
+                                td {
+                                    span class=(state_class(row.state_label())) {
+                                        (row.state_label())
+                                    }
+                                    div .small { (row.verification_line()) }
+                                }
+                                td {
+                                    form .stack method="post"
+                                        action=(crate::admin::ROUTE_BACKUPS_RESTORE) novalidate {
+                                        input type="hidden" name="archive" value=(row.name);
+                                        label for=(confirm_id) { "Type the filename to confirm" }
+                                        input type="text" id=(confirm_id) name="confirm"
+                                            autocomplete="off" spellcheck="false" required;
+                                        button type="submit" class="danger" {
+                                            "Restore this archive"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="restart-heading" {
+            h2 id="restart-heading" { "A restore needs a restart" }
+            p {
+                "A restore replaces the state files on disk. This page does not restart the "
+                "daemon and will not: the running daemon keeps its open handle to the replaced "
+                "database file, so the state it serves stays the old one until the service is "
+                "restarted."
+            }
+            p .small {
+                "Run "
+                code { "systemctl --user restart kallisti-eris" }
+                " after a restore for the new state to take effect. Nothing is lost in the "
+                "meantime: what was replaced is moved to a pre-restore directory beside the "
+                "database, and the audit log names it."
+            }
+        }
+    };
+    shell("Backups", view.state, Some(Nav::Backups), body)
+}
+
 /// A standalone error page, for a 403 or a 409 that a browser will read.
 pub fn error_page(state: SetupState, code: &str, message: &str) -> Markup {
     let body = html! {
@@ -1615,7 +1747,7 @@ pub fn display_text(text: Option<&str>, limit: usize) -> String {
 /// colour is never the only signal.
 fn state_class(state: &str) -> &'static str {
     match state {
-        "live" | "succeeded" | "paired" => "badge live",
+        "live" | "succeeded" | "paired" | "verified" => "badge live",
         "running" | "expired" | "awaiting code" => "badge expired",
         _ => "badge revoked",
     }

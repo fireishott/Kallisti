@@ -98,6 +98,18 @@ pub const ROUTE_SESSIONS: &str = "/dashboard/sessions";
 /// the one form that mints a pairing code.
 pub const ROUTE_DEVICES: &str = "/dashboard/devices";
 
+/// `GET /dashboard/backups` - every archive on this host, whether each one
+/// verifies, and the two forms: create one, restore one.
+pub const ROUTE_BACKUPS: &str = "/dashboard/backups";
+
+/// `POST /dashboard/backups/create` - write one archive into the archive
+/// directory.
+pub const ROUTE_BACKUPS_CREATE: &str = "/dashboard/backups/create";
+
+/// `POST /dashboard/backups/restore` - replace the live state from one archive.
+/// Destructive, so it takes the filename twice and never a path.
+pub const ROUTE_BACKUPS_RESTORE: &str = "/dashboard/backups/restore";
+
 /// One session's page. Built by [`session_path`] so the route and every link to
 /// it come from one place.
 pub const ROUTE_SESSION: &str = "/dashboard/sessions/{id}";
@@ -135,6 +147,7 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_DEVICES,
     ROUTE_SETTINGS,
     ROUTE_ACTIVITY,
+    ROUTE_BACKUPS,
     CSS_ROUTE,
 ];
 
@@ -164,6 +177,10 @@ pub const POST_ROUTES: &[&str] = &[
     "/dashboard/device/revoke",
     "/dashboard/mode",
     ROUTE_DEVICES,
+    // The two backup posts. Neither carries a path: the restore form names an
+    // archive in the archive directory, or it is refused.
+    ROUTE_BACKUPS_CREATE,
+    ROUTE_BACKUPS_RESTORE,
     // One literal cancel path, because the route list is a static slice and the
     // real path carries a job id. The phase 7 test only needs one path that
     // answers without a session.

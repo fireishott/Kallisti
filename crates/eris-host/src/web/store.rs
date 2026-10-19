@@ -125,6 +125,27 @@ pub fn audit_count(db: &Db) -> Result<i64, DbError> {
     db.with_conn(|conn| conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0)))
 }
 
+/// Append one audit row.
+///
+/// `detail` is a filename, a digest, a path, or another non-secret label - never
+/// a passphrase, a token, or a key value. The handler that cannot write the row
+/// treats that as a failure rather than swallowing it, because an action with no
+/// audit trail is an action the operator cannot reconstruct later.
+pub fn audit_write(
+    db: &Db,
+    actor: &str,
+    action: &str,
+    detail: Option<&str>,
+) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO audit_log (actor, action, detail) VALUES (?1, ?2, ?3)",
+            params![actor, action, detail],
+        )?;
+        Ok(())
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Sessions, jobs and devices
 // ---------------------------------------------------------------------------

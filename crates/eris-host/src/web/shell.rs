@@ -13,23 +13,38 @@
 use axum::http::StatusCode;
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_LOGIN, ROUTE_SESSIONS,
-    ROUTE_SETTINGS, router_with,
+    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_LOGIN,
+    ROUTE_SESSIONS, ROUTE_SETTINGS, router_with,
 };
 
 use super::harness::{
     Call, PURPLE_DENYLIST, block_on, ready_app, ready_engine, send, setup_engine, sign_in,
 };
 
-/// The nav links that have a page behind them. `/dashboard/backups` is the one
-/// entry still named in the nav without a page, and it is not in this list.
-const LIVE_NAV: [&str; 5] = [
+/// Every nav link that has a page behind it. Since P14 that is all of them: the
+/// backups page exists, so nothing is left as a placeholder.
+const LIVE_NAV: [&str; 6] = [
     ROUTE_DASHBOARD,
     ROUTE_SESSIONS,
     ROUTE_DEVICES,
     ROUTE_SETTINGS,
     ROUTE_ACTIVITY,
+    ROUTE_BACKUPS,
 ];
+
+/// The text of the `title` element, or a panic that prints the page.
+fn title_of(body: &str) -> String {
+    let open = "<title>";
+    let start = body
+        .find(open)
+        .unwrap_or_else(|| panic!("no title element: {body}"))
+        + open.len();
+    let end = body[start..]
+        .find("</title>")
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("no closing title element: {body}"));
+    body[start..end].to_owned()
+}
 
 /// The text of the link that carries `aria-current="page"`.
 ///
@@ -93,18 +108,18 @@ fn the_nav_renders_when_ready_and_not_on_the_login_page() {
         "the footer carries the version: {}",
         dashboard.body
     );
-    // One entry is still a placeholder, and only one: the backups page is not
-    // built yet, and a nav that answers a click with a 404 is worse than a nav
-    // that says so.
+    // Every entry is a link now that the backups page exists: a nav that answers
+    // a click with a 404 was the reason the placeholder existed, and there is no
+    // placeholder left.
     assert_eq!(
         dashboard.body.matches(r#"aria-disabled="true""#).count(),
-        1,
-        "only the backups entry is unavailable: {}",
+        0,
+        "no nav entry is unavailable: {}",
         dashboard.body
     );
     assert!(
         dashboard.body.contains(">Backups"),
-        "the unavailable entry is named: {}",
+        "the nav names the backups page: {}",
         dashboard.body
     );
 
@@ -179,21 +194,21 @@ fn sessions_and_devices_nav_links_are_active() {
                 page.body
             );
         }
-        // The placeholder is the backups entry and nothing else, on every page.
+        // No placeholders left, on every page.
         assert_eq!(
             page.body.matches(r#"aria-disabled="true""#).count(),
-            1,
-            "{route} has exactly one unavailable nav entry: {}",
+            0,
+            "{route} has no unavailable nav entry: {}",
             page.body
         );
         assert!(
             page.body.contains(">Backups"),
-            "{route} still names the backups entry: {}",
+            "{route} names the backups page: {}",
             page.body
         );
         assert!(
-            !page.body.contains(r#"href="/dashboard/backups""#),
-            "{route} does not link a page this build cannot serve: {}",
+            page.body.contains(r#"href="/dashboard/backups""#),
+            "{route} links the backups page: {}",
             page.body
         );
         let marked = owner_of_aria_current(&page.body);
@@ -291,4 +306,47 @@ fn every_page_has_no_purple_and_no_herald() {
             "{label} loads a font or a stylesheet"
         );
     }
+}
+
+/// Every page names itself and the product in its `title`, and names it the same
+/// way: `<page> - Kallisti 1.0`.
+///
+/// The title is the one string a browser shows when the tab is the only thing
+/// visible, so it is worth pinning rather than leaving to whichever template
+/// happened to be copied.
+#[test]
+fn every_page_title_names_the_page_and_the_product() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    let pages = [
+        (ROUTE_DASHBOARD, "Dashboard"),
+        (ROUTE_SESSIONS, "Sessions"),
+        (ROUTE_DEVICES, "Devices"),
+        (ROUTE_SETTINGS, "Settings"),
+        (ROUTE_ACTIVITY, "Activity"),
+        (ROUTE_BACKUPS, "Backups"),
+    ];
+    for (route, label) in pages {
+        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
+        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
+        let title = title_of(&page.body);
+        assert_eq!(
+            title,
+            format!("{label} - Kallisti 1.0"),
+            "{route} names its page and the product"
+        );
+    }
+
+    // The two pages outside the nav carry the same product name, so a tab is
+    // never ambiguous.
+    let login = block_on(send(&app, Call::get(ROUTE_LOGIN).html()));
+    assert_eq!(login.status, StatusCode::OK, "{}", login.body);
+    assert_eq!(title_of(&login.body), "Sign in - Kallisti 1.0");
+
+    let (_setup_dir, setup, _words) = setup_engine();
+    let wizard_app = router_with(AppState::new(setup, false));
+    let wizard = block_on(send(&wizard_app, Call::get("/setup")));
+    assert_eq!(wizard.status, StatusCode::OK, "{}", wizard.body);
+    assert_eq!(title_of(&wizard.body), "Onboarding - Kallisti 1.0");
 }
