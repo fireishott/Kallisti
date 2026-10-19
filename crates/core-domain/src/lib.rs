@@ -9,11 +9,17 @@ pub mod capability;
 pub mod device;
 pub mod events;
 pub mod ids;
+pub mod provider;
 
 pub use capability::{Capability, HostCapabilities};
 pub use device::{DeviceContext, DeviceSnapshot};
 pub use events::{EventKind, EventSeq};
 pub use ids::{DeviceId, EventId, IdError, SessionId, TurnId};
+pub use provider::{
+    API_KEY_REF_ENV_PREFIX, CacheRead, CacheReadReporting, Capabilities, LlmError, ModelProfile,
+    Provider, ProviderProfile, SecretRef, SecretRefError, TokenCount, ToolCall, ToolCallError,
+    UnavailableReason, Usage,
+};
 
 /// Crate version, mirrored from `[workspace.package]`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

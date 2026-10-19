@@ -10,7 +10,14 @@ name = "eris"
 path = "src/main.rs"
 
 [dependencies]
+clap = { workspace = true, features = ["derive"] }
 core-domain = { path = "../core-domain" }
+core-runtime = { path = "../core-runtime" }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

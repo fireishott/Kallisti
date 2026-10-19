@@ -10,10 +10,15 @@
 //! | [`provider`] | 4 (P4) | provider seam, `env:` key resolution, usage accounting |
 //! | [`turn`] | 8 (P8) | turn machine, worker lease, cancellation |
 //!
-//! Only [`log`] performs I/O today, and only through blocking `std::fs` - the WAL
-//! has to be fsynced before an ack, so it deliberately does not hide behind an
-//! async runtime. `core-runtime` links into the Lite core, so it must stay free
-//! of `tokio` and `reqwest` as well as any device framework.
+//! Two modules perform I/O. [`log`] writes through blocking `std::fs`, because the
+//! WAL has to be fsynced before an ack and hiding that behind an async runtime
+//! would make the fsync look optional. [`provider::openai_compat`] owns the HTTP
+//! client, which is the one place a network stack belongs.
+//!
+//! The Lite boundary is `crates/ios-host`'s dependency graph, not this crate's:
+//! Lite is `ios-host` + `core-domain`, so it never links `core-runtime` and
+//! therefore never links `reqwest` or `tokio` (locked amendment 9, enforced by
+//! `crates/ios-host/tests/no_network.rs` and the CI grep over its sources).
 
 pub mod log;
 pub mod prompt;

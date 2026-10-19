@@ -35,9 +35,12 @@ rand = "0.10.3"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 time = "0.3.55"
+# reqwest 0.13.5 renamed the TLS feature: `rustls-tls` (the 0.12 name, and the
+# name the P4 brief carried) does not exist in 0.13. The 0.13 spelling is
+# `rustls`, and the rest of the pin is unchanged.
 reqwest = { version = "0.13.5", default-features = false, features = [
     "json",
-    "rustls-tls",
+    "rustls",
     "stream",
 ] }
 base64 = "0.23.1"
