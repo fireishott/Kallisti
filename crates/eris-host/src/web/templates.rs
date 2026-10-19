@@ -25,7 +25,7 @@ use crate::onboarding::{
 };
 
 use super::css::APP_CSS;
-use super::store::AuditEntry;
+use super::store::{AuditEntry, DeviceOverview, JobRow, SessionRow};
 
 /// A validation failure, shaped for the JSON body and for the inline alert.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +325,10 @@ pub fn shell(title: &str, state: SetupState, nav: Option<Nav>, body: Markup) -> 
 pub enum Nav {
     /// The dashboard home.
     Dashboard,
+    /// Every device session, and the jobs each one started.
+    Sessions,
+    /// Every device, and the form that mints a pairing code.
+    Devices,
     /// The settings surface, the only page that writes behaviour.
     Settings,
     /// The audit trail.
@@ -332,16 +336,23 @@ pub enum Nav {
 }
 
 impl Nav {
-    /// Every entry, in display order. The two unavailable entries sit between
-    /// the dashboard and the settings page because that is where they belong
-    /// once they exist.
-    pub const ALL: [Self; 3] = [Self::Dashboard, Self::Settings, Self::Activity];
+    /// Every entry, in display order. `/dashboard/backups` is not here: it has no
+    /// page yet, so it renders as an unavailable entry rather than a link.
+    pub const ALL: [Self; 5] = [
+        Self::Dashboard,
+        Self::Sessions,
+        Self::Devices,
+        Self::Settings,
+        Self::Activity,
+    ];
 
     /// The path this section is served at.
     #[must_use]
     pub fn path(self) -> &'static str {
         match self {
             Self::Dashboard => crate::admin::ROUTE_DASHBOARD,
+            Self::Sessions => crate::admin::ROUTE_SESSIONS,
+            Self::Devices => crate::admin::ROUTE_DEVICES,
             Self::Settings => crate::admin::ROUTE_SETTINGS,
             Self::Activity => crate::admin::ROUTE_ACTIVITY,
         }
@@ -352,6 +363,8 @@ impl Nav {
     pub fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard",
+            Self::Sessions => "Sessions",
+            Self::Devices => "Devices",
             Self::Settings => "Settings",
             Self::Activity => "Activity",
         }
@@ -359,23 +372,19 @@ impl Nav {
 }
 
 /// The top-bar navigation.
+///
+/// Every entry is a link except `/dashboard/backups`, which has no page in this
+/// build and is rendered as a disabled entry with the word `soon` beside it.
 fn nav_bar(current: Nav) -> Markup {
     html! {
         nav class="nav" aria-label="Sections" {
-            a href=(Nav::Dashboard.path()) aria-current=[(current == Nav::Dashboard).then_some("page")] {
-                (Nav::Dashboard.label())
+            @for entry in Nav::ALL {
+                a href=(entry.path()) aria-current=[(current == entry).then_some("page")] {
+                    (entry.label())
+                }
             }
             span class="soon" aria-disabled="true" {
-                "Sessions " span .tag { "soon" }
-            }
-            span class="soon" aria-disabled="true" {
-                "Devices " span .tag { "soon" }
-            }
-            a href=(Nav::Settings.path()) aria-current=[(current == Nav::Settings).then_some("page")] {
-                (Nav::Settings.label())
-            }
-            a href=(Nav::Activity.path()) aria-current=[(current == Nav::Activity).then_some("page")] {
-                (Nav::Activity.label())
+                "Backups " span .tag { "soon" }
             }
         }
     }
@@ -872,17 +881,13 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
             h2 id="quick-actions" { "Quick actions" }
             div .actions {
                 a .button href=(Nav::Settings.path()) { "Settings" }
+                a .button.secondary href=(Nav::Sessions.path()) { "Sessions" }
+                a .button.secondary href=(Nav::Devices.path()) { "Devices" }
                 a .button.secondary href=(Nav::Activity.path()) { "Activity" }
-                span .button.secondary.soon aria-disabled="true" {
-                    "Sessions " span .tag { "soon" }
-                }
-                span .button.secondary.soon aria-disabled="true" {
-                    "Devices " span .tag { "soon" }
-                }
             }
             p .small {
-                "Sessions and Devices are the next two pages. They are named here rather than "
-                "linked, so nothing on this page answers a click with a 404."
+                "Sessions lists every device sign-in with the jobs it started. Devices lists "
+                "every device, revokes one, and mints the pairing code that adds the next."
             }
         }
 
@@ -938,7 +943,10 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
         section .card aria-labelledby="devices" {
             h2 id="devices" { "Devices" }
             @if view.devices.is_empty() {
-                p .small { "No device has been paired yet. Mint a code from the wizard's device step." }
+                p .small {
+                    "No device has been paired yet. Mint a code on the "
+                    a href=(Nav::Devices.path()) { "devices page" } "."
+                }
             } @else {
                 table {
                     thead {
@@ -1573,6 +1581,412 @@ pub fn error_page(state: SetupState, code: &str, message: &str) -> Markup {
         }
     };
     layout("Not available", state, body)
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+/// How many characters of a user agent the sessions table shows.
+const AGENT_LIMIT: usize = 60;
+
+/// How many characters of a job's request text a job block shows.
+pub const REQUEST_LIMIT: usize = 120;
+
+/// How many characters of an event payload the timeline shows.
+const PAYLOAD_LIMIT: usize = 80;
+
+/// One string for display: whole when it fits, truncated with an ASCII ellipsis
+/// when it does not, and a dash when there is nothing.
+#[must_use]
+pub fn display_text(text: Option<&str>, limit: usize) -> String {
+    let Some(text) = text else {
+        return "-".to_owned();
+    };
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(limit).collect();
+    out.push_str("...");
+    out
+}
+
+/// The class a session or job state carries. The word is always printed too, so
+/// colour is never the only signal.
+fn state_class(state: &str) -> &'static str {
+    match state {
+        "live" | "succeeded" | "paired" => "badge live",
+        "running" | "expired" | "awaiting code" => "badge expired",
+        _ => "badge revoked",
+    }
+}
+
+/// Everything the sessions list needs.
+#[derive(Debug, Clone)]
+pub struct SessionsView {
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every session, newest first.
+    pub rows: Vec<SessionRow>,
+    /// A failure to show, when a read failed.
+    pub error: Option<FormError>,
+    /// A success line, unused today but the shell's contract is shared.
+    pub notice: Option<String>,
+}
+
+impl SessionsView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            state,
+            rows: Vec::new(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// Everything one session's page needs.
+#[derive(Debug, Clone)]
+pub struct SessionDetailView {
+    /// The daemon's state.
+    pub state: SetupState,
+    /// The session itself.
+    pub session: SessionRow,
+    /// Its jobs, newest first, each with its events.
+    pub jobs: Vec<JobRow>,
+    /// A failure to show, when a cancel was refused.
+    pub error: Option<FormError>,
+    /// A success line, when a job was just cancelled.
+    pub notice: Option<String>,
+}
+
+impl SessionDetailView {
+    /// A view around one session, with no jobs read yet.
+    #[must_use]
+    pub fn new(state: SetupState, session: SessionRow) -> Self {
+        Self {
+            state,
+            session,
+            jobs: Vec::new(),
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// The sessions list: the table, or one friendly line when there is nothing.
+pub fn sessions_page(view: &SessionsView) -> Markup {
+    let body = html! {
+        h1 { "Sessions" }
+        p .lede {
+            "Every device session this host has opened, newest first. A session is one sign-in; "
+            "the jobs it started and every event they recorded are on its own page."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="sessions-heading" {
+            h2 id="sessions-heading" { "Device sessions" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "No device session has been opened yet. A session appears here the first time "
+                    "a paired device signs in through the device listener, and this page will list "
+                    "it with the jobs it ran."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Created" }
+                            th scope="col" { "Device" }
+                            th scope="col" { "Agent" }
+                            th scope="col" { "Last seen" }
+                            th scope="col" { "Expires" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Jobs" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            tr {
+                                td .mono {
+                                    a href=(crate::admin::session_path(&row.id)) { (row.created_at) }
+                                }
+                                td { (row.device_name.as_deref().unwrap_or("unknown")) }
+                                td .why { (display_text(row.user_agent.as_deref(), AGENT_LIMIT)) }
+                                td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
+                                td .mono { (row.expires_at) }
+                                td { span class=(state_class(&row.state)) { (row.state) } }
+                                td .mono { (row.job_count) }
+                            }
+                        }
+                    }
+                }
+                p .small {
+                    (view.rows.len())
+                    (if view.rows.len() == 1 { " session, " } else { " sessions, " })
+                    "revoked and expired ones included. Open one to read its jobs and its events."
+                }
+            }
+        }
+    };
+    shell("Sessions", view.state, Some(Nav::Sessions), body)
+}
+
+/// One job: its status, the facts about it, a cancel button while it can still
+/// be cancelled, and its events as a timeline in `seq` order.
+fn job_block(job: &JobRow) -> Markup {
+    html! {
+        article .job aria-label=(format!("Job {}", job.id)) {
+            div .job-head {
+                span class=(state_class(&job.status)) { (job.status) }
+                span .mono { (job.id) }
+                span .small { "kind " (job.kind) ", attempts " (job.attempts) }
+            }
+            dl .kv {
+                dt { "Request" }
+                dd .why { (display_text(job.request_text.as_deref(), REQUEST_LIMIT)) }
+                dt { "Created" }
+                dd { (job.created_at) }
+                dt { "Finished" }
+                dd { (job.finished_at.as_deref().unwrap_or("not yet")) }
+                @if job.error_code.is_some() || job.error_message.is_some() {
+                    dt { "Error" }
+                    dd .why {
+                        (job.error_code.as_deref().unwrap_or("error"))
+                        " "
+                        (job.error_message.as_deref().unwrap_or(""))
+                    }
+                }
+            }
+            @if job.is_cancellable() {
+                form .inline-form method="post" action=(crate::admin::job_cancel_path(&job.id)) novalidate {
+                    button type="submit" class="danger" { "Cancel job" }
+                }
+            }
+            h3 { "Events" }
+            @if job.events.is_empty() {
+                p .small { "No event has been recorded for this job yet." }
+            } @else {
+                ol .timeline {
+                    @for event in &job.events {
+                        li {
+                            span .mono { (event.occurred_at) }
+                            span .kind { (event.kind) }
+                            span .why {
+                                "seq " (event.seq) ": "
+                                (display_text(event.payload.as_deref(), PAYLOAD_LIMIT))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One session: its identity, then its jobs and their events.
+pub fn session_page(view: &SessionDetailView) -> Markup {
+    let session = &view.session;
+    let where_it_came_from = session.user_agent.as_deref().unwrap_or("unknown");
+    let body = html! {
+        h1 { "Session" }
+        p .lede {
+            "One device session, the jobs it started, and every event each job recorded."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        section .card aria-labelledby="session-heading" {
+            h2 id="session-heading" { "Identity" }
+            dl .kv {
+                dt { "Session" } dd { (session.id) }
+                dt { "Device" }
+                dd { (session.device_name.as_deref().unwrap_or("unknown")) }
+                dt { "User agent" } dd .why { (where_it_came_from) }
+                dt { "Created" } dd { (session.created_at) }
+                dt { "Last seen" } dd { (session.last_seen_at.as_deref().unwrap_or("never")) }
+                dt { "Expires" } dd { (session.expires_at) }
+                dt { "Revoked" } dd { (session.revoked_at.as_deref().unwrap_or("no")) }
+                dt { "State" } dd { span class=(state_class(&session.state)) { (session.state) } }
+                dt { "Jobs" } dd { (session.job_count) }
+            }
+            p .small {
+                "A session is a sign-in, not a device: a device that signs in twice has two of "
+                "these, and revoking the device closes both."
+            }
+        }
+        section .card aria-labelledby="jobs-heading" {
+            h2 id="jobs-heading" { "Jobs" }
+            @if view.jobs.is_empty() {
+                p .small {
+                    "This session has not started a job yet. A job appears here when the device "
+                    "asks for a turn through the device listener."
+                }
+            } @else {
+                p .small {
+                    "Newest first. A cancel is offered only while a job is queued or running, and "
+                    "it writes an audit row."
+                }
+                @for job in &view.jobs {
+                    (job_block(job))
+                }
+            }
+        }
+        div .actions {
+            a .button.secondary href=(Nav::Sessions.path()) { "All sessions" }
+            a .button.secondary href=(Nav::Devices.path()) { "Devices" }
+        }
+    };
+    shell("Session", view.state, Some(Nav::Sessions), body)
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
+
+/// The longest device name the form accepts. A name is a label in a table, not
+/// a place to paste a paragraph.
+pub const DEVICE_NAME_LIMIT: usize = 64;
+
+/// A pairing code that was just minted, on its way to the one response that will
+/// ever carry it.
+#[derive(Debug, Clone)]
+pub struct IssuedCodeView {
+    /// The eight characters, read from the pairing service once.
+    pub code: String,
+    /// When it stops redeeming.
+    pub expires_at: String,
+}
+
+/// Everything the devices page needs.
+#[derive(Debug, Clone)]
+pub struct DevicesView {
+    /// The daemon's state.
+    pub state: SetupState,
+    /// Every device, newest first, revoked ones included.
+    pub rows: Vec<DeviceOverview>,
+    /// The code minted by this response, if this render follows a mint. It is
+    /// never read back from the database: there is nothing there to read.
+    pub issued: Option<IssuedCodeView>,
+    /// A failure to show, when a mint was refused.
+    pub error: Option<FormError>,
+    /// A success line for anything other than a mint.
+    pub notice: Option<String>,
+}
+
+impl DevicesView {
+    /// An empty view for a given state.
+    #[must_use]
+    pub fn new(state: SetupState) -> Self {
+        Self {
+            state,
+            rows: Vec::new(),
+            issued: None,
+            error: None,
+            notice: None,
+        }
+    }
+}
+
+/// The devices page: the table, the one-shot code when there is one, and the
+/// form that mints the next one.
+pub fn devices_page(view: &DevicesView) -> Markup {
+    let body = html! {
+        h1 { "Devices" }
+        p .lede {
+            "Every device this host knows about, paired or not, and the one form that mints a "
+            "pairing code for the next one."
+        }
+        (alert_region(view.error.as_ref(), view.notice.as_deref()))
+        @if let Some(issued) = &view.issued {
+            section .card aria-labelledby="issued-heading" {
+                h2 id="issued-heading" { "Pairing code" }
+                p .small {
+                    "This code is shown once, in this response and nowhere else. Only a salted "
+                    "verifier is stored, so it cannot be shown again. Type it on the device before "
+                    "it expires."
+                }
+                p .pairing-code .mono { (issued.code) }
+                p .small { "Expires " (issued.expires_at) "." }
+            }
+        }
+        section .card aria-labelledby="devices-heading" {
+            h2 id="devices-heading" { "Devices" }
+            @if view.rows.is_empty() {
+                p .small {
+                    "No device has been registered yet. Mint a code below and pair one, or finish "
+                    "the device step in the wizard."
+                }
+            } @else {
+                table {
+                    thead {
+                        tr {
+                            th scope="col" { "Name" }
+                            th scope="col" { "Platform" }
+                            th scope="col" { "Paired" }
+                            th scope="col" { "Last seen" }
+                            th scope="col" { "State" }
+                            th scope="col" { "Action" }
+                        }
+                    }
+                    tbody {
+                        @for row in &view.rows {
+                            tr {
+                                td { (row.name) }
+                                td { (row.platform) }
+                                td .mono {
+                                    @if row.paired {
+                                        (row.paired_at.as_deref().unwrap_or("not yet"))
+                                    } @else {
+                                        "not yet"
+                                    }
+                                }
+                                td .mono { (row.last_seen_at.as_deref().unwrap_or("never")) }
+                                td {
+                                    span class=(state_class(row.state_label())) {
+                                        (row.state_label())
+                                    }
+                                }
+                                td {
+                                    @if row.revoked_at.is_some() {
+                                        span .small { "revoked" }
+                                    } @else {
+                                        form .inline-form method="post"
+                                            action="/dashboard/device/revoke" novalidate {
+                                            input type="hidden" name="device_id" value=(row.id);
+                                            button type="submit" class="danger" { "Revoke" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        section .card aria-labelledby="pair-heading" {
+            h2 id="pair-heading" { "Mint a pairing code" }
+            form method="post" action=(crate::admin::ROUTE_DEVICES) novalidate {
+                div .field {
+                    label for="device_name" { "Device name" }
+                    input type="text" id="device_name" name="device_name" value=""
+                        autocomplete="off" maxlength=(DEVICE_NAME_LIMIT) required;
+                    span .hint {
+                        "The name the device appears under in the table above. A name that is "
+                        "already known binds the code to that device instead of adding a second row."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Mint pairing code" }
+                }
+            }
+            p .small {
+                "One code per press: eight characters, five minutes, single use. The code is never "
+                "written to the database in readable form, never logged, and never recorded in the "
+                "audit log, which notes only the device name."
+            }
+        }
+    };
+    shell("Devices", view.state, Some(Nav::Devices), body)
 }
 
 #[cfg(test)]

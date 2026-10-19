@@ -1,18 +1,21 @@
-//! Shared test support for the phase 1 web suites: shell, settings, activity.
+//! Shared test support for the web suites: shell, settings, activity, sessions,
+//! devices.
 //!
 //! Every suite drives [`router_with`], the constructor the daemon serves, so the
 //! request-id middleware, the forwarded-header rejection and the ready gate are
 //! in the path of every assertion. Nothing here is compiled into the binary.
 //!
-//! The three suites that use this module are named for the phase brief, so they
-//! are `#[cfg(test)]` modules beside the production code rather than integration
-//! tests: the paths read `web::settings::*`, `web::shell::*` and `web::activity::*`.
+//! The suites that use this module are named for the phase brief, so they are
+//! `#[cfg(test)]` modules beside the production code rather than integration
+//! tests: the paths read `web::settings::*`, `web::shell::*`, `web::activity::*`,
+//! `web::sessions::*` and `web::devices::*`.
 
 use std::future::Future;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
+use rusqlite::OptionalExtension;
 use tower::ServiceExt;
 
 use crate::admin::{AppState, router_with};
@@ -36,7 +39,7 @@ pub const FORM_CONTENT_TYPE: &str = concat!("application/x-www-form", "-urlencod
 /// One in-process request.
 pub struct Call {
     method: Method,
-    uri: &'static str,
+    uri: String,
     accept_html: bool,
     cookie: Option<String>,
     content_type: Option<&'static str>,
@@ -44,8 +47,13 @@ pub struct Call {
 }
 
 impl Call {
-    /// A GET.
+    /// A GET on a route that is a literal.
     pub fn get(uri: &'static str) -> Self {
+        Self::get_owned(uri.to_owned())
+    }
+
+    /// A GET on a route that carries an id, so the path is built at run time.
+    pub fn get_owned(uri: String) -> Self {
         Self {
             method: Method::GET,
             uri,
@@ -56,8 +64,13 @@ impl Call {
         }
     }
 
-    /// A form POST.
+    /// A form POST on a route that is a literal.
     pub fn post(uri: &'static str, body: &str) -> Self {
+        Self::post_owned(uri.to_owned(), body)
+    }
+
+    /// A form POST on a route that carries an id.
+    pub fn post_owned(uri: String, body: &str) -> Self {
         Self {
             method: Method::POST,
             uri,
@@ -271,4 +284,182 @@ pub fn audit_rows(db: &Db) -> Vec<AuditRow> {
         Ok(out)
     })
     .expect("audit rows read")
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures for the sessions and devices suites
+//
+// The two pages read the tables the daemon already writes, so the tests write
+// those tables directly rather than inventing a second path into them. Every
+// helper takes the columns the page reads, and nothing is invented that the
+// schema does not allow.
+// ---------------------------------------------------------------------------
+
+/// One `devices` row.
+pub fn seed_device(
+    db: &Db,
+    id: &str,
+    name: &str,
+    platform: &str,
+    paired_at: Option<&str>,
+    last_seen_at: Option<&str>,
+    revoked_at: Option<&str>,
+) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO devices (id, name, platform, paired_at, last_seen_at, revoked_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, name, platform, paired_at, last_seen_at, revoked_at],
+        )?;
+        Ok(())
+    })
+    .expect("seed device");
+}
+
+/// A redeemed pairing code, which is one of the two facts that make a device
+/// `paired` in the page's own query.
+pub fn seed_redeemed_code(db: &Db, device_id: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO pairing_codes (id, code_hash, device_id, expires_at, consumed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                format!("code-{device_id}"),
+                "not-a-real-verifier",
+                device_id,
+                "2026-01-01T00:00:00.000Z",
+                "2026-01-01T00:00:01.000Z"
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed pairing code");
+}
+
+/// One `sessions` row.
+pub fn seed_session(
+    db: &Db,
+    id: &str,
+    device_id: Option<&str>,
+    user_agent: Option<&str>,
+    created_at: &str,
+    expires_at: &str,
+    revoked_at: Option<&str>,
+) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO sessions \
+             (id, device_id, user_agent, created_at, last_seen_at, expires_at, revoked_at) \
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
+            rusqlite::params![
+                id, device_id, user_agent, created_at, expires_at, revoked_at
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed session");
+}
+
+/// One `jobs` row. The nullable columns are passed as `None` by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn seed_job(
+    db: &Db,
+    id: &str,
+    session_id: Option<&str>,
+    status: &str,
+    request_text: Option<&str>,
+    created_at: &str,
+    finished_at: Option<&str>,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO jobs \
+             (id, kind, status, request_text, created_at, updated_at, finished_at, \
+              session_id, error_code, error_message) \
+             VALUES (?1, 'turn', ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                id,
+                status,
+                request_text,
+                created_at,
+                finished_at,
+                session_id,
+                error_code,
+                error_message
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed job");
+}
+
+/// One `job_events` row.
+pub fn seed_event(
+    db: &Db,
+    job_id: &str,
+    seq: i64,
+    kind: &str,
+    payload: Option<&str>,
+    occurred_at: &str,
+) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO job_events (job_id, seq, kind, payload, occurred_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![job_id, seq, kind, payload, occurred_at],
+        )?;
+        Ok(())
+    })
+    .expect("seed event");
+}
+
+/// One `jobs.status`, read straight from the table.
+pub fn job_status(db: &Db, id: &str) -> Option<String> {
+    db.with_conn(|conn| {
+        conn.query_row("SELECT status FROM jobs WHERE id = ?1", [id], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+    })
+    .expect("job status read")
+}
+
+/// Every text value of every row a `SELECT` returns, newline separated.
+///
+/// The pairing-code suite uses this to prove a minted code is nowhere in the
+/// tables: it is a whole-table read, not a guess about which column would hold
+/// it. Non-text columns are skipped rather than formatted.
+pub fn dump_text(db: &Db, sql: &str) -> String {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(sql)?;
+        let count = statement.column_count();
+        let mut rows = statement.query([])?;
+        let mut out = String::new();
+        while let Some(row) = rows.next()? {
+            for index in 0..count {
+                let value: Option<String> = row.get(index).unwrap_or(None);
+                if let Some(text) = value {
+                    out.push_str(&text);
+                    out.push('\n');
+                }
+            }
+        }
+        Ok(out)
+    })
+    .expect("table dump")
+}
+
+/// The `tr` a row link sits in, so a test can assert about one row only.
+pub fn row_window<'a>(page: &'a str, marker: &str) -> &'a str {
+    let at = page
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker} is missing from the page: {page}"));
+    let end = page[at..]
+        .find("</tr>")
+        .map(|offset| at + offset)
+        .unwrap_or(page.len());
+    let start = page[..at].rfind("<tr").unwrap_or(0);
+    &page[start..end]
 }

@@ -29,3 +29,11 @@ mod settings;
 /// Phase 1: the Activity page over `audit_log`.
 #[cfg(test)]
 mod activity;
+
+/// Phase 2: the Sessions list, the session detail page, and job cancellation.
+#[cfg(test)]
+mod sessions;
+
+/// Phase 2: the Devices list, its revoke button, and the pairing-code form.
+#[cfg(test)]
+mod devices;

@@ -13,13 +13,23 @@
 use axum::http::StatusCode;
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_LOGIN, ROUTE_SETTINGS, router_with,
+    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_LOGIN, ROUTE_SESSIONS,
+    ROUTE_SETTINGS, router_with,
 };
 
-use super::harness::{Call, PURPLE_DENYLIST, block_on, ready_engine, send, setup_engine, sign_in};
+use super::harness::{
+    Call, PURPLE_DENYLIST, block_on, ready_app, ready_engine, send, setup_engine, sign_in,
+};
 
-/// The four nav links that have a page behind them in this phase.
-const LIVE_NAV: [&str; 3] = [ROUTE_DASHBOARD, ROUTE_SETTINGS, ROUTE_ACTIVITY];
+/// The nav links that have a page behind them. `/dashboard/backups` is the one
+/// entry still named in the nav without a page, and it is not in this list.
+const LIVE_NAV: [&str; 5] = [
+    ROUTE_DASHBOARD,
+    ROUTE_SESSIONS,
+    ROUTE_DEVICES,
+    ROUTE_SETTINGS,
+    ROUTE_ACTIVITY,
+];
 
 /// The text of the link that carries `aria-current="page"`.
 ///
@@ -83,24 +93,18 @@ fn the_nav_renders_when_ready_and_not_on_the_login_page() {
         "the footer carries the version: {}",
         dashboard.body
     );
-    // And no nav link points at a route this build cannot serve. The two pages
-    // that arrive later are named in the nav and marked unavailable instead.
-    for missing in ["/dashboard/sessions", "/dashboard/devices"] {
-        assert!(
-            !dashboard.body.contains(&format!(r#"href="{missing}""#)),
-            "{missing} has no page in this phase, so it must not be a live link"
-        );
-    }
-    for label in [">Sessions", ">Devices"] {
-        assert!(
-            dashboard.body.contains(label),
-            "{label} is still named in the nav: {}",
-            dashboard.body
-        );
-    }
+    // One entry is still a placeholder, and only one: the backups page is not
+    // built yet, and a nav that answers a click with a 404 is worse than a nav
+    // that says so.
+    assert_eq!(
+        dashboard.body.matches(r#"aria-disabled="true""#).count(),
+        1,
+        "only the backups entry is unavailable: {}",
+        dashboard.body
+    );
     assert!(
-        dashboard.body.contains(r#"aria-disabled="true""#),
-        "the unavailable entries say so: {}",
+        dashboard.body.contains(">Backups"),
+        "the unavailable entry is named: {}",
         dashboard.body
     );
 
@@ -145,6 +149,65 @@ fn the_nav_renders_when_ready_and_not_on_the_login_page() {
         !wizard.body.contains(r#"<nav class="nav""#),
         "the wizard has no nav: {}",
         wizard.body
+    );
+}
+
+#[test]
+fn sessions_and_devices_nav_links_are_active() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // Both pages exist, so both entries are links on every live page, and each
+    // page marks itself current.
+    for route in [ROUTE_SESSIONS, ROUTE_DEVICES] {
+        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
+        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
+        let marked = owner_of_aria_current(&page.body);
+        assert!(
+            marked.contains(route),
+            "{route} marks itself current, found {marked}"
+        );
+    }
+
+    for route in LIVE_NAV {
+        let page = block_on(send(&app, Call::get(route).html().cookie(cookie)));
+        assert_eq!(page.status, StatusCode::OK, "{route}: {}", page.body);
+        for link in [ROUTE_SESSIONS, ROUTE_DEVICES] {
+            assert!(
+                page.body.contains(&format!(r#"href="{link}""#)),
+                "{route} links {link}: {}",
+                page.body
+            );
+        }
+        // The placeholder is the backups entry and nothing else, on every page.
+        assert_eq!(
+            page.body.matches(r#"aria-disabled="true""#).count(),
+            1,
+            "{route} has exactly one unavailable nav entry: {}",
+            page.body
+        );
+        assert!(
+            page.body.contains(">Backups"),
+            "{route} still names the backups entry: {}",
+            page.body
+        );
+        assert!(
+            !page.body.contains(r#"href="/dashboard/backups""#),
+            "{route} does not link a page this build cannot serve: {}",
+            page.body
+        );
+        let marked = owner_of_aria_current(&page.body);
+        assert!(
+            marked.contains(route),
+            "{route} marks itself current, found {marked}"
+        );
+    }
+
+    // The sign-in page still carries no nav at all, so no session link either.
+    let login = block_on(send(&app, Call::get(ROUTE_LOGIN).html()));
+    assert!(
+        !login.body.contains(&format!(r#"href="{ROUTE_SESSIONS}""#)),
+        "the login page links no session page"
     );
 }
 

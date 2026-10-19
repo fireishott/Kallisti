@@ -13,14 +13,15 @@
 use std::collections::BTreeMap;
 
 use axum::body::Body;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_LOGIN, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION,
+    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN,
+    ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::error::{ApiError, RequestId};
@@ -31,8 +32,10 @@ use crate::onboarding::{
 };
 use crate::web::store;
 use crate::web::templates::{
-    ActivityView, DashboardView, DeviceRow, FormError, SettingsGroup, SettingsView, SetupView,
-    activity_page, dashboard_page, login_page, settings_page, setup_page,
+    ActivityView, DEVICE_NAME_LIMIT, DashboardView, DeviceRow, DevicesView, FormError,
+    IssuedCodeView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
+    activity_page, dashboard_page, devices_page, error_page, login_page, session_page,
+    sessions_page, settings_page, setup_page,
 };
 
 /// The upload ceiling for one form post. Every field is a short string.
@@ -67,6 +70,10 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_ACTIVITY, get(activity))
+        .route(ROUTE_SESSIONS, get(sessions))
+        .route(ROUTE_SESSION, get(session_detail))
+        .route(ROUTE_DEVICES, get(devices).post(mint_pairing_code))
+        .route(ROUTE_JOB_CANCEL, post(cancel_job))
         .route("/dashboard/provider/rotate", post(rotate_provider))
         .route("/dashboard/device/revoke", post(revoke_device))
         .route("/dashboard/mode", post(mode))
@@ -93,6 +100,17 @@ fn see_other(location: &'static str) -> Response {
         [(header::LOCATION, HeaderValue::from_static(location))],
     )
         .into_response()
+}
+
+/// A 303 to a path that is built at run time, as a cancel is: the browser goes
+/// back to the page that offered the button.
+fn see_other_to(location: String) -> Response {
+    match HeaderValue::from_str(&location) {
+        Ok(value) => (StatusCode::SEE_OTHER, [(header::LOCATION, value)]).into_response(),
+        // A value that cannot be a header is a value a job id cannot be, so this
+        // is a refusal rather than a redirect anywhere unexpected.
+        Err(_) => see_other(ROUTE_SESSIONS),
+    }
 }
 
 /// A JSON success body.
@@ -639,6 +657,375 @@ async fn activity(
     match build_activity_view(&state) {
         Ok(view) => page(activity_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /dashboard/sessions` - every device session, newest first.
+async fn sessions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_sessions_view(&state) {
+        Ok(view) => page(sessions_page(&view)),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /dashboard/sessions/{id}` - one session, its jobs, and their events.
+///
+/// An id that names no row is a rendered 404 with the error template, never a
+/// 200 with an empty page: a blank page looks like a session with nothing in it,
+/// which is a different and wrong answer.
+async fn session_detail(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_session_detail_view(&state, &id) {
+        Ok(Some(view)) => page(session_page(&view)),
+        Ok(None) => missing_page(
+            &state,
+            &request_id.0,
+            &headers,
+            "session_not_found",
+            &format!("no session with id {id} exists on this host"),
+        ),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /dashboard/devices` - every device, and the form that mints a code.
+async fn devices(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_devices_view(&state) {
+        Ok(view) => page(devices_page(&view)),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `POST /dashboard/devices` - mint one pairing code for a device name.
+///
+/// The code exists in this response and nowhere else: the pairing service stores
+/// only an Argon2id verifier, this handler never writes the value, and the audit
+/// row carries the device name. Registering the device it names is deliberate:
+/// the row is what the table then shows as `awaiting code` until a phone redeems
+/// it.
+async fn mint_pairing_code(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return mint_refusal(&state, as_html, &request_id.0, error),
+    };
+    let name = field(&fields, "device_name").trim().to_owned();
+    if name.is_empty() {
+        return mint_refusal(
+            &state,
+            as_html,
+            &request_id.0,
+            FormError::new(
+                Some("device_name"),
+                "device_required",
+                "a device name is required to mint a pairing code",
+            ),
+        );
+    }
+    if name.chars().count() > DEVICE_NAME_LIMIT {
+        return mint_refusal(
+            &state,
+            as_html,
+            &request_id.0,
+            FormError::new(
+                Some("device_name"),
+                "device_name_too_long",
+                format!("a device name must be at most {DEVICE_NAME_LIMIT} characters"),
+            ),
+        );
+    }
+
+    let db = state.engine.db();
+    let store = state.engine.auth();
+    let device_id = match store::device_id_by_name(db, &name) {
+        Ok(Some(id)) => id,
+        Ok(None) => match store.register_device(&name, "unknown") {
+            Ok(id) => id,
+            Err(error) => {
+                return mint_refusal(
+                    &state,
+                    as_html,
+                    &request_id.0,
+                    FormError::new(Some("device_name"), error.code(), error.to_string()),
+                );
+            }
+        },
+        Err(error) => {
+            return ApiError::internal(request_id.0, db_error(&error).message).into_response();
+        }
+    };
+
+    // The one pairing path in the binary: the same service the wizard mints from.
+    let pairing = PairingService::new(db.clone());
+    let issued = match pairing.issue_for_device(&device_id) {
+        Ok(issued) => issued,
+        Err(error) => {
+            return mint_refusal(
+                &state,
+                as_html,
+                &request_id.0,
+                FormError::new(None, error.code(), error.to_string()),
+            );
+        }
+    };
+
+    // The audit row names the device and never the code.
+    if let Err(error) = store.audit("loopback", "device.pairing_code_issued", Some(&name)) {
+        return ApiError::internal(
+            request_id.0,
+            format!("the code was minted but the audit row could not be written: {error}"),
+        )
+        .into_response();
+    }
+
+    let expires_at = crate::auth::format_timestamp(issued.expires_at());
+    if as_html {
+        match build_devices_view(&state) {
+            Ok(mut view) => {
+                view.issued = Some(IssuedCodeView {
+                    code: issued.code().to_owned(),
+                    expires_at,
+                });
+                page(devices_page(&view))
+            }
+            Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+        }
+    } else {
+        ok_json(serde_json::json!({
+            "ok": true,
+            "device_id": device_id,
+            "device_name": name,
+            "code": issued.code(),
+            "expires_at": expires_at,
+        }))
+    }
+}
+
+/// `POST /dashboard/jobs/{id}/cancel` - cancel a queued or running job.
+///
+/// A job that is already terminal is a 400 with the reason a person needs, and
+/// the response writes nothing: a refusal that half-applies is worse than no
+/// button.
+async fn cancel_job(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let db = state.engine.db();
+    let job = match store::job_get(db, &id) {
+        Ok(Some(job)) => job,
+        Ok(None) => {
+            return missing_page(
+                &state,
+                &request_id.0,
+                &headers,
+                "job_not_found",
+                &format!("no job with id {id} exists on this host"),
+            );
+        }
+        Err(error) => {
+            return ApiError::internal(request_id.0, db_error(&error).message).into_response();
+        }
+    };
+
+    if !job.is_cancellable() {
+        let error = FormError::new(
+            None,
+            "job_not_cancellable",
+            format!(
+                "job {id} is already {}: only a queued or running job can be cancelled",
+                job.status
+            ),
+        );
+        return cancel_refusal(
+            &state,
+            as_html,
+            &request_id.0,
+            job.session_id.as_deref(),
+            error,
+        );
+    }
+
+    let at = crate::auth::format_timestamp(crate::auth::now());
+    match store::cancel_job(db, &id, &at) {
+        Ok(true) => {
+            if let Err(error) = state
+                .engine
+                .auth()
+                .audit("loopback", "job.cancel", Some(&id))
+            {
+                return ApiError::internal(
+                    request_id.0,
+                    format!("the job was cancelled but the audit row failed: {error}"),
+                )
+                .into_response();
+            }
+            if as_html {
+                let target = job
+                    .session_id
+                    .as_deref()
+                    .map(session_path)
+                    .unwrap_or_else(|| ROUTE_SESSIONS.to_owned());
+                see_other_to(target)
+            } else {
+                ok_json(serde_json::json!({
+                    "ok": true,
+                    "job_id": id,
+                    "status": "cancelled",
+                }))
+            }
+        }
+        // The row changed between the read and the update. The conditional
+        // update is why this branch exists at all.
+        Ok(false) => cancel_refusal(
+            &state,
+            as_html,
+            &request_id.0,
+            job.session_id.as_deref(),
+            FormError::new(
+                None,
+                "job_not_cancellable",
+                format!(
+                    "job {id} reached a terminal status while this request was in flight: only a                      queued or running job can be cancelled"
+                ),
+            ),
+        ),
+        Err(error) => ApiError::internal(request_id.0, db_error(&error).message).into_response(),
+    }
+}
+
+/// Assemble the sessions list.
+fn build_sessions_view(state: &AppState) -> Result<SessionsView, FormError> {
+    let engine = &state.engine;
+    let mut view = SessionsView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.rows = store::sessions_list(engine.db()).map_err(|error| db_error(&error))?;
+    Ok(view)
+}
+
+/// Assemble one session's page, or `None` when the id names no row.
+fn build_session_detail_view(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<SessionDetailView>, FormError> {
+    let db = state.engine.db();
+    let Some(session) = store::session_get(db, id).map_err(|error| db_error(&error))? else {
+        return Ok(None);
+    };
+    let mut view = SessionDetailView::new(
+        state.engine.state().map_err(|error| form_error(&error))?,
+        session,
+    );
+    view.jobs = store::jobs_for_session(db, id).map_err(|error| db_error(&error))?;
+    Ok(Some(view))
+}
+
+/// Assemble the devices page.
+fn build_devices_view(state: &AppState) -> Result<DevicesView, FormError> {
+    let engine = &state.engine;
+    let mut view = DevicesView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.rows = store::devices_list(engine.db()).map_err(|error| db_error(&error))?;
+    Ok(view)
+}
+
+/// A rendered 404 for a browser, the documented JSON refusal for an API client.
+fn missing_page(
+    state: &AppState,
+    request_id: &str,
+    headers: &HeaderMap,
+    code: &str,
+    message: &str,
+) -> Response {
+    if !wants_html(headers) {
+        return ApiError::new(StatusCode::NOT_FOUND, code, message, request_id).into_response();
+    }
+    match state.engine.state() {
+        Ok(state_now) => {
+            page_with_status(error_page(state_now, code, message), StatusCode::NOT_FOUND)
+        }
+        Err(error) => {
+            ApiError::internal(request_id, format!("cannot read the setup state: {error}"))
+                .into_response()
+        }
+    }
+}
+
+/// A refused cancel. The browser gets the session page back with the reason in
+/// its live region, so the button is not a dead end; an API client gets JSON.
+fn cancel_refusal(
+    state: &AppState,
+    as_html: bool,
+    request_id: &str,
+    session_id: Option<&str>,
+    error: FormError,
+) -> Response {
+    if !as_html {
+        return refusal(error);
+    }
+    if let Some(session_id) = session_id
+        && let Ok(Some(mut view)) = build_session_detail_view(state, session_id)
+    {
+        view.error = Some(error);
+        return page_with_status(session_page(&view), StatusCode::BAD_REQUEST);
+    }
+    match state.engine.state() {
+        Ok(state_now) => page_with_status(
+            error_page(state_now, &error.code, &error.message),
+            StatusCode::BAD_REQUEST,
+        ),
+        Err(engine_error) => ApiError::internal(
+            request_id,
+            format!("cannot read the setup state: {engine_error}"),
+        )
+        .into_response(),
+    }
+}
+
+/// A refused mint: the devices page again, with the reason in its live region.
+fn mint_refusal(state: &AppState, as_html: bool, request_id: &str, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if !as_html {
+        return refusal(error);
+    }
+    match build_devices_view(state) {
+        Ok(mut view) => {
+            view.error = Some(error);
+            page_with_status(devices_page(&view), status)
+        }
+        Err(build_error) => ApiError::internal(request_id, build_error.message).into_response(),
     }
 }
 

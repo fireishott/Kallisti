@@ -193,6 +193,47 @@ td.why { color: var(--muted); font-size: 13px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; }
 
+/* A state is a word plus a colour, never a colour on its own. */
+.badge.live { color: var(--ok); border-color: var(--ok); }
+.badge.expired { color: var(--warn); border-color: var(--warn); }
+.badge.revoked { color: var(--bad); border-color: var(--bad); }
+
+/* One job on a session page: its facts, its cancel button, its timeline. */
+.job {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 14px;
+  background: var(--raise);
+}
+.job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.job h3 { margin: 16px 0 6px; }
+
+.timeline { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
+.timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.timeline li:last-child { border-bottom: none; }
+.timeline .kind { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* The pairing code: the one thing on the page that is read aloud and retyped. */
+.pairing-code {
+  display: inline-block;
+  font-size: 30px;
+  letter-spacing: 0.28em;
+  padding: 12px 18px;
+  margin: 6px 0;
+  background: var(--deep);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+}
+
 code, .code {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 13px;

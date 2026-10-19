@@ -91,6 +91,32 @@ pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
 
+/// `GET /dashboard/sessions` - every device session, newest first.
+pub const ROUTE_SESSIONS: &str = "/dashboard/sessions";
+
+/// `GET /dashboard/devices` and `POST /dashboard/devices` - the device table and
+/// the one form that mints a pairing code.
+pub const ROUTE_DEVICES: &str = "/dashboard/devices";
+
+/// One session's page. Built by [`session_path`] so the route and every link to
+/// it come from one place.
+pub const ROUTE_SESSION: &str = "/dashboard/sessions/{id}";
+
+/// One job's cancel route, built by [`job_cancel_path`].
+pub const ROUTE_JOB_CANCEL: &str = "/dashboard/jobs/{id}/cancel";
+
+/// The path of one session's detail page.
+#[must_use]
+pub fn session_path(id: &str) -> String {
+    format!("{ROUTE_SESSIONS}/{id}")
+}
+
+/// The path that cancels one job.
+#[must_use]
+pub fn job_cancel_path(id: &str) -> String {
+    format!("/dashboard/jobs/{id}/cancel")
+}
+
 /// `GET /login` and `POST /login` - the way a browser gets a session once the
 /// wizard is closed. Sits behind the ready gate with the dashboard, because
 /// before `ready` the wizard is the surface that owns the credential.
@@ -105,6 +131,8 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETUP_STATE,
     ROUTE_LOGIN,
     ROUTE_DASHBOARD,
+    ROUTE_SESSIONS,
+    ROUTE_DEVICES,
     ROUTE_SETTINGS,
     ROUTE_ACTIVITY,
     CSS_ROUTE,
@@ -135,6 +163,11 @@ pub const POST_ROUTES: &[&str] = &[
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",
+    ROUTE_DEVICES,
+    // One literal cancel path, because the route list is a static slice and the
+    // real path carries a job id. The phase 7 test only needs one path that
+    // answers without a session.
+    "/dashboard/jobs/job-id/cancel",
 ];
 
 /// Shared handler state.
