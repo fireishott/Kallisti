@@ -58,6 +58,15 @@ a:hover { text-decoration: underline; }
 .brand { font-size: 15px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 .brand strong { color: var(--text); letter-spacing: 0.02em; text-transform: none; font-size: 18px; font-weight: 640; }
 
+.nav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 18px; margin-left: auto; margin-right: 18px; }
+.nav a { font-size: 14px; color: var(--muted); padding: 2px 0; border-bottom: 2px solid transparent; }
+.nav a:hover { color: var(--text); text-decoration: none; border-bottom-color: var(--line-strong); }
+.nav a[aria-current=page] { color: var(--text); border-bottom-color: var(--link); font-weight: 620; }
+.nav .soon { font-size: 14px; color: var(--muted); opacity: 0.6; }
+.nav .soon .tag { margin-left: 4px; }
+
+.soon { opacity: 0.55; cursor: not-allowed; }
+
 .badge {
   display: inline-block;
   padding: 2px 9px;

@@ -14,18 +14,25 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 
-use crate::admin::{AppState, ROUTE_DASHBOARD, ROUTE_LOGIN, VERSION};
+use crate::admin::{
+    AppState, ROUTE_ACTIVITY, ROUTE_DASHBOARD, ROUTE_LOGIN, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION,
+};
 use crate::auth::{AuthStore, PairingService};
 use crate::error::{ApiError, RequestId};
 use crate::onboarding::{
-    OnboardingError, Permissions, SETTING_MODEL, SETTING_PROVIDER_PROBED_AT, Step, Wizard, session,
+    OnboardingError, PermissionError, Permissions, SETTING_MODEL, SETTING_PROVIDER_BASE_URL,
+    SETTING_PROVIDER_KEY_REF, SETTING_PROVIDER_PROBED_AT, SETTING_WORKSPACE, Step, Wizard, session,
+    workspace,
 };
+use crate::web::store;
 use crate::web::templates::{
-    DashboardView, DeviceRow, FormError, SetupView, dashboard_page, login_page, setup_page,
+    ActivityView, DashboardView, DeviceRow, FormError, SettingsGroup, SettingsView, SetupView,
+    activity_page, dashboard_page, login_page, settings_page, setup_page,
 };
 
 /// The upload ceiling for one form post. Every field is a short string.
@@ -55,6 +62,11 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route(ROUTE_LOGIN, get(login_form).post(login))
         .route(ROUTE_DASHBOARD, get(dashboard))
+        .route(ROUTE_SETTINGS, get(settings))
+        .route(ROUTE_SETTINGS_PROVIDER, post(save_provider))
+        .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
+        .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
+        .route(ROUTE_ACTIVITY, get(activity))
         .route("/dashboard/provider/rotate", post(rotate_provider))
         .route("/dashboard/device/revoke", post(revoke_device))
         .route("/dashboard/mode", post(mode))
@@ -369,9 +381,16 @@ fn build_setup_view(state: &AppState) -> Result<SetupView, FormError> {
 /// Assemble the dashboard view from stored state.
 fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
     let engine = &state.engine;
+    let db = engine.db();
     let mut view = DashboardView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
-    view.db_ok = engine.db().quick_check().is_ok();
+    view.db_ok = db.quick_check().is_ok();
     view.sessions_live = state.sessions.live_count().unwrap_or(0);
+    view.device_sessions = store::session_count(db).map_err(|error| db_error(&error))?;
+    view.devices_known = store::device_count(db).map_err(|error| db_error(&error))?;
+    view.paired_devices = engine
+        .paired_device_count()
+        .map_err(|error| form_error(&error))?;
+    view.jobs = store::jobs_by_status(db).map_err(|error| db_error(&error))?;
     view.provider_base_url = engine
         .provider_base_url()
         .map_err(|error| form_error(&error))?;
@@ -394,7 +413,68 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
     view.device_listener = engine
         .device_listener_enabled()
         .map_err(|error| form_error(&error))?;
+    view.device_listener_bound = state.device.is_bound();
     Ok(view)
+}
+
+/// Assemble the settings view from stored state.
+///
+/// Every field is a database read with the documented default behind it, so the
+/// page renders what is stored and never a placeholder that disagrees with the
+/// rows.
+fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
+    let engine = &state.engine;
+    let mut view = SettingsView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
+    view.allow_full = state.allow_full;
+    view.provider_base_url = engine
+        .provider_base_url()
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_default();
+    view.provider_key_ref = engine
+        .provider_key_ref()
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_else(|| "env:NINEROUTER_API_KEY".to_owned());
+    view.model = engine
+        .model()
+        .map_err(|error| form_error(&error))?
+        .unwrap_or_default();
+    view.workspace = engine
+        .workspace_path()
+        .map_err(|error| form_error(&error))?
+        .display()
+        .to_string();
+    view.permissions = engine.permissions().map_err(|error| form_error(&error))?;
+    view.paired_devices = engine
+        .paired_device_count()
+        .map_err(|error| form_error(&error))?;
+    view.device_listener = engine
+        .device_listener_enabled()
+        .map_err(|error| form_error(&error))?;
+    view.device_listener_bound = state.device.is_bound();
+    Ok(view)
+}
+
+/// Assemble the activity view: the newest hundred audit rows.
+fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
+    let engine = &state.engine;
+    let mut view = ActivityView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.rows =
+        store::audit_recent(engine.db(), AUDIT_PAGE_SIZE).map_err(|error| db_error(&error))?;
+    view.total = store::audit_count(engine.db()).map_err(|error| db_error(&error))?;
+    Ok(view)
+}
+
+/// How many audit rows the activity page shows.
+const AUDIT_PAGE_SIZE: i64 = 100;
+
+/// A database failure as a form error, so a page is never replaced by a blank
+/// 200: the caller gets a 500 with a rendered message.
+fn db_error(error: &crate::db::DbError) -> FormError {
+    FormError::new(
+        None,
+        "db_error",
+        format!("the database read failed: {error}"),
+    )
 }
 
 /// Every device row, newest first.
@@ -517,6 +597,47 @@ async fn dashboard(
     }
     match build_dashboard_view(&state) {
         Ok(view) => page(dashboard_page(&view)),
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /dashboard/settings` - the three forms, pre-filled from the database.
+///
+/// The optional `saved` query value names the group that was just written, so a
+/// successful save lands on the page with the notice in that group's own live
+/// region rather than in a banner at the top that the reader has to connect to
+/// the form below it.
+async fn settings(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_settings_view(&state) {
+        Ok(mut view) => {
+            if let Some(group) = saved_group(&uri) {
+                view.notice = Some((group, group.saved_notice().to_owned()));
+            }
+            page(settings_page(&view))
+        }
+        Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /dashboard/activity` - the audit trail, newest first.
+async fn activity(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_activity_view(&state) {
+        Ok(view) => page(activity_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
     }
 }
@@ -1355,6 +1476,353 @@ async fn mode(
             "device_listener_bound": state.device.is_bound(),
         }))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Settings POST handlers
+// ---------------------------------------------------------------------------
+
+/// The redirect after a successful save, one per group.
+///
+/// The query value is the notice: the page reads it and renders the sentence in
+/// that group's own live region, so success is never silent and never a banner
+/// the reader has to match to a form.
+const SAVED_PROVIDER: &str = "/dashboard/settings?saved=provider";
+const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
+const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
+
+/// The group named by `?saved=`, when it names one this build knows.
+fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
+    let query = uri.query()?;
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if name != "saved" {
+            continue;
+        }
+        return match value {
+            "provider" => Some(SettingsGroup::Provider),
+            "workspace" => Some(SettingsGroup::Workspace),
+            "permissions" => Some(SettingsGroup::Permissions),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// One failure on the settings page: the same page back with the message in the
+/// failed group's live region.
+///
+/// The status is the shared map's, which is 400 for a field error, 429 for a rate
+/// limit and 500 for a database failure. A refusal is never a redirect and never
+/// an empty body.
+fn fail_settings(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_settings_view(state) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(settings_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
+/// A database write failure, as a 500 with a body rather than a silent redirect.
+fn store_failure(request_id: &str, what: &str, error: crate::db::DbError) -> Response {
+    ApiError::internal(
+        request_id.to_owned(),
+        format!("cannot store {what}: {error}"),
+    )
+    .into_response()
+}
+
+/// An audit write failure, which is a 500 for the same reason: a settings change
+/// that was not recorded did not happen as far as the product is concerned.
+fn audit_failure(request_id: &str, action: &str, error: crate::auth::AuthError) -> Response {
+    ApiError::internal(
+        request_id.to_owned(),
+        format!("cannot append the {action} audit row: {error}"),
+    )
+    .into_response()
+}
+
+/// `POST /dashboard/settings/provider` - endpoint, key reference, model.
+///
+/// What is stored is three strings, one of which is the *name* of an environment
+/// variable. No key value is accepted, stored, echoed, or logged: the reference
+/// is validated against `env:NAME` and nothing resolves it here.
+async fn save_provider(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let (base_url, key_ref, model) = match validate_provider(
+        field(&fields, "base_url"),
+        field(&fields, "api_key_ref"),
+        field(&fields, "model"),
+    ) {
+        Ok(parts) => parts,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let db = state.engine.db();
+    for (key, value) in [
+        (SETTING_PROVIDER_BASE_URL, base_url.as_str()),
+        (SETTING_PROVIDER_KEY_REF, key_ref.as_str()),
+        (SETTING_MODEL, model.as_str()),
+    ] {
+        if let Err(error) = store::settings_put(db, key, value) {
+            return store_failure(&request_id.0, key, error);
+        }
+    }
+
+    let detail = format!("base_url={base_url}; api_key_ref={key_ref}; model={model}");
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.provider", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.provider", error);
+    }
+
+    // Success is always a redirect, whatever `Accept` says: these three routes
+    // exist for a form, the page behind the redirect carries the notice, and a
+    // second success body would be a third way to read one answer. A refusal
+    // still answers an API client in JSON, because a script needs the field and
+    // the code.
+    see_other(SAVED_PROVIDER)
+}
+
+/// `POST /dashboard/settings/workspace` - the one directory a turn may write to.
+///
+/// The validation is [`workspace::prepare`], which is the same function the
+/// onboarding step calls: one rule, one implementation, so the dashboard cannot
+/// drift into accepting a path the wizard refuses.
+async fn save_workspace(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let prepared = match workspace::prepare(field(&fields, "workspace_path")) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("workspace_path"), error.code(), error.to_string()),
+            );
+        }
+    };
+    let path = prepared.path.display().to_string();
+    if let Err(error) = store::settings_put(state.engine.db(), SETTING_WORKSPACE, &path) {
+        return store_failure(&request_id.0, SETTING_WORKSPACE, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.workspace", Some(&path))
+    {
+        return audit_failure(&request_id.0, "settings.workspace", error);
+    }
+
+    see_other(SAVED_WORKSPACE)
+}
+
+/// `POST /dashboard/settings/permissions` - the closed permission tuple.
+///
+/// Three facts decide it, and none of them come from the form: whether this
+/// process was started with `--allow-full`, whether a device is genuinely paired,
+/// and whether the daemon is ready. A crafted post cannot supply any of them.
+/// The audit detail carries both sides of every value, because "who turned
+/// approvals off" is the question this row exists to answer.
+async fn save_permissions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let old = match state.engine.permissions() {
+        Ok(permissions) => permissions,
+        Err(error) => return refusal(form_error(&error)),
+    };
+    let paired = match state.engine.paired_device_count() {
+        Ok(count) => count > 0,
+        Err(error) => return refusal(form_error(&error)),
+    };
+    let ready = match state.engine.is_ready() {
+        Ok(ready) => ready,
+        Err(error) => return refusal(form_error(&error)),
+    };
+
+    let parsed = Permissions::validate_with(
+        field(&fields, "sandbox_mode"),
+        field(&fields, "approval_policy"),
+        field(&fields, "autopilot_ceiling"),
+        field(&fields, "telemetry"),
+        paired,
+        ready,
+        state.allow_full,
+    );
+    let permissions = match parsed {
+        Ok(permissions) => permissions,
+        Err(error) => return fail_settings(&state, as_html, permission_error(&error)),
+    };
+
+    if let Err(error) = state.engine.set_permissions(permissions) {
+        return refusal(form_error(&error));
+    }
+    let detail = format!(
+        "sandbox_mode {} -> {}; approval_policy {} -> {}; autopilot_ceiling {} -> {}; telemetry {} -> {}",
+        old.sandbox_mode.as_str(),
+        permissions.sandbox_mode.as_str(),
+        old.approval_policy.as_str(),
+        permissions.approval_policy.as_str(),
+        old.autopilot_ceiling.as_str(),
+        permissions.autopilot_ceiling.as_str(),
+        old.telemetry.as_str(),
+        permissions.telemetry.as_str(),
+    );
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.permissions", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.permissions", error);
+    }
+
+    see_other(SAVED_PERMISSIONS)
+}
+
+/// A permission refusal in the words of the dashboard, not the wizard.
+///
+/// The engine's `full` message says "onboarding cannot select", which is the
+/// wrong sentence on a page that is not onboarding. The code is unchanged, so a
+/// script still branches on `sandbox_full_not_available`.
+fn permission_error(error: &PermissionError) -> FormError {
+    match error {
+        PermissionError::FullNotAvailableInOnboarding => FormError::new(
+            Some("sandbox_mode"),
+            error.code(),
+            "full sandbox mode is not available on this process: it needs a restart of eris with --allow-full",
+        ),
+        PermissionError::NeverRequiresPairedDevice => FormError::new(
+            Some("approval_policy"),
+            error.code(),
+            "never ask needs a paired device and a finished setup: pair a phone first, so there is something that can answer an approval",
+        ),
+        other => FormError::new(Some(other.field()), other.code(), other.to_string()),
+    }
+}
+
+/// The rules for a provider save, in one place so the three fields are checked
+/// before anything is written.
+///
+/// The endpoint goes through [`core_domain::ProviderProfile::new`], the same
+/// constructor the runtime uses to build a request, so a URL this page accepts is
+/// a URL a turn can send to. The reference is checked twice: the shared parser
+/// proves the `env:` prefix, and the capitalisation rule proves the name is a
+/// variable name rather than a pasted value.
+fn validate_provider(
+    base_url: &str,
+    key_ref: &str,
+    model: &str,
+) -> Result<(String, String, String), FormError> {
+    let reference = core_domain::SecretRef::try_from(key_ref).map_err(|source| {
+        FormError::new(
+            Some("api_key_ref"),
+            "provider_key_ref_invalid",
+            format!(
+                "the key reference must be env:NAME, with the variable name in capitals: {source}"
+            ),
+        )
+    })?;
+    if !is_env_var_name(reference.env_name()) {
+        return Err(FormError::new(
+            Some("api_key_ref"),
+            "provider_key_ref_invalid",
+            "env:NAME needs a variable name in capitals: letters, digits and underscores, starting with a letter or an underscore",
+        ));
+    }
+
+    let profile = core_domain::ProviderProfile::new("settings", base_url, reference.clone())
+        .map_err(|source| {
+            FormError::new(
+                Some("base_url"),
+                "provider_endpoint_invalid",
+                format!("{source}"),
+            )
+        })?;
+    let base_url = profile.base_url;
+    if !endpoint_has_host(&base_url) {
+        return Err(FormError::new(
+            Some("base_url"),
+            "provider_endpoint_invalid",
+            format!("{base_url} needs a host after the scheme, as in http://127.0.0.1:20128/v1"),
+        ));
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(FormError::new(
+            Some("model"),
+            "provider_model_required",
+            "a model id is required: it is the model every turn starts with",
+        ));
+    }
+    Ok((base_url, reference.wire(), model.to_owned()))
+}
+
+/// Whether a string is a shell-style environment variable name in capitals.
+fn is_env_var_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return false;
+    }
+    characters.all(|character| {
+        character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+    })
+}
+
+/// Whether an `http(s)` URL carries a host, so `http://` alone is refused.
+fn endpoint_has_host(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or("");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty() && !authority.starts_with(':') && !authority.ends_with(':')
 }
 
 #[cfg(test)]

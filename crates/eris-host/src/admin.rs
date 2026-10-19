@@ -63,6 +63,21 @@ pub const ROUTE_SETUP_STATE: &str = "/setup/state";
 /// `GET /dashboard`.
 pub const ROUTE_DASHBOARD: &str = "/dashboard";
 
+/// `GET /dashboard/settings` - the three settings forms.
+pub const ROUTE_SETTINGS: &str = "/dashboard/settings";
+
+/// `POST /dashboard/settings/provider` - endpoint, key reference, model.
+pub const ROUTE_SETTINGS_PROVIDER: &str = "/dashboard/settings/provider";
+
+/// `POST /dashboard/settings/workspace` - the sandbox workspace path.
+pub const ROUTE_SETTINGS_WORKSPACE: &str = "/dashboard/settings/workspace";
+
+/// `POST /dashboard/settings/permissions` - the permission tuple.
+pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
+
+/// `GET /dashboard/activity` - the audit trail, newest first.
+pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
+
 /// `GET /login` and `POST /login` - the way a browser gets a session once the
 /// wizard is closed. Sits behind the ready gate with the dashboard, because
 /// before `ready` the wizard is the surface that owns the credential.
@@ -77,6 +92,8 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_SETUP_STATE,
     ROUTE_LOGIN,
     ROUTE_DASHBOARD,
+    ROUTE_SETTINGS,
+    ROUTE_ACTIVITY,
     CSS_ROUTE,
 ];
 
@@ -99,6 +116,9 @@ pub const POST_ROUTES: &[&str] = &[
     "/setup/device",
     "/setup/finish",
     ROUTE_LOGIN,
+    ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_WORKSPACE,
+    ROUTE_SETTINGS_PERMISSIONS,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",
