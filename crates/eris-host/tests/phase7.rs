@@ -707,14 +707,21 @@ async fn every_get_route_answers_with_a_body() {
         walk_wizard(&app, &engine, &passphrase, models_addr, dir.path()).await;
 
     // After onboarding: the whole surface, with a session where one is needed.
+    //
+    // A redirect is exempt from the body rule: its content is the Location
+    // header. `/` answers 302, and `/login` answers a 303 once a session exists,
+    // because the form is no longer the answer for this browser. Both point at
+    // the dashboard, which is the claim being made here.
     for route in ALL_GET_ROUTES {
         let reply = send(&app, Call::get(route).html().cookie(Some(&cookie))).await;
         assert!(
-            reply.status.is_success() || reply.status == StatusCode::FOUND,
+            reply.status.is_success()
+                || reply.status == StatusCode::FOUND
+                || reply.status == StatusCode::SEE_OTHER,
             "{route} answered {}",
             reply.status
         );
-        if reply.status == StatusCode::FOUND {
+        if reply.status == StatusCode::FOUND || reply.status == StatusCode::SEE_OTHER {
             assert_eq!(
                 reply
                     .headers

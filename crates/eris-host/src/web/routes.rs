@@ -18,14 +18,14 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 
-use crate::admin::{AppState, ROUTE_DASHBOARD, VERSION};
+use crate::admin::{AppState, ROUTE_DASHBOARD, ROUTE_LOGIN, VERSION};
 use crate::auth::{AuthStore, PairingService};
 use crate::error::{ApiError, RequestId};
 use crate::onboarding::{
     OnboardingError, Permissions, SETTING_MODEL, SETTING_PROVIDER_PROBED_AT, Step, Wizard, session,
 };
 use crate::web::templates::{
-    DashboardView, DeviceRow, FormError, SetupView, dashboard_page, setup_page,
+    DashboardView, DeviceRow, FormError, SetupView, dashboard_page, login_page, setup_page,
 };
 
 /// The upload ceiling for one form post. Every field is a short string.
@@ -47,8 +47,13 @@ pub fn setup_routes() -> axum::Router<AppState> {
 
 /// The dashboard routes. Every one of them sits behind the ready gate, which the
 /// admin router applies before merging this group.
+///
+/// `/login` is here rather than in the wizard group on purpose: signing in is
+/// only meaningful once the wizard is closed, and before `ready` the claim form
+/// is the surface that owns the credential.
 pub fn dashboard_routes() -> axum::Router<AppState> {
     axum::Router::new()
+        .route(ROUTE_LOGIN, get(login_form).post(login))
         .route(ROUTE_DASHBOARD, get(dashboard))
         .route("/dashboard/provider/rotate", post(rotate_provider))
         .route("/dashboard/device/revoke", post(revoke_device))
@@ -158,10 +163,15 @@ fn session_valid(state: &AppState, headers: &HeaderMap) -> bool {
     session::cookie_from_headers(headers).is_some_and(|value| state.sessions.verify(&value).is_ok())
 }
 
-/// The 403 a missing session earns, or a 303 to the wizard for a browser.
-fn no_session(headers: &HeaderMap, request_id: &str) -> Response {
+/// The 403 a missing session earns, or a 303 to a page that can mint one.
+///
+/// The destination is a parameter because the two halves of the admin surface
+/// have different ones: a wizard post sends the browser back to the wizard, and
+/// the dashboard sends it to the sign-in form. An API client always gets the
+/// documented `403 no_session`.
+fn no_session_to(headers: &HeaderMap, request_id: &str, target: &'static str) -> Response {
     if wants_html(headers) {
-        return see_other("/setup");
+        return see_other(target);
     }
     ApiError::new(
         StatusCode::FORBIDDEN,
@@ -170,6 +180,17 @@ fn no_session(headers: &HeaderMap, request_id: &str) -> Response {
         request_id,
     )
     .into_response()
+}
+
+/// The refusal for a wizard route: back to the wizard.
+fn no_session(headers: &HeaderMap, request_id: &str) -> Response {
+    no_session_to(headers, request_id, "/setup")
+}
+
+/// The refusal for the dashboard: to the sign-in form, which is the only route
+/// that can mint a session once the wizard is closed.
+fn no_dashboard_session(headers: &HeaderMap, request_id: &str) -> Response {
+    no_session_to(headers, request_id, ROUTE_LOGIN)
 }
 
 // ---------------------------------------------------------------------------
@@ -481,17 +502,159 @@ pub async fn setup_state(
 }
 
 /// `GET /dashboard` - health, provider, devices, kill switches.
+///
+/// A browser without a session is sent to the sign-in form rather than being
+/// shown a JSON refusal: landing on a 403 page is a dead end, and the whole point
+/// of the listener is a browser session. An API client keeps the documented
+/// `403 no_session`.
 async fn dashboard(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
 ) -> Response {
     if !session_valid(&state, &headers) {
-        return no_session(&headers, &request_id.0);
+        return no_dashboard_session(&headers, &request_id.0);
     }
     match build_dashboard_view(&state) {
         Ok(view) => page(dashboard_page(&view)),
         Err(error) => ApiError::internal(request_id.0, error.message).into_response(),
+    }
+}
+
+/// `GET /login` - the sign-in form, or a shortcut past it.
+async fn login_form(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if session_valid(&state, &headers) {
+        return see_other(ROUTE_DASHBOARD);
+    }
+    match state.engine.state() {
+        Ok(state_now) => page(login_page(state_now, None)),
+        Err(error) => ApiError::internal(
+            request_id.0,
+            format!("cannot read the setup state: {error}"),
+        )
+        .into_response(),
+    }
+}
+
+/// `POST /login` - verify the admin passphrase and mint the session cookie.
+///
+/// This is the route the daemon was missing: after onboarding finished, nothing
+/// could turn the operator's passphrase into a session, so the dashboard was
+/// unreachable from a browser. It writes nothing on the way in, and a refusal
+/// never mints a cookie.
+///
+/// A successful post is always a 303 to the dashboard, whatever `Accept` says:
+/// the cookie is the answer, and the destination is the page the caller asked
+/// for by signing in.
+async fn login(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+
+    // Rate limit before parsing, exactly as the claim form does, so a malformed
+    // flood costs an attempt too and the budget cannot be reset by garbage.
+    if !state.limiter.allow() {
+        let error = FormError::new(
+            None,
+            "rate_limited",
+            format!(
+                "too many sign-in attempts: {} per {} seconds, then the window has to pass",
+                state.limiter.limit(),
+                crate::onboarding::CLAIM_WINDOW.as_secs()
+            ),
+        );
+        return login_refusal(&state, as_html, error);
+    }
+
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return login_refusal(&state, as_html, error),
+    };
+    let passphrase = field(&fields, "passphrase");
+    if passphrase.is_empty() {
+        let error = FormError::new(
+            Some("passphrase"),
+            "passphrase_required",
+            "the admin passphrase is required",
+        );
+        return login_refusal(&state, as_html, error);
+    }
+
+    if let Err(error) = state.engine.login(passphrase) {
+        return login_refusal(&state, as_html, login_error(&error));
+    }
+
+    // Minted exactly as the claim step mints it: one row, one cookie, and the
+    // secret exists only in this response.
+    let minted = match state.sessions.mint() {
+        Ok(minted) => minted,
+        Err(error) => {
+            return ApiError::internal(
+                request_id.0,
+                format!("cannot mint the admin session: {error}"),
+            )
+            .into_response();
+        }
+    };
+    let cookie = session::set_cookie_header(&minted.cookie_value);
+    let mut response = see_other(ROUTE_DASHBOARD);
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+/// The status a failed sign-in deserves.
+///
+/// A credential that did not verify, or a host with none stored, is a 401: the
+/// caller is not authenticated. Everything else keeps the shared map, so a rate
+/// limit is still a 429 and an empty field is still a 400.
+fn login_status(code: &str) -> StatusCode {
+    match code {
+        "admin_passphrase_rejected" | "admin_passphrase_required" => StatusCode::UNAUTHORIZED,
+        other => failure_status(other),
+    }
+}
+
+/// One sign-in failure in whichever mode the caller speaks.
+fn login_refusal(state: &AppState, as_html: bool, error: FormError) -> Response {
+    let status = login_status(&error.code);
+    if !as_html {
+        return (status, axum::Json(error.to_json())).into_response();
+    }
+    match state.engine.state() {
+        Ok(state_now) => page_with_status(login_page(state_now, Some(&error)), status),
+        // The page needs the state badge; without it the JSON body still tells
+        // the truth, so the refusal is never a 200 with a hole in it.
+        Err(_) => (status, axum::Json(error.to_json())).into_response(),
+    }
+}
+
+/// The wire shape of a sign-in refusal, in plain English.
+///
+/// The codes are the engine's, unchanged, so a script can branch on them. The
+/// prose is written here because the engine's variants are named for the
+/// `eris setup --reset` path they were added for.
+fn login_error(error: &OnboardingError) -> FormError {
+    match error {
+        OnboardingError::AdminPassphraseRejected => FormError::new(
+            Some("passphrase"),
+            "admin_passphrase_rejected",
+            "that passphrase does not match the admin credential on this host",
+        ),
+        OnboardingError::AdminPassphraseRequired => FormError::new(
+            Some("passphrase"),
+            "admin_passphrase_required",
+            "this host has no admin credential stored yet",
+        ),
+        other => form_error(other),
     }
 }
 

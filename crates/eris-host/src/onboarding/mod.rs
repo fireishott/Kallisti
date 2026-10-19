@@ -894,6 +894,37 @@ impl SetupEngine {
         })
     }
 
+    /// `POST /login`: check the admin passphrase and, if it verifies, let the
+    /// caller mint a browser session.
+    ///
+    /// This is [`SetupEngine::reset`]'s verification half with every mutation
+    /// removed. It writes no setting, rewrites no passphrase, revokes no session,
+    /// and does not read or touch the wizard, because signing in is not a
+    /// lifecycle event. The only database write is the `auth.admin_password_rejected`
+    /// audit row that [`AuthStore::verify_admin_password`] already writes on a
+    /// failure.
+    ///
+    /// The value is normalized exactly as [`SetupEngine::accept_claim`] normalizes
+    /// it before storing the verifier, so the six words work whether the operator
+    /// types them in lower case or not. Only the Argon2id verifier is compared
+    /// against; the passphrase itself is never stored, logged, or echoed.
+    ///
+    /// A daemon with no admin credential refuses with
+    /// [`OnboardingError::AdminPassphraseRequired`], the same way `reset` does.
+    pub fn login(&self, admin_passphrase: &str) -> Result<(), OnboardingError> {
+        if self.auth().admin_password_hash()?.is_none() {
+            return Err(OnboardingError::AdminPassphraseRequired);
+        }
+        self.auth()
+            .verify_admin_password(&passphrase::normalize(admin_passphrase))
+            .map_err(|error| match error {
+                crate::auth::AuthError::AdminPasswordRejected => {
+                    OnboardingError::AdminPassphraseRejected
+                }
+                other => OnboardingError::Auth(other),
+            })
+    }
+
     /// Whether the daemon is ready. Convenience for the web layer.
     pub fn is_ready(&self) -> Result<bool, OnboardingError> {
         Ok(self.state()? == SetupState::Ready)

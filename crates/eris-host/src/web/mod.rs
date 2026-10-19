@@ -6,3 +6,9 @@
 pub mod css;
 pub mod routes;
 pub mod templates;
+
+/// P11 acceptance for the sign-in route. Test-only: the handlers live with the
+/// other handlers in `routes`, and this module is the suite that pins the
+/// browser path to the dashboard.
+#[cfg(test)]
+mod login;

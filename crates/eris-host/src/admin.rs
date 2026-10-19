@@ -63,6 +63,11 @@ pub const ROUTE_SETUP_STATE: &str = "/setup/state";
 /// `GET /dashboard`.
 pub const ROUTE_DASHBOARD: &str = "/dashboard";
 
+/// `GET /login` and `POST /login` - the way a browser gets a session once the
+/// wizard is closed. Sits behind the ready gate with the dashboard, because
+/// before `ready` the wizard is the surface that owns the credential.
+pub const ROUTE_LOGIN: &str = "/login";
+
 /// Every GET route the listener serves, including the ones that need a session
 /// or a finished setup. The phase 7 test walks this list.
 pub const ALL_GET_ROUTES: &[&str] = &[
@@ -70,12 +75,18 @@ pub const ALL_GET_ROUTES: &[&str] = &[
     ROUTE_HEALTHZ,
     ROUTE_SETUP,
     ROUTE_SETUP_STATE,
+    ROUTE_LOGIN,
     ROUTE_DASHBOARD,
     CSS_ROUTE,
 ];
 
 /// The GET routes that answer 200 with no session and no finished setup. The P5
 /// empty-body test walks this list.
+///
+/// `ROUTE_LOGIN` is deliberately absent: it is behind the ready gate and answers
+/// `409 not_ready` until onboarding finishes, so it cannot be in the
+/// "200 while unconfigured" set. It is covered by [`ALL_GET_ROUTES`] and by the
+/// `web::login` suite instead.
 pub const GET_ROUTES: &[&str] = &[ROUTE_HEALTHZ];
 
 /// Every POST route the listener serves.
@@ -87,6 +98,7 @@ pub const POST_ROUTES: &[&str] = &[
     "/setup/workspace",
     "/setup/device",
     "/setup/finish",
+    ROUTE_LOGIN,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",

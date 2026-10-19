@@ -689,6 +689,45 @@ pub fn setup_page(view: &SetupView) -> Markup {
     layout("Onboarding", view.state, body)
 }
 
+/// The sign-in page: the way into the dashboard from a browser.
+///
+/// `POST /setup/claim` minted a session exactly once, while the wizard was open.
+/// After onboarding finishes that form is gone, so without this page the
+/// dashboard had no browser path in at all. It asks for the same credential the
+/// claim did, and it writes nothing: a successful post mints a cookie and
+/// redirects.
+pub fn login_page(state: SetupState, error: Option<&FormError>) -> Markup {
+    let invalid = error.is_some_and(|error| error.field.as_deref() == Some("passphrase"));
+    let body = html! {
+        h1 { "Sign in" }
+        p .lede { "The dashboard answers only a browser holding an admin session. This form mints one." }
+        section .card aria-labelledby="login-heading" {
+            h2 id="login-heading" { "Admin sign-in" }
+            (alert_region(error, None))
+            form method="post" action="/login" novalidate {
+                div .field {
+                    label for="passphrase" { "Admin passphrase" }
+                    input id="passphrase" type="password" name="passphrase" value=""
+                        autocomplete="current-password" spellcheck="false"
+                        .invalid[invalid] aria-invalid=[invalid.then_some("true")]
+                        autofocus[invalid];
+                    span .hint {
+                        "The passphrase you chose during onboarding: six words, separated by spaces."
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Sign in" }
+                }
+            }
+        }
+        p .small {
+            "Still onboarding? " a href="/setup" { "The wizard" }
+            " is the way in before setup finishes."
+        }
+    };
+    layout("Sign in", state, body)
+}
+
 /// The dashboard page.
 pub fn dashboard_page(view: &DashboardView) -> Markup {
     let error = view.error.as_ref();
