@@ -1,0 +1,536 @@
+//! SQLite state: one file, WAL, embedded migrations.
+//!
+//! `~/.local/share/kallisti/eris.db` is the whole durable state of the daemon in
+//! P5: the setup state that `/healthz` reports, plus the tables the later phases
+//! fill in. Each connection is opened with three pragmas that are not optional:
+//!
+//! - `journal_mode=WAL`, so a reader never blocks the single writer;
+//! - `foreign_keys=ON`, because SQLite defaults it off per connection and the
+//!   cascade from `jobs` to `job_events` is only real if it is on;
+//! - `busy_timeout`, so a concurrent writer waits instead of returning
+//!   `SQLITE_BUSY`.
+//!
+//! `synchronous=FULL` follows ADR 0002: this daemon acks a turn, so a commit must
+//! survive a power cut, not only a process crash.
+//!
+//! Migrations are an ordered list, each applied inside one transaction, guarded
+//! by the highest version recorded in `schema_migrations`. Running the binary
+//! twice therefore applies nothing the second time and inserts no duplicate row.
+//! The DDL itself is also written `IF NOT EXISTS` with `INSERT OR IGNORE` seeds,
+//! so even a hand-run of 0001 is safe.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use rusqlite::Connection;
+
+/// Highest schema version this binary understands.
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The nine tables migration 0001 creates. `schema_migrations` is the tenth and
+/// is created by the runner, not by a migration.
+pub const TABLES: [&str; 9] = [
+    "admin_credential",
+    "app_state",
+    "audit_log",
+    "devices",
+    "job_events",
+    "jobs",
+    "pairing_codes",
+    "sessions",
+    "settings",
+];
+
+/// One forward migration. Never edited once released; add a new version.
+struct Migration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+/// The migration list. Append only.
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "0001_initial",
+    sql: MIGRATION_0001,
+}];
+
+/// Migration 0001: the whole P5 schema in one transaction.
+///
+/// Rules baked into the columns rather than into a later layer:
+/// `admin_credential` has a hash and no plaintext column anywhere;
+/// `pairing_codes.code_hash` is a verifier, not a code; `jobs.status` is a
+/// closed set; `job_events` is monotonic per job by `UNIQUE (job_id, seq)`.
+const MIGRATION_0001: &str = r"
+CREATE TABLE IF NOT EXISTS app_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    setup_state TEXT    NOT NULL DEFAULT 'setup'
+                CHECK (setup_state IN ('setup', 'ready')),
+    updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+INSERT OR IGNORE INTO app_state (id, setup_state) VALUES (1, 'setup');
+
+CREATE TABLE IF NOT EXISTS admin_credential (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    password_hash TEXT    NOT NULL,
+    algorithm     TEXT    NOT NULL DEFAULT 'argon2id',
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS devices (
+    id           TEXT PRIMARY KEY NOT NULL,
+    name         TEXT NOT NULL,
+    platform     TEXT NOT NULL,
+    public_key   TEXT,
+    paired_at    TEXT,
+    last_seen_at TEXT,
+    revoked_at   TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY NOT NULL,
+    device_id    TEXT REFERENCES devices (id) ON DELETE SET NULL,
+    user_agent   TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_seen_at TEXT,
+    expires_at   TEXT NOT NULL,
+    revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_device_id ON sessions (device_id);
+
+CREATE TABLE IF NOT EXISTS pairing_codes (
+    id          TEXT PRIMARY KEY NOT NULL,
+    code_hash   TEXT NOT NULL,
+    device_id   TEXT REFERENCES devices (id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at  TEXT NOT NULL,
+    consumed_at TEXT,
+    attempts    INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pairing_codes_expires_at ON pairing_codes (expires_at);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id            TEXT PRIMARY KEY NOT NULL,
+    kind          TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+    attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    error_code    TEXT,
+    error_message TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at    TEXT,
+    finished_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+
+CREATE TABLE IF NOT EXISTS job_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT    NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL CHECK (seq >= 1),
+    kind        TEXT    NOT NULL,
+    payload     TEXT,
+    occurred_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (job_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_events_job_id_seq ON job_events (job_id, seq);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY NOT NULL,
+    value      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    actor       TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    detail      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at ON audit_log (occurred_at);
+";
+
+/// Where 1.0 lives, for the reader who lands here first.
+pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
+
+/// `setup` until onboarding completes, `ready` after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupState {
+    /// First boot, onboarding not finished.
+    Setup,
+    /// Onboarding finished.
+    Ready,
+}
+
+impl SetupState {
+    /// The wire and database spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Ready => "ready",
+        }
+    }
+
+    /// Parse a stored value. Anything outside the CHECK constraint is a bug or
+    /// a hand-edited database, and both deserve a loud error.
+    pub fn parse(value: &str) -> Result<Self, DbError> {
+        match value {
+            "setup" => Ok(Self::Setup),
+            "ready" => Ok(Self::Ready),
+            other => Err(DbError::UnexpectedSetupState {
+                value: other.to_owned(),
+            }),
+        }
+    }
+}
+
+/// Everything that can go wrong around the database.
+#[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    /// The state directory or another path could not be created.
+    #[error("cannot prepare state directory {path}: {source}")]
+    Io {
+        /// Path that failed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// SQLite itself refused.
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    /// The file was written by a newer binary. Refuse rather than corrupt it.
+    #[error(
+        "database schema version {found} is newer than the {supported} this binary understands; upgrade eris instead of downgrading the database"
+    )]
+    SchemaAhead {
+        /// Version found in the file.
+        found: i64,
+        /// Version this binary supports.
+        supported: i64,
+    },
+    /// A version row was written but its DDL is missing from the binary.
+    #[error("schema version {version} was applied but this binary has no migration for it")]
+    MissingMigration {
+        /// Version that could not be found.
+        version: i64,
+    },
+    /// `journal_mode=WAL` did not stick.
+    #[error(
+        "refusing to run: journal_mode is {actual:?}, not wal (SQLite needs a writable file, not memory)"
+    )]
+    NotWal {
+        /// What SQLite reported.
+        actual: String,
+    },
+    /// `app_state` has its one row removed.
+    #[error("app_state has no row; the database was modified outside eris")]
+    MissingAppState,
+    /// `setup_state` holds a value outside the CHECK constraint.
+    #[error("app_state.setup_state is {value:?}, which is neither 'setup' nor 'ready'")]
+    UnexpectedSetupState {
+        /// The value that was found.
+        value: String,
+    },
+    /// The connection mutex was poisoned by a panic in another thread.
+    #[error("database connection is unusable: a previous holder panicked")]
+    Locked,
+}
+
+/// A handle to the one database. Cheap to clone; the connection is shared.
+#[derive(Clone)]
+pub struct Db {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    conn: Mutex<Connection>,
+    path: Option<PathBuf>,
+}
+
+impl Db {
+    /// Open (creating if needed), configure, and migrate the database file.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DbError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            prepare_state_dir(parent)?;
+        }
+        let mut conn = Connection::open(path)?;
+        configure(&conn)?;
+        migrate(&mut conn)?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                conn: Mutex::new(conn),
+                path: Some(path.to_path_buf()),
+            }),
+        })
+    }
+
+    /// An in-memory database, for tests. WAL is not available to `:memory:`, so
+    /// the two pragmas that are still meaningful are applied and the WAL check
+    /// is skipped.
+    pub fn open_in_memory() -> Result<Self, DbError> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {};",
+            BUSY_TIMEOUT.as_millis()
+        ))?;
+        migrate(&mut conn)?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                conn: Mutex::new(conn),
+                path: None,
+            }),
+        })
+    }
+
+    /// The file this database lives in, when it is a file.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.inner.path.as_deref()
+    }
+
+    /// `"setup"` or `"ready"`, read from `app_state`.
+    pub fn setup_state(&self) -> Result<SetupState, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT setup_state FROM app_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match value {
+            Some(value) => SetupState::parse(&value),
+            None => Err(DbError::MissingAppState),
+        }
+    }
+
+    /// Move the setup state. There is no route that calls this in P5; P7 owns
+    /// that transition.
+    pub fn set_setup_state(&self, state: SetupState) -> Result<(), DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let changed = conn.execute(
+            "UPDATE app_state SET setup_state = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1",
+            [state.as_str()],
+        )?;
+        if changed != 1 {
+            return Err(DbError::MissingAppState);
+        }
+        Ok(())
+    }
+
+    /// The highest applied migration version.
+    pub fn schema_version(&self) -> Result<i64, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let version: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(version)
+    }
+
+    /// Number of rows in `schema_migrations`. One per applied migration.
+    pub fn applied_migration_count(&self) -> Result<i64, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })?;
+        Ok(count)
+    }
+
+    /// The effective journal mode, lowercased.
+    pub fn journal_mode(&self) -> Result<String, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        Ok(mode.to_ascii_lowercase())
+    }
+
+    /// Whether this connection enforces foreign keys.
+    pub fn foreign_keys_enabled(&self) -> Result<bool, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+        Ok(enabled == 1)
+    }
+
+    /// The durability pragma: 0 `off`, 1 `normal`, 2 `full`, 3 `extra`.
+    pub fn synchronous_level(&self) -> Result<i64, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let level: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        Ok(level)
+    }
+
+    /// The configured busy timeout, in milliseconds.
+    pub fn busy_timeout_ms(&self) -> Result<i64, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+        Ok(timeout)
+    }
+
+    /// User table names, sorted, with SQLite's internal tables excluded.
+    pub fn table_names(&self) -> Result<Vec<String>, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let mut statement = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut names = Vec::new();
+        for name in rows {
+            names.push(name?);
+        }
+        Ok(names)
+    }
+
+    /// Column names of one table, in declaration order.
+    pub fn column_names(&self, table: &str) -> Result<Vec<String>, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+        let mut names = Vec::new();
+        for name in rows {
+            names.push(name?);
+        }
+        Ok(names)
+    }
+
+    /// Row count of one table.
+    pub fn row_count(&self, table: &str) -> Result<i64, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })?;
+        Ok(count)
+    }
+
+    /// `PRAGMA quick_check`: `"ok"` or the first problem SQLite reports.
+    pub fn quick_check(&self) -> Result<String, DbError> {
+        let conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        let result: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        Ok(result)
+    }
+}
+
+/// `Option<T>` for a query that may match no row, without a crate for it.
+trait OptionalRow<T> {
+    fn optional(self) -> Result<Option<T>, rusqlite::Error>;
+}
+
+impl<T> OptionalRow<T> for Result<T, rusqlite::Error> {
+    fn optional(self) -> Result<Option<T>, rusqlite::Error> {
+        match self {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+}
+
+/// Create the state directory if needed and make it owner-only.
+fn prepare_state_dir(dir: &Path) -> Result<(), DbError> {
+    let io_error = |path: &Path, source: std::io::Error| DbError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    fs::create_dir_all(dir).map_err(|source| io_error(dir, source))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The database holds session and pairing verifiers. Nobody else on the
+        // box needs to list it.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+            .map_err(|source| io_error(dir, source))?;
+    }
+    Ok(())
+}
+
+/// The three pragmas that are not optional.
+fn configure(conn: &Connection) -> Result<(), DbError> {
+    // `journal_mode` returns the mode it settled on, so it needs a query, not an
+    // execute. On a file database that must be `wal`.
+    let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(DbError::NotWal { actual: mode });
+    }
+    conn.execute_batch(&format!(
+        "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {}; PRAGMA synchronous = FULL;",
+        BUSY_TIMEOUT.as_millis()
+    ))?;
+    Ok(())
+}
+
+/// Apply every migration newer than the recorded version, one transaction each.
+fn migrate(conn: &mut Connection) -> Result<(), DbError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+             version    INTEGER PRIMARY KEY NOT NULL,
+             name       TEXT    NOT NULL,
+             applied_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         );",
+    )?;
+
+    let current: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if current > SCHEMA_VERSION {
+        return Err(DbError::SchemaAhead {
+            found: current,
+            supported: SCHEMA_VERSION,
+        });
+    }
+
+    for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
+        let transaction = conn.transaction()?;
+        transaction.execute_batch(migration.sql)?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+            rusqlite::params![migration.version, migration.name],
+        )?;
+        transaction.commit()?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_state_round_trips_and_rejects_junk() {
+        assert_eq!(
+            SetupState::parse("setup").expect("setup parses"),
+            SetupState::Setup
+        );
+        assert_eq!(
+            SetupState::parse("ready").expect("ready parses"),
+            SetupState::Ready
+        );
+        assert!(matches!(
+            SetupState::parse("onboarding"),
+            Err(DbError::UnexpectedSetupState { .. })
+        ));
+        assert_eq!(SetupState::Setup.as_str(), "setup");
+        assert_eq!(SetupState::Ready.as_str(), "ready");
+    }
+}

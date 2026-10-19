@@ -97,7 +97,7 @@ These override the original plan where they conflict.
 |---|---|
 | `crates/core-domain` | Types only: ids, events, capability enum, `DeviceSnapshot`, `DeviceContext`. No I/O, no HTTP, no async runtime. |
 | `crates/core-runtime` | Runtime seams: `log`, `prompt`, `provider`, `turn`. Skeleton modules in Wave 0. |
-| `crates/eris-host` | The Full daemon. Wave 0 stub binary that prints a version line. |
+| `crates/eris-host` | The Full daemon. P5: config loader (`eris.env` + `config.toml`), SQLite state with embedded migrations, the loopback admin listener on `127.0.0.1:7340`, the typed error body, and `doctor`. |
 | `crates/ios-host` | The Lite on-device surface. UniFFI 0.32.2 proc-macro surface: one exported function, `run_fake_turn`, backed by an in-process fake provider. Device half unproven; see `docs/adr/0003-lite-spike.md`. |
 
 Split crates rather than feature flags, because a feature flag is not a Lite
@@ -118,8 +118,44 @@ cargo clippy --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## Running at P5
+
+One binary, installed at `~/.local/opt/kallisti/bin/eris`:
+
+```bash
+eris            # `serve` is the default subcommand
+eris serve      # admin listener on 127.0.0.1:7340, loopback only
+eris probe "hi" # one real turn through the configured provider
+eris doctor     # JSON report: --json for one machine-readable object
+eris setup      # placeholder, exits 2 (onboarding is P7)
+eris device     # placeholder, exits 2 (device listener is P8)
+eris eval       # placeholder, exits 2
+eris version
+```
+
+State and config live outside the repo:
+
+| Path | Mode | Contents |
+|---|---|---|
+| `~/.config/kallisti/eris.env` | `0600` (enforced) | provider base URL, model, and a key **reference** (`env:NINEROUTER_API_KEY`) |
+| `~/.config/kallisti/config.toml` | none | `workspace_path`, `log_level`. Never a secret, never a bind address. |
+| `~/.local/share/kallisti/eris.db` | dir `0700` | SQLite, WAL, migrations in `schema_migrations` |
+
+```bash
+curl -s localhost:7340/healthz
+# {"status":"ok","version":"1.0.0","state":"setup","db":"ok"}
+```
+
+The admin address is a `const` in `crates/eris-host/src/admin.rs`. It is not a
+config key and not a flag: `config.toml` rejects any listen/bind key by name, and
+`eris serve` refuses to start when `eris.env` is group- or world-readable. The
+device port `7341` is not bound by this build.
+
 ## Status
 
-Wave 0 is a skeleton, not a working assistant. There is no daemon, no listener,
-no provider call, no database, and no generated bindings yet. The wave-by-wave
-plan is `~/vault/projects/kallisti-1.0-deployment-plan.md`.
+Wave 0 skeleton plus P1 through P5. What runs today: the provider seam returns a
+real completion through 9router, the session event log is green, and the daemon
+serves `/healthz` from a migrated SQLite database. Not built yet: auth and
+pairing (P6), the onboarding wizard (P7), the device listener (P8), and the
+`kallisti-eris.service` unit (P9). The wave-by-wave plan is
+`~/vault/projects/kallisti-1.0-deployment-plan.md`.

@@ -3,21 +3,42 @@ name = "eris-host"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Kallisti Eris daemon. Wave 0 stub binary; the server lands in later waves."
+description = "Kallisti Eris daemon: config, SQLite state, and the loopback admin listener."
+
+[lib]
+name = "eris_host"
+path = "src/lib.rs"
 
 [[bin]]
 name = "eris"
 path = "src/main.rs"
 
 [dependencies]
+axum = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 core-domain = { path = "../core-domain" }
 core-runtime = { path = "../core-runtime" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = [
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "signal",
+    "sync",
+    "time",
+    "io-util",
+] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

@@ -1,17 +1,35 @@
-//! Reading `~/.config/kallisti/eris.env`.
+//! Config: the secret half and the non-secret half.
 //!
-//! 1.0 has exactly one config surface, and it is a small `KEY=VALUE` file that is
-//! required to be mode `0600`. There is no TOML layer, no environment overlay,
-//! no dotenv crate: a probe either reads a file only the owner can read, or it
-//! refuses to run.
+//! There are exactly two files, and they hold different kinds of thing.
 //!
-//! The file holds a **reference** to the key, never the key:
+//! `~/.config/kallisti/eris.env` (mode `0600`, required):
 //!
 //! ```text
 //! KALLISTI_BASE_URL=http://127.0.0.1:20128/v1
 //! KALLISTI_MODEL=ds/deepseek-v4-flash
 //! KALLISTI_API_KEY_REF=env:NINEROUTER_API_KEY
 //! ```
+//!
+//! It holds a **reference** to the key, never the key. The loader refuses to
+//! run if the file is group- or world-readable, so a probe or a server either
+//! reads a file only the owner can read, or it refuses to start.
+//!
+//! `~/.config/kallisti/config.toml` (optional, no mode requirement, because it
+//! holds nothing secret):
+//!
+//! ```toml
+//! workspace_path = "~/kallisti-workspace"
+//! log_level = "info"
+//! ```
+//!
+//! That schema has exactly two keys, and it is deliberately not extensible by
+//! accident. Two classes of key are rejected by name *before* deserialisation,
+//! so the error says why:
+//!
+//! - anything that looks like a listen/bind address, because the admin listener
+//!   address is a literal in `admin.rs` and is the project's safety property;
+//! - anything that looks like a secret, because a secret value belongs in the
+//!   environment behind a reference, never in a file that is world-readable.
 //!
 //! Values are never logged and never echoed, so a config error names the *key*
 //! and not the value.
@@ -21,6 +39,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use core_domain::SecretRef;
+use serde::Deserialize;
 
 /// Required: the OpenAI-compatible base URL.
 pub const KEY_BASE_URL: &str = "KALLISTI_BASE_URL";
@@ -31,8 +50,38 @@ pub const KEY_API_KEY_REF: &str = "KALLISTI_API_KEY_REF";
 /// Optional: output cap for one turn.
 pub const KEY_MAX_OUTPUT_TOKENS: &str = "KALLISTI_MAX_OUTPUT_TOKENS";
 
-/// Mode the config file must have: owner read and write, nothing else.
+/// Mode the secret file must have: owner read and write, nothing else.
 pub const REQUIRED_MODE: u32 = 0o600;
+
+/// Config keys that would make the listener address configurable. Rejected on
+/// sight, whichever table they sit in.
+pub const FORBIDDEN_LISTEN_KEYS: &[&str] = &[
+    "listen",
+    "listen_addr",
+    "listen_address",
+    "bind",
+    "bind_addr",
+    "bind_address",
+    "admin_addr",
+    "admin_address",
+    "admin_listen",
+    "addr",
+    "address",
+    "host",
+    "port",
+    "socket",
+];
+
+/// Config keys that would put a secret in a world-readable file. Rejected on
+/// sight. `key` covers `api_key` and `apikey`; `credential` covers the plural.
+pub const FORBIDDEN_SECRET_KEYS: &[&str] = &[
+    "key",
+    "secret",
+    "token",
+    "password",
+    "passphrase",
+    "credential",
+];
 
 /// Why the config could not be loaded.
 #[derive(Debug, thiserror::Error)]
@@ -92,11 +141,57 @@ pub enum ConfigError {
         key: &'static str,
     },
     /// `$HOME` is not set, so the default path cannot be resolved.
-    #[error("HOME is not set, so the config path cannot be resolved")]
+    #[error("HOME is not set, so the config paths cannot be resolved")]
     NoHome,
+    /// The TOML file could not be read.
+    #[error("cannot read config file {path}: {source}")]
+    TomlRead {
+        /// Path that failed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// The TOML file did not parse, or carried a key outside the two-key schema.
+    #[error("config file {path} is not valid: {source}")]
+    TomlParse {
+        /// Path that was read.
+        path: PathBuf,
+        /// Parse error.
+        source: toml::de::Error,
+    },
+    /// A listen/bind key was present. The admin address is not configurable.
+    #[error(
+        "config file {path} carries the key {key}, but the admin listener address is fixed at 127.0.0.1:7340 and is not configurable: remove it"
+    )]
+    ListenerKeyInToml {
+        /// Path that was read.
+        path: PathBuf,
+        /// Key path that was rejected.
+        key: String,
+    },
+    /// A secret-looking key was present. Secrets do not live in this file.
+    #[error(
+        "config file {path} carries the key {key}, but config.toml must not hold a secret: keep the value in the environment and put only a reference in eris.env"
+    )]
+    SecretInToml {
+        /// Path that was read.
+        path: PathBuf,
+        /// Key path that was rejected.
+        key: String,
+    },
+    /// `log_level` was not one of the five tracing levels.
+    #[error(
+        "config file {path} has an unusable log_level; use one of trace, debug, info, warn, error"
+    )]
+    BadLogLevel {
+        /// Path that was read.
+        path: PathBuf,
+        /// The value that was rejected. Not a secret, but reported by name only.
+        value: String,
+    },
 }
 
-/// The parsed config. Carries a key *reference*, never a key.
+/// The parsed secret-half config. Carries a key *reference*, never a key.
 #[derive(Clone, PartialEq, Eq)]
 pub struct KallistiConfig {
     base_url: String,
@@ -121,8 +216,7 @@ impl fmt::Debug for KallistiConfig {
 impl KallistiConfig {
     /// The default config path, `~/.config/kallisti/eris.env`.
     pub fn default_path() -> Result<PathBuf, ConfigError> {
-        let home = std::env::var("HOME").map_err(|_| ConfigError::NoHome)?;
-        Ok(Path::new(&home).join(".config/kallisti/eris.env"))
+        Ok(Paths::from_home()?.env_file)
     }
 
     /// Load and validate a config file.
@@ -143,17 +237,14 @@ impl KallistiConfig {
             });
         }
 
-        #[cfg(unix)]
+        if let Some(mode) = file_mode(&metadata)
+            && mode != REQUIRED_MODE
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = metadata.permissions().mode() & 0o777;
-            if mode != REQUIRED_MODE {
-                return Err(ConfigError::InsecurePermissions {
-                    path: path.clone(),
-                    actual: mode,
-                    expected: REQUIRED_MODE,
-                });
-            }
+            return Err(ConfigError::InsecurePermissions {
+                path: path.clone(),
+                actual: mode,
+                expected: REQUIRED_MODE,
+            });
         }
 
         let text = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
@@ -264,6 +355,296 @@ impl KallistiConfig {
     }
 }
 
+/// Every path 1.0 touches under `$HOME`.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    /// `~/.config/kallisti`
+    pub config_dir: PathBuf,
+    /// `~/.config/kallisti/eris.env` - secret references, mode `0600`.
+    pub env_file: PathBuf,
+    /// `~/.config/kallisti/config.toml` - non-secret settings, optional.
+    pub toml_file: PathBuf,
+    /// `~/.local/share/kallisti`
+    pub state_dir: PathBuf,
+    /// `~/.local/share/kallisti/eris.db`
+    pub db_file: PathBuf,
+}
+
+impl Paths {
+    /// Resolve the defaults from `$HOME`.
+    pub fn from_home() -> Result<Self, ConfigError> {
+        let home = std::env::var("HOME").map_err(|_| ConfigError::NoHome)?;
+        let home = PathBuf::from(home);
+        Ok(Self {
+            config_dir: home.join(".config/kallisti"),
+            env_file: home.join(".config/kallisti/eris.env"),
+            toml_file: home.join(".config/kallisti/config.toml"),
+            state_dir: home.join(".local/share/kallisti"),
+            db_file: home.join(".local/share/kallisti/eris.db"),
+        })
+    }
+}
+
+/// Log level, as spelled in `config.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    /// `trace`
+    Trace,
+    /// `debug`
+    Debug,
+    /// `info`
+    Info,
+    /// `warn`
+    Warn,
+    /// `error`
+    Error,
+}
+
+impl LogLevel {
+    /// Default when `config.toml` does not say.
+    pub const DEFAULT: Self = Self::Info;
+
+    /// The `tracing` level this maps to.
+    #[must_use]
+    pub fn as_tracing(self) -> tracing::Level {
+        match self {
+            Self::Trace => tracing::Level::TRACE,
+            Self::Debug => tracing::Level::DEBUG,
+            Self::Info => tracing::Level::INFO,
+            Self::Warn => tracing::Level::WARN,
+            Self::Error => tracing::Level::ERROR,
+        }
+    }
+
+    /// The lowercase name used in config and in doctor output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "trace" => Some(Self::Trace),
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warn" | "warning" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// The parsed non-secret half. Exactly two keys, both optional.
+#[derive(Debug, Clone, Default)]
+pub struct TomlConfig {
+    workspace_path: Option<PathBuf>,
+    log_level: Option<LogLevel>,
+    source: Option<PathBuf>,
+}
+
+/// What deserialisation actually accepts. `deny_unknown_fields` is a second
+/// wall behind the key-name scan below.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TomlConfigRaw {
+    workspace_path: Option<PathBuf>,
+    log_level: Option<String>,
+}
+
+impl TomlConfig {
+    /// Defaults with no file behind them.
+    #[must_use]
+    pub fn defaults() -> Self {
+        Self::default()
+    }
+
+    /// Load `config.toml`. A missing file is not an error; it means defaults.
+    ///
+    /// There is deliberately no permission check here: this file must never
+    /// hold a secret, and the key-name scan refuses one if it appears.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        match fs::read_to_string(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::defaults()),
+            Err(source) => Err(ConfigError::TomlRead {
+                path: path.to_path_buf(),
+                source,
+            }),
+            Ok(text) => Self::parse(&text, path),
+        }
+    }
+
+    /// Parse `config.toml` text.
+    pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
+        // Parse to a generic value first so a rejected key can be named before
+        // serde turns it into "unknown field".
+        let value: toml::Value = toml::from_str(text).map_err(|source| ConfigError::TomlParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        reject_forbidden_keys(&value, "", path)?;
+
+        let raw: TomlConfigRaw = toml::from_str(text).map_err(|source| ConfigError::TomlParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        let log_level = match raw.log_level.as_deref() {
+            None => None,
+            Some(name) => Some(
+                LogLevel::parse(name).ok_or_else(|| ConfigError::BadLogLevel {
+                    path: path.to_path_buf(),
+                    value: name.to_owned(),
+                })?,
+            ),
+        };
+
+        Ok(Self {
+            workspace_path: raw.workspace_path,
+            log_level,
+            source: Some(path.to_path_buf()),
+        })
+    }
+
+    /// Sandbox workspace for turns. Defaults to `~/kallisti-workspace`.
+    #[must_use]
+    pub fn workspace_path(&self) -> PathBuf {
+        match &self.workspace_path {
+            Some(path) => expand_tilde(path),
+            None => expand_tilde(Path::new("~/kallisti-workspace")),
+        }
+    }
+
+    /// Log level, defaulting to `info`.
+    #[must_use]
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level.unwrap_or(LogLevel::DEFAULT)
+    }
+
+    /// The file this was read from, when there was one.
+    #[must_use]
+    pub fn source(&self) -> Option<&Path> {
+        self.source.as_deref()
+    }
+
+    /// Whether an explicit `workspace_path` was configured.
+    #[must_use]
+    pub fn workspace_path_is_default(&self) -> bool {
+        self.workspace_path.is_none()
+    }
+}
+
+/// Both halves, plus the paths they came from.
+#[derive(Debug, Clone)]
+pub struct LoadedConfig {
+    eris: KallistiConfig,
+    toml: TomlConfig,
+    paths: Paths,
+}
+
+impl LoadedConfig {
+    /// Load the secret half (strictly) and the non-secret half (optionally).
+    ///
+    /// This is the loader `serve` uses, so an `eris.env` that anyone else can
+    /// read stops the daemon from starting at all.
+    pub fn load(paths: Paths) -> Result<Self, ConfigError> {
+        let eris = KallistiConfig::load(&paths.env_file)?;
+        let toml = TomlConfig::load(&paths.toml_file)?;
+        Ok(Self { eris, toml, paths })
+    }
+
+    /// The provider half, read from `eris.env`.
+    #[must_use]
+    pub fn eris(&self) -> &KallistiConfig {
+        &self.eris
+    }
+
+    /// The non-secret half, read from `config.toml`.
+    #[must_use]
+    pub fn toml(&self) -> &TomlConfig {
+        &self.toml
+    }
+
+    /// The paths these were loaded from.
+    #[must_use]
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+}
+
+/// Reject listener and secret keys anywhere in the TOML tree.
+fn reject_forbidden_keys(
+    value: &toml::Value,
+    prefix: &str,
+    path: &Path,
+) -> Result<(), ConfigError> {
+    let Some(table) = value.as_table() else {
+        return Ok(());
+    };
+    for (key, child) in table {
+        let lowered = key.to_ascii_lowercase();
+        let full = if prefix.is_empty() {
+            lowered.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if FORBIDDEN_LISTEN_KEYS.contains(&lowered.as_str()) {
+            return Err(ConfigError::ListenerKeyInToml {
+                path: path.to_path_buf(),
+                key: full,
+            });
+        }
+        if FORBIDDEN_SECRET_KEYS
+            .iter()
+            .any(|needle| lowered.contains(needle))
+        {
+            return Err(ConfigError::SecretInToml {
+                path: path.to_path_buf(),
+                key: full,
+            });
+        }
+        reject_forbidden_keys(child, &full, path)?;
+    }
+    Ok(())
+}
+
+/// Permission bits of a file, on unix. `None` elsewhere.
+fn file_mode(metadata: &fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// Expand a leading `~` against `$HOME`. Anything else is returned unchanged.
+fn expand_tilde(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix('~') else {
+        return path.to_path_buf();
+    };
+    let Ok(home) = std::env::var("HOME") else {
+        return path.to_path_buf();
+    };
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        PathBuf::from(home)
+    } else {
+        Path::new(&home).join(rest)
+    }
+}
+
 /// Strip one layer of matching single or double quotes.
 fn unquote(value: &str) -> &str {
     let bytes = value.as_bytes();
@@ -290,6 +671,10 @@ KALLISTI_API_KEY_REF=env:NINEROUTER_API_KEY
 
     fn sample_path() -> PathBuf {
         PathBuf::from("/tmp/eris.env")
+    }
+
+    fn toml_path() -> PathBuf {
+        PathBuf::from("/tmp/config.toml")
     }
 
     #[test]
@@ -385,5 +770,141 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         let config = KallistiConfig::load(&path).expect("0600 must load");
         assert_eq!(config.model(), "ds/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn a_group_readable_mode_is_refused_by_the_full_loader() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        std::fs::write(&env_file, SAMPLE).expect("write");
+        std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+        let paths = Paths {
+            config_dir: dir.path().to_path_buf(),
+            env_file,
+            toml_file: dir.path().join("config.toml"),
+            state_dir: dir.path().join("state"),
+            db_file: dir.path().join("state/eris.db"),
+        };
+
+        let error = LoadedConfig::load(paths).expect_err("0640 must be refused");
+        assert!(
+            matches!(
+                error,
+                ConfigError::InsecurePermissions { actual: 0o640, .. }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_full_loader_reads_both_halves() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env_file = dir.path().join("eris.env");
+        let toml_file = dir.path().join("config.toml");
+        std::fs::write(&env_file, SAMPLE).expect("write");
+        std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        std::fs::write(&toml_file, "log_level = \"debug\"\n").expect("write");
+
+        let loaded = LoadedConfig::load(Paths {
+            config_dir: dir.path().to_path_buf(),
+            env_file,
+            toml_file,
+            state_dir: dir.path().join("state"),
+            db_file: dir.path().join("state/eris.db"),
+        })
+        .expect("both halves should load");
+
+        assert_eq!(loaded.eris().model(), "ds/deepseek-v4-flash");
+        assert_eq!(loaded.toml().log_level(), LogLevel::Debug);
+        assert!(
+            loaded
+                .toml()
+                .workspace_path()
+                .ends_with("kallisti-workspace")
+        );
+    }
+
+    #[test]
+    fn a_missing_config_toml_means_defaults() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let toml = TomlConfig::load(dir.path().join("absent.toml")).expect("missing is fine");
+        assert_eq!(toml.log_level(), LogLevel::Info);
+        assert_eq!(toml.source(), None);
+        assert!(toml.workspace_path_is_default());
+        assert!(toml.workspace_path().ends_with("kallisti-workspace"));
+    }
+
+    #[test]
+    fn the_two_documented_keys_parse() {
+        let toml = TomlConfig::parse(
+            "workspace_path = \"/tmp/ws\"\nlog_level = \"warn\"\n",
+            &toml_path(),
+        )
+        .expect("documented schema");
+        assert_eq!(toml.workspace_path(), PathBuf::from("/tmp/ws"));
+        assert_eq!(toml.log_level(), LogLevel::Warn);
+        assert!(!toml.workspace_path_is_default());
+    }
+
+    #[test]
+    fn config_toml_refuses_a_listen_address() {
+        // The safety property, stated as a test: the admin address is a literal
+        // in admin.rs, so a config key that would move it must be rejected.
+        for text in [
+            "listen = \"0.0.0.0:7340\"\n",
+            "bind_addr = \"0.0.0.0:7340\"\n",
+            "[server]\nport = 9000\n",
+            "[admin]\nhost = \"0.0.0.0\"\n",
+        ] {
+            let error = TomlConfig::parse(text, &toml_path()).expect_err("must be refused");
+            assert!(
+                matches!(error, ConfigError::ListenerKeyInToml { .. }),
+                "{text:?} gave {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_toml_refuses_a_secret_value() {
+        for text in [
+            "api_key = \"anything-at-all\"\n",
+            "NINEROUTER_API_KEY = \"anything-at-all\"\n",
+            "[provider]\ntoken = \"anything-at-all\"\n",
+        ] {
+            let error = TomlConfig::parse(text, &toml_path()).expect_err("must be refused");
+            assert!(
+                matches!(error, ConfigError::SecretInToml { .. }),
+                "{text:?} gave {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_toml_refuses_an_unknown_key() {
+        let error = TomlConfig::parse("colour_scheme = \"dark\"\n", &toml_path())
+            .expect_err("unknown keys are refused");
+        assert!(matches!(error, ConfigError::TomlParse { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn config_toml_refuses_an_unknown_log_level() {
+        let error = TomlConfig::parse("log_level = \"chatty\"\n", &toml_path())
+            .expect_err("must be refused");
+        assert!(
+            matches!(error, ConfigError::BadLogLevel { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn paths_default_under_home() {
+        let paths = Paths::from_home().expect("HOME is set in the test environment");
+        assert!(paths.env_file.ends_with(".config/kallisti/eris.env"));
+        assert!(paths.toml_file.ends_with(".config/kallisti/config.toml"));
+        assert!(paths.db_file.ends_with(".local/share/kallisti/eris.db"));
     }
 }

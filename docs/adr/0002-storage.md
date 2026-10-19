@@ -1,8 +1,8 @@
 # ADR 0002 - Storage: rusqlite bundled, WAL segments, plain WAL file
 
-- Status: **proposed** - nothing built yet, no database created
+- Status: **accepted** - relational half implemented in P5 (2026-10-19); event-log half in P2/P3
 - Date: 2026-10-19
-- Wave: 0 (decision recorded), implemented in Waves 1 and 3
+- Wave: 0 (decision recorded); relational store in P5, session event log in P2-P3
 - Related: locked amendments 3, 7
 
 ## Context
@@ -53,6 +53,30 @@ segment.
   `AlreadyLocked` rather than interleaving envelopes.
 - A committed segment is never rewritten, ever.
 
+## P5 implementation (2026-10-19)
+
+The relational half of this ADR is built, in `crates/eris-host/src/db.rs`:
+
+- `Db::open` sets `journal_mode=WAL` (and refuses to continue if SQLite does not
+  answer `wal`), `foreign_keys=ON`, `busy_timeout=5000`, `synchronous=FULL`, then
+  runs migrations before the listener binds. `~/.local/share/kallisti` is created
+  `0700`; the DB file inherits the default mode inside it.
+- Migration 0001 creates the nine tables named above. The runner keeps
+  `schema_migrations (version, name, applied_at)`, applies each version inside its
+  own transaction, and refuses a file whose version is newer than the binary
+  (`DbError::SchemaAhead`) instead of touching it. DDL is `IF NOT EXISTS` and the
+  seed rows are `INSERT OR IGNORE`, so a second start is a no-op.
+- Columns encode the amendment-3 rule rather than a later convention:
+  `admin_credential` has `password_hash` and no plaintext column;
+  `pairing_codes` has `code_hash` and no code; `jobs.status` is a closed set;
+  `job_events` is `UNIQUE (job_id, seq)`.
+- Tests: `migrations_are_idempotent_and_create_all_nine_tables`,
+  `the_database_is_in_wal_mode_with_foreign_keys_a_busy_timeout_and_full_sync`,
+  `the_credential_table_has_no_plaintext_column`.
+
+The VERIFY items about `rusqlite` 0.40.2 bundled builds and its pragma API are
+now answered by a green build and the tests above, on this host, with gcc 15.x.
+
 ## Consequences
 
 - The `bundled` feature needs a C compiler at build time. `gcc` is present on
@@ -83,5 +107,6 @@ segment.
 
 ## Not in this ADR
 
-No database is created and no migration is written in Wave 0. `rusqlite` and
-`fs4` are declared in the workspace dependency table with their pinned versions.
+Wave 0 declared the dependencies and wrote no migration; P5 wrote 0001. Anything
+about authentication, pairing flows, or job scheduling is P6 and later - this ADR
+covers storage, not policy.
