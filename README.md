@@ -98,11 +98,12 @@ These override the original plan where they conflict.
 | `crates/core-domain` | Types only: ids, events, capability enum, `DeviceSnapshot`, `DeviceContext`. No I/O, no HTTP, no async runtime. |
 | `crates/core-runtime` | Runtime seams: `log`, `prompt`, `provider`, `turn`. Skeleton modules in Wave 0. |
 | `crates/eris-host` | The Full daemon. Wave 0 stub binary that prints a version line. |
-| `crates/ios-host` | The Lite on-device surface. UniFFI stub until Wave 2. |
+| `crates/ios-host` | The Lite on-device surface. UniFFI 0.32.2 proc-macro surface: one exported function, `run_fake_turn`, backed by an in-process fake provider. Device half unproven; see `docs/adr/0003-lite-spike.md`. |
 
 Split crates rather than feature flags, because a feature flag is not a Lite
-security boundary (amendment 9). `ios-host` depends on `core-domain` and nothing
-else; that dependency graph is the boundary.
+security boundary (amendment 9). `ios-host` depends on `core-domain` and `uniffi`
+and nothing else; that dependency graph is the boundary, and both a source-scan
+test and a CI grep enforce it.
 
 ## Build
 

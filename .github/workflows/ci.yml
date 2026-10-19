@@ -29,6 +29,16 @@ jobs:
       - name: test
         run: cargo test --workspace
 
-  # The Lite boundary is a dependency graph, not a feature flag (locked
-  # amendment 9). The ios-host graph check lands with the Lite spike in Wave 2,
-  # alongside the no-reqwest/no-tokio source grep.
+      # The Lite boundary is a dependency graph, not a feature flag (locked
+      # amendment 9), and Gate A of the Lite proof is a turn with no listener
+      # and no network (locked amendment 2).
+      #
+      # Scoped to src/ on purpose: the test that asserts this absence lives in
+      # crates/ios-host/tests/ and therefore contains the tokens it forbids.
+      - name: ios-host source has no network stack
+        run: |
+          if grep -rniE 'reqwest|tokio|TcpListener|UdpSocket|std::net' crates/ios-host/src/; then
+            echo "::error::crates/ios-host/src must stay I/O-free: no reqwest, tokio, TcpListener, UdpSocket or std::net"
+            exit 1
+          fi
+          echo "crates/ios-host/src is clean"

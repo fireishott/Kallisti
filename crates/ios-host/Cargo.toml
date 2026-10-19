@@ -3,10 +3,17 @@ name = "ios-host"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Kallisti Lite on-device surface. UniFFI stub until Wave 2 (P3)."
+description = "Kallisti Lite on-device surface. UniFFI proc-macro surface, one exported function."
+
+# staticlib is what `xcodebuild -create-xcframework` consumes on iOS; cdylib is
+# what `uniffi-bindgen --library` reads on the host. rlib keeps `cargo test` and
+# any workspace crate able to depend on this one. See docs/adr/0003.
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 core-domain = { path = "../core-domain" }
+uniffi = { workspace = true }
 
 [lints]
 workspace = true
