@@ -8,6 +8,16 @@ description = "Kallisti 1.0 runtime seams: event log, prompt compile, provider s
 [dependencies]
 core-domain = { path = "../core-domain" }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zstd = { workspace = true }
+fs4 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

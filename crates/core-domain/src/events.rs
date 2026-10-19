@@ -66,6 +66,11 @@ pub enum EventKind {
         /// The prompt text as typed.
         text: String,
     },
+    /// A turn streamed one incremental text delta.
+    TurnToken {
+        /// The delta as received from the provider.
+        delta: String,
+    },
     /// A turn produced text.
     TurnCompleted {
         /// The assembled reply text.

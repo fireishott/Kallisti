@@ -4,6 +4,9 @@
 *.db-wal
 *.db-shm
 *.jsonl
+# Contract fixtures are checked-in goldens, not runtime state: the *.jsonl rule
+# above must not swallow them.
+!contract/fixtures/*.jsonl
 *.zst
 .env
 eris.env

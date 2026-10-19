@@ -1,17 +1,19 @@
 //! Runtime seams for Kallisti 1.0.
 //!
-//! Wave 0 ships the module skeleton and the decisions that are already locked.
-//! The behaviour lands in later waves:
+//! Wave 0 shipped the module skeleton and the decisions that are already locked.
+//! The behaviour lands wave by wave:
 //!
-//! | Module | Wave | What it will do |
+//! | Module | Wave | What it does |
 //! |---|---|---|
 //! | [`log`] | 1 (P2) | append-only session log, sealed segments, torn-tail recovery |
 //! | [`prompt`] | 2 | prompt block order and compilation |
 //! | [`provider`] | 4 (P4) | provider seam, `env:` key resolution, usage accounting |
 //! | [`turn`] | 8 (P8) | turn machine, worker lease, cancellation |
 //!
-//! Nothing here performs I/O yet. `core-runtime` links into the Lite core, so it
-//! must stay free of `tokio` and `reqwest` as well as any device framework.
+//! Only [`log`] performs I/O today, and only through blocking `std::fs` - the WAL
+//! has to be fsynced before an ack, so it deliberately does not hide behind an
+//! async runtime. `core-runtime` links into the Lite core, so it must stay free
+//! of `tokio` and `reqwest` as well as any device framework.
 
 pub mod log;
 pub mod prompt;
