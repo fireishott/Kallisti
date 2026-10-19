@@ -6,22 +6,39 @@
 //! tired operator and a copied config. `config.rs` refuses a `listen`/`bind` key
 //! outright, so there is no second way to set it.
 //!
-//! P5 serves health and nothing else. Onboarding routes and POST handlers belong
-//! to P7, the device listener to P8.
+//! Three layers guard the whole surface, in this order:
+//!
+//! 1. **request id** (outermost) - every response, including the 403 and the 409,
+//!    carries `x-request-id`;
+//! 2. **forwarded-header rejection** - a request carrying `X-Forwarded-*`,
+//!    `Forwarded` or any `Tailscale-*` header is a 403 `not_loopback`, no matter
+//!    what it asked for. Belt and braces against a future Serve mapping: the
+//!    bind is loopback, and this makes a proxy in front of it useless;
+//! 3. **the ready gate** on the dashboard - `409 not_ready` until onboarding
+//!    finishes.
+//!
+//! `/healthz`, `/`, `/setup`, `/setup/*` and `/static/*` are the only paths that
+//! answer before `ready`, and only `/setup` renders without an admin session.
 
 use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Extension, State};
-use axum::http::Uri;
-use axum::middleware;
+use axum::extract::{Extension, Request, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Serialize;
 use tokio::net::TcpListener;
 
+use crate::config::Paths;
 use crate::db::Db;
 use crate::error::{ApiError, RequestId, assign_request_id};
+use crate::onboarding::{AdminSessions, ClaimLimiter, SetupEngine};
+use crate::web::css::CSS_ROUTE;
+use crate::web::routes::{dashboard_routes, setup_routes};
 
 /// The admin listener address. Loopback, literal, not configurable.
 pub const ADMIN_ADDR: &str = "127.0.0.1:7340";
@@ -29,18 +46,82 @@ pub const ADMIN_ADDR: &str = "127.0.0.1:7340";
 /// The version every response reports. Mirrors `[workspace.package]`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The one route P5 serves.
+/// `GET /healthz`.
 pub const ROUTE_HEALTHZ: &str = "/healthz";
 
-/// Every GET route the admin listener serves. The empty-body test walks this
-/// list, so a new route cannot be added without being covered by it.
+/// `GET /` - a 302, by state.
+pub const ROUTE_ROOT: &str = "/";
+
+/// `GET /setup` - the wizard.
+pub const ROUTE_SETUP: &str = "/setup";
+
+/// `GET /setup/state` - wizard progress as JSON.
+pub const ROUTE_SETUP_STATE: &str = "/setup/state";
+
+/// `GET /dashboard`.
+pub const ROUTE_DASHBOARD: &str = "/dashboard";
+
+/// Every GET route the listener serves, including the ones that need a session
+/// or a finished setup. The phase 7 test walks this list.
+pub const ALL_GET_ROUTES: &[&str] = &[
+    ROUTE_ROOT,
+    ROUTE_HEALTHZ,
+    ROUTE_SETUP,
+    ROUTE_SETUP_STATE,
+    ROUTE_DASHBOARD,
+    CSS_ROUTE,
+];
+
+/// The GET routes that answer 200 with no session and no finished setup. The P5
+/// empty-body test walks this list.
 pub const GET_ROUTES: &[&str] = &[ROUTE_HEALTHZ];
 
-/// Shared handler state. The database is the only thing in it.
+/// Every POST route the listener serves.
+pub const POST_ROUTES: &[&str] = &[
+    "/setup/claim",
+    "/setup/provider",
+    "/setup/models",
+    "/setup/permissions",
+    "/setup/workspace",
+    "/setup/device",
+    "/setup/finish",
+    "/dashboard/provider/rotate",
+    "/dashboard/device/revoke",
+    "/dashboard/mode",
+];
+
+/// Shared handler state.
 #[derive(Clone)]
 pub struct AppState {
-    /// The one SQLite handle.
-    pub db: Db,
+    /// The onboarding engine (and the database underneath it).
+    pub engine: SetupEngine,
+    /// The admin cookie sessions.
+    pub sessions: AdminSessions,
+    /// Claim attempt limiter, in process on purpose: it guards a loopback form,
+    /// not a distributed API.
+    pub limiter: Arc<ClaimLimiter>,
+    /// True only when the process was started with `--allow-full`.
+    pub allow_full: bool,
+}
+
+impl AppState {
+    /// Build state around an engine. `allow_full` comes from the command line.
+    #[must_use]
+    pub fn new(engine: SetupEngine, allow_full: bool) -> Self {
+        let db = engine.db().clone();
+        Self {
+            engine,
+            sessions: AdminSessions::new(db),
+            limiter: Arc::new(ClaimLimiter::default()),
+            allow_full,
+        }
+    }
+
+    /// The database.
+    #[must_use]
+    pub fn db(&self) -> &Db {
+        self.engine.db()
+    }
 }
 
 /// `GET /healthz`, exactly. Field order is the wire order.
@@ -52,15 +133,121 @@ struct HealthBody {
     db: &'static str,
 }
 
-/// Build the admin router. The request-id middleware is layered over the whole
-/// router, so the 404 and 405 paths are covered as well as `/healthz`.
-pub fn router(db: Db) -> Router {
+/// Resolve the paths for a convenience router: `$KALLISTI_STATE_DIR` wins, then
+/// `$HOME`.
+#[must_use]
+pub fn default_paths() -> Paths {
+    if let Ok(dir) = std::env::var("KALLISTI_STATE_DIR")
+        && !dir.trim().is_empty()
+    {
+        return Paths::for_root(PathBuf::from(dir));
+    }
+    Paths::from_home().unwrap_or_else(|_| Paths::for_root("/tmp/kallisti-fallback"))
+}
+
+/// Build the admin router.
+///
+/// This is the real constructor: it wires the request-id middleware, the
+/// forwarded-header rejection, the ready gate, and the merged setup and dashboard
+/// routers.
+pub fn router_with(state: AppState) -> Router {
+    let dashboard =
+        dashboard_routes().layer(middleware::from_fn_with_state(state.clone(), require_ready));
     Router::new()
         .route(ROUTE_HEALTHZ, get(healthz))
+        .route(ROUTE_ROOT, get(root))
+        .route(ROUTE_SETUP_STATE, get(crate::web::routes::setup_state))
+        .route(CSS_ROUTE, get(stylesheet))
+        .merge(setup_routes())
+        .merge(dashboard)
         .fallback(no_route)
         .method_not_allowed_fallback(wrong_method)
+        .layer(middleware::from_fn(reject_forwarded))
         .layer(middleware::from_fn(assign_request_id))
-        .with_state(AppState { db })
+        .with_state(state)
+}
+
+/// Build a router over a database alone.
+///
+/// Test-only convenience: the paths come from the environment, and no wizard
+/// write happens on `/healthz`, on the 404 path, or on the 405 path. Serving the
+/// real UI goes through [`router_with`], so the paths are the ones the daemon
+/// resolved.
+pub fn router(db: Db) -> Router {
+    router_with(AppState::new(SetupEngine::new(db, default_paths()), false))
+}
+
+/// The ready gate: `409 not_ready` for every dashboard path until onboarding
+/// finishes.
+async fn require_ready(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|id| id.0.clone())
+        .unwrap_or_default();
+    match state.engine.is_ready() {
+        Ok(true) => next.run(request).await,
+        Ok(false) => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_ready",
+            "onboarding is not finished: the dashboard answers 409 until setup completes",
+            request_id,
+        )
+        .into_response(),
+        Err(error) => {
+            ApiError::internal(request_id, format!("cannot read the setup state: {error}"))
+                .into_response()
+        }
+    }
+}
+
+/// Refuse anything that arrived through a proxy.
+///
+/// A request carrying a forwarding header did not come from a browser on this
+/// host, whatever its peer address says. Tailscale Serve adds `Tailscale-*`
+/// identity headers; a conventional reverse proxy adds `X-Forwarded-*`. Both are
+/// a 403 with `code: "not_loopback"`.
+async fn reject_forwarded(request: Request, next: Next) -> Response {
+    if let Some(name) = forwarded_header(request.headers()) {
+        let request_id = request
+            .extensions()
+            .get::<RequestId>()
+            .map(|id| id.0.clone())
+            .unwrap_or_default();
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "not_loopback",
+            format!(
+                "the admin listener answers only a direct loopback client; this request carried the {name} header"
+            ),
+            request_id,
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
+/// The first forwarding header present, if any.
+#[must_use]
+pub fn forwarded_header(headers: &HeaderMap) -> Option<&'static str> {
+    const NAMED: [&str; 4] = [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "forwarded",
+    ];
+    for name in NAMED {
+        if headers.contains_key(name) {
+            return Some(name);
+        }
+    }
+    if headers
+        .keys()
+        .any(|key| key.as_str().starts_with("tailscale-"))
+    {
+        return Some("tailscale-");
+    }
+    None
 }
 
 /// Read the setup state and answer. A database that cannot answer is a 503 with
@@ -69,7 +256,7 @@ async fn healthz(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let db = state.db.clone();
+    let db = state.db().clone();
     // One row read. It happens off the async executor so a busy writer cannot
     // stall a runtime worker.
     match tokio::task::spawn_blocking(move || db.setup_state()).await {
@@ -89,6 +276,39 @@ async fn healthz(
                 .into_response()
         }
     }
+}
+
+/// `GET /` - a 302 to the wizard or the dashboard, by state.
+async fn root(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let location = match state.engine.is_ready() {
+        Ok(true) => ROUTE_DASHBOARD,
+        Ok(false) => ROUTE_SETUP,
+        Err(error) => {
+            return ApiError::internal(
+                request_id.0,
+                format!("cannot read the setup state: {error}"),
+            )
+            .into_response();
+        }
+    };
+    (
+        StatusCode::FOUND,
+        [(axum::http::header::LOCATION, location)],
+    )
+        .into_response()
+}
+
+/// `GET /static/app.css` - the one stylesheet, also inlined on every page.
+async fn stylesheet() -> Response {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        crate::web::css::APP_CSS,
+    )
+        .into_response()
 }
 
 /// Unknown path: a typed 404, not axum's empty body.
@@ -132,7 +352,7 @@ pub enum ServeError {
 ///
 /// The address is not a parameter on purpose: this function is the only way the
 /// daemon listens for HTTP, and its address is a literal.
-pub async fn serve(db: Db) -> Result<(), ServeError> {
+pub async fn serve(state: AppState) -> Result<(), ServeError> {
     let listener = TcpListener::bind(ADMIN_ADDR)
         .await
         .map_err(|source| ServeError::Bind {
@@ -141,13 +361,13 @@ pub async fn serve(db: Db) -> Result<(), ServeError> {
         })?;
     let addr = listener.local_addr().map_err(ServeError::LocalAddr)?;
     tracing::info!(%addr, "admin listener bound (loopback only)");
-    serve_on(listener, db).await
+    serve_on(listener, state).await
 }
 
 /// Serve an already-bound listener. Used by the socket test; `serve` is the only
 /// caller in the binary.
-pub async fn serve_on(listener: TcpListener, db: Db) -> Result<(), ServeError> {
-    let app = router(db);
+pub async fn serve_on(listener: TcpListener, state: AppState) -> Result<(), ServeError> {
+    let app = router_with(state);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -157,7 +377,7 @@ pub async fn serve_on(listener: TcpListener, db: Db) -> Result<(), ServeError> {
 }
 
 /// Wait for Ctrl-C or SIGTERM. Both are a clean stop, which is what the shell
-/// job in the P5 acceptance needs.
+/// job in the acceptance needs.
 async fn shutdown_signal() {
     let ctrl_c = async {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -198,5 +418,36 @@ mod tests {
     #[test]
     fn the_version_is_the_workspace_version() {
         assert_eq!(VERSION, "1.0.0");
+    }
+
+    #[test]
+    fn every_forwarding_header_is_recognised() {
+        for name in [
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "forwarded",
+            "tailscale-user",
+            "tailscale-user-login",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                "1.2.3.4".parse().expect("header value"),
+            );
+            assert!(
+                forwarded_header(&headers).is_some(),
+                "{name} must be refused"
+            );
+        }
+        let mut clean = HeaderMap::new();
+        clean.insert(
+            axum::http::header::HOST,
+            "127.0.0.1:7340".parse().expect("host"),
+        );
+        assert!(
+            forwarded_header(&clean).is_none(),
+            "a plain loopback request is not refused"
+        );
     }
 }

@@ -21,6 +21,7 @@ core-domain = { path = "../core-domain" }
 core-runtime = { path = "../core-runtime" }
 getrandom = { workspace = true }
 hex = { workspace = true }
+maud = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

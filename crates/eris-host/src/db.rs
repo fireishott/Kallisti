@@ -27,16 +27,17 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The ten tables the migrations create. `schema_migrations` is the eleventh and
-/// is created by the runner, not by a migration. 0001 creates the first nine;
-/// 0002 adds `auth_tokens`.
-pub const TABLES: [&str; 10] = [
+/// The eleven tables the migrations create. `schema_migrations` is the twelfth
+/// and is created by the runner, not by a migration. 0001 creates the first
+/// nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`.
+pub const TABLES: [&str; 11] = [
     "admin_credential",
+    "admin_sessions",
     "app_state",
     "audit_log",
     "auth_tokens",
@@ -66,6 +67,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "0002_auth_tokens",
         sql: MIGRATION_0002,
+    },
+    Migration {
+        version: 3,
+        name: "0003_admin_sessions",
+        sql: MIGRATION_0003,
     },
 ];
 
@@ -198,6 +204,26 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_device_kind ON auth_tokens (device_id, kind);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires_at ON auth_tokens (expires_at);
+";
+
+/// Migration 0003: the admin browser session, for the onboarding wizard and the
+/// dashboard.
+///
+/// The cookie the browser holds is `<row id>.<secret>`. The row keeps an
+/// Argon2id verifier of the secret and never the secret itself, so a copy of
+/// `eris.db` cannot be replayed as a logged-in session. The id is a lookup key,
+/// not a credential: a rotate or a revoke retires the row and the cookie dies
+/// immediately because verification re-reads it on every request.
+const MIGRATION_0003: &str = r"
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id         TEXT PRIMARY KEY NOT NULL,
+    token_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions (expires_at);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

@@ -53,12 +53,13 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("state/eris.db");
 
-    // First open: the file does not exist, so 0001 and 0002 run.
+    // First open: the file does not exist, so 0001, 0002 and 0003 run.
     // (The name above is the P5 contract name; P6 added 0002 and a tenth table,
-    // so the numbers below are the current ones and `TABLES` is the list.)
+    // P7 added 0003 and an eleventh, so the numbers below are the current ones
+    // and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 2);
-    assert_eq!(first.applied_migration_count().expect("count"), 2);
+    assert_eq!(first.schema_version().expect("version"), 3);
+    assert_eq!(first.applied_migration_count().expect("count"), 3);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -84,10 +85,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 2);
+    assert_eq!(second.schema_version().expect("version"), 3);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        2,
+        3,
         "re-running migrations must not add a version row"
     );
     assert_eq!(
@@ -373,14 +374,18 @@ fn dechunk(body: &str) -> String {
 
 #[tokio::test]
 async fn the_served_socket_answers_healthz_with_the_exact_body() {
-    let (_dir, db) = test_db();
+    let (dir, db) = test_db();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral loopback listener");
     let addr = listener.local_addr().expect("a local address");
     assert!(addr.ip().is_loopback(), "{addr} must be loopback");
 
-    let server = tokio::spawn(eris_host::admin::serve_on(listener, db));
+    let state = eris_host::admin::AppState::new(
+        eris_host::onboarding::SetupEngine::new(db, eris_host::config::Paths::for_root(dir.path())),
+        false,
+    );
+    let server = tokio::spawn(eris_host::admin::serve_on(listener, state));
     let (status, body) = http_get_once(addr, ROUTE_HEALTHZ).await;
 
     assert_eq!(status, 200);

@@ -383,6 +383,30 @@ impl Paths {
             db_file: home.join(".local/share/kallisti/eris.db"),
         })
     }
+
+    /// The same four paths under an explicit root.
+    ///
+    /// This exists so a test or an acceptance run can exercise the first-run
+    /// state machine without touching the real database: `--state-dir` points at
+    /// a scratch root and every path moves under it, `config/`, `state/`, the
+    /// database and `first-run.txt` included. Nothing about the real
+    /// `~/.local/share/kallisti/eris.db` is read or written in that mode.
+    ///
+    /// The layout mirrors `$HOME` on purpose, so a scratch run follows the same
+    /// relative shape the installed daemon uses.
+    #[must_use]
+    pub fn for_root(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let config_dir = root.join("config");
+        let state_dir = root.join("state");
+        Self {
+            env_file: config_dir.join("eris.env"),
+            toml_file: config_dir.join("config.toml"),
+            db_file: state_dir.join("eris.db"),
+            config_dir,
+            state_dir,
+        }
+    }
 }
 
 /// Log level, as spelled in `config.toml`.
@@ -629,7 +653,7 @@ fn file_mode(metadata: &fs::Metadata) -> Option<u32> {
 }
 
 /// Expand a leading `~` against `$HOME`. Anything else is returned unchanged.
-fn expand_tilde(path: &Path) -> PathBuf {
+pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     let Some(rest) = text.strip_prefix('~') else {
         return path.to_path_buf();

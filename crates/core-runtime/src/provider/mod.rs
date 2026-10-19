@@ -23,6 +23,7 @@
 //!   provider numbers.
 
 pub mod classify;
+pub mod models;
 pub mod openai_compat;
 pub mod stream;
 
@@ -31,6 +32,7 @@ use std::fmt;
 use core_domain::LlmError;
 
 pub use core_domain::{API_KEY_REF_ENV_PREFIX, SecretRef, SecretRefError};
+pub use models::{ModelCatalog, list_models, parse_model_list};
 pub use openai_compat::OpenAiCompatProvider;
 pub use stream::ChatStreamParser;
 
