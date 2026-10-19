@@ -1,0 +1,16 @@
+[package]
+name = "eris-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Kallisti Eris daemon. Wave 0 stub binary; the server lands in later waves."
+
+[[bin]]
+name = "eris"
+path = "src/main.rs"
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+
+[lints]
+workspace = true

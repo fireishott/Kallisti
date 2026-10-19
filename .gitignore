@@ -1,0 +1,9 @@
+/target
+/contract/gen
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.zst
+.env
+eris.env

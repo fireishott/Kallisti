@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins 1.99.1 and its components; installing it
+      # explicitly keeps a runner's default stable from masking a drift.
+      - name: Install pinned toolchain
+        run: >-
+          rustup toolchain install 1.99.1
+          --profile default
+          --component rustfmt
+          --component clippy
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+  # The Lite boundary is a dependency graph, not a feature flag (locked
+  # amendment 9). The ios-host graph check lands with the Lite spike in Wave 2,
+  # alongside the no-reqwest/no-tokio source grep.

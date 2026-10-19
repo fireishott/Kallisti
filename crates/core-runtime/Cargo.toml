@@ -1,0 +1,13 @@
+[package]
+name = "core-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Kallisti 1.0 runtime seams: event log, prompt compile, provider seam, turn machine."
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

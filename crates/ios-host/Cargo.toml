@@ -1,0 +1,12 @@
+[package]
+name = "ios-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Kallisti Lite on-device surface. UniFFI stub until Wave 2 (P3)."
+
+[dependencies]
+core-domain = { path = "../core-domain" }
+
+[lints]
+workspace = true
