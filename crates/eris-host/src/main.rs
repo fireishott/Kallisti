@@ -68,6 +68,13 @@ enum Command {
         /// is bound only when the dashboard switch is on.
         #[arg(long)]
         device_listen: bool,
+        /// Also serve the admin UI on this address, in addition to the loopback
+        /// listener, which is always bound. Accepts only a loopback address or
+        /// this host's own tailnet address (an IPv4 address in 100.64.0.0/10 that
+        /// is assigned to an interface here). `0.0.0.0`, `::`, a LAN address, a
+        /// public address and a hostname are refused before anything binds.
+        #[arg(long, value_name = "IP:PORT")]
+        admin_listen: Option<String>,
     },
     /// Send one prompt through the configured provider, print the reply and usage.
     Probe {
@@ -145,11 +152,12 @@ fn main() -> ExitCode {
 
     match cli.command {
         // `serve` is the default: no subcommand starts the daemon.
-        None => run_serve(cli.state_dir, false, false),
+        None => run_serve(cli.state_dir, false, false, None),
         Some(Command::Serve {
             allow_full,
             device_listen,
-        }) => run_serve(cli.state_dir, allow_full, device_listen),
+            admin_listen,
+        }) => run_serve(cli.state_dir, allow_full, device_listen, admin_listen),
         Some(Command::Probe { prompt }) => run_probe(&prompt),
         Some(Command::Setup { reset }) => run_setup(cli.json, reset, cli.state_dir),
         Some(Command::Device { command }) => match command {
@@ -218,7 +226,30 @@ fn resolve_paths(state_dir: Option<PathBuf>) -> Result<Paths, String> {
     }
 }
 
-fn run_serve(state_dir: Option<PathBuf>, allow_full: bool, device_listen: bool) -> ExitCode {
+fn run_serve(
+    state_dir: Option<PathBuf>,
+    allow_full: bool,
+    device_listen: bool,
+    admin_listen: Option<String>,
+) -> ExitCode {
+    // The `--admin-listen` value is validated before anything else runs, and in
+    // particular before any listener binds: a refused address must fail with a
+    // message about the address, not with "address already in use" from the
+    // loopback bind that is already up, and it must never open a socket.
+    let second_listener = match admin_listen {
+        None => None,
+        Some(raw) => match admin::listen::parse_admin_listen(&raw) {
+            Ok(addr) => {
+                tracing::info!(%addr, "second admin listener requested");
+                Some(addr)
+            }
+            Err(error) => {
+                eprintln!("eris serve: {error}");
+                return ExitCode::from(EXIT_FAILURE);
+            }
+        },
+    };
+
     let paths = match resolve_paths(state_dir) {
         Ok(paths) => paths,
         Err(message) => {
@@ -324,7 +355,7 @@ fn run_serve(state_dir: Option<PathBuf>, allow_full: bool, device_listen: bool) 
         if device_enabled {
             state.device.start();
         }
-        admin::serve(state).await
+        admin::serve_with(state, second_listener).await
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

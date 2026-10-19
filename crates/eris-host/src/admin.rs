@@ -1,10 +1,18 @@
-//! The admin listener: loopback, one port, one literal.
+//! The admin listener: loopback by default, one literal.
 //!
-//! The address is [`ADMIN_ADDR`], a `const` in this file. It is not a field in
-//! `config.toml`, not an environment variable, and not a command-line flag,
-//! because "the admin plane is reachable from this host only" has to survive a
-//! tired operator and a copied config. `config.rs` refuses a `listen`/`bind` key
-//! outright, so there is no second way to set it.
+//! The default address is [`ADMIN_ADDR`], a `const` in this file. It is not a
+//! field in `config.toml` and not an environment variable, because "the admin
+//! plane is reachable from this host only" has to survive a tired operator and a
+//! copied config. `config.rs` refuses a `listen`/`bind` key outright.
+//!
+//! The one exception is `serve --admin-listen`, which can add a *second* listener
+//! beside the loopback one. It cannot move or replace the loopback bind: the value
+//! has to pass [`listen::parse_admin_listen`], which accepts only a loopback
+//! address or this host's own tailnet address (`100.64.0.0/10`, and only when that
+//! address is assigned locally). A LAN address, a wildcard, a public address and a
+//! hostname are refused before anything binds. The point of the tailnet case is
+//! that an iPad on the tailnet can open the UI without a proxy in front of it, and
+//! everything below still applies to those requests.
 //!
 //! Three layers guard the whole surface, in this order:
 //!
@@ -12,8 +20,9 @@
 //!    carries `x-request-id`;
 //! 2. **forwarded-header rejection** - a request carrying `X-Forwarded-*`,
 //!    `Forwarded` or any `Tailscale-*` header is a 403 `not_loopback`, no matter
-//!    what it asked for. Belt and braces against a future Serve mapping: the
-//!    bind is loopback, and this makes a proxy in front of it useless;
+//!    what it asked for, and on every listener including the tailnet one. Belt and
+//!    braces against a future Serve mapping: nothing may sit in front of the admin
+//!    plane and pretend to be the client;
 //! 3. **the ready gate** on the dashboard - `409 not_ready` until onboarding
 //!    finishes.
 //!
@@ -21,6 +30,7 @@
 //! answer before `ready`, and only `/setup` renders without an admin session.
 
 use std::io;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,7 +52,10 @@ use crate::onboarding::{AdminSessions, ClaimLimiter, SetupEngine};
 use crate::web::css::CSS_ROUTE;
 use crate::web::routes::{dashboard_routes, setup_routes};
 
-/// The admin listener address. Loopback, literal, not configurable.
+pub mod listen;
+
+/// The default admin listener address. Loopback and literal: `serve` always binds
+/// it, and `--admin-listen` can only add a second listener, never move this one.
 pub const ADMIN_ADDR: &str = "127.0.0.1:7340";
 
 /// The version every response reports. Mirrors `[workspace.package]`.
@@ -383,6 +396,16 @@ pub enum ServeError {
     /// The listener address could not be read back.
     #[error("cannot read the bound admin address: {0}")]
     LocalAddr(#[source] io::Error),
+    /// The opt-in second listener could not be bound. Startup fails: a daemon
+    /// that was asked for two listeners and got one is not what the operator
+    /// asked for.
+    #[error("cannot bind the second admin listener on {addr}: {source}")]
+    SecondBind {
+        /// The validated address from `--admin-listen`.
+        addr: SocketAddr,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
     /// Serving failed.
     #[error("admin listener failed: {0}")]
     Serve(#[source] io::Error),
@@ -393,15 +416,60 @@ pub enum ServeError {
 /// The address is not a parameter on purpose: this function is the only way the
 /// daemon listens for HTTP, and its address is a literal.
 pub async fn serve(state: AppState) -> Result<(), ServeError> {
+    serve_with(state, None).await
+}
+
+/// Bind [`ADMIN_ADDR`] first, then an optional second listener on `second`, and
+/// serve the same router on both.
+///
+/// The loopback bind always happens and always happens first. `second` is the
+/// validated `--admin-listen` value, or `None` for the default loopback-only
+/// daemon. Both listeners must bind before either starts serving, so a failure to
+/// bind the second one is a startup failure rather than a daemon that quietly
+/// lost the listener the operator asked for.
+pub async fn serve_with(state: AppState, second: Option<SocketAddr>) -> Result<(), ServeError> {
     let listener = TcpListener::bind(ADMIN_ADDR)
         .await
         .map_err(|source| ServeError::Bind {
             addr: ADMIN_ADDR,
             source,
         })?;
-    let addr = listener.local_addr().map_err(ServeError::LocalAddr)?;
-    tracing::info!(%addr, "admin listener bound (loopback only)");
-    serve_on(listener, state).await
+    let loopback = listener.local_addr().map_err(ServeError::LocalAddr)?;
+
+    let Some(second) = second else {
+        tracing::info!(addr = %loopback, "admin listener bound (loopback only)");
+        return serve_on(listener, state).await;
+    };
+
+    // Asking for the default by name is not a second listener: binding it twice
+    // would fail with the address already in use.
+    if second == loopback {
+        tracing::info!(
+            addr = %loopback,
+            note = "--admin-listen names the default address, so there is one listener",
+            "admin listener bound (loopback only)"
+        );
+        return serve_on(listener, state).await;
+    }
+
+    let tailnet = TcpListener::bind(second)
+        .await
+        .map_err(|source| ServeError::SecondBind {
+            addr: second,
+            source,
+        })?;
+    let tailnet_addr = tailnet.local_addr().map_err(ServeError::LocalAddr)?;
+    tracing::info!(
+        loopback = %loopback,
+        tailnet = %tailnet_addr,
+        "admin listeners bound (loopback and opt-in tailnet)"
+    );
+
+    // Same `AppState`, same router: `serve_on` calls `router_with` for each.
+    tokio::select! {
+        result = serve_on(listener, state.clone()) => result,
+        result = serve_on(tailnet, state) => result,
+    }
 }
 
 /// Serve an already-bound listener. Used by the socket test; `serve` is the only
