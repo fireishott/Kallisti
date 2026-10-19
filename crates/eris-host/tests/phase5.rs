@@ -53,10 +53,12 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("state/eris.db");
 
-    // First open: the file does not exist, so 0001 runs.
+    // First open: the file does not exist, so 0001 and 0002 run.
+    // (The name above is the P5 contract name; P6 added 0002 and a tenth table,
+    // so the numbers below are the current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 1);
-    assert_eq!(first.applied_migration_count().expect("count"), 1);
+    assert_eq!(first.schema_version().expect("version"), 2);
+    assert_eq!(first.applied_migration_count().expect("count"), 2);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -82,10 +84,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 1);
+    assert_eq!(second.schema_version().expect("version"), 2);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        1,
+        2,
         "re-running migrations must not add a version row"
     );
     assert_eq!(
@@ -96,7 +98,7 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     assert_eq!(
         second.table_names().expect("tables").len(),
         TABLES.len() + 1,
-        "nine tables plus schema_migrations, after two opens"
+        "the documented tables plus schema_migrations, after two opens"
     );
 }
 

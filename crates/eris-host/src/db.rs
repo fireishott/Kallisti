@@ -1,8 +1,8 @@
 //! SQLite state: one file, WAL, embedded migrations.
 //!
-//! `~/.local/share/kallisti/eris.db` is the whole durable state of the daemon in
-//! P5: the setup state that `/healthz` reports, plus the tables the later phases
-//! fill in. Each connection is opened with three pragmas that are not optional:
+//! `~/.local/share/kallisti/eris.db` is the whole durable state of the daemon:
+//! the setup state that `/healthz` reports, plus the tables the later phases fill
+//! in. P5 shipped 0001; P6 adds 0002 with `auth_tokens`. Each connection is opened with three pragmas that are not optional:
 //!
 //! - `journal_mode=WAL`, so a reader never blocks the single writer;
 //! - `foreign_keys=ON`, because SQLite defaults it off per connection and the
@@ -27,17 +27,19 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The nine tables migration 0001 creates. `schema_migrations` is the tenth and
-/// is created by the runner, not by a migration.
-pub const TABLES: [&str; 9] = [
+/// The ten tables the migrations create. `schema_migrations` is the eleventh and
+/// is created by the runner, not by a migration. 0001 creates the first nine;
+/// 0002 adds `auth_tokens`.
+pub const TABLES: [&str; 10] = [
     "admin_credential",
     "app_state",
     "audit_log",
+    "auth_tokens",
     "devices",
     "job_events",
     "jobs",
@@ -54,11 +56,18 @@ struct Migration {
 }
 
 /// The migration list. Append only.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "0001_initial",
-    sql: MIGRATION_0001,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_initial",
+        sql: MIGRATION_0001,
+    },
+    Migration {
+        version: 2,
+        name: "0002_auth_tokens",
+        sql: MIGRATION_0002,
+    },
+];
 
 /// Migration 0001: the whole P5 schema in one transaction.
 ///
@@ -163,6 +172,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at ON audit_log (occurred_at);
+";
+
+/// Migration 0002: the P6 auth token table.
+///
+/// A row is one minted token: an Argon2id PHC verifier, the device it belongs to,
+/// its kind, the scope set, and the three timestamps that decide whether it still
+/// verifies. There is no column for the value itself, and no column that could
+/// hold a reversible encoding of it. Both indexes exist for the two reads the
+/// verifier path makes: all rows of a device, and the expiry sweep.
+///
+/// Every statement is `IF NOT EXISTS`, so a hand-run of this file is safe.
+const MIGRATION_0002: &str = r"
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id         TEXT PRIMARY KEY NOT NULL,
+    device_id  TEXT NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+    token_hash TEXT NOT NULL,
+    scope      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT NOT NULL,
+    rotated_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_device_kind ON auth_tokens (device_id, kind);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires_at ON auth_tokens (expires_at);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.
@@ -305,6 +340,20 @@ impl Db {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.inner.path.as_deref()
+    }
+
+    /// Run one closure against the connection.
+    ///
+    /// This is the escape hatch for the modules that own their own tables (the
+    /// auth store in P6). It hands out the live connection, so a caller must not
+    /// stash it, and it maps a poisoned mutex to [`DbError::Locked`] rather than
+    /// panicking a request thread.
+    pub fn with_conn<T>(
+        &self,
+        run: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, DbError> {
+        let mut conn = self.inner.conn.lock().map_err(|_| DbError::Locked)?;
+        run(&mut conn).map_err(DbError::Sqlite)
     }
 
     /// `"setup"` or `"ready"`, read from `app_state`.
