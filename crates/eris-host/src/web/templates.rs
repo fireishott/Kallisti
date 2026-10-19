@@ -311,8 +311,9 @@ pub fn shell(title: &str, state: SetupState, nav: Option<Nav>, body: Markup) -> 
                     (body)
                     footer {
                         "Eris " (VERSION)
-                        " | admin listener " (ADMIN_ADDR) ", loopback only"
-                        " | reach it over SSH, never a proxy"
+                        " | admin listener " (ADMIN_ADDR)
+                        ", plus this host's tailnet address when enabled"
+                        " | never a proxy"
                     }
                 }
             }
@@ -914,12 +915,13 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                 dt { "Device sessions" } dd { (view.device_sessions) }
                 dt { "Paired devices" } dd { (view.paired_devices) " of " (view.devices_known) }
                 dt { "Jobs" } dd { (view.jobs_line()) }
-                dt { "Admin listener" } dd { (ADMIN_ADDR) ", bound, loopback only" }
+                dt { "Admin listener" } dd { (ADMIN_ADDR) ", bound" }
                 dt { "Device listener" } dd { (view.device_listener_line()) }
             }
             p .small {
-                "Both listeners are literals in the binary. The admin listener answers this page; "
-                "the device listener binds only when it is switched on below."
+                "The private addresses are literals in the binary. The admin listener answers this page on "
+                "loopback, and additionally on this host's own tailnet address when the service is started "
+                "with --admin-listen. The device listener binds only when it is switched on below."
             }
         }
 
@@ -1451,8 +1453,10 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                         th scope="row" { "Network" }
                         td .value { "loopback only" " " span .tag { "locked" } }
                         td .why {
-                            "Admin on " (ADMIN_ADDR) " and device on " (DEVICE_ADDR)
-                            ", both literals in the binary. Nothing listens on a LAN address."
+                            "The assistant reaches only loopback services. The admin listener binds "
+                            (ADMIN_ADDR) " and, when started with --admin-listen, this host's own "
+                            "tailnet address; the device listener binds " (DEVICE_ADDR)
+                            ". Nothing listens on a LAN address."
                         }
                     }
                     tr {

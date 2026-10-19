@@ -134,6 +134,7 @@ fn the_settings_page_renders_current_values() {
     );
     assert!(lowered.contains("disabled"), "{page}");
     assert!(lowered.contains("loopback only"), "{page}");
+    assert!(lowered.contains("--admin-listen"), "{page}");
     assert!(
         page.contains("127.0.0.1:7340") && page.contains("127.0.0.1:7341"),
         "both listener literals are stated: {page}"
