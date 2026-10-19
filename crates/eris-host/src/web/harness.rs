@@ -44,6 +44,8 @@ pub struct Call {
     cookie: Option<String>,
     content_type: Option<&'static str>,
     body: Option<String>,
+    peer: Option<std::net::SocketAddr>,
+    headers: Vec<(&'static str, &'static str)>,
 }
 
 impl Call {
@@ -61,6 +63,8 @@ impl Call {
             cookie: None,
             content_type: None,
             body: None,
+            peer: None,
+            headers: Vec::new(),
         }
     }
 
@@ -78,12 +82,30 @@ impl Call {
             cookie: None,
             content_type: Some(FORM_CONTENT_TYPE),
             body: Some(body.to_owned()),
+            peer: None,
+            headers: Vec::new(),
         }
     }
 
     /// Send a browser `Accept` header.
     pub fn html(mut self) -> Self {
         self.accept_html = true;
+        self
+    }
+
+    /// Pretend the request arrived from this TCP peer.
+    ///
+    /// The daemon gets this from `into_make_service_with_connect_info`, which is
+    /// exactly what a `ConnectInfo` extension is; inserting it here means the
+    /// trusted-proxy rule is exercised through the real middleware.
+    pub fn peer(mut self, addr: std::net::SocketAddr) -> Self {
+        self.peer = Some(addr);
+        self
+    }
+
+    /// Add one request header.
+    pub fn header(mut self, name: &'static str, value: &'static str) -> Self {
+        self.headers.push((name, value));
         self
     }
 
@@ -146,9 +168,17 @@ pub async fn send(app: &Router, call: Call) -> Reply {
     if let Some(cookie) = &call.cookie {
         builder = builder.header(header::COOKIE, cookie);
     }
-    let request = builder
+    for (name, value) in &call.headers {
+        builder = builder.header(*name, *value);
+    }
+    let mut request = builder
         .body(Body::from(call.body.unwrap_or_default()))
         .expect("a valid request");
+    if let Some(peer) = call.peer {
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+    }
     let response = app
         .clone()
         .oneshot(request)

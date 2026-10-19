@@ -1,28 +1,21 @@
-//! The admin listener: loopback by default, one literal.
+//! The admin listener: a list of addresses, loopback by default.
 //!
-//! The default address is [`ADMIN_ADDR`], a `const` in this file. It is not a
-//! field in `config.toml` and not an environment variable, because "the admin
-//! plane is reachable from this host only" has to survive a tired operator and a
-//! copied config. `config.rs` refuses a `listen`/`bind` key outright.
-//!
-//! The one exception is `serve --admin-listen`, which can add a *second* listener
-//! beside the loopback one. It cannot move or replace the loopback bind: the value
-//! has to pass [`listen::parse_admin_listen`], which accepts only a loopback
-//! address or this host's own tailnet address (`100.64.0.0/10`, and only when that
-//! address is assigned locally). A LAN address, a wildcard, a public address and a
-//! hostname are refused before anything binds. The point of the tailnet case is
-//! that an iPad on the tailnet can open the UI without a proxy in front of it, and
-//! everything below still applies to those requests.
+//! [`ADMIN_ADDR`] is still the default and still loopback, but it is no longer
+//! the only possible bind. `admin.listen` in `config.toml` holds one or more
+//! `ip:port` literals, every one of them is served simultaneously, and
+//! `serve --admin-listen <ip:port>` (repeatable) adds to that list for a one-off
+//! run. `admin/listen.rs` owns the rules; nothing in this file is specific to
+//! Tailscale, to a LAN, or to a reverse proxy.
 //!
 //! Three layers guard the whole surface, in this order:
 //!
 //! 1. **request id** (outermost) - every response, including the 403 and the 409,
 //!    carries `x-request-id`;
-//! 2. **forwarded-header rejection** - a request carrying `X-Forwarded-*`,
-//!    `Forwarded` or any `Tailscale-*` header is a 403 `not_loopback`, no matter
-//!    what it asked for, and on every listener including the tailnet one. Belt and
-//!    braces against a future Serve mapping: nothing may sit in front of the admin
-//!    plane and pretend to be the client;
+//! 2. **client context** ([`crate::web::proxy::client_context_middleware`]) -
+//!    forwarding headers are believed only from a peer inside
+//!    `admin.trusted_proxies` (loopback by default, so Tailscale Serve, nginx and
+//!    Caddy work with no config). A peer outside the list that sends them is a
+//!    403 `not_loopback`, because that is a spoofing attempt;
 //! 3. **the ready gate** on the dashboard - `409 not_ready` until onboarding
 //!    finishes.
 //!
@@ -32,7 +25,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::Router;
 use axum::extract::{Extension, Request, State};
@@ -50,12 +43,15 @@ use crate::device::turns::TurnStore;
 use crate::error::{ApiError, RequestId, assign_request_id};
 use crate::onboarding::{AdminSessions, ClaimLimiter, SetupEngine};
 use crate::web::css::CSS_ROUTE;
+use crate::web::proxy::{AdminAccess, client_context_middleware};
 use crate::web::routes::{dashboard_routes, setup_routes};
+use crate::web::templates::Chrome;
 
 pub mod listen;
 
-/// The default admin listener address. Loopback and literal: `serve` always binds
-/// it, and `--admin-listen` can only add a second listener, never move this one.
+/// The default admin listener address: loopback, and what an empty
+/// `admin.listen` means. It is the first bind unless the config says otherwise;
+/// it is no longer the only one the daemon can make.
 pub const ADMIN_ADDR: &str = "127.0.0.1:7340";
 
 /// The version every response reports. Mirrors `[workspace.package]`.
@@ -194,8 +190,8 @@ pub struct AppState {
     pub engine: SetupEngine,
     /// The admin cookie sessions.
     pub sessions: AdminSessions,
-    /// Claim attempt limiter, in process on purpose: it guards a loopback form,
-    /// not a distributed API.
+    /// Claim attempt limiter, in process on purpose: it guards one form, so it
+    /// counts attempts per effective client rather than per proxy.
     pub limiter: Arc<ClaimLimiter>,
     /// True only when the process was started with `--allow-full`.
     pub allow_full: bool,
@@ -203,6 +199,11 @@ pub struct AppState {
     /// at boot when the flag or the setting asks for it, and from the dashboard
     /// toggle afterwards.
     pub device: DeviceService,
+    /// Who may front the listener, and what it is called in public.
+    pub access: Arc<AdminAccess>,
+    /// The addresses actually bound, in bind order. Written once by `serve`
+    /// before anything serves, read by the pages that report the truth.
+    listeners: Arc<RwLock<Vec<SocketAddr>>>,
 }
 
 impl AppState {
@@ -217,6 +218,45 @@ impl AppState {
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
             device,
+            access: Arc::new(AdminAccess::loopback_only()),
+            listeners: Arc::new(RwLock::new(vec![
+                ADMIN_ADDR
+                    .parse()
+                    .expect("the default is a literal ip:port"),
+            ])),
+        }
+    }
+
+    /// Attach the access model the config resolved.
+    #[must_use]
+    pub fn with_access(mut self, access: AdminAccess) -> Self {
+        self.access = Arc::new(access);
+        self
+    }
+
+    /// Record the addresses that actually bound. Called by `serve_listeners`
+    /// before the first request is answered.
+    pub fn set_bound_listeners(&self, listeners: Vec<SocketAddr>) {
+        if let Ok(mut slot) = self.listeners.write() {
+            *slot = listeners;
+        }
+    }
+
+    /// The bound addresses, for the pages that report them.
+    #[must_use]
+    pub fn bound_listeners(&self) -> Vec<SocketAddr> {
+        self.listeners
+            .read()
+            .map(|slot| slot.clone())
+            .unwrap_or_else(|_| vec![ADMIN_ADDR.parse().expect("the default is a literal")])
+    }
+
+    /// What every page needs to state the listener truth in its shell.
+    #[must_use]
+    pub fn chrome(&self) -> Chrome {
+        Chrome {
+            listeners: self.bound_listeners(),
+            public_url: self.access.public_url.clone(),
         }
     }
 
@@ -265,7 +305,10 @@ pub fn router_with(state: AppState) -> Router {
         .merge(dashboard)
         .fallback(no_route)
         .method_not_allowed_fallback(wrong_method)
-        .layer(middleware::from_fn(reject_forwarded))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            client_context_middleware,
+        ))
         .layer(middleware::from_fn(assign_request_id))
         .with_state(state)
 }
@@ -302,32 +345,6 @@ async fn require_ready(State(state): State<AppState>, request: Request, next: Ne
                 .into_response()
         }
     }
-}
-
-/// Refuse anything that arrived through a proxy.
-///
-/// A request carrying a forwarding header did not come from a browser on this
-/// host, whatever its peer address says. Tailscale Serve adds `Tailscale-*`
-/// identity headers; a conventional reverse proxy adds `X-Forwarded-*`. Both are
-/// a 403 with `code: "not_loopback"`.
-async fn reject_forwarded(request: Request, next: Next) -> Response {
-    if let Some(name) = forwarded_header(request.headers()) {
-        let request_id = request
-            .extensions()
-            .get::<RequestId>()
-            .map(|id| id.0.clone())
-            .unwrap_or_default();
-        return ApiError::new(
-            StatusCode::FORBIDDEN,
-            "not_loopback",
-            format!(
-                "the admin listener answers only a direct loopback client; this request carried the {name} header"
-            ),
-            request_id,
-        )
-        .into_response();
-    }
-    next.run(request).await
 }
 
 /// The first forwarding header present, if any.
@@ -435,27 +452,17 @@ async fn wrong_method(uri: Uri, Extension(request_id): Extension<RequestId>) -> 
 /// Why `serve` could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
-    /// The admin port could not be bound.
-    #[error("cannot bind the admin listener on {addr}: {source}")]
+    /// One of the configured addresses could not be bound.
+    #[error("cannot bind an admin listener on {addr}: {source}")]
     Bind {
-        /// The fixed address.
-        addr: &'static str,
-        /// Underlying I/O error.
-        source: io::Error,
-    },
-    /// The listener address could not be read back.
-    #[error("cannot read the bound admin address: {0}")]
-    LocalAddr(#[source] io::Error),
-    /// The opt-in second listener could not be bound. Startup fails: a daemon
-    /// that was asked for two listeners and got one is not what the operator
-    /// asked for.
-    #[error("cannot bind the second admin listener on {addr}: {source}")]
-    SecondBind {
-        /// The validated address from `--admin-listen`.
+        /// The configured address.
         addr: SocketAddr,
         /// Underlying I/O error.
         source: io::Error,
     },
+    /// A listener address could not be read back.
+    #[error("cannot read a bound admin address: {0}")]
+    LocalAddr(#[source] io::Error),
     /// Serving failed.
     #[error("admin listener failed: {0}")]
     Serve(#[source] io::Error),
@@ -463,73 +470,105 @@ pub enum ServeError {
 
 /// Bind [`ADMIN_ADDR`] and serve until a shutdown signal arrives.
 ///
-/// The address is not a parameter on purpose: this function is the only way the
-/// daemon listens for HTTP, and its address is a literal.
+/// This is the shape the tests and `serve_on` callers use: one listener, the
+/// documented default.
 pub async fn serve(state: AppState) -> Result<(), ServeError> {
-    serve_with(state, None).await
+    let default: SocketAddr = ADMIN_ADDR
+        .parse()
+        .expect("the default is a literal ip:port");
+    serve_listeners(state, vec![default]).await
 }
 
-/// Bind [`ADMIN_ADDR`] first, then an optional second listener on `second`, and
-/// serve the same router on both.
+/// Bind every address in `addrs` and serve the same router on all of them.
 ///
-/// The loopback bind always happens and always happens first. `second` is the
-/// validated `--admin-listen` value, or `None` for the default loopback-only
-/// daemon. Both listeners must bind before either starts serving, so a failure to
-/// bind the second one is a startup failure rather than a daemon that quietly
-/// lost the listener the operator asked for.
-pub async fn serve_with(state: AppState, second: Option<SocketAddr>) -> Result<(), ServeError> {
-    let listener = TcpListener::bind(ADMIN_ADDR)
-        .await
-        .map_err(|source| ServeError::Bind {
-            addr: ADMIN_ADDR,
-            source,
-        })?;
-    let loopback = listener.local_addr().map_err(ServeError::LocalAddr)?;
-
-    let Some(second) = second else {
-        tracing::info!(addr = %loopback, "admin listener bound (loopback only)");
-        return serve_on(listener, state).await;
-    };
-
-    // Asking for the default by name is not a second listener: binding it twice
-    // would fail with the address already in use.
-    if second == loopback {
+/// Every address must bind before any of them serves, so a failure is a startup
+/// failure that names the address rather than a daemon that quietly lost the
+/// listener the operator asked for. The addresses that did bind are recorded in
+/// [`AppState`] before the first request, which is what lets the dashboard and
+/// the footer state the truth instead of a constant.
+///
+/// A wildcard bind is called out in the log at `warn` level, naming the exposure:
+/// `0.0.0.0` is every interface this host has, and that is a decision the
+/// operator should see every time the daemon starts.
+pub async fn serve_listeners(state: AppState, addrs: Vec<SocketAddr>) -> Result<(), ServeError> {
+    let (addrs, covered) = listen::effective_binds(&addrs);
+    for addr in &covered {
         tracing::info!(
-            addr = %loopback,
-            note = "--admin-listen names the default address, so there is one listener",
-            "admin listener bound (loopback only)"
+            addr = %addr,
+            "admin listener is covered by a wildcard bind on the same port, so it gets no socket of its own"
         );
-        return serve_on(listener, state).await;
+    }
+    let mut bound = Vec::with_capacity(addrs.len());
+    let mut listeners = Vec::with_capacity(addrs.len());
+    for addr in addrs {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|source| ServeError::Bind { addr, source })?;
+        let local = listener.local_addr().map_err(ServeError::LocalAddr)?;
+        bound.push(local);
+        listeners.push(listener);
     }
 
-    let tailnet = TcpListener::bind(second)
-        .await
-        .map_err(|source| ServeError::SecondBind {
-            addr: second,
-            source,
-        })?;
-    let tailnet_addr = tailnet.local_addr().map_err(ServeError::LocalAddr)?;
+    state.set_bound_listeners(bound.clone());
+    for addr in &bound {
+        if listen::is_wildcard(*addr) {
+            tracing::warn!(
+                addr = %addr,
+                "admin listener bound to the wildcard address: the UI answers on every interface this host has, including any LAN and tailnet address"
+            );
+        }
+        if listen::is_tailnet(addr.ip()) {
+            tracing::info!(addr = %addr, "admin listener bound on a tailnet address");
+        }
+    }
     tracing::info!(
-        loopback = %loopback,
-        tailnet = %tailnet_addr,
-        "admin listeners bound (loopback and opt-in tailnet)"
+        listeners = ?bound,
+        count = bound.len(),
+        "admin listeners bound"
     );
 
-    // Same `AppState`, same router: `serve_on` calls `router_with` for each.
-    tokio::select! {
-        result = serve_on(listener, state.clone()) => result,
-        result = serve_on(tailnet, state) => result,
+    let mut tasks = tokio::task::JoinSet::new();
+    for listener in listeners {
+        let state = state.clone();
+        tasks.spawn(async move { serve_on(listener, state).await });
     }
+
+    let mut outcome: Result<(), ServeError> = Ok(());
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                if outcome.is_ok() {
+                    outcome = Err(error);
+                }
+            }
+            Err(join) => {
+                if outcome.is_ok() && join.is_panic() {
+                    outcome = Err(ServeError::Serve(io::Error::other(
+                        "an admin listener task panicked",
+                    )));
+                }
+            }
+        }
+        // One listener stopping is the shutdown signal for all of them: they
+        // share the same signal and the same router.
+        tasks.abort_all();
+    }
+    outcome
 }
 
-/// Serve an already-bound listener. Used by the socket test; `serve` is the only
-/// caller in the binary.
+/// Serve an already-bound listener. Used by the socket tests and by
+/// [`serve_listeners`]; both get the client's peer address, because the
+/// trusted-proxy rule cannot work without it.
 pub async fn serve_on(listener: TcpListener, state: AppState) -> Result<(), ServeError> {
     let app = router_with(state);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(ServeError::Serve)?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(ServeError::Serve)?;
     tracing::info!("admin listener stopped");
     Ok(())
 }

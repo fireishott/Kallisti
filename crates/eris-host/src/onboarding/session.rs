@@ -11,10 +11,12 @@
 //! - verification re-reads `revoked_at` and `expires_at` on every request, so a
 //!   revoke is immediate.
 //!
-//! `Secure` is deliberately absent from the attribute list: the admin listener
-//! binds `127.0.0.1` over plain HTTP, and a `Secure` cookie would simply never be
-//! stored by the browser, which would lock the operator out of their own wizard.
-//! `HttpOnly`, `SameSite=Strict` and `Path=/` are all set.
+//! `Secure` is not unconditional. A plain loopback HTTP page must not set it,
+//! because the browser would drop the cookie and lock the operator out; an
+//! `https` public URL, or a request that arrived over a trusted `https` proxy,
+//! must set it. The caller decides with
+//! [`crate::web::proxy::AdminAccess::cookie_secure`] and passes the answer in.
+//! `HttpOnly`, `SameSite=Strict` and `Path=/` are always set.
 
 use std::time::Duration;
 
@@ -204,13 +206,16 @@ impl AdminSessions {
 
 /// The `Set-Cookie` value for a minted session.
 ///
-/// `Secure` is absent on purpose (loopback HTTP), and `HttpOnly` and
+/// `secure` comes from [`crate::web::proxy::AdminAccess::cookie_secure`]: set for
+/// an `https` public URL or a trusted `https` proxy, absent on plain loopback
+/// HTTP, where a `Secure` cookie would never be stored. `HttpOnly` and
 /// `SameSite=Strict` are not negotiable: this cookie is the whole admin surface.
 #[must_use]
-pub fn set_cookie_header(cookie_value: &str) -> String {
+pub fn set_cookie_header(cookie_value: &str, secure: bool) -> String {
     format!(
-        "{COOKIE_NAME}={cookie_value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-        SESSION_TTL.as_secs()
+        "{COOKIE_NAME}={cookie_value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
+        SESSION_TTL.as_secs(),
+        if secure { "; Secure" } else { "" }
     )
 }
 
@@ -350,7 +355,7 @@ mod tests {
 
     #[test]
     fn the_cookie_attributes_are_the_documented_ones() {
-        let header = set_cookie_header("id.secret");
+        let header = set_cookie_header("id.secret", false);
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("SameSite=Strict"));
         assert!(header.contains("Path=/"));
@@ -359,6 +364,12 @@ mod tests {
             "Secure would be dropped over loopback HTTP and lock the operator out"
         );
         assert!(clear_cookie_header().contains("Max-Age=0"));
+
+        // The same cookie over https carries Secure, because the browser will
+        // only send it back on that scheme.
+        let secure = set_cookie_header("id.secret", true);
+        assert!(secure.contains("; Secure"), "{secure}");
+        assert!(secure.contains("HttpOnly"), "{secure}");
     }
 
     #[test]

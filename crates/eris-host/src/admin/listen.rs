@@ -1,322 +1,338 @@
-//! The admin listener's address policy: loopback by default, plus one opt-in
-//! second listener on this host's own tailnet address.
+//! The admin listener's address list.
 //!
-//! [`super::ADMIN_ADDR`] stays the default and stays loopback. This module is the
-//! only place a second admin bind can come from, and it is narrow on purpose:
+//! The default is [`super::ADMIN_ADDR`], loopback, and it stays the default: an
+//! operator who never writes a `[admin]` table gets exactly the daemon 1.0
+//! shipped with. What changed is that the list is now data, not a constant:
 //!
-//! - a loopback address (`127.0.0.0/8` or `::1`) is accepted;
-//! - an IPv4 address in the Tailscale CGNAT range `100.64.0.0/10` is accepted
-//!   only when it is actually assigned to an interface on this host;
-//! - everything else is refused before anything binds: `0.0.0.0`, `::`, a private
-//!   LAN address, a public address, a bare address with no port, and any hostname.
+//! - `admin.listen` in `config.toml` holds one or more `ip:port` binds, and every
+//!   one of them is served simultaneously;
+//! - `serve --admin-listen <ip:port>` is repeatable and *adds* to that list, so a
+//!   one-off exposure needs no config edit;
+//! - an absent or empty list means exactly one listener, `127.0.0.1:7340`.
 //!
-//! The local-assignment check is a `UdpSocket` connect, not a subprocess: the
-//! kernel picks a route and a source address for the destination, and if it picks
-//! the address that was asked about, that address is ours. A UDP connect sends
-//! nothing, and the daemon never shells out to `tailscale` or `ip`.
+//! Nothing is hardcoded to Tailscale any more. A tailnet address, a LAN address,
+//! a public address and the wildcard are all literals an operator may ask for,
+//! and each of them means the same thing: bind that interface. Putting a reverse
+//! proxy, a Cloudflare tunnel or Tailscale Serve in front of the loopback
+//! listener is the job of [`crate::web::proxy`], which decides whether the
+//! forwarding headers on an arriving request may be believed.
+//!
+//! Two facts are still enforced here, because they are mistakes rather than
+//! choices: an entry that is not a literal `ip:port` (a hostname, a URL) is a
+//! config error naming the value, and the same address listed twice is a config
+//! error, because the second bind would fail with the address already in use.
 
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 
+use crate::admin::ADMIN_ADDR;
 #[cfg(test)]
-use crate::admin::{ADMIN_ADDR, AppState};
+use crate::admin::AppState;
 
-/// The Tailscale CGNAT block, `100.64.0.0/10`, as a network and mask.
-const TAILNET_V4_NETWORK: u32 = 0x6440_0000;
-/// The prefix mask that goes with [`TAILNET_V4_NETWORK`].
-const TAILNET_V4_MASK: u32 = 0xFFC0_0000;
-
-/// An address that `--admin-listen` will not bind, with the reason.
+/// Why a listener list was refused. Both variants carry the offending value, so
+/// the message an operator sees names what they typed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "refusing --admin-listen {addr}: the admin UI may bind only loopback or this host's tailnet \
-     address ({reason})"
-)]
-pub struct ListenRefused {
-    /// The literal the operator passed, exactly as it was passed.
-    pub addr: String,
-    /// Why it was refused, in plain words.
-    pub reason: String,
+pub enum ListenError {
+    /// The entry is not a literal `ip:port`.
+    #[error(
+        "admin listener {value} is not a literal ip:port: a hostname, a URL and a bare address with no port are refused"
+    )]
+    Malformed {
+        /// The literal as written.
+        value: String,
+    },
+    /// The same address appears more than once.
+    #[error("admin listener {value} is listed twice: each address may bind once")]
+    Duplicate {
+        /// The literal as written.
+        value: String,
+    },
 }
 
-impl ListenRefused {
-    fn new(addr: &str, reason: impl Into<String>) -> Self {
-        Self {
-            addr: addr.to_owned(),
-            reason: reason.into(),
+/// Parse one `ip:port` literal. Any literal address is accepted: loopback, a LAN
+/// address, a tailnet address, a public address, `0.0.0.0` and `::`.
+///
+/// # Errors
+///
+/// Returns [`ListenError::Malformed`] for anything that is not a literal
+/// `ip:port`, which is what keeps a hostname and a URL out of a bind.
+pub fn parse_listen_entry(raw: &str) -> Result<SocketAddr, ListenError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ListenError::Malformed {
+            value: String::from("<empty>"),
+        });
+    }
+    trimmed
+        .parse::<SocketAddr>()
+        .map_err(|_| ListenError::Malformed {
+            value: trimmed.to_owned(),
+        })
+}
+
+/// The configured list, in bind order. An empty list means the default.
+///
+/// # Errors
+///
+/// A malformed entry or a duplicate is a config error.
+pub fn parse_listen_list(raw: &[String]) -> Result<Vec<SocketAddr>, ListenError> {
+    if raw.is_empty() {
+        let default = ADMIN_ADDR
+            .parse()
+            .expect("the default is a literal ip:port");
+        return Ok(vec![default]);
+    }
+    let mut out: Vec<SocketAddr> = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let addr = parse_listen_entry(entry)?;
+        if out.contains(&addr) {
+            return Err(ListenError::Duplicate {
+                value: entry.trim().to_owned(),
+            });
+        }
+        out.push(addr);
+    }
+    Ok(out)
+}
+
+/// The effective list: what `config.toml` says, plus every `--admin-listen` flag.
+///
+/// The flag adds; it never replaces and never moves the configured binds, so
+/// `eris serve --admin-listen 0.0.0.0:7340` serves the config list *and* the
+/// wildcard. A flag that names an address already configured adds nothing,
+/// because binding one address twice is an "address in use" failure, not a
+/// second listener.
+///
+/// # Errors
+///
+/// A malformed flag is a startup error naming the value.
+pub fn resolve_listeners(
+    configured: &[SocketAddr],
+    flags: &[String],
+) -> Result<Vec<SocketAddr>, ListenError> {
+    let mut out = configured.to_vec();
+    for flag in flags {
+        let addr = parse_listen_entry(flag)?;
+        if !out.contains(&addr) {
+            out.push(addr);
         }
     }
+    Ok(out)
 }
 
-/// What an address is, for the bind policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
-    /// `127.0.0.0/8` or `::1`.
-    Loopback,
-    /// `100.64.0.0/10`.
-    Tailnet,
-    /// `0.0.0.0` or `::`.
-    Wildcard,
-    /// `10/8`, `172.16/12`, `192.168/16` or `169.254/16`.
-    Lan,
-    /// Any other IPv4 address.
-    Public,
-    /// An IPv6 address that is neither loopback nor unspecified. Tailscale's
-    /// IPv6 block is not part of this policy.
-    NotTailnetV6,
+/// The addresses that actually get a socket, in bind order.
+///
+/// A wildcard on a port already covers every address of its family on that port,
+/// so binding the wildcard and a specific address of the same family and port
+/// cannot both succeed: the kernel refuses the second one with "address already
+/// in use". The wildcard is the superset the operator asked for, so the specific
+/// bind is redundant rather than a mistake, and it is dropped here instead of
+/// turning a documented config into a startup failure. Duplicates of the *same*
+/// literal are still a config error, because that is a typo, not an overlap.
+///
+/// Returns the effective bind list and the entries that were covered.
+#[must_use]
+pub fn effective_binds(addrs: &[SocketAddr]) -> (Vec<SocketAddr>, Vec<SocketAddr>) {
+    let mut out: Vec<SocketAddr> = Vec::with_capacity(addrs.len());
+    let mut covered: Vec<SocketAddr> = Vec::new();
+    for addr in addrs {
+        let same_family = |planned: &SocketAddr| planned.is_ipv4() == addr.is_ipv4();
+        if out.iter().any(|planned| {
+            planned.port() == addr.port() && same_family(planned) && is_wildcard(*planned)
+        }) {
+            covered.push(*addr);
+            continue;
+        }
+        if is_wildcard(*addr) {
+            let mut removed = Vec::new();
+            out.retain(|planned| {
+                let redundant = planned.port() == addr.port() && same_family(planned);
+                if redundant {
+                    removed.push(*planned);
+                }
+                !redundant
+            });
+            covered.extend(removed);
+        }
+        out.push(*addr);
+    }
+    (out, covered)
+}
+
+/// True for `0.0.0.0` and `::`: every interface this host has, at once.
+#[must_use]
+pub fn is_wildcard(addr: SocketAddr) -> bool {
+    addr.ip().is_unspecified()
 }
 
 /// True when `ip` is inside the Tailscale CGNAT range `100.64.0.0/10`.
+///
+/// Kept for reporting: the bind policy no longer special-cases the range, but a
+/// listener on a tailnet address is worth naming in a log line and in the ADR.
 #[must_use]
-pub fn is_tailnet(ip: IpAddr) -> bool {
+pub fn is_tailnet(ip: std::net::IpAddr) -> bool {
+    /// The Tailscale CGNAT block, `100.64.0.0/10`, as a network and mask.
+    const TAILNET_V4_NETWORK: u32 = 0x6440_0000;
+    /// The prefix mask that goes with `TAILNET_V4_NETWORK`.
+    const TAILNET_V4_MASK: u32 = 0xFFC0_0000;
     match ip {
-        IpAddr::V4(v4) => (u32::from(v4) & TAILNET_V4_MASK) == TAILNET_V4_NETWORK,
-        IpAddr::V6(_) => false,
-    }
-}
-
-/// True when `ip` is assigned to an interface on this host.
-///
-/// A `UdpSocket` connect asks the kernel for a route and a source address without
-/// sending a packet. If the kernel's chosen source is the address we asked about,
-/// the address is ours. There is no `getifaddrs` binding in `std`, and a
-/// subprocess would put `tailscale` or `ip` in the daemon's trust boundary.
-#[must_use]
-pub fn is_locally_assigned(ip: IpAddr) -> bool {
-    let wildcard = match ip {
-        IpAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
-        IpAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
-    };
-    let Ok(socket) = UdpSocket::bind(wildcard) else {
-        return false;
-    };
-    if socket.connect(SocketAddr::new(ip, 9)).is_err() {
-        return false;
-    }
-    socket
-        .local_addr()
-        .map(|local| local.ip() == ip)
-        .unwrap_or(false)
-}
-
-/// Classify one address for the bind policy.
-fn classify(ip: IpAddr) -> Class {
-    match ip {
-        IpAddr::V4(v4) => {
-            if v4.is_loopback() {
-                Class::Loopback
-            } else if v4.is_unspecified() {
-                Class::Wildcard
-            } else if is_tailnet(IpAddr::V4(v4)) {
-                Class::Tailnet
-            } else if is_private_v4(v4) {
-                Class::Lan
-            } else {
-                Class::Public
-            }
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() {
-                Class::Loopback
-            } else if v6.is_unspecified() {
-                Class::Wildcard
-            } else {
-                Class::NotTailnetV6
-            }
-        }
-    }
-}
-
-/// The RFC 1918 blocks, plus link-local, which is what a LAN hands out.
-fn is_private_v4(v4: Ipv4Addr) -> bool {
-    let [a, b, ..] = v4.octets();
-    a == 10
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 169 && b == 254)
-}
-
-/// Validate one `--admin-listen` value against this host.
-///
-/// # Errors
-///
-/// Returns [`ListenRefused`] for anything that is not a loopback address or this
-/// host's own tailnet address.
-pub fn parse_admin_listen(raw: &str) -> Result<SocketAddr, ListenRefused> {
-    parse_admin_listen_with(raw, &is_locally_assigned)
-}
-
-/// [`parse_admin_listen`] with the local-assignment check injected, so the policy
-/// can be tested without owning the address.
-///
-/// # Errors
-///
-/// Returns [`ListenRefused`] on the same rules as [`parse_admin_listen`].
-pub fn parse_admin_listen_with(
-    raw: &str,
-    assigned: &dyn Fn(IpAddr) -> bool,
-) -> Result<SocketAddr, ListenRefused> {
-    let addr: SocketAddr = match raw.parse() {
-        Ok(addr) => addr,
-        Err(_) => {
-            let reason = if raw.parse::<IpAddr>().is_ok() {
-                "the value is a bare address with no port, and a bare address is refused"
-            } else {
-                "this is not a literal ip:port; a hostname or a service name is refused"
-            };
-            return Err(ListenRefused::new(raw, reason));
-        }
-    };
-
-    match classify(addr.ip()) {
-        Class::Loopback => Ok(addr),
-        Class::Tailnet => {
-            if assigned(addr.ip()) {
-                Ok(addr)
-            } else {
-                Err(ListenRefused::new(
-                    raw,
-                    format!(
-                        "{} is in the tailnet range but is not assigned to any interface on this \
-                         host",
-                        addr.ip()
-                    ),
-                ))
-            }
-        }
-        Class::Wildcard => Err(ListenRefused::new(
-            raw,
-            format!(
-                "{} is the wildcard address, which is every interface at once",
-                addr.ip()
-            ),
-        )),
-        Class::Lan => Err(ListenRefused::new(
-            raw,
-            format!("{} is a private LAN address", addr.ip()),
-        )),
-        Class::Public => Err(ListenRefused::new(
-            raw,
-            format!(
-                "{} is a public address, not this host's tailnet address",
-                addr.ip()
-            ),
-        )),
-        Class::NotTailnetV6 => Err(ListenRefused::new(
-            raw,
-            format!(
-                "{} is not a tailnet address on this policy: only the IPv4 block 100.64.0.0/10 is \
-                 accepted",
-                addr.ip()
-            ),
-        )),
-    }
-}
-
-impl fmt::Display for Class {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Loopback => "loopback",
-            Self::Tailnet => "tailnet",
-            Self::Wildcard => "wildcard",
-            Self::Lan => "lan",
-            Self::Public => "public",
-            Self::NotTailnetV6 => "ipv6-not-tailnet",
-        };
-        f.write_str(name)
+        std::net::IpAddr::V4(v4) => (u32::from(v4) & TAILNET_V4_MASK) == TAILNET_V4_NETWORK,
+        std::net::IpAddr::V6(_) => false,
     }
 }
 
 #[test]
-fn the_default_is_still_loopback_only() {
+fn the_default_list_is_loopback_only() {
+    let listeners = parse_listen_list(&[]).expect("an empty list is the default");
     let default: SocketAddr = ADMIN_ADDR.parse().expect("a literal socket address");
-    assert_eq!(default.to_string(), "127.0.0.1:7340");
-    assert!(default.ip().is_loopback(), "{default} must be loopback");
-    // Asking for the default by name is accepted and stays one listener: the
-    // default never becomes a tailnet bind.
+    assert_eq!(listeners, vec![default]);
+    assert!(listeners[0].ip().is_loopback());
+    assert!(!is_wildcard(listeners[0]));
+}
+
+#[tokio::test]
+async fn multiple_addresses_are_all_bound() {
+    let wants = vec!["127.0.0.1:0".to_owned(), "0.0.0.0:0".to_owned()];
+    let listeners = parse_listen_list(&wants).expect("two literal addresses");
+    assert_eq!(listeners.len(), 2, "{listeners:?}");
+
+    let dir = tempfile::tempdir().expect("a temporary state root");
+    let db = crate::db::Db::open(dir.path().join("eris.db")).expect("a fresh database");
+    let paths = crate::config::Paths::for_root(dir.path());
+    let state = AppState::new(crate::onboarding::SetupEngine::new(db, paths), false);
+
+    let mut bound = Vec::new();
+    for addr in listeners {
+        bound.push(
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .expect("every configured address binds"),
+        );
+    }
+    assert_eq!(bound.len(), 2, "both listeners are bound");
+
+    let mut addrs = Vec::new();
+    let mut tasks = Vec::new();
+    for listener in bound {
+        addrs.push(listener.local_addr().expect("a local address"));
+        tasks.push(tokio::spawn(crate::admin::serve_on(
+            listener,
+            state.clone(),
+        )));
+    }
+    for addr in &addrs {
+        let (status, body) = get_once(*addr, "/healthz").await;
+        assert_eq!(status, 200, "{addr} did not answer: {body}");
+        assert!(body.contains(r#""status":"ok""#), "{body}");
+    }
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[test]
+fn a_wildcard_bind_subsumes_the_same_port_loopback() {
+    // Curtis's live config: loopback first, then the wildcard on the same port.
+    // The kernel refuses the second bind, and the wildcard already serves
+    // loopback, so the wildcard is kept and the loopback entry is reported as
+    // covered rather than as an error.
+    let wants = vec!["127.0.0.1:7340".to_owned(), "0.0.0.0:7340".to_owned()];
+    let configured = parse_listen_list(&wants).expect("two distinct literals, not a duplicate");
+    let (effective, covered) = effective_binds(&configured);
     assert_eq!(
-        parse_admin_listen(ADMIN_ADDR).expect("the default is accepted"),
-        default
+        effective,
+        vec!["0.0.0.0:7340".parse::<SocketAddr>().expect("literal")]
     );
-    assert!(
-        !is_tailnet(default.ip()),
-        "the default is not a tailnet bind"
+    assert_eq!(
+        covered,
+        vec!["127.0.0.1:7340".parse::<SocketAddr>().expect("literal")]
     );
+
+    // The other order is the same answer.
+    let reversed = vec!["0.0.0.0:7340".to_owned(), "127.0.0.1:7340".to_owned()];
+    let (effective, covered) = effective_binds(&parse_listen_list(&reversed).expect("two binds"));
+    assert_eq!(
+        effective,
+        vec!["0.0.0.0:7340".parse::<SocketAddr>().expect("literal")]
+    );
+    assert_eq!(covered.len(), 1);
+
+    // Two specific addresses on one port are not redundant with each other.
+    let specific = vec!["127.0.0.1:7340".to_owned(), "192.168.68.51:7340".to_owned()];
+    let (effective, covered) =
+        effective_binds(&parse_listen_list(&specific).expect("two specific binds"));
+    assert_eq!(effective.len(), 2);
+    assert!(covered.is_empty());
 }
 
 #[test]
-fn a_tailnet_address_is_accepted() {
-    let raw = "100.89.211.80:7340";
-    let assigned = IpAddr::V4(Ipv4Addr::new(100, 89, 211, 80));
-    let parsed = parse_admin_listen_with(raw, &|ip| ip == assigned)
-        .expect("a tailnet address that is assigned locally is accepted");
-    assert_eq!(parsed.to_string(), raw);
-    assert!(is_tailnet(parsed.ip()));
-    // The range alone is not enough: on a host where nothing owns the address,
-    // the same literal is refused.
-    let refused =
-        parse_admin_listen_with(raw, &|_| false).expect_err("an address nothing owns is refused");
-    assert!(
-        refused.to_string().contains(
-            "refusing --admin-listen 100.89.211.80:7340: the admin UI may bind only loopback \
-             or this host's tailnet address"
-        ),
-        "{refused}"
-    );
-    assert!(
-        refused
-            .to_string()
-            .contains("not assigned to any interface"),
-        "{refused}"
-    );
-}
-
-#[test]
-fn a_lan_address_is_refused() {
-    for raw in ["192.168.68.51:7340", "10.0.0.5:7340", "172.16.4.1:7340"] {
-        let error = parse_admin_listen(raw).expect_err("a LAN address is refused");
-        let message = error.to_string();
-        assert!(
-            message.starts_with(&format!(
-                "refusing --admin-listen {raw}: the admin UI may bind only loopback or this \
-                 host's tailnet address"
-            )),
-            "{message}"
-        );
-        assert!(message.contains("private LAN address"), "{message}");
+fn a_wildcard_address_is_accepted_when_asked_for() {
+    let wants = vec!["0.0.0.0:7340".to_owned(), "[::]:7340".to_owned()];
+    let listeners = parse_listen_list(&wants).expect("a wildcard is bound when it is asked for");
+    assert_eq!(listeners.len(), 2);
+    for addr in &listeners {
+        assert!(addr.ip().is_unspecified(), "{addr} is the wildcard address");
+        assert!(is_wildcard(*addr), "{addr} is reported as a wildcard");
     }
 }
 
 #[test]
-fn a_wildcard_address_is_refused() {
-    for raw in ["0.0.0.0:7340", "[::]:7340"] {
-        let error = parse_admin_listen(raw).expect_err("a wildcard is refused");
-        let message = error.to_string();
+fn a_duplicate_address_is_a_config_error() {
+    let wants = vec!["127.0.0.1:7340".to_owned(), "127.0.0.1:7340".to_owned()];
+    let error = parse_listen_list(&wants).expect_err("a duplicate is refused");
+    let message = error.to_string();
+    assert!(message.contains("127.0.0.1:7340"), "{message}");
+    assert!(
+        message.to_ascii_lowercase().contains("twice")
+            || message.to_ascii_lowercase().contains("duplicate"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_malformed_address_is_a_config_error() {
+    for raw in [
+        "localhost:7340",
+        "fih-ai-host.tail4d497d.ts.net:7340",
+        "127.0.0.1",
+        "0.0.0.0",
+        "https://kallisti.example.com",
+        "not an address",
+    ] {
+        let error = parse_listen_list(&[raw.to_owned()]).expect_err("a malformed entry is refused");
         assert!(
-            message.starts_with(&format!(
-                "refusing --admin-listen {raw}: the admin UI may bind only loopback or this \
-                 host's tailnet address"
-            )),
-            "{message}"
+            error.to_string().contains(raw),
+            "the error names the bad value {raw}: {error}"
         );
-        assert!(message.contains("wildcard address"), "{message}");
     }
 }
 
 #[test]
-fn a_public_address_is_refused() {
-    for raw in ["8.8.8.8:7340", "1.1.1.1:7340"] {
-        let error = parse_admin_listen(raw).expect_err("a public address is refused");
-        let message = error.to_string();
-        assert!(
-            message.starts_with(&format!(
-                "refusing --admin-listen {raw}: the admin UI may bind only loopback or this \
-                 host's tailnet address"
-            )),
-            "{message}"
-        );
-        assert!(message.contains("public address"), "{message}");
-    }
+fn the_flag_adds_to_the_config_list() {
+    let configured = parse_listen_list(&["127.0.0.1:7340".to_owned()]).expect("the default");
+    let with_flag = resolve_listeners(&configured, &["0.0.0.0:7340".to_owned()])
+        .expect("the flag adds to the configured list");
+    assert_eq!(
+        with_flag,
+        vec![
+            "127.0.0.1:7340".parse().expect("literal"),
+            "0.0.0.0:7340".parse().expect("literal"),
+        ]
+    );
+    assert_eq!(
+        with_flag[0], configured[0],
+        "the configured bind stays first"
+    );
+
+    // Naming an address that is already configured adds nothing: binding it
+    // twice would fail with the address already in use.
+    let same = resolve_listeners(&configured, &["127.0.0.1:7340".to_owned()])
+        .expect("naming the configured address is not an error");
+    assert_eq!(same, configured);
+
+    // A malformed flag is still a startup error that names the value.
+    let refused = resolve_listeners(&configured, &["localhost:7340".to_owned()])
+        .expect_err("a hostname flag is refused");
+    assert!(refused.to_string().contains("localhost:7340"), "{refused}");
 }
 
 #[test]
@@ -326,18 +342,10 @@ fn a_hostname_is_refused() {
         "fih-ai-host.tail4d497d.ts.net:7340",
         "example.com:7340",
     ] {
-        let error = parse_admin_listen(raw).expect_err("a hostname is refused");
-        let message = error.to_string();
+        let error = parse_listen_entry(raw).expect_err("a hostname is refused");
         assert!(
-            message.starts_with(&format!(
-                "refusing --admin-listen {raw}: the admin UI may bind only loopback or this \
-                 host's tailnet address"
-            )),
-            "{message}"
-        );
-        assert!(
-            message.contains("not a literal ip:port") || message.contains("bare address"),
-            "{message}"
+            error.to_string().contains("not a literal ip:port"),
+            "{error}"
         );
     }
 }
@@ -349,16 +357,16 @@ async fn both_listeners_serve_the_same_healthz() {
     let paths = crate::config::Paths::for_root(dir.path());
     let state = AppState::new(crate::onboarding::SetupEngine::new(db, paths), false);
 
-    // Two listeners, one `AppState`, one router: the shape `serve_with` builds
-    // when `--admin-listen` is given. Ephemeral ports keep the test independent
-    // of whatever else is on this host.
+    // Two listeners, one `AppState`, one router: the shape `serve_listeners`
+    // builds. Ephemeral ports keep the test independent of whatever else is on
+    // this host.
     let first = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral loopback listener");
     let first_addr = first.local_addr().expect("a local address");
     let second = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("a second ephemeral loopback listener");
+        .expect("an ephemeral loopback listener");
     let second_addr = second.local_addr().expect("a local address");
     assert_ne!(first_addr, second_addr);
 

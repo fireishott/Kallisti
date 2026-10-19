@@ -14,6 +14,8 @@
 //!   focus lands on the first error without any JavaScript;
 //! - colour is never the only signal: the alert carries the message text.
 
+use std::net::SocketAddr;
+
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::admin::{ADMIN_ADDR, VERSION};
@@ -95,6 +97,8 @@ impl DeviceRow {
 /// Everything the wizard page needs.
 #[derive(Debug, Clone)]
 pub struct SetupView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// Server-side wizard progress.
@@ -132,6 +136,7 @@ impl SetupView {
     #[must_use]
     pub fn new(state: SetupState, wizard: Wizard, version: impl Into<String>) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             wizard,
             error: None,
@@ -154,6 +159,8 @@ impl SetupView {
 /// Everything the dashboard page needs.
 #[derive(Debug, Clone)]
 pub struct DashboardView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state, which is `ready` on this page.
     pub state: SetupState,
     /// The version line.
@@ -201,6 +208,7 @@ impl DashboardView {
     #[must_use]
     pub fn new(state: SetupState, version: impl Into<String>) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             version: version.into(),
             db_ok: true,
@@ -268,13 +276,75 @@ fn slug(value: &str) -> String {
         .collect()
 }
 
+/// The listener truth every page states in its footer, plus the public URL when
+/// the operator configured one.
+///
+/// It is built from [`crate::admin::AppState::chrome`], which reads the addresses
+/// that actually bound. A page never guesses a listener from a constant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chrome {
+    /// The addresses that bound, in bind order.
+    pub listeners: Vec<SocketAddr>,
+    /// `admin.public_url`, when one is configured.
+    pub public_url: Option<String>,
+}
+
+impl Default for Chrome {
+    fn default() -> Self {
+        Self {
+            listeners: vec![
+                ADMIN_ADDR
+                    .parse()
+                    .expect("the default admin address is a literal ip:port"),
+            ],
+            public_url: None,
+        }
+    }
+}
+
+impl Chrome {
+    /// The first bound address: the one the config or the flag named first.
+    #[must_use]
+    pub fn primary(&self) -> String {
+        self.listeners
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| ADMIN_ADDR.to_owned())
+    }
+
+    /// Every bound address as one line, for the System card.
+    #[must_use]
+    pub fn listens_line(&self) -> String {
+        if self.listeners.is_empty() {
+            return ADMIN_ADDR.to_owned();
+        }
+        self.listeners
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The footer line: the primary address, and the count when there is more
+    /// than one listener.
+    #[must_use]
+    pub fn footer_line(&self) -> String {
+        let count = self.listeners.len();
+        if count > 1 {
+            format!("{} ({count} listeners)", self.primary())
+        } else {
+            self.primary()
+        }
+    }
+}
+
 /// The document shell every page shares, without navigation.
 ///
 /// Used by the three pages that must stay minimal: the wizard while it is open,
 /// the sign-in form, and an error page. A nav on any of those is a trap, because
 /// the pages it points at are not reachable from there.
-pub fn layout(title: &str, state: SetupState, body: Markup) -> Markup {
-    shell(title, state, None, body)
+pub fn layout(title: &str, state: SetupState, body: Markup, chrome: &Chrome) -> Markup {
+    shell(title, state, None, body, chrome)
 }
 
 /// The signed-in application shell: top bar, nav, page, footer.
@@ -286,7 +356,13 @@ pub fn layout(title: &str, state: SetupState, body: Markup) -> Markup {
 /// `Nav::Sessions` and `Nav::Devices` render as unavailable entries rather than
 /// links: those two pages are not part of this phase, and a nav that answers a
 /// click with a 404 is worse than a nav that says so.
-pub fn shell(title: &str, state: SetupState, nav: Option<Nav>, body: Markup) -> Markup {
+pub fn shell(
+    title: &str,
+    state: SetupState,
+    nav: Option<Nav>,
+    body: Markup,
+    chrome: &Chrome,
+) -> Markup {
     let state_class = match state {
         SetupState::Setup => "badge setup",
         SetupState::Ready => "badge ready",
@@ -311,9 +387,11 @@ pub fn shell(title: &str, state: SetupState, nav: Option<Nav>, body: Markup) -> 
                     (body)
                     footer {
                         "Eris " (VERSION)
-                        " | admin listener " (ADMIN_ADDR)
-                        ", plus this host's tailnet address when enabled"
-                        " | never a proxy"
+                        " | admin listener " (chrome.footer_line())
+                        @if let Some(url) = &chrome.public_url {
+                            " | public URL " (url)
+                        }
+                        " | configured in config.toml"
                     }
                 }
             }
@@ -830,7 +908,7 @@ pub fn setup_page(view: &SetupView) -> Markup {
             }
         }
     };
-    layout("Onboarding", view.state, body)
+    layout("Onboarding", view.state, body, &view.chrome)
 }
 
 /// The sign-in page: the way into the dashboard from a browser.
@@ -840,7 +918,7 @@ pub fn setup_page(view: &SetupView) -> Markup {
 /// dashboard had no browser path in at all. It asks for the same credential the
 /// claim did, and it writes nothing: a successful post mints a cookie and
 /// redirects.
-pub fn login_page(state: SetupState, error: Option<&FormError>) -> Markup {
+pub fn login_page(state: SetupState, error: Option<&FormError>, chrome: &Chrome) -> Markup {
     let invalid = error.is_some_and(|error| error.field.as_deref() == Some("passphrase"));
     let body = html! {
         h1 { "Sign in" }
@@ -869,7 +947,7 @@ pub fn login_page(state: SetupState, error: Option<&FormError>) -> Markup {
             " is the way in before setup finishes."
         }
     };
-    layout("Sign in", state, body)
+    layout("Sign in", state, body, chrome)
 }
 
 /// The dashboard page.
@@ -915,13 +993,16 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                 dt { "Device sessions" } dd { (view.device_sessions) }
                 dt { "Paired devices" } dd { (view.paired_devices) " of " (view.devices_known) }
                 dt { "Jobs" } dd { (view.jobs_line()) }
-                dt { "Admin listener" } dd { (ADMIN_ADDR) ", bound" }
+                dt { "Admin listeners" } dd { (view.chrome.listens_line()) }
+                @if let Some(url) = &view.chrome.public_url {
+                    dt { "Public URL" } dd { (url) }
+                }
                 dt { "Device listener" } dd { (view.device_listener_line()) }
             }
             p .small {
-                "The private addresses are literals in the binary. The admin listener answers this page on "
-                "loopback, and additionally on this host's own tailnet address when the service is started "
-                "with --admin-listen. The device listener binds only when it is switched on below."
+                "The admin listener binds every address in admin.listen, and every one of them serves "
+                "this page. admin.listen, admin.public_url and admin.trusted_proxies live in config.toml. "
+                "The device listener binds only when it is switched on below."
             }
         }
 
@@ -1060,7 +1141,13 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
             }
         }
     };
-    shell("Dashboard", view.state, Some(Nav::Dashboard), body)
+    shell(
+        "Dashboard",
+        view.state,
+        Some(Nav::Dashboard),
+        body,
+        &view.chrome,
+    )
 }
 
 /// One group of the settings page: one form, one route, one live region.
@@ -1123,6 +1210,8 @@ impl SettingsGroup {
 /// Everything the settings page needs.
 #[derive(Debug, Clone)]
 pub struct SettingsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state, which is `ready` on this page.
     pub state: SetupState,
     /// The version line.
@@ -1156,6 +1245,7 @@ impl SettingsView {
     #[must_use]
     pub fn new(state: SetupState, version: impl Into<String>) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             version: version.into(),
             allow_full: false,
@@ -1451,12 +1541,14 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                     }
                     tr .locked {
                         th scope="row" { "Network" }
-                        td .value { "loopback only" " " span .tag { "locked" } }
+                        td .value { "configured" " " span .tag { "config.toml" } }
                         td .why {
-                            "The assistant reaches only loopback services. The admin listener binds "
-                            (ADMIN_ADDR) " and, when started with --admin-listen, this host's own "
-                            "tailnet address; the device listener binds " (DEVICE_ADDR)
-                            ". Nothing listens on a LAN address."
+                            "The UI can be reached on this host, on a LAN address, on a tailnet "
+                            "address, or through a reverse proxy in front of any of them. That is "
+                            "decided by admin.listen, admin.public_url and admin.trusted_proxies in "
+                            "config.toml, not by anything compiled in. The device listener stays on "
+                            (DEVICE_ADDR) ", loopback only, and the assistant itself reaches only the "
+                            "provider endpoint you configure."
                         }
                     }
                     tr {
@@ -1466,22 +1558,32 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                     }
                     tr .locked {
                         th scope="row" { "Admin listener" }
-                        td .value { (ADMIN_ADDR) " " span .tag { "fixed" } }
+                        td .value { (view.chrome.listens_line()) " " span .tag { "config.toml" } }
                         td .why {
-                            "Not configurable: there is no listen key in the config file, no flag, "
-                            "and no environment variable that moves this port."
+                            "Set by admin.listen in config.toml, plus --admin-listen on the command "
+                            "line, which adds to the list. Every listed address is served at once. "
+                            "0.0.0.0 binds every interface this host has and is a decision to make on "
+                            "purpose, out loud."
                         }
                     }
                 }
             }
         }
     };
-    shell("Settings", view.state, Some(Nav::Settings), body)
+    shell(
+        "Settings",
+        view.state,
+        Some(Nav::Settings),
+        body,
+        &view.chrome,
+    )
 }
 
 /// Everything the activity page needs.
 #[derive(Debug, Clone)]
 pub struct ActivityView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// The newest audit rows, newest first.
@@ -1499,6 +1601,7 @@ impl ActivityView {
     #[must_use]
     pub fn new(state: SetupState) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             rows: Vec::new(),
             total: 0,
@@ -1573,12 +1676,20 @@ pub fn activity_page(view: &ActivityView) -> Markup {
             }
         }
     };
-    shell("Activity", view.state, Some(Nav::Activity), body)
+    shell(
+        "Activity",
+        view.state,
+        Some(Nav::Activity),
+        body,
+        &view.chrome,
+    )
 }
 
 /// Everything the backups page needs.
 #[derive(Debug, Clone)]
 pub struct BackupsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// Every archive in the archive directory, newest first, each verified.
@@ -1594,6 +1705,7 @@ impl BackupsView {
     #[must_use]
     pub fn new(state: SetupState) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             rows: Vec::new(),
             notice: None,
@@ -1701,11 +1813,17 @@ pub fn backups_page(view: &BackupsView) -> Markup {
             }
         }
     };
-    shell("Backups", view.state, Some(Nav::Backups), body)
+    shell(
+        "Backups",
+        view.state,
+        Some(Nav::Backups),
+        body,
+        &view.chrome,
+    )
 }
 
 /// A standalone error page, for a 403 or a 409 that a browser will read.
-pub fn error_page(state: SetupState, code: &str, message: &str) -> Markup {
+pub fn error_page(state: SetupState, code: &str, message: &str, chrome: &Chrome) -> Markup {
     let body = html! {
         h1 { "Not available" }
         (alert_region(Some(&FormError::new(None, code, message)), None))
@@ -1716,7 +1834,7 @@ pub fn error_page(state: SetupState, code: &str, message: &str) -> Markup {
             a href="/" { "Back to the start" }
         }
     };
-    layout("Not available", state, body)
+    layout("Not available", state, body, chrome)
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,6 +1878,8 @@ fn state_class(state: &str) -> &'static str {
 /// Everything the sessions list needs.
 #[derive(Debug, Clone)]
 pub struct SessionsView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// Every session, newest first.
@@ -1775,6 +1895,7 @@ impl SessionsView {
     #[must_use]
     pub fn new(state: SetupState) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             rows: Vec::new(),
             error: None,
@@ -1786,6 +1907,8 @@ impl SessionsView {
 /// Everything one session's page needs.
 #[derive(Debug, Clone)]
 pub struct SessionDetailView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// The session itself.
@@ -1803,6 +1926,7 @@ impl SessionDetailView {
     #[must_use]
     pub fn new(state: SetupState, session: SessionRow) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             session,
             jobs: Vec::new(),
@@ -1866,7 +1990,13 @@ pub fn sessions_page(view: &SessionsView) -> Markup {
             }
         }
     };
-    shell("Sessions", view.state, Some(Nav::Sessions), body)
+    shell(
+        "Sessions",
+        view.state,
+        Some(Nav::Sessions),
+        body,
+        &view.chrome,
+    )
 }
 
 /// One job: its status, the facts about it, a cancel button while it can still
@@ -1972,7 +2102,13 @@ pub fn session_page(view: &SessionDetailView) -> Markup {
             a .button.secondary href=(Nav::Devices.path()) { "Devices" }
         }
     };
-    shell("Session", view.state, Some(Nav::Sessions), body)
+    shell(
+        "Session",
+        view.state,
+        Some(Nav::Sessions),
+        body,
+        &view.chrome,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1996,6 +2132,8 @@ pub struct IssuedCodeView {
 /// Everything the devices page needs.
 #[derive(Debug, Clone)]
 pub struct DevicesView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
     /// The daemon's state.
     pub state: SetupState,
     /// Every device, newest first, revoked ones included.
@@ -2014,6 +2152,7 @@ impl DevicesView {
     #[must_use]
     pub fn new(state: SetupState) -> Self {
         Self {
+            chrome: Chrome::default(),
             state,
             rows: Vec::new(),
             issued: None,
@@ -2122,7 +2261,13 @@ pub fn devices_page(view: &DevicesView) -> Markup {
             }
         }
     };
-    shell("Devices", view.state, Some(Nav::Devices), body)
+    shell(
+        "Devices",
+        view.state,
+        Some(Nav::Devices),
+        body,
+        &view.chrome,
+    )
 }
 
 #[cfg(test)]
@@ -2170,7 +2315,8 @@ mod tests {
         let dashboard = dashboard_page(&DashboardView::new(SetupState::Ready, "1.0.0"))
             .into_string()
             .to_ascii_lowercase();
-        let error = error_page(SetupState::Setup, "not_loopback", "denied")
+        let chrome = Chrome::default();
+        let error = error_page(SetupState::Setup, "not_loopback", "denied", &chrome)
             .into_string()
             .to_ascii_lowercase();
         for page in [&setup, &dashboard, &error] {

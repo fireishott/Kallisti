@@ -33,6 +33,7 @@ use crate::onboarding::{
     workspace,
 };
 use crate::web::backups;
+use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
     ActivityView, BackupsView, DEVICE_NAME_LIMIT, DashboardView, DeviceRow, DevicesView, FormError,
@@ -40,6 +41,18 @@ use crate::web::templates::{
     activity_page, backups_page, dashboard_page, devices_page, error_page, login_page,
     session_page, sessions_page, settings_page, setup_page,
 };
+
+/// The client context the middleware attached, or a plain direct context when a
+/// test drives a handler without it.
+///
+/// The real router always attaches one; this keeps a handler honest about the
+/// case where it did not, instead of panicking on an extractor.
+fn context_of(context: Option<Extension<ClientContext>>) -> ClientContext {
+    match context {
+        Some(Extension(context)) => context,
+        None => ClientContext::default(),
+    }
+}
 
 /// The upload ceiling for one form post. Every field is a short string.
 const MAX_BODY_BYTES: usize = 16 * 1024;
@@ -372,6 +385,7 @@ fn build_setup_view(state: &AppState) -> Result<SetupView, FormError> {
         .map_err(|error| form_error(&error))?;
     let wizard = engine.wizard().map_err(|error| form_error(&error))?;
     let mut view = SetupView::new(state_now, wizard, VERSION);
+    view.chrome = state.chrome();
     view.provider_base_url = engine
         .provider_base_url()
         .map_err(|error| form_error(&error))?
@@ -407,6 +421,7 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
     let engine = &state.engine;
     let db = engine.db();
     let mut view = DashboardView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
+    view.chrome = state.chrome();
     view.db_ok = db.quick_check().is_ok();
     view.sessions_live = state.sessions.live_count().unwrap_or(0);
     view.device_sessions = store::session_count(db).map_err(|error| db_error(&error))?;
@@ -449,6 +464,7 @@ fn build_dashboard_view(state: &AppState) -> Result<DashboardView, FormError> {
 fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     let engine = &state.engine;
     let mut view = SettingsView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
+    view.chrome = state.chrome();
     view.allow_full = state.allow_full;
     view.provider_base_url = engine
         .provider_base_url()
@@ -482,6 +498,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
 fn build_activity_view(state: &AppState) -> Result<ActivityView, FormError> {
     let engine = &state.engine;
     let mut view = ActivityView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
     view.rows =
         store::audit_recent(engine.db(), AUDIT_PAGE_SIZE).map_err(|error| db_error(&error))?;
     view.total = store::audit_count(engine.db()).map_err(|error| db_error(&error))?;
@@ -944,6 +961,7 @@ async fn restore_backup(
 fn build_backups_view(state: &AppState) -> Result<BackupsView, FormError> {
     let engine = &state.engine;
     let mut view = BackupsView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
     view.rows = backups::list(engine.paths()).map_err(|error| {
         FormError::new(
             None,
@@ -1285,6 +1303,7 @@ async fn cancel_job(
 fn build_sessions_view(state: &AppState) -> Result<SessionsView, FormError> {
     let engine = &state.engine;
     let mut view = SessionsView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
     view.rows = store::sessions_list(engine.db()).map_err(|error| db_error(&error))?;
     Ok(view)
 }
@@ -1302,6 +1321,7 @@ fn build_session_detail_view(
         state.engine.state().map_err(|error| form_error(&error))?,
         session,
     );
+    view.chrome = state.chrome();
     view.jobs = store::jobs_for_session(db, id).map_err(|error| db_error(&error))?;
     Ok(Some(view))
 }
@@ -1310,6 +1330,7 @@ fn build_session_detail_view(
 fn build_devices_view(state: &AppState) -> Result<DevicesView, FormError> {
     let engine = &state.engine;
     let mut view = DevicesView::new(engine.state().map_err(|error| form_error(&error))?);
+    view.chrome = state.chrome();
     view.rows = store::devices_list(engine.db()).map_err(|error| db_error(&error))?;
     Ok(view)
 }
@@ -1326,9 +1347,10 @@ fn missing_page(
         return ApiError::new(StatusCode::NOT_FOUND, code, message, request_id).into_response();
     }
     match state.engine.state() {
-        Ok(state_now) => {
-            page_with_status(error_page(state_now, code, message), StatusCode::NOT_FOUND)
-        }
+        Ok(state_now) => page_with_status(
+            error_page(state_now, code, message, &state.chrome()),
+            StatusCode::NOT_FOUND,
+        ),
         Err(error) => {
             ApiError::internal(request_id, format!("cannot read the setup state: {error}"))
                 .into_response()
@@ -1356,7 +1378,7 @@ fn cancel_refusal(
     }
     match state.engine.state() {
         Ok(state_now) => page_with_status(
-            error_page(state_now, &error.code, &error.message),
+            error_page(state_now, &error.code, &error.message, &state.chrome()),
             StatusCode::BAD_REQUEST,
         ),
         Err(engine_error) => ApiError::internal(
@@ -1392,7 +1414,7 @@ async fn login_form(
         return see_other(ROUTE_DASHBOARD);
     }
     match state.engine.state() {
-        Ok(state_now) => page(login_page(state_now, None)),
+        Ok(state_now) => page(login_page(state_now, None, &state.chrome())),
         Err(error) => ApiError::internal(
             request_id.0,
             format!("cannot read the setup state: {error}"),
@@ -1414,14 +1436,17 @@ async fn login_form(
 async fn login(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    context: Option<Extension<ClientContext>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
     let as_html = wants_html(&headers);
+    let context = context_of(context);
 
     // Rate limit before parsing, exactly as the claim form does, so a malformed
-    // flood costs an attempt too and the budget cannot be reset by garbage.
-    if !state.limiter.allow() {
+    // flood costs an attempt too and the budget cannot be reset by garbage. The
+    // budget is per effective client.
+    if !state.limiter.allow_for(context.client_ip) {
         let error = FormError::new(
             None,
             "rate_limited",
@@ -1464,7 +1489,24 @@ async fn login(
             .into_response();
         }
     };
-    let cookie = session::set_cookie_header(&minted.cookie_value);
+    if let Err(error) = store::audit_write(
+        state.db(),
+        &context.actor(),
+        "admin.signed_in",
+        Some(if context.trusted {
+            "login via trusted proxy"
+        } else {
+            "login direct"
+        }),
+    ) {
+        return ApiError::internal(
+            request_id.0,
+            format!("cannot write the sign-in audit row: {error}"),
+        )
+        .into_response();
+    }
+    let cookie =
+        session::set_cookie_header(&minted.cookie_value, state.access.cookie_secure(&context));
     let mut response = see_other(ROUTE_DASHBOARD);
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
@@ -1491,7 +1533,9 @@ fn login_refusal(state: &AppState, as_html: bool, error: FormError) -> Response 
         return (status, axum::Json(error.to_json())).into_response();
     }
     match state.engine.state() {
-        Ok(state_now) => page_with_status(login_page(state_now, Some(&error)), status),
+        Ok(state_now) => {
+            page_with_status(login_page(state_now, Some(&error), &state.chrome()), status)
+        }
         // The page needs the state badge; without it the JSON body still tells
         // the truth, so the refusal is never a 200 with a hole in it.
         Err(_) => (status, axum::Json(error.to_json())).into_response(),
@@ -1527,18 +1571,22 @@ fn login_error(error: &OnboardingError) -> FormError {
 async fn claim(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    context: Option<Extension<ClientContext>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
     let as_html = wants_html(&headers);
+    let context = context_of(context);
 
     // The wizard is locked once the daemon is ready, before anything is read.
     if let Err(error) = state.engine.ensure_wizard_open() {
         return fail(&state, as_html, form_error(&error));
     }
 
-    // Rate limit before parsing, so a malformed flood costs an attempt too.
-    if !state.limiter.allow() {
+    // Rate limit before parsing, so a malformed flood costs an attempt too. The
+    // budget is per effective client, so a proxy in front of this daemon cannot
+    // pool every client into one budget.
+    if !state.limiter.allow_for(context.client_ip) {
         let error = FormError::new(
             None,
             "rate_limited",
@@ -1581,7 +1629,26 @@ async fn claim(
             .into_response();
         }
     };
-    let cookie = session::set_cookie_header(&minted.cookie_value);
+    // The sign-in is audited against the real client, not the proxy in front of
+    // it. The detail names the route, never a credential.
+    if let Err(error) = store::audit_write(
+        state.db(),
+        &context.actor(),
+        "admin.signed_in",
+        Some(if context.trusted {
+            "setup/claim via trusted proxy"
+        } else {
+            "setup/claim direct"
+        }),
+    ) {
+        return ApiError::internal(
+            request_id.0,
+            format!("cannot write the sign-in audit row: {error}"),
+        )
+        .into_response();
+    }
+    let cookie =
+        session::set_cookie_header(&minted.cookie_value, state.access.cookie_secure(&context));
     let mut response = if as_html {
         see_other("/setup")
     } else {

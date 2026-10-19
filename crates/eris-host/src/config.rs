@@ -22,24 +22,35 @@
 //! log_level = "info"
 //! ```
 //!
-//! That schema has exactly two keys, and it is deliberately not extensible by
-//! accident. Two classes of key are rejected by name *before* deserialisation,
-//! so the error says why:
+//! and one optional `[admin]` table, which is how the UI is reached:
 //!
-//! - anything that looks like a listen/bind address, because the admin listener
-//!   address is a literal in `admin.rs` and is the project's safety property;
-//! - anything that looks like a secret, because a secret value belongs in the
-//!   environment behind a reference, never in a file that is world-readable.
+//! ```toml
+//! [admin]
+//! listen = ["127.0.0.1:7340"]                   # every address is served at once
+//! public_url = "https://kallisti.example.com"   # absolute links, cookie security
+//! trusted_proxies = ["127.0.0.1/32", "::1/128"] # peers that may set forwarding headers
+//! ```
 //!
-//! Values are never logged and never echoed, so a config error names the *key*
-//! and not the value.
+//! Every key is optional and none is a secret. An absent `listen` means exactly
+//! `127.0.0.1:7340`; an absent `trusted_proxies` means loopback only; an absent
+//! `public_url` means the operator reaches the daemon by address.
+//!
+//! The schema is deliberately not extensible by accident. A key that looks like
+//! a secret is rejected by name *before* deserialisation, so the error says why:
+//! a secret value belongs in the environment behind a reference, never in a file
+//! that is world-readable. Unknown keys are refused by serde. Values are never
+//! logged and never echoed, so a config error names the *key* and not the value.
 
 use std::fmt;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use core_domain::SecretRef;
 use serde::Deserialize;
+
+use crate::admin::listen::{ListenError, parse_listen_list};
+use crate::web::proxy::{AdminAccess, ProxyConfigError};
 
 /// Required: the OpenAI-compatible base URL.
 pub const KEY_BASE_URL: &str = "KALLISTI_BASE_URL";
@@ -52,25 +63,6 @@ pub const KEY_MAX_OUTPUT_TOKENS: &str = "KALLISTI_MAX_OUTPUT_TOKENS";
 
 /// Mode the secret file must have: owner read and write, nothing else.
 pub const REQUIRED_MODE: u32 = 0o600;
-
-/// Config keys that would make the listener address configurable. Rejected on
-/// sight, whichever table they sit in.
-pub const FORBIDDEN_LISTEN_KEYS: &[&str] = &[
-    "listen",
-    "listen_addr",
-    "listen_address",
-    "bind",
-    "bind_addr",
-    "bind_address",
-    "admin_addr",
-    "admin_address",
-    "admin_listen",
-    "addr",
-    "address",
-    "host",
-    "port",
-    "socket",
-];
 
 /// Config keys that would put a secret in a world-readable file. Rejected on
 /// sight. `key` covers `api_key` and `apikey`; `credential` covers the plural.
@@ -159,15 +151,21 @@ pub enum ConfigError {
         /// Parse error.
         source: toml::de::Error,
     },
-    /// A listen/bind key was present. The admin address is not configurable.
-    #[error(
-        "config file {path} carries the key {key}, but the admin listener address is fixed at 127.0.0.1:7340 and is not configurable: remove it"
-    )]
-    ListenerKeyInToml {
+    /// `admin.listen` could not be used.
+    #[error("config file {path} has an unusable admin.listen: {source}")]
+    BadListen {
         /// Path that was read.
         path: PathBuf,
-        /// Key path that was rejected.
-        key: String,
+        /// Why the list was refused.
+        source: ListenError,
+    },
+    /// `admin.public_url` or `admin.trusted_proxies` could not be used.
+    #[error("config file {path} has an unusable admin setting: {source}")]
+    BadAdminSetting {
+        /// Path that was read.
+        path: PathBuf,
+        /// Why the setting was refused.
+        source: ProxyConfigError,
     },
     /// A secret-looking key was present. Secrets do not live in this file.
     #[error(
@@ -464,21 +462,74 @@ impl LogLevel {
     }
 }
 
-/// The parsed non-secret half. Exactly two keys, both optional.
+/// The parsed non-secret half. Every key is optional.
 #[derive(Debug, Clone, Default)]
 pub struct TomlConfig {
     workspace_path: Option<PathBuf>,
     log_level: Option<LogLevel>,
+    admin: AdminConfig,
     source: Option<PathBuf>,
 }
 
-/// What deserialisation actually accepts. `deny_unknown_fields` is a second
-/// wall behind the key-name scan below.
+/// What deserialisation actually accepts. `deny_unknown_fields` is the wall that
+/// refuses a key nobody documented.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlConfigRaw {
     workspace_path: Option<PathBuf>,
     log_level: Option<String>,
+    admin: Option<AdminRaw>,
+}
+
+/// The `[admin]` table, before validation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminRaw {
+    listen: Option<Vec<String>>,
+    public_url: Option<String>,
+    trusted_proxies: Option<Vec<String>>,
+}
+
+/// The `[admin]` table, validated: how the UI is reached and who may front it.
+#[derive(Debug, Clone)]
+pub struct AdminConfig {
+    listen: Vec<SocketAddr>,
+    access: AdminAccess,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            listen: parse_listen_list(&[]).unwrap_or_else(|_| {
+                vec![
+                    "127.0.0.1:7340"
+                        .parse()
+                        .expect("the documented default is a literal ip:port"),
+                ]
+            }),
+            access: AdminAccess::loopback_only(),
+        }
+    }
+}
+
+impl AdminConfig {
+    /// Every address the daemon will bind, in order. Never empty.
+    #[must_use]
+    pub fn listen(&self) -> &[SocketAddr] {
+        &self.listen
+    }
+
+    /// `admin.public_url`, when the operator configured one.
+    #[must_use]
+    pub fn public_url(&self) -> Option<&str> {
+        self.access.public_url.as_deref()
+    }
+
+    /// The access model: trusted proxies and the public URL.
+    #[must_use]
+    pub fn access(&self) -> &AdminAccess {
+        &self.access
+    }
 }
 
 impl TomlConfig {
@@ -529,9 +580,30 @@ impl TomlConfig {
             ),
         };
 
+        let admin = match raw.admin {
+            None => AdminConfig::default(),
+            Some(raw_admin) => {
+                let listen = parse_listen_list(raw_admin.listen.as_deref().unwrap_or_default())
+                    .map_err(|source| ConfigError::BadListen {
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                let access = AdminAccess::parse(
+                    raw_admin.trusted_proxies.as_deref().unwrap_or_default(),
+                    raw_admin.public_url.as_deref(),
+                )
+                .map_err(|source| ConfigError::BadAdminSetting {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+                AdminConfig { listen, access }
+            }
+        };
+
         Ok(Self {
             workspace_path: raw.workspace_path,
             log_level,
+            admin,
             source: Some(path.to_path_buf()),
         })
     }
@@ -549,6 +621,12 @@ impl TomlConfig {
     #[must_use]
     pub fn log_level(&self) -> LogLevel {
         self.log_level.unwrap_or(LogLevel::DEFAULT)
+    }
+
+    /// The `[admin]` table, validated.
+    #[must_use]
+    pub fn admin(&self) -> &AdminConfig {
+        &self.admin
     }
 
     /// The file this was read from, when there was one.
@@ -602,7 +680,7 @@ impl LoadedConfig {
     }
 }
 
-/// Reject listener and secret keys anywhere in the TOML tree.
+/// Reject secret-looking keys anywhere in the TOML tree.
 fn reject_forbidden_keys(
     value: &toml::Value,
     prefix: &str,
@@ -618,12 +696,6 @@ fn reject_forbidden_keys(
         } else {
             format!("{prefix}.{key}")
         };
-        if FORBIDDEN_LISTEN_KEYS.contains(&lowered.as_str()) {
-            return Err(ConfigError::ListenerKeyInToml {
-                path: path.to_path_buf(),
-                key: full,
-            });
-        }
         if FORBIDDEN_SECRET_KEYS
             .iter()
             .any(|needle| lowered.contains(needle))
@@ -875,18 +947,80 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
     }
 
     #[test]
-    fn config_toml_refuses_a_listen_address() {
-        // The safety property, stated as a test: the admin address is a literal
-        // in admin.rs, so a config key that would move it must be rejected.
+    fn config_toml_accepts_and_validates_the_admin_table() {
+        // The admin address is config now, so `[admin] listen` parses.
+        let toml = TomlConfig::parse(
+            "[admin]\nlisten = [\"127.0.0.1:7340\", \"0.0.0.0:7340\"]\n",
+            &toml_path(),
+        )
+        .expect("the admin listen list is a documented key");
+        assert_eq!(
+            toml.admin().listen(),
+            &[
+                "127.0.0.1:7340"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("literal"),
+                "0.0.0.0:7340"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("literal"),
+            ]
+        );
+
+        // An absent table is the default, and the default is still loopback.
+        let bare = TomlConfig::parse("log_level = \"info\"\n", &toml_path()).expect("no admin");
+        assert_eq!(
+            bare.admin().listen(),
+            &["127.0.0.1:7340"
+                .parse::<std::net::SocketAddr>()
+                .expect("literal")]
+        );
+        assert!(bare.admin().public_url().is_none());
+
+        // public_url and trusted_proxies are validated here, so a typo is a
+        // startup error and not a silent surprise later.
+        let full = TomlConfig::parse(
+            "[admin]\npublic_url = \"https://kallisti.example.com\"\n\
+             trusted_proxies = [\"127.0.0.1/32\", \"192.168.68.0/24\"]\n",
+            &toml_path(),
+        )
+        .expect("a documented admin table");
+        assert_eq!(
+            full.admin().public_url(),
+            Some("https://kallisti.example.com")
+        );
+        assert!(
+            full.admin()
+                .access()
+                .trusted
+                .contains("192.168.68.20".parse().expect("ip"))
+        );
+
+        let bad_listen =
+            TomlConfig::parse("[admin]\nlisten = [\"localhost:7340\"]\n", &toml_path())
+                .expect_err("a hostname bind is refused");
+        assert!(
+            matches!(bad_listen, ConfigError::BadListen { .. }),
+            "{bad_listen:?}"
+        );
+
+        let bad_proxy = TomlConfig::parse(
+            "[admin]\ntrusted_proxies = [\"10.0.0.0/33\"]\n",
+            &toml_path(),
+        )
+        .expect_err("a bad CIDR is refused");
+        assert!(
+            matches!(bad_proxy, ConfigError::BadAdminSetting { .. }),
+            "{bad_proxy:?}"
+        );
+
+        // A stray key nobody documented is still refused by serde.
         for text in [
-            "listen = \"0.0.0.0:7340\"\n",
             "bind_addr = \"0.0.0.0:7340\"\n",
-            "[server]\nport = 9000\n",
             "[admin]\nhost = \"0.0.0.0\"\n",
         ] {
             let error = TomlConfig::parse(text, &toml_path()).expect_err("must be refused");
             assert!(
-                matches!(error, ConfigError::ListenerKeyInToml { .. }),
+                matches!(error, ConfigError::TomlParse { .. }),
                 "{text:?} gave {error:?}"
             );
         }

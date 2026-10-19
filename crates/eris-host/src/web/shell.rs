@@ -62,6 +62,43 @@ fn owner_of_aria_current(body: &str) -> String {
 }
 
 #[test]
+fn the_dashboard_lists_every_bound_listener() {
+    let (_dir, engine, passphrase) = ready_engine();
+    let state = AppState::new(engine, false);
+    let bound: Vec<std::net::SocketAddr> = vec![
+        "127.0.0.1:7340".parse().expect("a literal address"),
+        "192.168.68.51:7340".parse().expect("a literal address"),
+    ];
+    state.set_bound_listeners(bound);
+    let app = router_with(state);
+    let cookie = sign_in(&app, &passphrase);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_DASHBOARD).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+
+    for addr in ["127.0.0.1:7340", "192.168.68.51:7340"] {
+        assert!(
+            page.body.contains(addr),
+            "the System card lists the bound address {addr}: {}",
+            page.body
+        );
+    }
+    assert!(
+        page.body.contains("(2 listeners)"),
+        "the footer counts the bound listeners: {}",
+        page.body
+    );
+    assert!(
+        !page.body.contains("(1 listener)"),
+        "two listeners is not one: {}",
+        page.body
+    );
+}
+
+#[test]
 fn the_nav_renders_when_ready_and_not_on_the_login_page() {
     let (_dir, engine, passphrase) = ready_engine();
     let app = router_with(AppState::new(engine, false));

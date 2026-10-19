@@ -133,15 +133,30 @@ fn the_settings_page_renders_current_values() {
         "{page}"
     );
     assert!(lowered.contains("disabled"), "{page}");
+    // The premise moved in P15: the admin listener is configured, not compiled
+    // in, so the page states where it is configured and what it can reach. The
+    // device listener is still the one literal, and the page still says so.
     assert!(lowered.contains("loopback only"), "{page}");
     assert!(lowered.contains("--admin-listen"), "{page}");
     assert!(
         page.contains("127.0.0.1:7340") && page.contains("127.0.0.1:7341"),
-        "both listener literals are stated: {page}"
+        "both listener addresses are stated: {page}"
     );
     assert!(
-        lowered.contains("not configurable"),
-        "the admin bind says it is not configurable: {page}"
+        lowered.contains("config.toml"),
+        "the admin bind says where it is configured: {page}"
+    );
+    assert!(
+        lowered.contains("lan") && lowered.contains("tailnet") && lowered.contains("reverse proxy"),
+        "the network row names every way the UI can be reached: {page}"
+    );
+    assert!(
+        lowered.contains("not by anything compiled in"),
+        "the network row says the listener is not compiled in: {page}"
+    );
+    assert!(
+        !lowered.contains("not configurable"),
+        "the admin bind is configurable now: {page}"
     );
 
     // House style.

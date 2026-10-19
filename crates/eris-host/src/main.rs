@@ -7,10 +7,12 @@
 //! that exits non-zero on purpose (a placeholder that exits 0 looks like a
 //! working feature to every script that calls it), and `version` prints one line.
 //!
-//! `serve` is the only command that binds a port, and both ports are literals in
-//! their modules: 7340 in `admin.rs`, 7341 in `device/mod.rs`. The device port is
-//! bound only with `--device-listen` or when the dashboard switch says so.
-//! Nothing here installs a service or touches another process on the host.
+//! `serve` is the only command that binds a port. The admin addresses come from
+//! `admin.listen` in `config.toml` plus every `--admin-listen` flag, defaulting to
+//! `127.0.0.1:7340`; the device port (7341) is still a literal in
+//! `device/mod.rs` and is bound only with `--device-listen` or when the dashboard
+//! switch says so. Nothing here installs a service or touches another process on
+//! the host.
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -57,7 +59,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the admin listener on 127.0.0.1:7340. The default subcommand.
+    /// Run the admin listener: every address in `admin.listen`, defaulting to
+    /// 127.0.0.1:7340. The default subcommand.
     Serve {
         /// Allow `full` sandbox mode to be stored. Without this flag, `full` is
         /// refused by onboarding and by the dashboard, and only a restart with
@@ -68,13 +71,14 @@ enum Command {
         /// is bound only when the dashboard switch is on.
         #[arg(long)]
         device_listen: bool,
-        /// Also serve the admin UI on this address, in addition to the loopback
-        /// listener, which is always bound. Accepts only a loopback address or
-        /// this host's own tailnet address (an IPv4 address in 100.64.0.0/10 that
-        /// is assigned to an interface here). `0.0.0.0`, `::`, a LAN address, a
-        /// public address and a hostname are refused before anything binds.
-        #[arg(long, value_name = "IP:PORT")]
-        admin_listen: Option<String>,
+        /// Also serve the admin UI on this address. Repeatable, and additive:
+        /// every address here is served in addition to everything in
+        /// `admin.listen`, so `--admin-listen 0.0.0.0:7340` needs no config
+        /// edit. Any literal `ip:port` is accepted, including a LAN address, a
+        /// tailnet address and `0.0.0.0`; a hostname is refused before anything
+        /// binds.
+        #[arg(long, value_name = "IP:PORT", action = clap::ArgAction::Append)]
+        admin_listen: Vec<String>,
     },
     /// Send one prompt through the configured provider, print the reply and usage.
     Probe {
@@ -152,7 +156,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         // `serve` is the default: no subcommand starts the daemon.
-        None => run_serve(cli.state_dir, false, false, None),
+        None => run_serve(cli.state_dir, false, false, Vec::new()),
         Some(Command::Serve {
             allow_full,
             device_listen,
@@ -230,26 +234,8 @@ fn run_serve(
     state_dir: Option<PathBuf>,
     allow_full: bool,
     device_listen: bool,
-    admin_listen: Option<String>,
+    admin_listen: Vec<String>,
 ) -> ExitCode {
-    // The `--admin-listen` value is validated before anything else runs, and in
-    // particular before any listener binds: a refused address must fail with a
-    // message about the address, not with "address already in use" from the
-    // loopback bind that is already up, and it must never open a socket.
-    let second_listener = match admin_listen {
-        None => None,
-        Some(raw) => match admin::listen::parse_admin_listen(&raw) {
-            Ok(addr) => {
-                tracing::info!(%addr, "second admin listener requested");
-                Some(addr)
-            }
-            Err(error) => {
-                eprintln!("eris serve: {error}");
-                return ExitCode::from(EXIT_FAILURE);
-            }
-        },
-    };
-
     let paths = match resolve_paths(state_dir) {
         Ok(paths) => paths,
         Err(message) => {
@@ -265,6 +251,23 @@ fn run_serve(
             return ExitCode::from(EXIT_FAILURE);
         }
     };
+
+    // The listener list is resolved from the config file plus every flag, and
+    // validated before anything binds: a refused address must fail with a
+    // message about the address, never with "address already in use" from a
+    // listener that is already up, and it must never open a socket.
+    let configured = loaded.toml().admin().listen().to_vec();
+    let listeners = match admin::listen::resolve_listeners(&configured, &admin_listen) {
+        Ok(listeners) => listeners,
+        Err(error) => {
+            eprintln!("eris serve: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let access = loaded.toml().admin().access().clone();
+    if let Some(url) = access.public_url.as_deref() {
+        tracing::info!(%url, "public URL configured");
+    }
 
     init_logging(loaded.toml().log_level());
 
@@ -300,11 +303,20 @@ fn run_serve(
                 let host = hostname();
                 print!(
                     "{}",
-                    first_run_block(&passphrase, &run.first_run_path, &user, &host, 7340)
+                    first_run_block(
+                        &passphrase,
+                        &run.first_run_path,
+                        &user,
+                        &host,
+                        primary_port(&listeners)
+                    )
                 );
                 let _ = io::stdout().flush();
             } else if run.state == eris_host::db::SetupState::Setup {
-                print!("{}", pending_block(&run.first_run_path, 7340));
+                print!(
+                    "{}",
+                    pending_block(&run.first_run_path, primary_port(&listeners))
+                );
                 let _ = io::stdout().flush();
             }
         }
@@ -336,7 +348,7 @@ fn run_serve(
         }
     };
 
-    let state = AppState::new(engine, allow_full);
+    let state = AppState::new(engine, allow_full).with_access(access);
 
     // The device listener is opt-in twice over: the flag, or the switch the
     // operator last saved in the dashboard. Either one binds 127.0.0.1:7341; the
@@ -355,7 +367,7 @@ fn run_serve(
         if device_enabled {
             state.device.start();
         }
-        admin::serve_with(state, second_listener).await
+        admin::serve_listeners(state, listeners).await
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -363,6 +375,15 @@ fn run_serve(
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// The port the first-run block prints: the first configured listener's port,
+/// because that is the URL the operator is most likely to open.
+fn primary_port(listeners: &[std::net::SocketAddr]) -> u16 {
+    listeners
+        .first()
+        .map(std::net::SocketAddr::port)
+        .unwrap_or(7340)
 }
 
 /// `eris device token --id <device_id> [--print]`: mint one access token for an
@@ -471,6 +492,12 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
             return ExitCode::from(EXIT_FAILURE);
         }
     };
+    // The recovery path prints the URL a browser should open. It comes from the
+    // same config the daemon reads; a config that cannot be read falls back to
+    // the documented default rather than blocking a reset.
+    let port = LoadedConfig::load(paths.clone())
+        .map(|loaded| primary_port(loaded.toml().admin().listen()))
+        .unwrap_or(7340);
     let db = match Db::open(&paths.db_file) {
         Ok(db) => db,
         Err(error) => {
@@ -510,7 +537,7 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
                     "state": wizard.state.as_str(),
                     "next_step": wizard.next_step.map(|step| step.as_str()),
                     "steps": steps,
-                    "url": "http://127.0.0.1:7340/setup",
+                    "url": format!("http://127.0.0.1:{port}/setup"),
                 })
             );
         } else {
@@ -531,7 +558,7 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
                     status.completed_at.as_deref().unwrap_or("open")
                 );
             }
-            println!("wizard: http://127.0.0.1:7340/setup");
+            println!("wizard: http://127.0.0.1:{port}/setup");
             println!(
                 "the setup passphrase, if still pending, is in {}",
                 engine.first_run_path().display()
@@ -557,7 +584,7 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
                         "status": "ok",
                         "state": "setup",
                         "first_run_file": run.first_run_path.display().to_string(),
-                        "url": "http://127.0.0.1:7340/setup",
+                        "url": format!("http://127.0.0.1:{port}/setup"),
                     })
                 );
             } else if let Some(passphrase) = run.generated {
@@ -565,7 +592,7 @@ fn run_setup(json: bool, reset: bool, state_dir: Option<PathBuf>) -> ExitCode {
                 let host = hostname();
                 print!(
                     "{}",
-                    first_run_block(&passphrase, &run.first_run_path, &user, &host, 7340)
+                    first_run_block(&passphrase, &run.first_run_path, &user, &host, port)
                 );
             }
             ExitCode::SUCCESS

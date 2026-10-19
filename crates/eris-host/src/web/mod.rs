@@ -5,6 +5,7 @@
 
 pub mod backups;
 pub mod css;
+pub mod proxy;
 pub mod routes;
 pub mod store;
 pub mod templates;
