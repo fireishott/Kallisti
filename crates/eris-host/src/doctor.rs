@@ -37,8 +37,28 @@ pub struct DoctorReport {
     pub db: &'static str,
     /// Verdict for the provider configuration.
     pub provider: &'static str,
+    /// Verdict for the plaintext-secret scan.
+    pub secrets: &'static str,
     /// The evidence behind each verdict.
     pub detail: DoctorDetail,
+}
+
+/// What the plaintext scan observed.
+///
+/// The scan is deliberately dumb: any run of 40 or more characters from
+/// `[A-Za-z0-9_-]` in a config or state file is a candidate secret. It reports
+/// the count and where it looked, never the matched value, so the report itself
+/// cannot leak one.
+#[derive(Debug, Serialize)]
+pub struct SecretsDetail {
+    /// Files read by the scan.
+    pub files_scanned: usize,
+    /// How many token-shaped literals were found. Zero is the only good number.
+    pub plaintext: usize,
+    /// `path:line` for each finding, in path order. Values are never copied.
+    pub findings: Vec<String>,
+    /// Why the scan could not run, when it could not.
+    pub error: Option<String>,
 }
 
 /// What each check observed.
@@ -50,6 +70,8 @@ pub struct DoctorDetail {
     pub db: DbDetail,
     /// Provider facts. No key value ever appears here.
     pub provider: ProviderDetail,
+    /// Plaintext-secret scan facts.
+    pub secrets: SecretsDetail,
 }
 
 /// The two config files.
@@ -147,6 +169,7 @@ impl DoctorReport {
         out.push_str(&format!("  config   {}\n", self.config));
         out.push_str(&format!("  db       {}\n", self.db));
         out.push_str(&format!("  provider {}\n", self.provider));
+        out.push_str(&format!("  secrets  {}\n", self.secrets));
         out.push('\n');
 
         let config = &self.detail.config;
@@ -205,6 +228,15 @@ impl DoctorReport {
         ));
         out.push_str("  model call    not made (doctor spends no token)\n");
 
+        let secrets = &self.detail.secrets;
+        out.push_str(&format!(
+            "  plaintext     {} token-shaped literal(s) across {} file(s)\n",
+            secrets.plaintext, secrets.files_scanned
+        ));
+        for finding in &secrets.findings {
+            out.push_str(&format!("  finding       {finding}\n"));
+        }
+
         if let Some(error) = &self.status_error() {
             out.push_str(&format!("\n  error: {error}\n"));
         }
@@ -218,6 +250,7 @@ impl DoctorReport {
             .clone()
             .or_else(|| self.detail.db.error.clone())
             .or_else(|| self.detail.provider.error.clone())
+            .or_else(|| self.detail.secrets.error.clone())
     }
 }
 
@@ -228,8 +261,13 @@ pub fn run(paths: &Paths) -> DoctorReport {
     let (config_verdict, config_detail, eris) = check_config(paths);
     let (db_verdict, db_detail) = check_db(paths);
     let (provider_verdict, provider_detail) = check_provider(eris.as_ref());
+    let (secrets_verdict, secrets_detail) = check_secrets(paths);
 
-    let status = if config_verdict == OK && db_verdict == OK && provider_verdict == OK {
+    let status = if config_verdict == OK
+        && db_verdict == OK
+        && provider_verdict == OK
+        && secrets_verdict == OK
+    {
         OK
     } else {
         "degraded"
@@ -241,12 +279,127 @@ pub fn run(paths: &Paths) -> DoctorReport {
         config: config_verdict,
         db: db_verdict,
         provider: provider_verdict,
+        secrets: secrets_verdict,
         detail: DoctorDetail {
             config: config_detail,
             db: db_detail,
             provider: provider_detail,
+            secrets: secrets_detail,
         },
     }
+}
+
+/// How long the longest clean literal may be before it is reported.
+const PLAINTEXT_RUN: usize = 40;
+
+/// The biggest file the scan will read. Anything larger is reported, not read.
+const PLAINTEXT_FILE_CEILING: u64 = 256 * 1024;
+
+/// Scan the config and state directories for token-shaped plaintext.
+///
+/// A candidate is any run of [`PLAINTEXT_RUN`] or more characters from
+/// `[A-Za-z0-9_-]`. The database, its sidecars, and any copy of it are skipped:
+/// they hold Argon2id verifiers by design, and a verifier is not a usable
+/// secret. The scan reports where it looked, never what it found.
+fn check_secrets(paths: &Paths) -> (&'static str, SecretsDetail) {
+    let mut detail = SecretsDetail {
+        files_scanned: 0,
+        plaintext: 0,
+        findings: Vec::new(),
+        error: None,
+    };
+
+    let db_name = paths
+        .db_file
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    for dir in [&paths.config_dir, &paths.state_dir] {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                detail.error = Some(format!("cannot list {}: {error}", dir.display()));
+                return ("cannot_scan", detail);
+            }
+        };
+
+        let mut files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && !is_database_file(path, &db_name))
+            .collect();
+        files.sort();
+
+        for path in files {
+            match fs::metadata(&path) {
+                Ok(meta) if meta.len() > PLAINTEXT_FILE_CEILING => {
+                    detail.findings.push(format!(
+                        "{}:0 (larger than {PLAINTEXT_FILE_CEILING} bytes, not read)",
+                        path.display()
+                    ));
+                    detail.plaintext += 1;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    detail.error = Some(format!("cannot stat {}: {error}", path.display()));
+                    return ("cannot_scan", detail);
+                }
+            }
+
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            detail.files_scanned += 1;
+            let text = String::from_utf8_lossy(&bytes);
+            for (index, line) in text.lines().enumerate() {
+                if longest_run(line) >= PLAINTEXT_RUN {
+                    detail.plaintext += 1;
+                    detail
+                        .findings
+                        .push(format!("{}:{}", path.display(), index + 1));
+                }
+            }
+        }
+    }
+
+    let verdict = if detail.plaintext == 0 {
+        OK
+    } else {
+        "plaintext_secret"
+    };
+    (verdict, detail)
+}
+
+/// Whether a path is the database, a sidecar, or a copy of it.
+///
+/// Everything whose name starts with the configured database file name is
+/// skipped: `eris.db`, `eris.db-wal`, `eris.db-shm`, and any `eris.db.*` backup a
+/// human or a test left behind. Those are verifier stores, not secret files, and
+/// reading them as text produces base64 noise rather than findings.
+fn is_database_file(path: &Path, db_name: &str) -> bool {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    !db_name.is_empty() && name.starts_with(db_name)
+}
+
+/// The longest run of `[A-Za-z0-9_-]` in one line.
+fn longest_run(line: &str) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for byte in line.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
 }
 
 fn check_config(paths: &Paths) -> (&'static str, ConfigDetail, Option<KallistiConfig>) {
@@ -472,6 +625,7 @@ pub fn run_default() -> DoctorReport {
             config: "invalid",
             db: "unknown",
             provider: "unconfigured",
+            secrets: "unknown",
             detail: DoctorDetail {
                 config: ConfigDetail {
                     env_file: String::from("<unknown>"),
@@ -506,6 +660,12 @@ pub fn run_default() -> DoctorReport {
                     tcp_target: None,
                     tcp_reachable: None,
                     model_call: "not_made",
+                    error: Some(String::from("paths could not be resolved")),
+                },
+                secrets: SecretsDetail {
+                    files_scanned: 0,
+                    plaintext: 0,
+                    findings: Vec::new(),
                     error: Some(String::from("paths could not be resolved")),
                 },
             },
@@ -543,6 +703,7 @@ mod tests {
             config: OK,
             db: OK,
             provider: OK,
+            secrets: OK,
             detail: DoctorDetail {
                 config: ConfigDetail {
                     env_file: String::from("/tmp/eris.env"),
@@ -579,6 +740,12 @@ mod tests {
                     model_call: "not_made",
                     error: None,
                 },
+                secrets: SecretsDetail {
+                    files_scanned: 2,
+                    plaintext: 0,
+                    findings: Vec::new(),
+                    error: None,
+                },
             },
         };
 
@@ -589,6 +756,91 @@ mod tests {
         assert_eq!(json["provider"], "ok");
         assert_eq!(json["detail"]["db"]["tables_expected"], 9);
         assert_eq!(json["detail"]["provider"]["model_call"], "not_made");
+        assert_eq!(json["secrets"], "ok", "top-level secrets verdict");
+        assert_eq!(json["detail"]["secrets"]["plaintext"], 0);
         assert!(report.is_ok());
+    }
+
+    #[test]
+    fn the_longest_run_counts_only_the_documented_alphabet() {
+        assert_eq!(longest_run("short_value"), 11);
+        assert_eq!(longest_run("a-b_c"), 5, "hyphen and underscore count");
+        assert_eq!(longest_run("dots.and/slashes break it"), 7, "slashes");
+        assert_eq!(longest_run(""), 0);
+        let forty = "a".repeat(PLAINTEXT_RUN);
+        assert_eq!(longest_run(&forty), PLAINTEXT_RUN);
+    }
+
+    #[test]
+    fn the_scan_finds_a_planted_literal_and_ignores_the_database() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = dir.path().join("config");
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::create_dir_all(&state_dir).expect("state dir");
+
+        let secret = "a".repeat(PLAINTEXT_RUN + 5);
+        fs::write(config_dir.join("leaked.env"), format!("TOKEN={secret}\n"))
+            .expect("write the planted file");
+        // A verifier lives in the database by design, so the scan must skip it.
+        fs::write(state_dir.join("eris.db"), format!("{secret}\n")).expect("write the db");
+        // So must a stale copy of it, which is base64 noise rather than a secret.
+        fs::write(state_dir.join("eris.db.pre-p7"), format!("{secret}\n")).expect("write a copy");
+        fs::write(state_dir.join("first-run.txt"), "hush drift creme pogo\n").expect("clean file");
+
+        let paths = Paths {
+            config_dir: config_dir.clone(),
+            env_file: config_dir.join("eris.env"),
+            toml_file: config_dir.join("config.toml"),
+            state_dir: state_dir.clone(),
+            db_file: state_dir.join("eris.db"),
+        };
+
+        let (verdict, detail) = check_secrets(&paths);
+        assert_eq!(verdict, "plaintext_secret");
+        assert_eq!(detail.plaintext, 1, "only the leaked config file counts");
+        assert_eq!(detail.files_scanned, 2, "leaked.env and first-run.txt");
+        assert_eq!(detail.findings.len(), 1);
+        assert!(
+            detail.findings[0].ends_with("leaked.env:1"),
+            "the finding names the file and line, never the value: {:?}",
+            detail.findings
+        );
+        assert!(
+            !detail.findings[0].contains(&secret),
+            "the report must not copy the secret"
+        );
+    }
+
+    #[test]
+    fn a_clean_config_tree_scans_ok() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = dir.path().join("config");
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        fs::write(
+            config_dir.join("eris.env"),
+            "KALLISTI_API_KEY_REF=env:NINEROUTER_API_KEY\n",
+        )
+        .expect("write env");
+        fs::write(
+            state_dir.join("first-run.txt"),
+            "hush drift creme pogo foyer mule\n",
+        )
+        .expect("write the passphrase file");
+
+        let paths = Paths {
+            config_dir: config_dir.clone(),
+            env_file: config_dir.join("eris.env"),
+            toml_file: config_dir.join("config.toml"),
+            state_dir: state_dir.clone(),
+            db_file: state_dir.join("eris.db"),
+        };
+
+        let (verdict, detail) = check_secrets(&paths);
+        assert_eq!(verdict, OK, "findings: {:?}", detail.findings);
+        assert_eq!(detail.plaintext, 0);
+        assert_eq!(detail.files_scanned, 2);
     }
 }
