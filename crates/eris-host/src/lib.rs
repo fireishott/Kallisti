@@ -14,6 +14,10 @@
 //! limiter) and `web` (maud templates, the one stylesheet, and the wizard and
 //! dashboard routes).
 //!
+//! P7b adds `backup`: the archive format, the `VACUUM INTO` database snapshot,
+//! verification, and the restore ordering that keeps a crash from leaving a
+//! database that refers to session files that are not there.
+//!
 //! P8 adds `device`: the `/v1` listener on 127.0.0.1:7341, pairing, the turn
 //! worker and its lease, the SSE stream with resume and a bounded retention
 //! window, cancellation, and idempotency. The listener binds only when asked to,
@@ -21,6 +25,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod backup;
 pub mod config;
 pub mod db;
 pub mod device;

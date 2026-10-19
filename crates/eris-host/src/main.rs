@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 
 use eris_host::admin::AppState;
 use eris_host::auth::{AuthStore, ScopeSet, TokenOrigin, TokenService};
+use eris_host::backup::{self, BackupError, CreateRequest, RestoreRequest};
 use eris_host::config::{LoadedConfig, LogLevel, Paths};
 use eris_host::db::Db;
 use eris_host::onboarding::{SetupEngine, first_run_block, pending_block};
@@ -47,7 +48,7 @@ struct Cli {
     /// Use this root instead of `$HOME` for config and state. The layout is
     /// `config/` and `state/` under the root, so a scratch root never reads or
     /// writes the installed database. Applies to every subcommand.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", alias = "into")]
     state_dir: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -83,6 +84,39 @@ enum Command {
     Device {
         #[command(subcommand)]
         command: Option<DeviceCommand>,
+    },
+    /// Write an archive of all state, or list one with `--list`.
+    Backup {
+        /// Absolute path of the archive to write, or to read with `--list`.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// With `--list`: the archive to read, as `eris backup --list <path>`.
+        #[arg(value_name = "ARCHIVE")]
+        archive: Option<PathBuf>,
+        /// Include the sandbox workspace. It is user data and is off by default.
+        #[arg(long)]
+        include_workspace: bool,
+        /// Re-read the archive and verify every member after writing it.
+        #[arg(long)]
+        verify: bool,
+        /// Read the manifest of an existing archive. Writes nothing.
+        #[arg(long)]
+        list: bool,
+        /// Allow a destination under the system temporary directory.
+        #[arg(long)]
+        allow_tmp: bool,
+    },
+    /// Restore state from an archive. Destructive: takes a safety copy first.
+    Restore {
+        /// The archive to restore from.
+        #[arg(long = "from", value_name = "PATH")]
+        from: PathBuf,
+        /// Replace existing state. Required when the target is not empty.
+        #[arg(long)]
+        force: bool,
+        /// Verify and report what would change, writing nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Report what this process verified: config, database, provider reachability.
     Doctor,
@@ -134,6 +168,30 @@ fn main() -> ExitCode {
             "eval",
             "the evaluation harness is not implemented: this build ships serve, probe, setup, device and doctor",
         ),
+        Some(Command::Backup {
+            out,
+            archive,
+            include_workspace,
+            verify,
+            list,
+            allow_tmp,
+        }) => run_backup(
+            cli.json,
+            cli.state_dir,
+            BackupArgs {
+                out,
+                archive,
+                include_workspace,
+                verify,
+                list,
+                allow_tmp,
+            },
+        ),
+        Some(Command::Restore {
+            from,
+            force,
+            dry_run,
+        }) => run_restore(cli.json, cli.state_dir, &from, force, dry_run),
         Some(Command::Doctor) => run_doctor(cli.json),
         Some(Command::Version) => {
             println!("eris {}", admin::VERSION);
@@ -540,6 +598,255 @@ fn run_probe(prompt: &str) -> ExitCode {
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// The `backup` flags, gathered so the handler signature stays readable.
+struct BackupArgs {
+    out: Option<PathBuf>,
+    archive: Option<PathBuf>,
+    include_workspace: bool,
+    verify: bool,
+    list: bool,
+    allow_tmp: bool,
+}
+
+/// `eris backup`: write an archive, or read one with `--list`.
+///
+/// Every path prints exactly one JSON object under `--json`, including the
+/// failures: a 200-style success with an empty body would be indistinguishable
+/// from a bug to every script that calls this.
+fn run_backup(json: bool, state_dir: Option<PathBuf>, args: BackupArgs) -> ExitCode {
+    if args.list {
+        let target = match (args.out.clone(), args.archive.clone()) {
+            (Some(out), None) => out,
+            (None, Some(archive)) => archive,
+            (Some(_), Some(_)) => {
+                return usage_failure(
+                    json,
+                    "backup",
+                    "give either --out <path> or a positional <path> with --list, not both",
+                );
+            }
+            (None, None) => {
+                return usage_failure(
+                    json,
+                    "backup",
+                    "--list needs the archive: `eris backup --list --out <path>` or `eris backup --list <path>`",
+                );
+            }
+        };
+        return match backup::open(&target) {
+            Ok(opened) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "archive": target.display().to_string(),
+                            "archive_bytes": opened.archive_bytes,
+                            "archive_sha256": opened.archive_sha256,
+                            "format_version": opened.manifest.format_version,
+                            "schema_version": opened.manifest.schema_version,
+                            "eris_version": opened.manifest.eris_version,
+                            "created_at": opened.manifest.created_at,
+                            "host": opened.manifest.host,
+                            "member_count": opened.manifest.members.len(),
+                            "members": opened.manifest.members.iter().map(backup::Member::to_json).collect::<Vec<_>>(),
+                            "excluded": opened.manifest.excluded.iter().map(backup::Excluded::to_json).collect::<Vec<_>>(),
+                            "wal_partial_bytes": opened.manifest.wal_partial_bytes,
+                            "manifest_sha256": opened.manifest.manifest_sha256,
+                        })
+                    );
+                } else {
+                    println!(
+                        "{}: {} members, schema {}, written {} by eris {}",
+                        target.display(),
+                        opened.manifest.members.len(),
+                        opened.manifest.schema_version,
+                        opened.manifest.created_at,
+                        opened.manifest.eris_version
+                    );
+                    for member in &opened.manifest.members {
+                        println!(
+                            "  {:<16} {:>10}  {}",
+                            member.kind, member.bytes, member.path
+                        );
+                    }
+                    for excluded in &opened.manifest.excluded {
+                        println!("  excluded  {}  ({})", excluded.path, excluded.reason);
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => backup_failure(json, "backup --list", &error),
+        };
+    }
+
+    let Some(out) = args.out else {
+        return usage_failure(
+            json,
+            "backup",
+            "--out <absolute-path> is required: `eris backup --out ~/kallisti-backup.bk`",
+        );
+    };
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => return backup_failure_from_message(json, "backup", &message),
+    };
+    let request = CreateRequest {
+        out,
+        include_workspace: args.include_workspace,
+        verify: args.verify,
+        allow_tmp: args.allow_tmp,
+        paths,
+    };
+    match backup::create(&request) {
+        Ok(report) => {
+            if json {
+                println!("{}", report.to_json());
+            } else {
+                println!(
+                    "backup written: {} ({} bytes, sha256 {})",
+                    report.archive.display(),
+                    report.archive_bytes,
+                    report.archive_sha256
+                );
+                for member in &report.members {
+                    println!(
+                        "  {:<16} {:>10}  {}",
+                        member.kind, member.bytes, member.path
+                    );
+                }
+                for excluded in &report.excluded {
+                    println!("  excluded  {}  ({})", excluded.path, excluded.reason);
+                }
+                if report.wal_partial_bytes > 0 {
+                    println!(
+                        "  note: {} bytes of live WAL tail were dropped because the daemon held the session lock",
+                        report.wal_partial_bytes
+                    );
+                }
+                println!(
+                    "  schema {}  verified {}",
+                    report.schema_version,
+                    if report.verified {
+                        "yes"
+                    } else {
+                        "no (--verify not given)"
+                    }
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => backup_failure(json, "backup", &error),
+    }
+}
+
+/// `eris restore`: verify, take a safety copy, then place.
+fn run_restore(
+    json: bool,
+    state_dir: Option<PathBuf>,
+    from: &std::path::Path,
+    force: bool,
+    dry_run: bool,
+) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => return backup_failure_from_message(json, "restore", &message),
+    };
+    let request = RestoreRequest {
+        from: from.to_path_buf(),
+        force,
+        dry_run,
+        paths,
+    };
+    match backup::restore(&request) {
+        Ok(report) => {
+            if json {
+                println!("{}", report.to_json());
+            } else if report.dry_run {
+                println!(
+                    "dry run: would restore {} members from {} (schema {})",
+                    report.members,
+                    report.archive.display(),
+                    report.schema_version
+                );
+                for path in &report.would_write {
+                    println!("  would write  {path}");
+                }
+                println!("  database quick_check: {}", report.quick_check);
+            } else {
+                println!(
+                    "restored {} members from {} (schema {})",
+                    report.members,
+                    report.archive.display(),
+                    report.schema_version
+                );
+                if let Some(safety) = &report.safety_copy {
+                    println!("  previous state moved to {}", safety.display());
+                }
+                for path in &report.placed {
+                    println!("  placed  {path}");
+                }
+                println!(
+                    "  database quick_check: {}  sha256 {}",
+                    report.quick_check,
+                    report.db_sha256.as_deref().unwrap_or("unknown")
+                );
+                println!(
+                    "  restart the daemon to reopen the restored database: systemctl --user restart kallisti-eris"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => backup_failure(json, "restore", &error),
+    }
+}
+
+/// A `backup`/`restore` failure: one JSON object under `--json`, exit by class.
+fn backup_failure(json: bool, command: &str, error: &BackupError) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": error.code(),
+                    "message": error.to_string(),
+                },
+            })
+        );
+    } else {
+        eprintln!("eris {command}: {error}");
+    }
+    ExitCode::from(error.exit_code())
+}
+
+/// A usage failure that never reached [`BackupError`].
+fn usage_failure(json: bool, command: &str, message: &str) -> ExitCode {
+    backup_failure(
+        json,
+        command,
+        &BackupError::Usage {
+            message: message.to_owned(),
+        },
+    )
+}
+
+/// A path-resolution failure, which is an I/O-class failure and not a usage one.
+fn backup_failure_from_message(json: bool, command: &str, message: &str) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": false,
+                "error": { "code": "config", "message": message },
+            })
+        );
+    } else {
+        eprintln!("eris {command}: {message}");
+    }
+    ExitCode::from(backup::EXIT_FAILURE)
 }
 
 /// The host name, for the SSH tunnel line in the first-run block.

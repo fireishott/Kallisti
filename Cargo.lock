@@ -535,12 +535,14 @@ dependencies = [
  "clap",
  "core-domain",
  "core-runtime",
+ "fs4",
  "getrandom 0.4.3",
  "hex",
  "maud",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "time",
@@ -551,6 +553,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
