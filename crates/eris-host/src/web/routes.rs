@@ -1173,6 +1173,15 @@ async fn mode(
         return refusal(form_error(&error));
     }
 
+    // The switch is not only a row. Enabling binds 127.0.0.1:7341 now, in this
+    // process, with the same `DeviceService` the daemon built at start-up;
+    // disabling stops new turns immediately and leaves the socket bound, so the
+    // SSE streams of running turns are not cut off by a kill switch.
+    state.device.set_accepting(listener);
+    if listener {
+        state.device.start();
+    }
+
     if as_html {
         render_dashboard_ok(&state, "kill switches saved".to_owned())
     } else {
@@ -1180,6 +1189,7 @@ async fn mode(
             "ok": true,
             "permissions": permissions_json(permissions),
             "device_listener_enabled": listener,
+            "device_listener_bound": state.device.is_bound(),
         }))
     }
 }

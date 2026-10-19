@@ -35,6 +35,8 @@ use tokio::net::TcpListener;
 
 use crate::config::Paths;
 use crate::db::Db;
+use crate::device::DeviceService;
+use crate::device::turns::TurnStore;
 use crate::error::{ApiError, RequestId, assign_request_id};
 use crate::onboarding::{AdminSessions, ClaimLimiter, SetupEngine};
 use crate::web::css::CSS_ROUTE;
@@ -102,6 +104,10 @@ pub struct AppState {
     pub limiter: Arc<ClaimLimiter>,
     /// True only when the process was started with `--allow-full`.
     pub allow_full: bool,
+    /// The device listener's service. It binds nothing until `start` is called:
+    /// at boot when the flag or the setting asks for it, and from the dashboard
+    /// toggle afterwards.
+    pub device: DeviceService,
 }
 
 impl AppState {
@@ -109,11 +115,13 @@ impl AppState {
     #[must_use]
     pub fn new(engine: SetupEngine, allow_full: bool) -> Self {
         let db = engine.db().clone();
+        let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env());
         Self {
             engine,
             sessions: AdminSessions::new(db),
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
+            device,
         }
     }
 

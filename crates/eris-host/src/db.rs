@@ -2,7 +2,9 @@
 //!
 //! `~/.local/share/kallisti/eris.db` is the whole durable state of the daemon:
 //! the setup state that `/healthz` reports, plus the tables the later phases fill
-//! in. P5 shipped 0001; P6 adds 0002 with `auth_tokens`. Each connection is opened with three pragmas that are not optional:
+//! in. P5 shipped 0001; P6 adds 0002 with `auth_tokens`; P7 adds 0003 with
+//! `admin_sessions`; P8 adds 0004, the turn columns on `jobs` and the idempotency
+//! index. Each connection is opened with three pragmas that are not optional:
 //!
 //! - `journal_mode=WAL`, so a reader never blocks the single writer;
 //! - `foreign_keys=ON`, because SQLite defaults it off per connection and the
@@ -27,14 +29,15 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The eleven tables the migrations create. `schema_migrations` is the twelfth
 /// and is created by the runner, not by a migration. 0001 creates the first
-/// nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`.
+/// nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds columns
+/// to `jobs` and no table at all, so the count is unchanged.
 pub const TABLES: [&str; 11] = [
     "admin_credential",
     "admin_sessions",
@@ -72,6 +75,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "0003_admin_sessions",
         sql: MIGRATION_0003,
+    },
+    Migration {
+        version: 4,
+        name: "0004_turn_columns",
+        sql: MIGRATION_0004,
     },
 ];
 
@@ -224,6 +232,42 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions (expires_at);
+";
+
+/// Migration 0004: the turn columns `jobs` needs to be a device job.
+///
+/// Six columns, no new table:
+///
+/// - `device_id` and `session_id` say whose job it is; both are `ON DELETE SET
+///   NULL`, so a revoked device or a pruned session does not take the job history
+///   with it;
+/// - `idempotency_key` is the client's `Idempotency-Key` header, verbatim;
+/// - `request_text` is the prompt, kept so a claim after a restart still has
+///   something to send: the device surface is the first caller that needs a job
+///   to outlive the request that created it;
+/// - `claimed_at` and `lease_expires_at` are the worker lease. An atomic
+///   `UPDATE ... WHERE status = 'queued'` stamps both, so two workers cannot run
+///   the same job.
+///
+/// The unique partial index is the idempotency guarantee in the only place it can
+/// be trusted - the database - and it is partial because a job with no key must
+/// not collide with another job with no key.
+///
+/// Unlike 0001-0003 this migration is not hand-runnable twice: SQLite has no
+/// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. The `schema_migrations` row the
+/// runner writes is the guard, which is why the version row is inserted in the
+/// same transaction as the DDL.
+const MIGRATION_0004: &str = r"
+ALTER TABLE jobs ADD COLUMN device_id TEXT REFERENCES devices (id) ON DELETE SET NULL;
+ALTER TABLE jobs ADD COLUMN session_id TEXT REFERENCES sessions (id) ON DELETE SET NULL;
+ALTER TABLE jobs ADD COLUMN idempotency_key TEXT;
+ALTER TABLE jobs ADD COLUMN request_text TEXT;
+ALTER TABLE jobs ADD COLUMN claimed_at TEXT;
+ALTER TABLE jobs ADD COLUMN lease_expires_at TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_device_idempotency
+    ON jobs (device_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

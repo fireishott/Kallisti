@@ -1,0 +1,766 @@
+//! The six `/v1` handlers.
+//!
+//! Every route does the same three things in the same order: authenticate the
+//! bearer, check the gate that route is subject to, then act on the state store.
+//! Nothing here decides what a scope means - [`ScopeSet::require`] does - and
+//! nothing here writes an event directly: the hub owns the log so a handler can
+//! never interleave with the worker.
+//!
+//! Bodies are JSON, with a form-encoded fallback so a `curl --data-urlencode`
+//! acceptance run works without a `-H 'Content-Type: application/json'`.
+
+use std::collections::BTreeMap;
+use std::convert::Infallible;
+use std::pin::Pin;
+
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use tokio_stream::Stream;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+
+use crate::auth::{
+    PairingService, Scope, ScopeSet, TokenOrigin, TokenService, VerifiedToken, format_timestamp,
+};
+use crate::device::turns::TurnFrame;
+use crate::device::{DeviceError, DeviceService};
+
+/// The upload ceiling for one device body. A prompt is text, and text is not
+/// unbounded.
+const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// Header carrying a client's idempotency key.
+const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+/// Header a reconnecting SSE client sends.
+const LAST_EVENT_ID_HEADER: &str = "last-event-id";
+
+/// How often an idle stream sends a comment, so a dead peer is noticed.
+const KEEP_ALIVE_SECONDS: u64 = 15;
+
+// ---------------------------------------------------------------------------
+// Shared plumbing
+// ---------------------------------------------------------------------------
+
+/// The presented bearer, when the header is shaped like one.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?;
+    let token = token.trim();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+/// Verify the bearer against the stored verifiers.
+///
+/// One 401 for every failure mode - missing, malformed, expired, revoked - so a
+/// client cannot use the difference between them to probe whether a token it
+/// guessed ever existed.
+fn authenticate(
+    service: &DeviceService,
+    headers: &HeaderMap,
+) -> Result<VerifiedToken, DeviceError> {
+    let presented = bearer(headers).ok_or_else(|| {
+        DeviceError::unauthorized(
+            "token_invalid",
+            "the Authorization header must carry a Bearer access token",
+        )
+    })?;
+    TokenService::new(service.engine().db().clone())
+        .verify_access(presented)
+        .map_err(|_| {
+            DeviceError::unauthorized(
+                "token_invalid",
+                "the access token does not verify: it is unknown, expired, or revoked",
+            )
+        })
+}
+
+/// The scope check, as a 403 rather than a 401: the token is real, it just is not
+/// allowed to do this.
+fn require_scope(token: &VerifiedToken, scope: Scope) -> Result<(), DeviceError> {
+    token.scope().require(scope).map_err(|_| {
+        DeviceError::new(
+            StatusCode::FORBIDDEN,
+            "scope_denied",
+            format!("the token does not carry the {scope} scope"),
+        )
+    })
+}
+
+/// The not-ready gate: a device surface on a daemon with no provider is a trap.
+fn require_ready(service: &DeviceService) -> Result<(), DeviceError> {
+    match service.engine().is_ready() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(DeviceError::new(
+            StatusCode::CONFLICT,
+            "not_ready",
+            "onboarding is not finished: the device surface answers 409 until setup completes",
+        )),
+        Err(error) => Err(DeviceError::db_unavailable(format!(
+            "cannot read the setup state: {error}"
+        ))),
+    }
+}
+
+/// The kill switch half of the dashboard toggle.
+fn require_accepting(service: &DeviceService) -> Result<(), DeviceError> {
+    if service.accepting() {
+        return Ok(());
+    }
+    Err(DeviceError::new(
+        StatusCode::CONFLICT,
+        "device_listener_disabled",
+        "the operator switched the device listener off: new turns resume when it is switched back on",
+    ))
+}
+
+/// Read one body as a flat string map: JSON first, form-encoded otherwise.
+async fn read_fields(
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<BTreeMap<String, String>, DeviceError> {
+    let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            DeviceError::bad_request(
+                "body_too_large",
+                format!("the body must be under {MAX_BODY_BYTES} bytes"),
+            )
+        })?;
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| DeviceError::bad_request("body_not_utf8", "the body is not valid UTF-8"))?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let looks_json = content_type.starts_with("application/json") || trimmed.starts_with('{');
+    if looks_json {
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|_| {
+            DeviceError::bad_request("body_not_json", "the JSON body did not parse")
+        })?;
+        let object = value.as_object().ok_or_else(|| {
+            DeviceError::bad_request("body_not_object", "the JSON body must be an object")
+        })?;
+        let mut fields = BTreeMap::new();
+        for (key, value) in object {
+            let text = match value {
+                serde_json::Value::String(text) => text.clone(),
+                serde_json::Value::Bool(flag) => flag.to_string(),
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            fields.insert(key.clone(), text);
+        }
+        return Ok(fields);
+    }
+
+    let mut fields = BTreeMap::new();
+    for pair in trimmed.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, value) = match pair.split_once('=') {
+            Some((name, value)) => (name, value),
+            None => (pair, ""),
+        };
+        fields.insert(percent_decode(name)?, percent_decode(value)?);
+    }
+    Ok(fields)
+}
+
+/// Percent-decode one form component, with `+` as a space.
+fn percent_decode(input: &str) -> Result<String, DeviceError> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 3 > bytes.len() {
+                    return Err(DeviceError::bad_request(
+                        "body_malformed",
+                        "a percent escape in the body is truncated",
+                    ));
+                }
+                let high = hex_digit(bytes[index + 1])?;
+                let low = hex_digit(bytes[index + 2])?;
+                out.push(high * 16 + low);
+                index += 3;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_| {
+        DeviceError::bad_request(
+            "body_malformed",
+            "a percent escape in the body is not valid UTF-8",
+        )
+    })
+}
+
+/// One hex digit.
+fn hex_digit(byte: u8) -> Result<u8, DeviceError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(DeviceError::bad_request(
+            "body_malformed",
+            "a percent escape in the body is not hexadecimal",
+        )),
+    }
+}
+
+/// One field, trimmed. Missing reads as empty, so validation owns the message.
+fn field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> &'a str {
+    fields.get(name).map(String::as_str).unwrap_or("").trim()
+}
+
+/// One SSE frame: `id`, `event`, `data`, in that order.
+fn frame_event(frame: &TurnFrame) -> Event {
+    Event::default()
+        .id(frame.seq.to_string())
+        .event(frame.kind.as_str())
+        .data(frame.data.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/pair
+// ---------------------------------------------------------------------------
+
+/// Redeem a pairing code for an access and refresh pair.
+///
+/// The code is single use and is verified against an Argon2id PHC string; the
+/// plaintext exists only in the request. A code that is unknown, expired or
+/// already consumed gets the same 401 with the same code, because the three are
+/// not distinguishable to a client that should not be trying to guess.
+pub async fn pair(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let code = field(&fields, "code");
+    if code.is_empty() {
+        return DeviceError::unauthorized("pairing_code_invalid", "a pairing code is required")
+            .into_response();
+    }
+
+    let db = service.engine().db().clone();
+    let redeemed = match PairingService::new(db.clone()).redeem(code) {
+        Ok(redeemed) => redeemed,
+        Err(_) => {
+            return DeviceError::unauthorized(
+                "pairing_code_invalid",
+                "the pairing code is invalid, expired, or already used",
+            )
+            .into_response();
+        }
+    };
+
+    let tokens = TokenService::new(db);
+    let device_id = match redeemed.device_id() {
+        Some(device_id) => device_id.to_owned(),
+        None => {
+            // An unbound code (minted by `eris setup` before the phone existed):
+            // the name on the request is the only name this device will have.
+            let name = field(&fields, "device_name");
+            let name = if name.is_empty() { "device" } else { name };
+            match tokens.register_device(name, "unknown") {
+                Ok(device_id) => device_id,
+                Err(error) => {
+                    return DeviceError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "device_register_failed",
+                        error.to_string(),
+                    )
+                    .into_response();
+                }
+            }
+        }
+    };
+
+    let scopes = ScopeSet::device_default();
+    let minted = match tokens.mint_pair(&device_id, scopes, TokenOrigin::Device) {
+        Ok(minted) => minted,
+        Err(error) => {
+            let status = match error {
+                crate::auth::AuthError::DeviceRevoked => StatusCode::UNAUTHORIZED,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            return DeviceError::new(status, "pairing_rejected", error.to_string()).into_response();
+        }
+    };
+
+    let list: Vec<&'static str> = scopes.iter().map(Scope::as_str).collect();
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "device_id": device_id,
+            "access_token": minted.access.token(),
+            "refresh_token": minted.refresh.token(),
+            "scopes": list,
+            "expires_at": format_timestamp(minted.access.expires_at()),
+        })),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/token/refresh
+// ---------------------------------------------------------------------------
+
+/// Trade a refresh token for one fresh access token.
+///
+/// The refresh token is verified and left alone rather than rotated: the
+/// documented response carries only an access token, so a rotation here would
+/// retire the caller's only means of refreshing and hand the new one to nobody.
+/// Rotation is a P6 primitive the pairing flow does not use yet, and inventing it
+/// into this endpoint would make a second refresh fail.
+pub async fn refresh(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let presented = field(&fields, "refresh_token");
+    if presented.is_empty() {
+        return DeviceError::unauthorized("token_invalid", "a refresh token is required")
+            .into_response();
+    }
+    let tokens = TokenService::new(service.engine().db().clone());
+    let verified = match tokens.verify_refresh(presented) {
+        Ok(verified) => verified,
+        Err(_) => {
+            return DeviceError::unauthorized(
+                "token_invalid",
+                "the refresh token does not verify: it is unknown, expired, or revoked",
+            )
+            .into_response();
+        }
+    };
+    if verified.scope().has_admin() {
+        return DeviceError::unauthorized(
+            "token_invalid",
+            "an admin-scoped refresh token is not accepted on the device listener",
+        )
+        .into_response();
+    }
+    let access =
+        match tokens.mint_access(verified.device_id(), verified.scope(), TokenOrigin::Device) {
+            Ok(access) => access,
+            Err(error) => {
+                return DeviceError::unauthorized("token_invalid", error.to_string())
+                    .into_response();
+            }
+        };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "access_token": access.token(),
+        "expires_at": format_timestamp(access.expires_at()),
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/turns
+// ---------------------------------------------------------------------------
+
+/// Queue one turn and answer `202` before the provider has been called.
+pub async fn create_turn(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    if let Err(error) = require_ready(&service) {
+        return error.into_response();
+    }
+    if let Err(error) = require_accepting(&service) {
+        return error.into_response();
+    }
+
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let text = field(&fields, "text");
+    if text.is_empty() {
+        return DeviceError::bad_request("text_required", "the turn text must not be empty")
+            .into_response();
+    }
+
+    let idempotency_key = headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let store = service.hub().store();
+    if let Some(key) = idempotency_key {
+        match store.find_idempotent(token.device_id(), key) {
+            Ok(Some(job_id)) => {
+                let job = store.job(&job_id).ok().flatten();
+                let session_id = job
+                    .as_ref()
+                    .and_then(|job| job.session_id.clone())
+                    .unwrap_or_default();
+                let state = job
+                    .map(|job| job.status)
+                    .unwrap_or_else(|| "queued".to_owned());
+                return (
+                    StatusCode::ACCEPTED,
+                    axum::Json(serde_json::json!({
+                        "ok": true,
+                        "job_id": job_id,
+                        "session_id": session_id,
+                        "state": state,
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
+                    .into_response();
+            }
+        }
+    }
+
+    let session_id = match store.ensure_session(token.device_id()) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot open a session: {error}"))
+                .into_response();
+        }
+    };
+    let job_id = match store.create_job(token.device_id(), &session_id, idempotency_key, text) {
+        Ok(job_id) => job_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))
+                .into_response();
+        }
+    };
+
+    // The channel exists before the response does, so a client that subscribes
+    // the instant it reads the 202 cannot miss the first frame.
+    let sender = service.hub().begin(&job_id);
+    service.hub().spawn(job_id.clone(), sender);
+
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "job_id": job_id,
+            "session_id": session_id,
+            "state": "queued",
+        })),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/turns/{id}/events
+// ---------------------------------------------------------------------------
+
+/// The SSE stream for one job: replay strictly after `Last-Event-ID`, then tail.
+///
+/// A resume point older than the retention window is a `409 buffer_miss` with a
+/// snapshot URL, never a partial stream that looks complete: a client that has
+/// lost frames has to know it lost them.
+pub async fn events(
+    State(service): State<DeviceService>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+
+    let store = service.hub().store();
+    let job = match store.job(&job_id) {
+        Ok(Some(job)) if job.device_id.as_deref() == Some(token.device_id()) => job,
+        Ok(_) => return DeviceError::job_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
+                .into_response();
+        }
+    };
+
+    let last_event_id = match headers.get(LAST_EVENT_ID_HEADER) {
+        Some(value) => {
+            let text = value.to_str().unwrap_or("").trim();
+            match text.parse::<i64>() {
+                Ok(seq) if seq >= 0 => seq,
+                _ => {
+                    return DeviceError::bad_request(
+                        "last_event_id_invalid",
+                        "Last-Event-ID must be a non-negative event sequence number",
+                    )
+                    .into_response();
+                }
+            }
+        }
+        None => 0,
+    };
+
+    // Subscribe before reading, so a frame written between the read and the tail
+    // is delivered by the channel rather than lost in the gap.
+    let receiver = service.hub().subscribe(&job_id);
+
+    let replay = match store.events_after(&job_id, last_event_id) {
+        Ok(replay) => replay,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the event log: {error}"))
+                .into_response();
+        }
+    };
+    let oldest = match store.min_seq(&job_id) {
+        Ok(oldest) => oldest,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the event log: {error}"))
+                .into_response();
+        }
+    };
+    if let Some(oldest) = oldest
+        && oldest > last_event_id.saturating_add(1)
+    {
+        return DeviceError::buffer_miss(job.session_id.as_deref().unwrap_or("")).into_response();
+    }
+
+    let replay_last = replay
+        .last()
+        .map(|frame| frame.seq)
+        .unwrap_or(last_event_id);
+    let replay_ended = replay.last().is_some_and(TurnFrame::is_terminal);
+    let replay_events: Vec<Result<Event, Infallible>> =
+        replay.iter().map(|frame| Ok(frame_event(frame))).collect();
+
+    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        match (replay_ended, receiver) {
+            (false, Some(receiver)) => {
+                let live = BroadcastStream::new(receiver).filter_map(move |item| match item {
+                    Ok(frame) if frame.seq > replay_last => {
+                        Some(Ok::<_, Infallible>(frame_event(&frame)))
+                    }
+                    // A lagged subscriber missed frames in this process. The ids
+                    // it already has tell it what to ask for next, and a resume
+                    // past the retention window gets the documented 409.
+                    _ => None,
+                });
+                Box::pin(tokio_stream::iter(replay_events).chain(live))
+            }
+            // A job with no live worker (finished, or from an earlier process)
+            // is answered from the log alone.
+            _ => Box::pin(tokio_stream::iter(replay_events)),
+        };
+
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECONDS))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/turns/{id}/cancel
+// ---------------------------------------------------------------------------
+
+/// Stop a running turn. Idempotent in the sense that matters: a second cancel is
+/// a `409 turn_not_cancellable`, not a second `cancelled` frame.
+pub async fn cancel(
+    State(service): State<DeviceService>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Chat) {
+        return error.into_response();
+    }
+    let store = service.hub().store();
+    match store.job(&job_id) {
+        Ok(Some(job)) if job.device_id.as_deref() == Some(token.device_id()) => {}
+        Ok(_) => return DeviceError::job_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read job state: {error}"))
+                .into_response();
+        }
+    }
+    match service.hub().cancel(&job_id) {
+        Ok(Some(_)) => axum::Json(serde_json::json!({
+            "ok": true,
+            "state": "cancelled",
+        }))
+        .into_response(),
+        Ok(None) => DeviceError::new(
+            StatusCode::CONFLICT,
+            "turn_not_cancellable",
+            "the turn already finished: there is nothing left to cancel",
+        )
+        .into_response(),
+        Err(error) => {
+            DeviceError::db_unavailable(format!("cannot cancel the turn: {error}")).into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/sessions/{id}
+// ---------------------------------------------------------------------------
+
+/// The snapshot a `buffer_miss` points at: the session and every turn in it.
+pub async fn session(
+    State(service): State<DeviceService>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let store = service.hub().store();
+    let row = match store.session(&session_id) {
+        Ok(Some(row)) if row.device_id.as_deref() == Some(token.device_id()) => row,
+        Ok(_) => return DeviceError::session_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the session: {error}"))
+                .into_response();
+        }
+    };
+    let state = if row.revoked_at.is_some() {
+        "revoked"
+    } else if crate::auth::parse_timestamp(&row.expires_at)
+        .map(|at| crate::auth::now() >= at)
+        .unwrap_or(true)
+    {
+        "expired"
+    } else {
+        "active"
+    };
+    let turns = match store.session_turns(&session_id) {
+        Ok(turns) => turns,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the session turns: {error}"))
+                .into_response();
+        }
+    };
+    let turns: Vec<serde_json::Value> = turns
+        .into_iter()
+        .map(|turn| {
+            serde_json::json!({
+                "job_id": turn.job_id,
+                "state": turn.status,
+                "text": turn.text,
+                "created_at": turn.created_at,
+                "finished_at": turn.finished_at,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "session_id": session_id,
+        "state": state,
+        "turns": turns,
+    }))
+    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bearer_is_read_only_from_the_authorization_header() {
+        let mut headers = HeaderMap::new();
+        assert!(bearer(&headers).is_none());
+        headers.insert(header::AUTHORIZATION, "Basic abc".parse().expect("value"));
+        assert!(bearer(&headers).is_none());
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer  deadbeef ".parse().expect("value"),
+        );
+        assert_eq!(bearer(&headers), Some("deadbeef"));
+        headers.insert(header::AUTHORIZATION, "Bearer   ".parse().expect("value"));
+        assert!(bearer(&headers).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_form_body_decodes_and_a_json_body_decodes_to_the_same_map() {
+        let mut headers = HeaderMap::new();
+        let body = Body::from("code=AB2CD3EF&device_name=iPhone");
+        let form = read_fields(&headers, body).await.expect("form body");
+        assert_eq!(form.get("code").map(String::as_str), Some("AB2CD3EF"));
+        assert_eq!(form.get("device_name").map(String::as_str), Some("iPhone"));
+
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/json".parse().expect("value"),
+        );
+        let body = Body::from(r#"{"code":"AB2CD3EF","device_name":"iPhone"}"#);
+        let json = read_fields(&headers, body).await.expect("json body");
+        assert_eq!(json, form);
+    }
+
+    #[test]
+    fn a_frame_reports_its_own_termination() {
+        use crate::device::turns::FrameKind;
+        let delta = TurnFrame {
+            seq: 1,
+            kind: FrameKind::Delta,
+            data: serde_json::json!({ "text": "ok" }),
+        };
+        assert!(!delta.is_terminal());
+        for kind in [FrameKind::Done, FrameKind::Error, FrameKind::Cancelled] {
+            let frame = TurnFrame {
+                seq: 2,
+                kind,
+                data: serde_json::Value::Null,
+            };
+            assert!(frame.is_terminal(), "{kind:?} must end the stream");
+        }
+    }
+}

@@ -1,15 +1,16 @@
 //! `eris` - the Kallisti 1.0 daemon binary.
 //!
-//! Command surface as of P7. `serve` is the default: with no subcommand, the
+//! Command surface as of P8. `serve` is the default: with no subcommand, the
 //! daemon starts. `probe` is the P4 provider proof, `doctor` reports what it
-//! verified, `setup` drives the first-run recovery path, `device` and `eval` are
-//! placeholders that exit non-zero on purpose (a placeholder that exits 0 looks
-//! like a working feature to every script that calls it), and `version` prints
-//! one line.
+//! verified, `setup` drives the first-run recovery path, `device token` is the
+//! documented test affordance for acceptance runs, `eval` is still a placeholder
+//! that exits non-zero on purpose (a placeholder that exits 0 looks like a
+//! working feature to every script that calls it), and `version` prints one line.
 //!
-//! `serve` is the only command that binds a port, and the port is a literal in
-//! `admin.rs`. Nothing here installs a service, binds the device port, or touches
-//! another process on the host.
+//! `serve` is the only command that binds a port, and both ports are literals in
+//! their modules: 7340 in `admin.rs`, 7341 in `device/mod.rs`. The device port is
+//! bound only with `--device-listen` or when the dashboard switch says so.
+//! Nothing here installs a service or touches another process on the host.
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use eris_host::admin::AppState;
+use eris_host::auth::{AuthStore, ScopeSet, TokenOrigin, TokenService};
 use eris_host::config::{LoadedConfig, LogLevel, Paths};
 use eris_host::db::Db;
 use eris_host::onboarding::{SetupEngine, first_run_block, pending_block};
@@ -27,6 +29,8 @@ use eris_host::{admin, doctor, probe};
 const EXIT_FAILURE: u8 = 1;
 /// Exit code for a subcommand that is not implemented in this build.
 const EXIT_NOT_IMPLEMENTED: u8 = 2;
+/// Exit code for a device the command refuses to mint for: unknown or revoked.
+const EXIT_DEVICE_REFUSED: u8 = 3;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -59,6 +63,10 @@ enum Command {
         /// the flag can change that.
         #[arg(long)]
         allow_full: bool,
+        /// Bind the device listener on 127.0.0.1:7341. Without this flag the port
+        /// is bound only when the dashboard switch is on.
+        #[arg(long)]
+        device_listen: bool,
     },
     /// Send one prompt through the configured provider, print the reply and usage.
     Probe {
@@ -71,8 +79,11 @@ enum Command {
         #[arg(long)]
         reset: bool,
     },
-    /// Placeholder. The device listener is P8 and 7341 stays unbound.
-    Device,
+    /// Device helpers. Nothing here binds a port; the listener is `serve`.
+    Device {
+        #[command(subcommand)]
+        command: Option<DeviceCommand>,
+    },
     /// Report what this process verified: config, database, provider reachability.
     Doctor,
     /// Placeholder. The evaluation harness is not part of this build.
@@ -81,24 +92,47 @@ enum Command {
     Version,
 }
 
+/// The `device` subcommands.
+#[derive(Debug, Subcommand)]
+enum DeviceCommand {
+    /// TEST-ONLY: mint one access token for an existing device and print it.
+    Token {
+        /// The device id to mint for. It must already exist and not be revoked.
+        #[arg(long, value_name = "DEVICE_ID")]
+        id: String,
+        /// Print the token and nothing else on stdout.
+        #[arg(long)]
+        print: bool,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         // `serve` is the default: no subcommand starts the daemon.
-        None => run_serve(cli.state_dir, false),
-        Some(Command::Serve { allow_full }) => run_serve(cli.state_dir, allow_full),
+        None => run_serve(cli.state_dir, false, false),
+        Some(Command::Serve {
+            allow_full,
+            device_listen,
+        }) => run_serve(cli.state_dir, allow_full, device_listen),
         Some(Command::Probe { prompt }) => run_probe(&prompt),
         Some(Command::Setup { reset }) => run_setup(cli.json, reset, cli.state_dir),
-        Some(Command::Device) => not_implemented(
-            cli.json,
-            "device",
-            "the device listener is P8: 127.0.0.1:7341 is not bound by this build",
-        ),
+        Some(Command::Device { command }) => match command {
+            Some(DeviceCommand::Token { id, print }) => {
+                run_device_token(cli.json, &id, print, cli.state_dir)
+            }
+            None => not_implemented(
+                cli.json,
+                "device",
+                "device has one subcommand: `device token --id <device_id> [--print]`. \
+                 The listener itself is `eris serve --device-listen`",
+            ),
+        },
         Some(Command::Eval) => not_implemented(
             cli.json,
             "eval",
-            "the evaluation harness is not implemented: this build ships serve, probe, setup and doctor",
+            "the evaluation harness is not implemented: this build ships serve, probe, setup, device and doctor",
         ),
         Some(Command::Doctor) => run_doctor(cli.json),
         Some(Command::Version) => {
@@ -126,7 +160,7 @@ fn resolve_paths(state_dir: Option<PathBuf>) -> Result<Paths, String> {
     }
 }
 
-fn run_serve(state_dir: Option<PathBuf>, allow_full: bool) -> ExitCode {
+fn run_serve(state_dir: Option<PathBuf>, allow_full: bool, device_listen: bool) -> ExitCode {
     let paths = match resolve_paths(state_dir) {
         Ok(paths) => paths,
         Err(message) => {
@@ -214,13 +248,127 @@ fn run_serve(state_dir: Option<PathBuf>, allow_full: bool) -> ExitCode {
     };
 
     let state = AppState::new(engine, allow_full);
-    match runtime.block_on(admin::serve(state)) {
+
+    // The device listener is opt-in twice over: the flag, or the switch the
+    // operator last saved in the dashboard. Either one binds 127.0.0.1:7341; the
+    // flag exists so an acceptance run does not have to drive the wizard first.
+    let device_setting = state.engine.device_listener_enabled().unwrap_or(false);
+    let device_enabled = device_listen || device_setting;
+    state.device.set_accepting(device_enabled);
+    tracing::info!(
+        device_listen,
+        device_setting,
+        device_enabled,
+        "device listener decision"
+    );
+
+    match runtime.block_on(async move {
+        if device_enabled {
+            state.device.start();
+        }
+        admin::serve(state).await
+    }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("eris serve: {error}");
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// `eris device token --id <device_id> [--print]`: mint one access token for an
+/// existing device.
+///
+/// **This is a local, owner-only test affordance for acceptance runs, not a
+/// supported way to distribute credentials.** It exists because P10's acceptance
+/// chain has to drive `/v1/turns` and `/v1/.../events` as a paired device, and
+/// the honest way to pair over HTTP is to redeem a pairing code that a human read
+/// off the wizard - a code that has to be delivered out of band, which a scripted
+/// run on one host cannot do end to end. Minting through [`TokenService`] keeps
+/// every storage rule intact: only the Argon2id verifier reaches the database and
+/// the plaintext exists once, on stdout.
+///
+/// It deliberately cannot do the things a credential-distribution tool would:
+/// there is no way to list tokens, no way to read a token back, no way to mint
+/// for more than the one `--id` given, and no way to mint for a device that is
+/// unknown or revoked. Exit code 3 means "refused", so a script can tell a bad id
+/// from a broken database.
+fn run_device_token(
+    json: bool,
+    device_id: &str,
+    print: bool,
+    state_dir: Option<PathBuf>,
+) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris device token: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris device token: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+
+    let store = AuthStore::new(db.clone());
+    match store.device(device_id) {
+        Ok(Some(device)) => {
+            if device.revoked_at.is_some() {
+                eprintln!(
+                    "eris device token: device {device_id} is revoked; pair the device again instead"
+                );
+                return ExitCode::from(EXIT_DEVICE_REFUSED);
+            }
+        }
+        Ok(None) => {
+            eprintln!("eris device token: no device with id {device_id} in this state directory");
+            return ExitCode::from(EXIT_DEVICE_REFUSED);
+        }
+        Err(error) => {
+            eprintln!("eris device token: cannot read the device: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
+
+    let tokens = TokenService::new(db);
+    let minted =
+        match tokens.mint_access(device_id, ScopeSet::device_default(), TokenOrigin::Device) {
+            Ok(minted) => minted,
+            Err(error) => {
+                eprintln!("eris device token: cannot mint: {error}");
+                return ExitCode::from(EXIT_DEVICE_REFUSED);
+            }
+        };
+    // The audit row carries the device id and never the value.
+    let _ = store.audit("cli", "device.token_minted", Some(device_id));
+    let expires_at = eris_host::auth::format_timestamp(minted.expires_at());
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "device_id": device_id,
+                "token": minted.token(),
+                "expires_at": expires_at,
+            })
+        );
+    } else {
+        if !print {
+            eprintln!(
+                "eris device token: minted an access token for {device_id} (expires {expires_at})"
+            );
+        }
+        println!("{}", minted.token());
+    }
+    ExitCode::SUCCESS
 }
 
 /// `eris setup` reports progress; `eris setup --reset` reopens the wizard after

@@ -12,13 +12,18 @@
 //! P7 adds `onboarding` (the first-run state machine, the six-word passphrase,
 //! the permission matrix, the workspace rule, admin sessions and the claim rate
 //! limiter) and `web` (maud templates, the one stylesheet, and the wizard and
-//! dashboard routes). There is still no device listener and no service unit;
-//! those are P8 and P9.
+//! dashboard routes).
+//!
+//! P8 adds `device`: the `/v1` listener on 127.0.0.1:7341, pairing, the turn
+//! worker and its lease, the SSE stream with resume and a bounded retention
+//! window, cancellation, and idempotency. The listener binds only when asked to,
+//! and there is still no service unit, because that is P9.
 
 pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod device;
 pub mod doctor;
 pub mod error;
 pub mod onboarding;
