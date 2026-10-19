@@ -21,8 +21,8 @@ use axum::routing::{get, post};
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS,
-    ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE,
-    VERSION, session_path,
+    ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -32,6 +32,7 @@ use crate::onboarding::{
     SETTING_PROVIDER_KEY_REF, SETTING_PROVIDER_PROBED_AT, SETTING_WORKSPACE, Step, Wizard, session,
     workspace,
 };
+use crate::persona::{MAX_PERSONA_BYTES, SETTING_PERSONA_ENABLED, character_count};
 use crate::web::backups;
 use crate::web::proxy::ClientContext;
 use crate::web::store;
@@ -85,6 +86,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PROVIDER, post(save_provider))
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
+        .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -254,15 +256,27 @@ async fn read_fields(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<BTreeMap<String, String>, FormError> {
-    let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
-        .await
-        .map_err(|_| {
-            FormError::new(
-                None,
-                "body_too_large",
-                format!("the form body must be under {MAX_BODY_BYTES} bytes"),
-            )
-        })?;
+    read_fields_within(headers, body, MAX_BODY_BYTES).await
+}
+
+/// Parse a form body with an explicit ceiling.
+///
+/// The persona form needs more than [`MAX_BODY_BYTES`]: the text is capped at
+/// 32 KiB decoded, and form encoding can spend three bytes per character, so a
+/// legitimate maximum-sized persona is up to 96 KiB on the wire. Every other
+/// form keeps the smaller ceiling.
+async fn read_fields_within(
+    headers: &HeaderMap,
+    body: Body,
+    max_bytes: usize,
+) -> Result<BTreeMap<String, String>, FormError> {
+    let bytes = axum::body::to_bytes(body, max_bytes).await.map_err(|_| {
+        FormError::new(
+            None,
+            "body_too_large",
+            format!("the form body must be under {max_bytes} bytes"),
+        )
+    })?;
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -491,6 +505,16 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .device_listener_enabled()
         .map_err(|error| form_error(&error))?;
     view.device_listener_bound = state.device.is_bound();
+    // The persona is a file, not a row: the page shows what the next turn would
+    // send, and a read failure is stated rather than rendered as an empty box.
+    view.persona_path = state.persona.path().display().to_string();
+    view.persona_text = state.persona.read_text().unwrap_or_default();
+    view.persona_enabled = state.persona.effective_enabled(
+        engine
+            .setting(SETTING_PERSONA_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
     Ok(view)
 }
 
@@ -2297,6 +2321,7 @@ async fn mode(
 const SAVED_PROVIDER: &str = "/dashboard/settings?saved=provider";
 const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
+const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 
 /// The group named by `?saved=`, when it names one this build knows.
 fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
@@ -2310,6 +2335,7 @@ fn saved_group(uri: &Uri) -> Option<SettingsGroup> {
             "provider" => Some(SettingsGroup::Provider),
             "workspace" => Some(SettingsGroup::Workspace),
             "permissions" => Some(SettingsGroup::Permissions),
+            "persona" => Some(SettingsGroup::Persona),
             _ => None,
         };
     }
@@ -2528,6 +2554,95 @@ async fn save_permissions(
     }
 
     see_other(SAVED_PERMISSIONS)
+}
+
+/// The largest form body the persona route will read.
+///
+/// The decoded text is capped at [`MAX_PERSONA_BYTES`]; form encoding can spend
+/// three bytes per character, so the wire ceiling is four times the cap and no
+/// legitimate save is refused for size before the person-sized check runs.
+const PERSONA_BODY_BYTES: usize = MAX_PERSONA_BYTES * 4;
+
+/// `POST /dashboard/settings/persona` - the assistant's identity.
+///
+/// Two facts decide this save and neither is negotiable:
+///
+/// - over [`MAX_PERSONA_BYTES`] is refused with the count and the cap, because a
+///   truncated persona is a persona the operator did not write;
+/// - an enabled persona with no text is refused too. "On, with nothing in it" is
+///   a setting that silently does nothing, so the page says which way to go
+///   instead of storing a switch that has no effect.
+///
+/// The audit row carries the count and the flag. The text is the operator's own
+/// words: it is written to a 0644 file and never to the audit log or a log line.
+async fn save_persona(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, PERSONA_BODY_BYTES).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let enabled = match fields.get("persona_enabled") {
+        Some(_) => flag(&fields, "persona_enabled"),
+        // An unchecked checkbox sends nothing. The form always renders the
+        // checkbox, so "absent" is "off" here rather than "leave it alone".
+        None => false,
+    };
+    let text = fields.get("persona_text").cloned().unwrap_or_default();
+
+    if text.len() > MAX_PERSONA_BYTES {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("persona_text"),
+                "persona_too_large",
+                format!(
+                    "the persona is {} bytes and the limit is {MAX_PERSONA_BYTES} bytes. \
+                     Shorten it, or disable the persona",
+                    text.len()
+                ),
+            ),
+        );
+    }
+    if enabled && text.trim().is_empty() {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("persona_text"),
+                "persona_empty",
+                "the persona is enabled but the text is empty. Write something, or clear the \
+                 checkbox to disable the persona instead",
+            ),
+        );
+    }
+
+    if let Err(error) = state.persona.write(&text) {
+        return ApiError::internal(request_id.0.clone(), error.to_string()).into_response();
+    }
+    let stored = if enabled { "true" } else { "false" };
+    if let Err(error) = store::settings_put(state.engine.db(), SETTING_PERSONA_ENABLED, stored) {
+        return store_failure(&request_id.0, SETTING_PERSONA_ENABLED, error);
+    }
+    let detail = format!("enabled={stored}; characters={}", character_count(&text));
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.persona", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.persona", error);
+    }
+
+    see_other(SAVED_PERSONA)
 }
 
 /// A permission refusal in the words of the dashboard, not the wizard.

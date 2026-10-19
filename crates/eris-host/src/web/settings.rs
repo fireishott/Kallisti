@@ -119,9 +119,11 @@ fn the_settings_page_renders_current_values() {
             "the {name} radio for {value} has no label: {page}"
         );
     }
+    // Four forms now that Assistant identity is the fourth group, so the page
+    // level region plus one per form is five.
     assert_eq!(
         page.matches(r#"aria-live="polite""#).count(),
-        4,
+        5,
         "one page level region plus one per form: {page}"
     );
 

@@ -26,6 +26,7 @@ use eris_host::backup::{self, BackupError, CreateRequest, RestoreRequest};
 use eris_host::config::{LoadedConfig, LogLevel, Paths};
 use eris_host::db::Db;
 use eris_host::onboarding::{SetupEngine, first_run_block, pending_block};
+use eris_host::persona::PersonaConfig;
 use eris_host::{admin, doctor, probe};
 
 /// Exit code for a failure.
@@ -348,7 +349,9 @@ fn run_serve(
         }
     };
 
-    let state = AppState::new(engine, allow_full).with_access(access);
+    let state = AppState::new(engine, allow_full)
+        .with_access(access)
+        .with_persona(PersonaConfig::from_toml(loaded.toml().persona(), &paths));
 
     // The device listener is opt-in twice over: the flag, or the switch the
     // operator last saved in the dashboard. Either one binds 127.0.0.1:7341; the
@@ -619,10 +622,24 @@ fn run_doctor(json: bool) -> ExitCode {
 }
 
 fn run_probe(prompt: &str) -> ExitCode {
-    let config = match eris_host::config::KallistiConfig::default_path()
-        .and_then(|path| eris_host::config::KallistiConfig::load(&path))
-    {
+    let paths = match Paths::from_home() {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("eris probe: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let config = match eris_host::config::KallistiConfig::load(&paths.env_file) {
         Ok(config) => config,
+        Err(error) => {
+            eprintln!("eris probe: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    // A probe carries the same identity the daemon would: it is the same
+    // `[persona]` table and the same file, resolved against the real paths.
+    let persona = match eris_host::config::TomlConfig::load(&paths.toml_file) {
+        Ok(toml) => PersonaConfig::from_toml(toml.persona(), &paths),
         Err(error) => {
             eprintln!("eris probe: {error}");
             return ExitCode::from(EXIT_FAILURE);
@@ -645,7 +662,7 @@ fn run_probe(prompt: &str) -> ExitCode {
     let mut out = stdout.lock();
     let mut diag = stderr.lock();
 
-    let result = runtime.block_on(probe::run(&config, prompt, &mut out, &mut diag));
+    let result = runtime.block_on(probe::run(&config, &persona, prompt, &mut out, &mut diag));
 
     match result {
         Ok(_) => ExitCode::SUCCESS,

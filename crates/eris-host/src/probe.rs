@@ -6,15 +6,22 @@
 //!
 //! Deliberate limits, because P4 is not P5: no listener, no database, no session
 //! log, no turn machine. It prints the reply and the usage line and exits.
+//!
+//! It carries the persona too, because a probe that answered as a bare model
+//! while the daemon answered as the assistant would be a probe of a different
+//! product. The diagnostic line states the system prompt's length and never its
+//! text.
 
 use std::io::{self, Write};
 
 use core_domain::{Capabilities, LlmError, ModelProfile, Provider, ProviderProfile};
+use core_runtime::prompt::{PromptInputs, compile};
 use core_runtime::provider::{
     ChatRequest, OpenAiCompatProvider, ProviderEvent, SecretKey, resolve_api_key,
 };
 
 use crate::config::KallistiConfig;
+use crate::persona::PersonaConfig;
 
 /// Everything that can make a probe fail.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +32,12 @@ pub enum ProbeError {
     /// The provider call failed. The six variants are the seam's whole surface.
     #[error(transparent)]
     Provider(#[from] LlmError),
+    /// The persona file could not be used.
+    #[error(transparent)]
+    Persona(#[from] crate::persona::PersonaError),
+    /// The persona did not fit in the system prompt.
+    #[error(transparent)]
+    Prompt(#[from] core_runtime::prompt::PromptError),
     /// Writing the reply failed.
     #[error("cannot write output: {0}")]
     Output(#[from] io::Error),
@@ -53,6 +66,7 @@ pub fn provider_for(
 /// Run one turn, streaming text to `out`.
 pub async fn run(
     config: &KallistiConfig,
+    persona: &PersonaConfig,
     prompt: &str,
     out: &mut impl Write,
     diag: &mut impl Write,
@@ -67,8 +81,46 @@ pub async fn run(
         provider.model().id
     )?;
 
-    let mut request = ChatRequest::user_text(prompt);
+    // The identity, from the file, on this run: an edit is live without a
+    // restart, which is the property this probe is also there to demonstrate.
+    let persona_text = persona.load(None)?;
+    let inputs = PromptInputs {
+        persona: persona_text,
+        ..PromptInputs::default()
+    };
+    let compiled = compile(&inputs)?;
+    if compiled.is_empty() {
+        writeln!(
+            diag,
+            "eris probe: no persona text is configured, so this turn carries no system message"
+        )?;
+    }
+
+    let system = (!compiled.is_empty()).then(|| compiled.as_str().to_owned());
+    let mut request = ChatRequest::with_system(system, prompt);
     request.max_output_tokens = config.max_output_tokens();
+
+    // The body `stream_chat` is about to POST, inspected for its shape only.
+    // This is the same `build_body` the request goes out through, so it is
+    // evidence about the wire rather than a claim about our intent, and it
+    // prints roles and a length - never the text.
+    let body = provider.build_body(&request);
+    let messages = body["messages"].as_array().cloned().unwrap_or_default();
+    let first_role = messages
+        .first()
+        .and_then(|message| message["role"].as_str())
+        .unwrap_or("none");
+    let system_bytes = messages
+        .first()
+        .filter(|message| message["role"] == "system")
+        .and_then(|message| message["content"].as_str())
+        .map(str::len)
+        .unwrap_or(0);
+    writeln!(
+        diag,
+        "eris probe: wire messages={} first_role={first_role} system_bytes={system_bytes}",
+        messages.len()
+    )?;
 
     let mut reasoning_bytes = 0usize;
     let completion = {

@@ -39,3 +39,8 @@ mod sessions;
 /// Phase 2: the Devices list, its revoke button, and the pairing-code form.
 #[cfg(test)]
 mod devices;
+
+/// The Assistant identity group: the persona file, its size, and the two
+/// refusals that keep an enabled-but-blank persona from existing.
+#[cfg(test)]
+mod persona;

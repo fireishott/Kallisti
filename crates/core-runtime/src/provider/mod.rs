@@ -146,6 +146,12 @@ pub struct ToolSpec {
 /// One turn's request.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChatRequest {
+    /// The system prompt for this turn, when there is one.
+    ///
+    /// Kept beside the messages rather than inside them so its position is not
+    /// the caller's problem: the adapter always places it first, and an absent
+    /// or empty value means no system message at all.
+    pub system: Option<String>,
     /// Prompt messages, in order.
     pub messages: Vec<ChatMessage>,
     /// Output cap, when the caller wants one.
@@ -155,10 +161,28 @@ pub struct ChatRequest {
 }
 
 impl ChatRequest {
-    /// A one-message prompt.
+    /// A one-message prompt with no system message.
     #[must_use]
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: text.into(),
+            }],
+            ..Self::default()
+        }
+    }
+
+    /// A one-message prompt with an optional system preamble.
+    ///
+    /// `None` and an all-whitespace string are the same thing: no system
+    /// message. An empty system message is not sent, because several
+    /// OpenAI-compatible servers reject it and none of them need it.
+    #[must_use]
+    pub fn with_system(system: Option<String>, text: impl Into<String>) -> Self {
+        let system = system.filter(|text| !text.trim().is_empty());
+        Self {
+            system,
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: text.into(),
@@ -265,5 +289,34 @@ mod tests {
             request.messages[0].content,
             "reply with the single word: ok"
         );
+    }
+
+    #[test]
+    fn the_system_message_is_sent_first() {
+        let profile = core_domain::ProviderProfile::new(
+            "9router",
+            "http://127.0.0.1:20128/v1",
+            SecretRef::Env("KALLISTI_TEST_API_KEY".to_owned()),
+        )
+        .expect("profile");
+        let provider = super::openai_compat::OpenAiCompatProvider::new(
+            profile,
+            core_domain::ModelProfile::new("ds/deepseek-v4-flash"),
+            core_domain::Capabilities::openai_compatible(),
+        )
+        .expect("provider");
+
+        let request = ChatRequest::with_system(Some("Be brief.".to_owned()), "weather?");
+        let body = provider.build_body(&request);
+        assert_eq!(body["messages"][0]["role"], "system", "{body}");
+        assert_eq!(body["messages"][0]["content"], "Be brief.");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "weather?");
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(2));
+
+        // No system text is no system message: not an empty one.
+        let bare = provider.build_body(&ChatRequest::user_text("weather?"));
+        assert_eq!(bare["messages"][0]["role"], "user");
+        assert_eq!(bare["messages"].as_array().map(Vec::len), Some(1));
     }
 }

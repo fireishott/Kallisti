@@ -32,5 +32,6 @@ pub mod device;
 pub mod doctor;
 pub mod error;
 pub mod onboarding;
+pub mod persona;
 pub mod probe;
 pub mod web;

@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use core_domain::{Capabilities, LlmError, ModelProfile, ProviderProfile};
+use core_runtime::prompt::{PromptInputs, compile};
 use core_runtime::provider::{
     ChatRequest, OpenAiCompatProvider, ProviderEvent, SecretKey, SecretRef,
 };
@@ -45,6 +46,7 @@ use uuid::Uuid;
 use crate::auth::{format_timestamp, now, parse_timestamp};
 use crate::db::{Db, DbError};
 use crate::onboarding::{SETTING_MODEL, SETTING_PROVIDER_BASE_URL, SETTING_PROVIDER_KEY_REF};
+use crate::persona::PersonaConfig;
 
 /// How many events one job keeps by default. Older rows are pruned as new ones
 /// land; `seq` keeps climbing.
@@ -587,6 +589,22 @@ impl TurnStore {
             model,
         }))
     }
+
+    /// The operator's persona switch, as the dashboard last saved it.
+    ///
+    /// `None` means no row: the `[persona] enabled` key in `config.toml` decides.
+    /// Read per turn rather than cached, so the dashboard toggle takes effect on
+    /// the next turn without a restart.
+    pub fn persona_enabled(&self) -> Result<Option<String>, DbError> {
+        self.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![crate::persona::SETTING_PERSONA_ENABLED],
+                |row| row.get(0),
+            )
+            .optional()
+        })
+    }
 }
 
 /// The guarded append. One statement, so it is atomic against a concurrent
@@ -654,6 +672,7 @@ pub struct TurnHub {
     store: TurnStore,
     channels: Mutex<HashMap<String, broadcast::Sender<TurnFrame>>>,
     key_lookup: KeyLookup,
+    persona: Mutex<Option<PersonaConfig>>,
 }
 
 impl TurnHub {
@@ -672,7 +691,29 @@ impl TurnHub {
             store: TurnStore::new(db, buffer),
             channels: Mutex::new(HashMap::new()),
             key_lookup,
+            persona: Mutex::new(None),
         }
+    }
+
+    /// Give this hub an identity. Without one there is no system message, which
+    /// is the right default for a hub a test built for another purpose.
+    #[must_use]
+    pub fn with_persona(self, persona: PersonaConfig) -> Self {
+        self.set_persona(persona);
+        self
+    }
+
+    /// Replace the identity. Takes effect on the next turn's file read.
+    pub fn set_persona(&self, persona: PersonaConfig) {
+        if let Ok(mut slot) = self.persona.lock() {
+            *slot = Some(persona);
+        }
+    }
+
+    /// The identity this hub would use, when it has one.
+    #[must_use]
+    pub fn persona(&self) -> Option<PersonaConfig> {
+        self.persona.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// The store underneath.
@@ -797,6 +838,85 @@ impl TurnHub {
             }
         };
 
+        // The identity: read from the file now, on this turn, so an edit is live
+        // without a restart. `None` is the ordinary "no persona" case and the
+        // turn goes ahead with no system message at all.
+        let stored_enabled = {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || store.persona_enabled()).await
+        };
+        let stored_enabled = match stored_enabled {
+            Ok(Ok(value)) => value,
+            _ => {
+                let _ = self
+                    .fail_early(
+                        &job_id,
+                        &sender,
+                        "persona_setting_unreadable",
+                        "the persona switch could not be read from the settings table",
+                    )
+                    .await;
+                self.retire(&job_id);
+                return;
+            }
+        };
+        let persona_text = match self.persona() {
+            None => None,
+            Some(persona) => {
+                match tokio::task::spawn_blocking(move || persona.load(stored_enabled.as_deref()))
+                    .await
+                {
+                    Ok(Ok(text)) => text,
+                    Ok(Err(error)) => {
+                        // A persona file that exists and cannot be used is a
+                        // configuration mistake, not an absent persona: refuse
+                        // the turn with the numbers instead of sending a prompt
+                        // nobody wrote.
+                        let _ = self
+                            .fail_early(&job_id, &sender, error.code(), &error.to_string())
+                            .await;
+                        self.retire(&job_id);
+                        return;
+                    }
+                    Err(join) => {
+                        let _ = self
+                            .fail_early(
+                                &job_id,
+                                &sender,
+                                "persona_task_failed",
+                                &format!("the persona read did not finish: {join}"),
+                            )
+                            .await;
+                        self.retire(&job_id);
+                        return;
+                    }
+                }
+            }
+        };
+
+        let inputs = PromptInputs {
+            persona: persona_text,
+            ..PromptInputs::default()
+        };
+        let compiled = match compile(&inputs) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                let _ = self
+                    .fail_early(&job_id, &sender, "persona_too_large", &error.to_string())
+                    .await;
+                self.retire(&job_id);
+                return;
+            }
+        };
+        // A length, never the text: the persona is the operator's own words and
+        // does not belong in a log line.
+        tracing::debug!(
+            system_bytes = compiled.bytes(),
+            has_persona = !compiled.is_empty(),
+            "the turn system prompt is compiled"
+        );
+        let system = (!compiled.is_empty()).then(|| compiled.as_str().to_owned());
+
         // The writer: one blocking task owns every row this job writes.
         let (tx, mut rx) = mpsc::unbounded_channel::<Signal>();
         let writer = {
@@ -858,7 +978,7 @@ impl TurnHub {
                     return;
                 }
             };
-            let request = ChatRequest::user_text(prompt);
+            let request = ChatRequest::with_system(system, prompt);
             let mut sink = |event: ProviderEvent| {
                 if let ProviderEvent::Text(fragment) = event
                     && !fragment.is_empty()

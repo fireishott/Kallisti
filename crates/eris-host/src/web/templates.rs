@@ -1159,11 +1159,18 @@ pub enum SettingsGroup {
     Workspace,
     /// The permission tuple.
     Permissions,
+    /// The assistant's identity: the persona text and its switch.
+    Persona,
 }
 
 impl SettingsGroup {
     /// Every group, in page order.
-    pub const ALL: [Self; 3] = [Self::Provider, Self::Workspace, Self::Permissions];
+    pub const ALL: [Self; 4] = [
+        Self::Provider,
+        Self::Workspace,
+        Self::Permissions,
+        Self::Persona,
+    ];
 
     /// The anchor and error-region id for this group.
     #[must_use]
@@ -1172,12 +1179,13 @@ impl SettingsGroup {
             Self::Provider => "provider",
             Self::Workspace => "workspace",
             Self::Permissions => "permissions",
+            Self::Persona => "persona",
         }
     }
 
     /// Whether a validation failure belongs to this group.
     ///
-    /// The field names are disjoint across the three forms, so the failure
+    /// The field names are disjoint across the four forms, so the failure
     /// carries its own group and the page never has to guess. A failure with no
     /// field (a database error) belongs to none of them and lands in the page
     /// level region instead.
@@ -1193,6 +1201,7 @@ impl SettingsGroup {
                 field,
                 "sandbox_mode" | "approval_policy" | "autopilot_ceiling" | "telemetry"
             ),
+            Self::Persona => matches!(field, "persona_text" | "persona_enabled"),
         }
     }
 
@@ -1203,6 +1212,7 @@ impl SettingsGroup {
             Self::Provider => "provider settings saved",
             Self::Workspace => "workspace saved",
             Self::Permissions => "permissions saved",
+            Self::Persona => "assistant identity saved",
         }
     }
 }
@@ -1234,6 +1244,12 @@ pub struct SettingsView {
     pub device_listener: bool,
     /// Whether this process has bound the device port.
     pub device_listener_bound: bool,
+    /// The persona text the daemon would send, as the file holds it.
+    pub persona_text: String,
+    /// Whether the persona is switched on.
+    pub persona_enabled: bool,
+    /// The file the persona lives in, stated on the page.
+    pub persona_path: String,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
@@ -1257,9 +1273,19 @@ impl SettingsView {
             paired_devices: 0,
             device_listener: false,
             device_listener_bound: false,
+            persona_text: String::new(),
+            persona_enabled: true,
+            persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             error: None,
             notice: None,
         }
+    }
+
+    /// How many characters the persona text is: the number the page states and
+    /// the audit row records.
+    #[must_use]
+    pub fn persona_characters(&self) -> usize {
+        crate::persona::character_count(&self.persona_text)
     }
 
     /// The failure that belongs to one group, if any.
@@ -1465,13 +1491,72 @@ fn permissions_group(view: &SettingsView) -> Markup {
     }
 }
 
-/// The settings page: three forms, then the rows that are read-only by design.
+/// The assistant identity group: one textarea, one switch, one measured size.
+///
+/// The text is the operator's own words, so it is rendered as an editable value
+/// and nothing else: no preview pane, no transformation, and no copy of it in a
+/// second place on the page that could disagree with the file.
+fn persona_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    let first = ["persona_text", "persona_enabled"]
+        .into_iter()
+        .find(|name| focuses(name));
+    html! {
+        form method="post" action="/dashboard/settings/persona" novalidate {
+            (group_region(view, SettingsGroup::Persona))
+            div .field {
+                label for="persona_text" { "Assistant identity" }
+                textarea id="persona_text" name="persona_text" rows="12" spellcheck="false"
+                    autofocus[first == Some("persona_text")] { (view.persona_text) }
+                span .hint {
+                    "The file is " code { (view.persona_path) } ". It is read on every turn, so an "
+                    "edit here takes effect on the next one without a restart."
+                }
+            }
+            p .small {
+                "This text is " (view.persona_characters()) " characters"
+                @if view.persona_characters() > 0 {
+                    " and is sent on every turn."
+                } @else {
+                    "."
+                }
+                " The limit is " (crate::persona::MAX_PERSONA_BYTES) " bytes."
+            }
+            p .small {
+                "Every turn sends this text to the model as the system prompt. Turning it off "
+                "sends no system prompt at all, which is what a bare model gets."
+            }
+            div .field {
+                label for="persona_enabled" {
+                    input type="checkbox" id="persona_enabled" name="persona_enabled" value="true"
+                        autofocus[first == Some("persona_enabled")]
+                        checked[view.persona_enabled];
+                    " Send the assistant identity on every turn"
+                }
+                span .hint {
+                    "Off by default here is honest: a persona that is switched on with nothing in "
+                    "it would send an empty instruction."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save assistant identity" }
+            }
+            p .small {
+                "This text is not a secret and is written to disk readable, at mode 0644. The audit "
+                "row records only how big it is and whether it is on."
+            }
+        }
+    }
+}
+
+/// The settings page: four forms, then the rows that are read-only by design.
 pub fn settings_page(view: &SettingsView) -> Markup {
     let page_error = view.error.as_ref().filter(|error| error.field.is_none());
     let body = html! {
         h1 { "Settings" }
         p .lede {
-            "Three groups, each its own form and its own route. A save redirects and says so; "
+            "Four groups, each its own form and its own route. A save redirects and says so; "
             "a refusal re-renders this page with the reason next to the field that caused it."
         }
         (alert_region(page_error, None))
@@ -1509,6 +1594,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                     " on " (DEVICE_ADDR)
                 }
             }
+        }
+
+        section .card aria-labelledby="persona-heading" {
+            h2 id="persona-heading" { "Assistant identity" }
+            p .small {
+                "Who this assistant is. The text here is the system prompt every turn carries, and "
+                "it is the one setting that changes how the model talks rather than what it can reach."
+            }
+            (persona_group(view))
         }
 
         section .card aria-labelledby="read-only-heading" {

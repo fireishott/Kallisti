@@ -382,6 +382,16 @@ impl Paths {
         })
     }
 
+    /// The persona file, `persona.md` in the config directory.
+    ///
+    /// Derived rather than stored so a scratch root from [`Paths::for_root`]
+    /// gets its own persona: no test can read the operator's real one, and an
+    /// acceptance run cannot edit it.
+    #[must_use]
+    pub fn persona_file(&self) -> PathBuf {
+        self.config_dir.join("persona.md")
+    }
+
     /// The same four paths under an explicit root.
     ///
     /// This exists so a test or an acceptance run can exercise the first-run
@@ -468,6 +478,7 @@ pub struct TomlConfig {
     workspace_path: Option<PathBuf>,
     log_level: Option<LogLevel>,
     admin: AdminConfig,
+    persona: PersonaTable,
     source: Option<PathBuf>,
 }
 
@@ -479,6 +490,61 @@ struct TomlConfigRaw {
     workspace_path: Option<PathBuf>,
     log_level: Option<String>,
     admin: Option<AdminRaw>,
+    persona: Option<PersonaRaw>,
+}
+
+/// The `[persona]` table, before validation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersonaRaw {
+    enabled: Option<bool>,
+    path: Option<PathBuf>,
+    text: Option<String>,
+}
+
+/// The `[persona]` table: whether the assistant has an identity, and where it
+/// lives.
+///
+/// Every key is optional. `enabled` defaults to `true` because a persona file
+/// that exists is a decision the operator already made by writing it; `path`
+/// defaults to `~/.config/kallisti/persona.md`; `text` is used only when that
+/// file is absent, which is the case for a deployment that wants the text in
+/// the config rather than a second file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonaTable {
+    enabled: bool,
+    path: Option<PathBuf>,
+    text: Option<String>,
+}
+
+impl Default for PersonaTable {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+            text: None,
+        }
+    }
+}
+
+impl PersonaTable {
+    /// Whether the persona is on, when the dashboard has not said otherwise.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The configured path, before tilde expansion.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The inline fallback text.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
 }
 
 /// The `[admin]` table, before validation.
@@ -604,6 +670,14 @@ impl TomlConfig {
             workspace_path: raw.workspace_path,
             log_level,
             admin,
+            persona: match raw.persona {
+                None => PersonaTable::default(),
+                Some(persona) => PersonaTable {
+                    enabled: persona.enabled.unwrap_or(true),
+                    path: persona.path,
+                    text: persona.text,
+                },
+            },
             source: Some(path.to_path_buf()),
         })
     }
@@ -627,6 +701,12 @@ impl TomlConfig {
     #[must_use]
     pub fn admin(&self) -> &AdminConfig {
         &self.admin
+    }
+
+    /// The `[persona]` table. Absent means the documented defaults.
+    #[must_use]
+    pub fn persona(&self) -> &PersonaTable {
+        &self.persona
     }
 
     /// The file this was read from, when there was one.
@@ -1064,5 +1144,39 @@ KALLISTI_API_KEY_REF=sk-not-a-reference
         assert!(paths.env_file.ends_with(".config/kallisti/eris.env"));
         assert!(paths.toml_file.ends_with(".config/kallisti/config.toml"));
         assert!(paths.db_file.ends_with(".local/share/kallisti/eris.db"));
+        assert!(
+            paths
+                .persona_file()
+                .ends_with(".config/kallisti/persona.md")
+        );
+    }
+
+    #[test]
+    fn config_toml_accepts_the_persona_table_and_defaults_it_on() {
+        // Absent means on at the documented path with no inline text.
+        let bare = TomlConfig::parse("log_level = \"info\"\n", &toml_path()).expect("no persona");
+        assert!(bare.persona().enabled());
+        assert_eq!(bare.persona().path(), None);
+        assert_eq!(bare.persona().text(), None);
+
+        // Spelled out, every key lands.
+        let text = "[persona]\nenabled = false\npath = \"/tmp/id.md\"\n";
+        let toml = TomlConfig::parse(text, &toml_path()).expect("persona table");
+        assert!(!toml.persona().enabled());
+        assert_eq!(toml.persona().path(), Some(Path::new("/tmp/id.md")));
+        assert_eq!(toml.persona().text(), None);
+
+        // The inline fallback is accepted, and is not mistaken for a secret.
+        let inline = TomlConfig::parse("[persona]\ntext = \"be brief\"\n", &toml_path())
+            .expect("inline text");
+        assert_eq!(inline.persona().text(), Some("be brief"));
+        assert!(inline.persona().enabled());
+    }
+
+    #[test]
+    fn the_persona_table_refuses_a_key_nobody_documented() {
+        let error = TomlConfig::parse("[persona]\nmood = \"sunny\"\n", &toml_path())
+            .expect_err("unknown persona keys are refused");
+        assert!(matches!(error, ConfigError::TomlParse { .. }), "{error:?}");
     }
 }

@@ -26,7 +26,7 @@ use tokio_stream::StreamExt;
 
 use super::classify;
 use super::stream::ChatStreamParser;
-use super::{ChatRequest, Completion, ProviderEvent, SecretKey};
+use super::{ChatRequest, ChatRole, Completion, ProviderEvent, SecretKey};
 
 /// How long to wait for the connection itself. Separate from the stream: a slow
 /// model is normal, an endpoint that will not accept a TCP connection is not.
@@ -87,18 +87,30 @@ impl OpenAiCompatProvider {
     /// OpenAI-compatible servers omit the usage frame entirely, and the seam
     /// would then have to report usage as unavailable for a provider that can
     /// actually report it.
+    ///
+    /// The system prompt, when there is one, is the first message whatever the
+    /// caller did with `messages`: the dialect expects the instruction preamble
+    /// there, and a turn that put it anywhere else would be ignored by some
+    /// servers and half-honoured by others.
     #[must_use]
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = request
-            .messages
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "role": message.role.as_str(),
-                    "content": message.content,
-                })
+        let mut messages: Vec<serde_json::Value> = Vec::with_capacity(request.messages.len() + 1);
+        if let Some(system) = request
+            .system
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        {
+            messages.push(serde_json::json!({
+                "role": ChatRole::System.as_str(),
+                "content": system,
+            }));
+        }
+        messages.extend(request.messages.iter().map(|message| {
+            serde_json::json!({
+                "role": message.role.as_str(),
+                "content": message.content,
             })
-            .collect();
+        }));
 
         let mut body = serde_json::json!({
             "model": self.model.id,

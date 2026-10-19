@@ -38,6 +38,7 @@ use tokio::net::TcpListener;
 
 use crate::error::assign_request_id;
 use crate::onboarding::SetupEngine;
+use crate::persona::PersonaConfig;
 
 use turns::TurnHub;
 
@@ -192,9 +193,13 @@ pub struct DeviceService {
 
 impl DeviceService {
     /// Build the service. It binds nothing; `start` does that.
+    ///
+    /// The identity comes from the paths this engine resolved, so a scratch root
+    /// reads its own persona file and a test can never touch the operator's.
     #[must_use]
     pub fn new(engine: SetupEngine, buffer: usize) -> Self {
-        let hub = Arc::new(TurnHub::new(engine.db().clone(), buffer));
+        let persona = PersonaConfig::at_path(engine.paths().persona_file());
+        let hub = Arc::new(TurnHub::new(engine.db().clone(), buffer).with_persona(persona));
         Self {
             engine,
             hub,
@@ -208,17 +213,22 @@ impl DeviceService {
     /// crate forbids `unsafe`, and edition 2024 makes `set_var` unsafe.
     #[must_use]
     pub fn with_key_lookup(engine: SetupEngine, buffer: usize, lookup: turns::KeyLookup) -> Self {
-        let hub = Arc::new(TurnHub::with_key_lookup(
-            engine.db().clone(),
-            buffer,
-            lookup,
-        ));
+        let persona = PersonaConfig::at_path(engine.paths().persona_file());
+        let hub = Arc::new(
+            TurnHub::with_key_lookup(engine.db().clone(), buffer, lookup).with_persona(persona),
+        );
         Self {
             engine,
             hub,
             accepting: Arc::new(AtomicBool::new(true)),
             bound: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Replace the identity the turn worker uses. Called by `serve` once the
+    /// `[persona]` table has been resolved against the config file.
+    pub fn set_persona(&self, persona: PersonaConfig) {
+        self.hub.set_persona(persona);
     }
 
     /// The turn hub.

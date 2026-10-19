@@ -42,6 +42,7 @@ use crate::device::DeviceService;
 use crate::device::turns::TurnStore;
 use crate::error::{ApiError, RequestId, assign_request_id};
 use crate::onboarding::{AdminSessions, ClaimLimiter, SetupEngine};
+use crate::persona::PersonaConfig;
 use crate::web::css::CSS_ROUTE;
 use crate::web::proxy::{AdminAccess, client_context_middleware};
 use crate::web::routes::{dashboard_routes, setup_routes};
@@ -83,6 +84,9 @@ pub const ROUTE_SETTINGS_WORKSPACE: &str = "/dashboard/settings/workspace";
 
 /// `POST /dashboard/settings/permissions` - the permission tuple.
 pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
+
+/// `POST /dashboard/settings/persona` - the assistant's identity.
+pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
 
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
@@ -169,6 +173,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_WORKSPACE,
     ROUTE_SETTINGS_PERMISSIONS,
+    ROUTE_SETTINGS_PERSONA,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",
@@ -201,6 +206,9 @@ pub struct AppState {
     pub device: DeviceService,
     /// Who may front the listener, and what it is called in public.
     pub access: Arc<AdminAccess>,
+    /// The assistant's identity: where the file is, and whether it is on.
+    /// Resolved from `[persona]` in `config.toml` plus the paths a run chose.
+    pub persona: PersonaConfig,
     /// The addresses actually bound, in bind order. Written once by `serve`
     /// before anything serves, read by the pages that report the truth.
     listeners: Arc<RwLock<Vec<SocketAddr>>>,
@@ -211,6 +219,7 @@ impl AppState {
     #[must_use]
     pub fn new(engine: SetupEngine, allow_full: bool) -> Self {
         let db = engine.db().clone();
+        let persona = PersonaConfig::at_path(engine.paths().persona_file());
         let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env());
         Self {
             engine,
@@ -219,12 +228,22 @@ impl AppState {
             allow_full,
             device,
             access: Arc::new(AdminAccess::loopback_only()),
+            persona,
             listeners: Arc::new(RwLock::new(vec![
                 ADMIN_ADDR
                     .parse()
                     .expect("the default is a literal ip:port"),
             ])),
         }
+    }
+
+    /// Apply the `[persona]` table: the file the dashboard reads and writes, and
+    /// the default on/off state. `serve` calls this once, before anything binds.
+    #[must_use]
+    pub fn with_persona(mut self, persona: PersonaConfig) -> Self {
+        self.device.set_persona(persona.clone());
+        self.persona = persona;
+        self
     }
 
     /// Attach the access model the config resolved.
