@@ -380,18 +380,27 @@ pub fn shell(
             body {
                 div .wrap {
                     header .top {
-                        div .brand { strong { "Kallisti" } " 1.0 Eris daemon" }
+                        div .brand {
+                            span .mark aria-hidden="true" { "K" }
+                            span .word {
+                                strong { "Kallisti" }
+                                span .ver { "1.0 Eris daemon" }
+                            }
+                        }
                         @if let Some(current) = nav { (nav_bar(current)) }
                         span class=(state_class) { (state.as_str()) }
                     }
                     (body)
                     footer {
-                        "Eris " (VERSION)
-                        " | admin listener " (chrome.footer_line())
-                        @if let Some(url) = &chrome.public_url {
-                            " | public URL " (url)
+                        span .facts {
+                            "Eris " (VERSION)
+                            " | admin listener " (chrome.footer_line())
+                            @if let Some(url) = &chrome.public_url {
+                                " | public URL " (url)
+                            }
+                            " | configured in config.toml"
                         }
-                        " | configured in config.toml"
+                        span .sign { "to the most beautiful" }
                     }
                 }
             }
@@ -567,8 +576,8 @@ fn radio_group(
         .iter()
         .position(|(value, _, _)| !disabled_values.contains(value));
     html! {
-        fieldset .field style="border:0;padding:0;margin:0 0 18px" aria-invalid=[invalid.then_some("true")] {
-            legend style="font-size:13px;font-weight:600;margin-bottom:8px" { (legend) }
+        fieldset .field aria-invalid=[invalid.then_some("true")] {
+            legend { (legend) }
             div .choices {
                 @for (index, (value, label, why)) in options.iter().enumerate() {
                     @let checked = *value == selected;
@@ -592,7 +601,7 @@ fn radio_group(
 pub fn permission_table(rows: &[PermissionRow]) -> Markup {
     html! {
         table {
-            caption style="text-align:left;color:#9aa4b2;font-size:12px;padding-bottom:8px" {
+            caption {
                 "What a turn may do. Each row states its consequence."
             }
             thead {
@@ -809,7 +818,7 @@ fn step_body(view: &SetupView) -> Markup {
                 @if let Some(code) = &view.pairing_code {
                     div .card .tight {
                         h3 { "Pairing code" }
-                        p .mono style="font-size:22px;letter-spacing:0.18em" { (code) }
+                        p .pairing-code .mono { (code) }
                         p .small {
                             "Single use. Expires "
                             @if let Some(expires) = &view.pairing_expires { (expires) } @else { "in five minutes" }
@@ -921,30 +930,33 @@ pub fn setup_page(view: &SetupView) -> Markup {
 pub fn login_page(state: SetupState, error: Option<&FormError>, chrome: &Chrome) -> Markup {
     let invalid = error.is_some_and(|error| error.field.as_deref() == Some("passphrase"));
     let body = html! {
-        h1 { "Sign in" }
-        p .lede { "The dashboard answers only a browser holding an admin session. This form mints one." }
-        section .card aria-labelledby="login-heading" {
-            h2 id="login-heading" { "Admin sign-in" }
-            (alert_region(error, None))
-            form method="post" action="/login" novalidate {
-                div .field {
-                    label for="passphrase" { "Admin passphrase" }
-                    input id="passphrase" type="password" name="passphrase" value=""
-                        autocomplete="current-password" spellcheck="false"
-                        .invalid[invalid] aria-invalid=[invalid.then_some("true")]
-                        autofocus[invalid];
-                    span .hint {
-                        "The passphrase you chose during onboarding: six words, separated by spaces."
+        div .auth {
+            div .mark aria-hidden="true" { "K" }
+            h1 { "Sign in" }
+            p .lede { "The dashboard answers only a browser holding an admin session. This form mints one." }
+            section .card aria-labelledby="login-heading" {
+                h2 id="login-heading" { "Admin sign-in" }
+                (alert_region(error, None))
+                form method="post" action="/login" novalidate {
+                    div .field {
+                        label for="passphrase" { "Admin passphrase" }
+                        input id="passphrase" type="password" name="passphrase" value=""
+                            autocomplete="current-password" spellcheck="false"
+                            .invalid[invalid] aria-invalid=[invalid.then_some("true")]
+                            autofocus[invalid];
+                        span .hint {
+                            "The passphrase you chose during onboarding: six words, separated by spaces."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Sign in" }
                     }
                 }
-                div .actions {
-                    button type="submit" { "Sign in" }
-                }
             }
-        }
-        p .small {
-            "Still onboarding? " a href="/setup" { "The wizard" }
-            " is the way in before setup finishes."
+            p .small {
+                "Still onboarding? " a href="/setup" { "The wizard" }
+                " is the way in before setup finishes."
+            }
         }
     };
     layout("Sign in", state, body, chrome)
@@ -992,12 +1004,19 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                 dt { "Admin sessions live" } dd { (view.sessions_live) }
                 dt { "Device sessions" } dd { (view.device_sessions) }
                 dt { "Paired devices" } dd { (view.paired_devices) " of " (view.devices_known) }
-                dt { "Jobs" } dd { (view.jobs_line()) }
                 dt { "Admin listeners" } dd { (view.chrome.listens_line()) }
                 @if let Some(url) = &view.chrome.public_url {
                     dt { "Public URL" } dd { (url) }
                 }
                 dt { "Device listener" } dd { (view.device_listener_line()) }
+            }
+            div .stats aria-label="Jobs by status" {
+                @for (status, count) in &view.jobs {
+                    div .stat {
+                        span .n { (count) }
+                        span .k { (status) }
+                    }
+                }
             }
             p .small {
                 "The admin listener binds every address in admin.listen, and every one of them serves "
@@ -1030,9 +1049,11 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
         section .card aria-labelledby="devices" {
             h2 id="devices" { "Devices" }
             @if view.devices.is_empty() {
-                p .small {
-                    "No device has been paired yet. Mint a code on the "
-                    a href=(Nav::Devices.path()) { "devices page" } "."
+                p .empty {
+                    strong { "No device paired yet" }
+                    "Mint a code on the "
+                    a href=(Nav::Devices.path()) { "devices page" }
+                    " and pair the first one."
                 }
             } @else {
                 table {
@@ -1136,7 +1157,7 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                     button type="submit" { "Save kill switches" }
                 }
             }
-            div style="margin-top:18px" {
+            div .mt {
                 (permission_table(&view.permission_rows))
             }
         }
@@ -1585,7 +1606,7 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "read only, ask first, drafts only, telemetry off."
             }
             (permissions_group(view))
-            dl .kv style="margin-top:18px" {
+            dl .kv .mt {
                 dt { "Paired devices" } dd { (view.paired_devices) }
                 dt { "Device listener" } dd {
                     @if view.device_listener { "on" } @else { "off" }
@@ -1612,7 +1633,7 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "them to switch."
             }
             table {
-                caption style="text-align:left;color:#9aa4b2;font-size:12px;padding-bottom:8px" {
+                caption {
                     "What 1.0 does not do, stated on the page rather than left to a guess."
                 }
                 thead {
@@ -1738,7 +1759,10 @@ pub fn activity_page(view: &ActivityView) -> Markup {
         section .card aria-labelledby="audit-heading" {
             h2 id="audit-heading" { "Audit log" }
             @if view.rows.is_empty() {
-                p .small { "No audit row has been written yet." }
+                p .empty {
+                    strong { "Nothing recorded yet" }
+                    "No audit row has been written yet."
+                }
             } @else {
                 table {
                     thead {
@@ -1844,7 +1868,8 @@ pub fn backups_page(view: &BackupsView) -> Markup {
         section .card aria-labelledby="archives-heading" {
             h2 id="archives-heading" { "Archives" }
             @if view.rows.is_empty() {
-                p .small {
+                p .empty {
+                    strong { "No archive yet" }
                     "No archive exists yet. Create one now, and it will appear here with its size "
                     "and whether every member verifies against its manifest."
                 }
@@ -2042,7 +2067,8 @@ pub fn sessions_page(view: &SessionsView) -> Markup {
         section .card aria-labelledby="sessions-heading" {
             h2 id="sessions-heading" { "Device sessions" }
             @if view.rows.is_empty() {
-                p .small {
+                p .empty {
+                    strong { "No device session yet" }
                     "No device session has been opened yet. A session appears here the first time "
                     "a paired device signs in through the device listener, and this page will list "
                     "it with the jobs it ran."
@@ -2126,7 +2152,7 @@ fn job_block(job: &JobRow) -> Markup {
             }
             h3 { "Events" }
             @if job.events.is_empty() {
-                p .small { "No event has been recorded for this job yet." }
+                p .empty { "No event has been recorded for this job yet." }
             } @else {
                 ol .timeline {
                     @for event in &job.events {
@@ -2177,7 +2203,8 @@ pub fn session_page(view: &SessionDetailView) -> Markup {
         section .card aria-labelledby="jobs-heading" {
             h2 id="jobs-heading" { "Jobs" }
             @if view.jobs.is_empty() {
-                p .small {
+                p .empty {
+                    strong { "No jobs yet" }
                     "This session has not started a job yet. A job appears here when the device "
                     "asks for a turn through the device listener."
                 }
