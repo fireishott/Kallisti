@@ -29,21 +29,22 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The thirteen tables the migrations create. `schema_migrations` is the
+/// The fourteen tables the migrations create. `schema_migrations` is the
 /// thirteenth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`.
-pub const TABLES: [&str; 13] = [
+pub const TABLES: [&str; 14] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
     "audit_log",
     "auth_tokens",
+    "chat_attachments",
     "chat_conversations",
     "chat_messages",
     "devices",
@@ -97,6 +98,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "0007_chat_conversations",
         sql: MIGRATION_0007,
+    },
+    Migration {
+        version: 8,
+        name: "0008_chat_attachments",
+        sql: MIGRATION_0008,
     },
 ];
 
@@ -358,6 +364,28 @@ INSERT OR IGNORE INTO chat_conversations (id, title, created_at, updated_at)
     SELECT conversation_id, 'Earlier chat', MIN(created_at), MAX(created_at)
       FROM chat_messages
      GROUP BY conversation_id;
+";
+
+/// Migration 0008: files a message carries.
+///
+/// The bytes live in the workspace, not in the database: a row records where the
+/// file is, what it was called when it arrived, and how big it was. `message_id`
+/// is filled once the message it belonged to is written, so an upload that
+/// arrives before its message is still traceable.
+const MIGRATION_0008: &str = r"
+CREATE TABLE IF NOT EXISTS chat_attachments (
+    id              TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    message_id      TEXT,
+    name            TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    size            INTEGER NOT NULL DEFAULT 0,
+    media_type      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation
+    ON chat_attachments (conversation_id, created_at);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use axum::body::Body;
+use axum::extract::FromRequest;
 use axum::extract::multipart::Multipart;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
@@ -26,9 +27,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_NEW,
-    ROUTE_CHAT_SEND, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION,
-    ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
+    ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL,
+    ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_FULL_ACCESS,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -95,6 +97,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_WORKSPACE, post(save_workspace))
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
+        .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
         .route(ROUTE_SESSION, get(session_detail))
@@ -107,6 +110,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_SEND, post(chat_send))
         .route(ROUTE_CHAT_CLEAR, post(chat_clear))
         .route(ROUTE_CHAT_NEW, post(chat_new))
+        .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
         .route(ROUTE_CHAT_DELETE, post(chat_delete))
         .route(wallpaper::ROUTE_WALLPAPER_SAVE, post(save_wallpaper))
@@ -495,7 +499,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
     let engine = &state.engine;
     let mut view = SettingsView::new(engine.state().map_err(|error| form_error(&error))?, VERSION);
     view.chrome = state.chrome();
-    view.allow_full = state.allow_full;
+    view.allow_full = state.allow_full();
+    view.allow_full_from_flag = state.allow_full;
+    view.allow_full_stored = matches!(
+        engine.setting(crate::onboarding::SETTING_ALLOW_FULL),
+        Ok(Some(ref value)) if value.trim().eq_ignore_ascii_case("true")
+    );
     view.provider_base_url = engine
         .provider_base_url()
         .map_err(|error| form_error(&error))?
@@ -2290,7 +2299,7 @@ async fn mode(
         field(&fields, "telemetry"),
         paired,
         true,
-        state.allow_full,
+        state.allow_full(),
     );
     let permissions = match parsed {
         Ok(permissions) => permissions,
@@ -2546,7 +2555,7 @@ async fn save_permissions(
         field(&fields, "telemetry"),
         paired,
         ready,
-        state.allow_full,
+        state.allow_full(),
     );
     let permissions = match parsed {
         Ok(permissions) => permissions,
@@ -2905,6 +2914,41 @@ async fn chat_conversation_handler(
     }
 }
 
+/// `GET /dashboard/chat/sessions.json`.
+///
+/// The rail is server-rendered, which means a conversation that gains its name
+/// while the page is open has no way to appear until a reload. The streaming
+/// script calls this after every turn and re-renders the list in place.
+async fn chat_sessions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match chat::conversations(state.engine.db(), chat::SESSION_LIMIT) {
+        Ok(rows) => {
+            let sessions: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "id": row.id,
+                        "title": row.title,
+                        "stamp": crate::web::templates::clock(&row.updated_at),
+                    })
+                })
+                .collect();
+            ok_json(serde_json::json!({ "ok": true, "sessions": sessions }))
+        }
+        Err(error) => ApiError::internal(
+            request_id.0,
+            format!("cannot read the conversation list: {error}"),
+        )
+        .into_response(),
+    }
+}
+
 /// `POST /dashboard/chat/new` - start a conversation and go to it.
 async fn chat_new(
     State(state): State<AppState>,
@@ -2943,6 +2987,92 @@ async fn chat_delete(
     }
 }
 
+/// `POST /dashboard/settings/full-access`.
+///
+/// Turning it on requires the operator to type the word, because it is the one
+/// switch that can hand a turn the whole host. Turning it off requires nothing:
+/// a refusal should cost one click, not a ritual.
+async fn save_full_access(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    let stored_now = matches!(
+        state.engine.setting(crate::onboarding::SETTING_ALLOW_FULL),
+        Ok(Some(ref value)) if value.trim().eq_ignore_ascii_case("true")
+    );
+
+    if !stored_now {
+        // Enabling: the typed word is the whole guard.
+        if !field(&fields, "confirm")
+            .trim()
+            .eq_ignore_ascii_case("full")
+        {
+            return fail_settings(
+                &state,
+                wants_html(&headers),
+                FormError::new(
+                    Some("confirm"),
+                    "confirm_required",
+                    "type full to enable full host access; nothing was changed",
+                ),
+            );
+        }
+        if let Err(error) = state
+            .engine
+            .set_setting(crate::onboarding::SETTING_ALLOW_FULL, "true")
+        {
+            return fail_settings(
+                &state,
+                wants_html(&headers),
+                FormError::new(None, "settings_unwritable", error.to_string()),
+            );
+        }
+    } else if let Err(error) = state
+        .engine
+        .set_setting(crate::onboarding::SETTING_ALLOW_FULL, "false")
+    {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(None, "settings_unwritable", error.to_string()),
+        );
+    }
+
+    // Revoking the switch also revokes the mode it enabled: leaving `full`
+    // selected while the switch is off would mean the stored tuple disagrees with
+    // the rule the next save enforces.
+    if stored_now
+        && let Ok(mut permissions) = state.engine.permissions()
+        && permissions.sandbox_mode == crate::onboarding::SandboxMode::Full
+    {
+        permissions.sandbox_mode = crate::onboarding::SandboxMode::DEFAULT;
+        let _ = state.engine.set_permissions(permissions);
+    }
+
+    let detail = if stored_now {
+        "full host off"
+    } else {
+        "full host on"
+    };
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.full_access", Some(detail))
+    {
+        return audit_failure(&request_id.0, "settings.full_access", error);
+    }
+    see_other(ROUTE_SETTINGS)
+}
+
 /// The path of one conversation, built in one place.
 fn conversation_path(id: &str) -> String {
     format!("/dashboard/chat/{id}")
@@ -2968,14 +3098,34 @@ async fn chat_send(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     headers: HeaderMap,
-    body: Body,
+    request: axum::extract::Request,
 ) -> Response {
     if !session_valid(&state, &headers) {
         return no_dashboard_session(&headers, &request_id.0);
     }
-    let fields = match read_fields_within(&headers, body, chat::MAX_MESSAGE_BYTES * 4).await {
-        Ok(fields) => fields,
-        Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
+    // One route, two encodings: a plain form post (`curl -d`, a browser with no
+    // script) and a multipart post that can carry a file. The browser's composer
+    // always sends multipart once a file is chosen.
+    let multipart = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .to_ascii_lowercase()
+                .starts_with("multipart/form-data")
+        });
+
+    let (fields, files) = if multipart {
+        match read_multipart_chat(state.clone(), request).await {
+            Ok(pair) => pair,
+            Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
+        }
+    } else {
+        let (parts, body) = request.into_parts();
+        match read_fields_within(&parts.headers, body, chat::MAX_MESSAGE_BYTES * 4).await {
+            Ok(fields) => (fields, Vec::new()),
+            Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
+        }
     };
     let text = match chat::accept_text(field(&fields, "message")) {
         Ok(text) => text,
@@ -3048,7 +3198,19 @@ async fn chat_send(
         Ok(transcript) => transcript,
         Err(error) => return refusal(FormError::new(None, "chat_unreadable", error.to_string())),
     };
-    let history = chat::history(&transcript, &answer_id);
+    let mut history = chat::history(&transcript, &answer_id);
+    // Attachments ride after the question, as a second user message built for
+    // this turn only: the transcript keeps what the operator typed, and the
+    // model still learns what came with it.
+    if !files.is_empty() {
+        let described = chat::describe_attachments(&files);
+        if !described.trim().is_empty() {
+            history.push(core_runtime::provider::ChatMessage {
+                role: core_runtime::provider::ChatRole::User,
+                content: described,
+            });
+        }
+    }
 
     let streaming = headers
         .get(header::ACCEPT)
@@ -3105,6 +3267,145 @@ fn resolve_chat_model(
         // taken at face value rather than refused for want of a list.
         _ => Ok(requested.to_owned()),
     }
+}
+
+/// Read a chat form that may carry one file.
+///
+/// Everything the composer needs fits in one multipart body, so the no-script
+/// path is the same route: the browser posts `message`, `model`, `conversation`
+/// and an optional `file`. The file is written into the workspace before the
+/// turn runs, and the row that records it is written here too, so a file on disk
+/// always has a row and a row always has a file.
+async fn read_multipart_chat(
+    state: AppState,
+    request: axum::extract::Request,
+) -> Result<
+    (
+        std::collections::BTreeMap<String, String>,
+        Vec<chat::Attachment>,
+    ),
+    FormError,
+> {
+    let mut multipart = axum::extract::Multipart::from_request(request, &state)
+        .await
+        .map_err(|error| {
+            FormError::new(
+                None,
+                "upload_unreadable",
+                format!("the form did not parse as multipart: {error}"),
+            )
+        })?;
+
+    let mut fields = std::collections::BTreeMap::new();
+    let mut files: Vec<chat::Attachment> = Vec::new();
+    while let Some(mut field) = multipart.next_field().await.map_err(|error| {
+        FormError::new(
+            None,
+            "upload_unreadable",
+            format!("the form did not parse as multipart: {error}"),
+        )
+    })? {
+        let name = field.name().unwrap_or_default().to_owned();
+        if name != "file" {
+            let value = field.text().await.map_err(|error| {
+                FormError::new(None, "upload_unreadable", format!("field {name}: {error}"))
+            })?;
+            fields.insert(name, value);
+            continue;
+        }
+        // A file part. An empty picker sends an empty part with no filename, and
+        // that is "no attachment", not an error.
+        let Some(original) = field.file_name().map(str::to_owned) else {
+            while field
+                .chunk()
+                .await
+                .map_err(|error| {
+                    FormError::new(None, "upload_unreadable", format!("file part: {error}"))
+                })?
+                .is_some()
+            {}
+            continue;
+        };
+        if original.trim().is_empty() {
+            continue;
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = field.chunk().await.map_err(|error| {
+            FormError::new(
+                Some("file"),
+                "upload_unreadable",
+                format!("file part: {error}"),
+            )
+        })? {
+            if bytes.len() + chunk.len() > chat::MAX_ATTACHMENT_BYTES {
+                return Err(FormError::new(
+                    Some("file"),
+                    "upload_too_large",
+                    format!(
+                        "an attachment must be under {} bytes",
+                        chat::MAX_ATTACHMENT_BYTES
+                    ),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.is_empty() {
+            continue;
+        }
+        let safe = chat::safe_file_name(&original);
+        let conversation = chat::resolve_conversation(
+            state.engine.db(),
+            Some(field_value(&fields, "conversation")),
+        )
+        .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
+        let directory = state
+            .engine
+            .workspace_path()
+            .map_err(|error| FormError::new(None, "workspace_unreadable", error.to_string()))?
+            .join("uploads")
+            .join(&conversation);
+        std::fs::create_dir_all(&directory).map_err(|error| {
+            FormError::new(
+                None,
+                "upload_write_failed",
+                format!("cannot create {}: {error}", directory.display()),
+            )
+        })?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let path = directory.join(format!("{id}-{safe}"));
+        write_atomically(&path, &bytes).map_err(|error| {
+            FormError::new(
+                None,
+                "upload_write_failed",
+                format!("cannot write {}: {error}", path.display()),
+            )
+        })?;
+        let attachment = chat::Attachment {
+            id,
+            name: safe,
+            path: path.display().to_string(),
+            size: bytes.len() as u64,
+            media_type: chat::media_type_for(&original),
+        };
+        chat::record_attachment(state.engine.db(), &conversation, &attachment)
+            .map_err(|error| FormError::new(None, "chat_write_failed", error.to_string()))?;
+        let _ = state.engine.auth().audit(
+            "loopback",
+            "chat.attachment",
+            Some(&format!(
+                "{} bytes, {}",
+                attachment.size,
+                attachment.media_type.as_deref().unwrap_or("unknown type")
+            )),
+        );
+        files.push(attachment);
+    }
+    Ok((fields, files))
+}
+
+/// A field from a map, as a `&str` that outlives the call.
+fn field_value<'a>(fields: &'a std::collections::BTreeMap<String, String>, name: &str) -> &'a str {
+    fields.get(name).map(String::as_str).unwrap_or("")
 }
 
 /// `POST /dashboard/chat/clear`.

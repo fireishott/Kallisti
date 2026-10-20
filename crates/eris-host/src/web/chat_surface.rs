@@ -195,6 +195,156 @@ fn a_model_outside_the_probe_is_refused_by_name() {
 }
 
 #[test]
+fn the_rail_list_is_served_for_a_page_that_stays_open() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    chat::append(
+        db,
+        chat::CONVERSATION_ID,
+        Role::User,
+        "name me",
+        State::Complete,
+    )
+    .unwrap();
+    let second = chat::create_conversation(db).unwrap();
+
+    let reply = block_on(send(
+        &app,
+        Call::get(crate::admin::ROUTE_CHAT_SESSIONS).cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let body = reply.json();
+    assert_eq!(body["ok"], true);
+    let sessions = body["sessions"].as_array().expect("a list");
+    assert!(sessions.len() >= 2, "{body}");
+    assert!(
+        sessions.iter().any(|row| row["id"] == second.as_str()),
+        "the new conversation is listed: {body}"
+    );
+    assert!(
+        sessions
+            .iter()
+            .all(|row| row["title"].is_string() && row["stamp"].is_string()),
+        "each row carries a title and a stamp: {body}"
+    );
+}
+
+#[test]
+fn full_access_is_a_switch_the_operator_can_flip() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // It starts off, and selecting full is refused.
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PERMISSIONS,
+            "sandbox_mode=full&approval_policy=ask&autopilot_ceiling=l1&telemetry=off",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+
+    // Enabling needs the typed word.
+    let no_word = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_FULL_ACCESS, "confirm=").cookie(cookie),
+    ));
+    assert_eq!(no_word.status, StatusCode::BAD_REQUEST, "{}", no_word.body);
+    assert_eq!(no_word.json()["code"], "confirm_required");
+    assert!(
+        engine
+            .setting(crate::onboarding::SETTING_ALLOW_FULL)
+            .unwrap()
+            .as_deref()
+            != Some("true"),
+        "a missing confirmation changes nothing"
+    );
+
+    // With it, the switch is on and the mode is accepted.
+    let enabled = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_FULL_ACCESS, "confirm=full").cookie(cookie),
+    ));
+    assert_eq!(enabled.status, StatusCode::SEE_OTHER, "{}", enabled.body);
+    assert_eq!(
+        engine
+            .setting(crate::onboarding::SETTING_ALLOW_FULL)
+            .unwrap()
+            .as_deref(),
+        Some("true")
+    );
+    let accepted = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_PERMISSIONS,
+            "sandbox_mode=full&approval_policy=ask&autopilot_ceiling=l1&telemetry=off",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(accepted.status, StatusCode::SEE_OTHER, "{}", accepted.body);
+    assert_eq!(engine.permissions().unwrap().sandbox_mode.as_str(), "full");
+
+    // Turning it off needs no ritual, and it drops the mode it enabled.
+    let disabled = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_FULL_ACCESS, "").cookie(cookie),
+    ));
+    assert_eq!(disabled.status, StatusCode::SEE_OTHER, "{}", disabled.body);
+    assert_ne!(
+        engine.permissions().unwrap().sandbox_mode.as_str(),
+        "full",
+        "revoking the switch revokes the mode"
+    );
+}
+
+#[test]
+fn a_message_can_carry_a_file_and_the_turn_is_told_about_it() {
+    let (_dir, engine, app, cookie) = ready_app();
+    crate::web::chat::seed_conversation(engine.db(), crate::web::chat::CONVERSATION_ID).unwrap();
+
+    let boundary = "----kallisti-test-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"message\"\r\n\r\nread this\r\n\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"conversation\"\r\n\r\n{conv}\r\n\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nline one\nline two\r\n--{boundary}--\r\n",
+        conv = crate::web::chat::CONVERSATION_ID
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_CHAT_SEND, &body)
+            .content_type(concat!(
+                "multipart/form-data; boundary=",
+                "----kallisti-test-boundary"
+            ))
+            .cookie(Some(&cookie)),
+    ));
+    // The provider is stubbed out in this fixture, so the turn itself is refused;
+    // what matters here is that the file was accepted, stored, and recorded.
+    assert!(
+        reply.status == StatusCode::SEE_OTHER || reply.status == StatusCode::BAD_REQUEST,
+        "{}",
+        reply.body
+    );
+
+    let workspace = engine.workspace_path().unwrap();
+    let directory = workspace
+        .join("uploads")
+        .join(crate::web::chat::CONVERSATION_ID);
+    let entries: Vec<_> = std::fs::read_dir(&directory)
+        .expect("the uploads directory exists")
+        .filter_map(Result::ok)
+        .collect();
+    assert_eq!(entries.len(), 1, "one file was written");
+    let name = entries[0].file_name().to_string_lossy().to_string();
+    assert!(
+        name.ends_with("-notes.txt"),
+        "the name is kept, safe: {name}"
+    );
+    let stored = std::fs::read(entries[0].path()).expect("readable");
+    assert_eq!(stored, b"line one\nline two");
+}
+
+#[test]
 fn an_empty_message_is_refused_by_name_and_writes_nothing() {
     let (_dir, engine, app, cookie) = ready_app();
     let reply = block_on(send(

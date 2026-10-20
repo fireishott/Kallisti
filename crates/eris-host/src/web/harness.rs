@@ -87,6 +87,12 @@ impl Call {
         }
     }
 
+    /// Replace the request content type, for the multipart suites.
+    pub fn content_type(mut self, value: &'static str) -> Self {
+        self.content_type = Some(value);
+        self
+    }
+
     /// Send a browser `Accept` header.
     pub fn html(mut self) -> Self {
         self.accept_html = true;

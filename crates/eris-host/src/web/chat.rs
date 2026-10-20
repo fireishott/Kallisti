@@ -49,6 +49,163 @@ pub const SESSION_LIMIT: usize = 30;
 /// The longest title the rail stores from a first message.
 pub const TITLE_LIMIT: usize = 72;
 
+/// One file a message carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    /// Row id.
+    pub id: String,
+    /// The name it arrived with, already stripped of any path.
+    pub name: String,
+    /// Where it was written, absolute.
+    pub path: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// What the bytes claim to be, from the extension.
+    pub media_type: Option<String>,
+}
+
+/// The largest single attachment a message may carry.
+pub const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+/// How much of a text file is pasted into the prompt.
+pub const INLINE_TEXT_BYTES: usize = 8 * 1024;
+
+/// How much pasted text one turn may carry across every attachment.
+pub const INLINE_TOTAL_BYTES: usize = 32 * 1024;
+
+/// Extensions treated as text, so their content can ride in the prompt.
+const TEXT_EXTENSIONS: [&str; 18] = [
+    "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "log", "toml", "yaml", "yml", "ini",
+    "cfg", "rs", "py", "sh", "sql", "html",
+];
+
+/// The media type from a filename, for the record. Never trusted for safety:
+/// what is stored is decided by the name, and what is served is decided by the
+/// route, so a lying extension is a filing problem rather than a security one.
+#[must_use]
+pub fn media_type_for(name: &str) -> Option<String> {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())?;
+    let kind = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "md" | "markdown" => "text/markdown",
+        "txt" | "log" | "toml" | "yaml" | "yml" | "ini" | "cfg" | "rs" | "py" | "sh" | "sql"
+        | "html" => "text/plain",
+        "zip" => "application/zip",
+        _ => return None,
+    };
+    Some(kind.to_owned())
+}
+
+/// Whether the file's content is worth pasting into the prompt.
+#[must_use]
+pub fn is_text(name: &str) -> bool {
+    name.rsplit_once('.')
+        .map(|(_, ext)| TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// The name a file is stored under: no path, no traversal, bounded.
+///
+/// A browser sends `filename` with whatever the operator chose, and a name is
+/// the one place a path can sneak into a filesystem write.
+#[must_use]
+pub fn safe_file_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("file").trim();
+    let cleaned: String = base
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('.').trim().to_owned();
+    let cleaned = if cleaned.is_empty() {
+        "file".to_owned()
+    } else {
+        cleaned
+    };
+    if cleaned.len() > 120 {
+        cleaned[cleaned.len() - 120..].to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Record an attachment row and return the id.
+pub fn record_attachment(db: &Db, conversation: &str, file: &Attachment) -> Result<(), DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO chat_attachments
+                 (id, conversation_id, name, path, size, media_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                file.id,
+                conversation,
+                file.name,
+                file.path,
+                file.size as i64,
+                file.media_type
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+/// The prompt text that tells the model what came with the message.
+///
+/// Text files are pasted in full up to a budget, because a path the model cannot
+/// read is not an attachment. Everything else is named and located: the turn
+/// runs in the workspace, so a file it may open is a file it can work with.
+#[must_use]
+pub fn describe_attachments(files: &[Attachment]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n\nThe operator attached these files to this message:\n");
+    let mut budget = INLINE_TOTAL_BYTES;
+    for file in files {
+        out.push_str(&format!(
+            "- {} ({} bytes) at {}\n",
+            file.name, file.size, file.path
+        ));
+        if budget == 0 || !is_text(&file.name) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&file.path) else {
+            out.push_str("  (the file could not be read)\n");
+            continue;
+        };
+        let take = bytes.len().min(INLINE_TEXT_BYTES).min(budget);
+        let slice = &bytes[..take];
+        let text = String::from_utf8_lossy(slice);
+        let truncated = take < bytes.len();
+        out.push_str(&format!(
+            "  contents{}:\n",
+            if truncated { ", truncated" } else { "" }
+        ));
+        out.push_str("  ```\n");
+        for line in text.lines() {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str("  ```\n");
+        budget -= take;
+    }
+    out
+}
+
 /// One conversation the rail can list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conversation {
@@ -976,6 +1133,63 @@ mod tests {
         assert_eq!(stats.cache_hit_pct, None);
         assert_eq!(stats.context_pct, None);
         assert_eq!(stats.tokens_per_second, None);
+    }
+
+    #[test]
+    fn a_file_name_cannot_carry_a_path() {
+        assert_eq!(safe_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_file_name("C:\\Users\\x\\notes.txt"), "notes.txt");
+        assert_eq!(safe_file_name("weird name: v2?.md"), "weird name_ v2_.md");
+        assert_eq!(safe_file_name("   "), "file");
+        assert_eq!(safe_file_name("..."), "file");
+        let long = "a".repeat(300);
+        assert!(safe_file_name(&long).len() <= 120);
+    }
+
+    #[test]
+    fn text_files_ride_in_the_prompt_and_binaries_are_only_located() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = dir.path().join("notes.md");
+        std::fs::write(&text, "# Title\n\nBody line").unwrap();
+        let binary = dir.path().join("scan.pdf");
+        std::fs::write(&binary, b"%PDF-1.7\x00\x01").unwrap();
+
+        let files = vec![
+            Attachment {
+                id: "a".into(),
+                name: "notes.md".into(),
+                path: text.display().to_string(),
+                size: 18,
+                media_type: Some("text/markdown".into()),
+            },
+            Attachment {
+                id: "b".into(),
+                name: "scan.pdf".into(),
+                path: binary.display().to_string(),
+                size: 9,
+                media_type: Some("application/pdf".into()),
+            },
+        ];
+
+        let described = describe_attachments(&files);
+        assert!(described.contains("notes.md"));
+        assert!(described.contains("Body line"), "text content is pasted");
+        assert!(described.contains("scan.pdf"));
+        assert!(
+            !described.contains("%PDF"),
+            "binary content is never pasted into a prompt"
+        );
+        assert_eq!(describe_attachments(&[]), "");
+    }
+
+    #[test]
+    fn is_text_knows_the_extensions_it_pastes() {
+        for name in ["a.txt", "b.md", "c.json", "d.rs", "e.csv"] {
+            assert!(is_text(name), "{name}");
+        }
+        for name in ["a.pdf", "b.png", "c.zip", "noextension"] {
+            assert!(!is_text(name), "{name}");
+        }
     }
 
     #[test]

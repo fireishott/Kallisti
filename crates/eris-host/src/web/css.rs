@@ -898,6 +898,43 @@ pre.code {
 .composer-pick .nowrap { white-space: nowrap; }
 .composer-send { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 
+/* The attach control: a labelled + that opens the picker, and the queued name
+   beside it so a turn never carries a file the operator forgot about. */
+.attach {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attach:hover { color: var(--text); background: var(--raise); }
+.attach-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+}
+.attach-input:focus-visible + .attach-name { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.attach-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--platinum);
+}
+
 .statusbar {
   position: relative;
   z-index: 1;

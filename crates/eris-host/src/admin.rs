@@ -87,6 +87,10 @@ pub const ROUTE_CHAT_CLEAR: &str = "/dashboard/chat/clear";
 /// `GET /dashboard/chat/{id}` - one conversation.
 pub const ROUTE_CHAT_ID: &str = "/dashboard/chat/{id}";
 
+/// `GET /dashboard/chat/sessions.json` - the rail's list, for a page that stays
+/// open while conversations change underneath it.
+pub const ROUTE_CHAT_SESSIONS: &str = "/dashboard/chat/sessions.json";
+
 /// `POST /dashboard/chat/new` - start a conversation.
 pub const ROUTE_CHAT_NEW: &str = "/dashboard/chat/new";
 
@@ -107,6 +111,10 @@ pub const ROUTE_SETTINGS_PERMISSIONS: &str = "/dashboard/settings/permissions";
 
 /// `POST /dashboard/settings/persona` - the assistant's identity.
 pub const ROUTE_SETTINGS_PERSONA: &str = "/dashboard/settings/persona";
+
+/// `POST /dashboard/settings/full-access` - the operator's own switch for full
+/// host sandbox mode, behind a typed confirmation.
+pub const ROUTE_SETTINGS_FULL_ACCESS: &str = "/dashboard/settings/full-access";
 
 /// `GET /dashboard/activity` - the audit trail, newest first.
 pub const ROUTE_ACTIVITY: &str = "/dashboard/activity";
@@ -218,7 +226,11 @@ pub struct AppState {
     /// Claim attempt limiter, in process on purpose: it guards one form, so it
     /// counts attempts per effective client rather than per proxy.
     pub limiter: Arc<ClaimLimiter>,
-    /// True only when the process was started with `--allow-full`.
+    /// True when the process was started with `--allow-full`.
+    ///
+    /// The command line is the override; [`AppState::allow_full`] is the answer
+    /// the UI and the validator should use, because it also honours the stored
+    /// switch an operator flipped from the dashboard.
     pub allow_full: bool,
     /// The device listener's service. It binds nothing until `start` is called:
     /// at boot when the flag or the setting asks for it, and from the dashboard
@@ -340,6 +352,23 @@ impl AppState {
         } else {
             crate::web::wallpaper::url(&selected)
         }
+    }
+
+    /// Whether full host sandbox mode may be selected.
+    ///
+    /// Either the process was started with `--allow-full`, or the operator turned
+    /// it on from the dashboard. The stored switch is read on every call rather
+    /// than cached, so flipping it takes effect on the next save without a
+    /// restart, and revoking it is immediate for the same reason.
+    #[must_use]
+    pub fn allow_full(&self) -> bool {
+        if self.allow_full {
+            return true;
+        }
+        matches!(
+            self.engine.setting(crate::onboarding::SETTING_ALLOW_FULL),
+            Ok(Some(value)) if value.trim().eq_ignore_ascii_case("true")
+        )
     }
 
     /// The database.
@@ -700,7 +729,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.7");
+        assert_eq!(VERSION, "1.0.8");
     }
 
     #[test]

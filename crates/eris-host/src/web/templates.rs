@@ -423,7 +423,7 @@ pub fn shell(
                             form .side-action method="post" action=(crate::admin::ROUTE_CHAT_NEW) {
                                 button type="submit" { "+  New chat" }
                             }
-                            nav .sessions aria-label="Conversations" {
+                            nav .sessions id="rail-sessions" aria-label="Conversations" {
                                 @if chrome.sessions.is_empty() {
                                     span .side-empty { "No conversations yet" }
                                 }
@@ -1320,8 +1320,12 @@ pub struct SettingsView {
     pub state: SetupState,
     /// The version line.
     pub version: String,
-    /// True only when the process was started with `--allow-full`.
+    /// True when full host sandbox mode may be selected (flag or stored switch).
     pub allow_full: bool,
+    /// Whether the operator's stored switch is on.
+    pub allow_full_stored: bool,
+    /// Whether this process was started with `--allow-full`.
+    pub allow_full_from_flag: bool,
     /// Stored provider base URL.
     pub provider_base_url: String,
     /// Stored key reference. A reference, never a value.
@@ -1363,6 +1367,8 @@ impl SettingsView {
             state,
             version: version.into(),
             allow_full: false,
+            allow_full_stored: false,
+            allow_full_from_flag: false,
             provider_base_url: String::new(),
             provider_key_ref: String::new(),
             model: String::new(),
@@ -1537,8 +1543,8 @@ fn permissions_group(view: &SettingsView) -> Markup {
             ))
             @if !view.allow_full {
                 p .small {
-                    "Full host is not selectable on this process. It needs a restart of eris with "
-                    code { "--allow-full" } ", which is a decision made at a keyboard on this host."
+                    "Full host is off. Turn it on below, or start eris with " code { "--allow-full" }
+                    " which overrides the stored switch for the life of the process."
                 }
             }
             (radio_group(
@@ -1701,6 +1707,52 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                     ", "
                     @if view.device_listener_bound { "bound" } @else { "not bound" }
                     " on " (DEVICE_ADDR)
+                }
+            }
+        }
+
+        section .card aria-labelledby="full-access-heading" {
+            h2 id="full-access-heading" { "Full host access" }
+            p .small {
+                "Whether this operator may select full host sandbox mode at all. It is off by "
+                "default, it needs a typed confirmation to enable, and every change is audited. "
+                "While it is off the option stays greyed out in the permissions table above."
+            }
+            dl .kv {
+                dt { "Stored switch" } dd {
+                    @if view.allow_full_stored { "on" } @else { "off" }
+                }
+                dt { "Command line" } dd {
+                    @if view.allow_full_from_flag { "started with --allow-full" } @else { "not passed" }
+                }
+                dt { "Effective" } dd {
+                    @if view.allow_full { "full host selectable" } @else { "refused" }
+                }
+            }
+            form method="post" action="/dashboard/settings/full-access" novalidate {
+                @if !view.allow_full_stored {
+                    div .field {
+                        label for="confirm" { "Type full to enable" }
+                        input id="confirm" type="text" name="confirm" value=""
+                            autocomplete="off" spellcheck="false"
+                            placeholder="full";
+                        span .hint {
+                            "This unlocks command execution on the whole host for every turn. The "
+                            "rest of the daemon does not change; this is the one switch that decides "
+                            "whether the sandbox may be opened."
+                        }
+                    }
+                    div .actions {
+                        button type="submit" { "Enable full host" }
+                    }
+                } @else {
+                    p .small {
+                        "Full host is enabled. Turning it off refuses the option immediately; a turn "
+                        "that is already running is not interrupted."
+                    }
+                    div .actions {
+                        button type="submit" class="danger" { "Disable full host" }
+                    }
                 }
             }
         }
@@ -2758,7 +2810,7 @@ fn chat_status_strip(view: &ChatView) -> Markup {
 /// script-free.
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
-        div .chat-shell {
+        div .chat-shell data-conversation=(view.conversation.clone()) {
         div .chat-head {
             div .chat-title {
                 h1 { "Chat" }
@@ -2823,12 +2875,21 @@ pub fn chat_page(view: &ChatView) -> Markup {
         }
         @if view.provider_ready {
             form .composer id="composer-form" method="post"
-                action=(crate::admin::ROUTE_CHAT_SEND) novalidate {
+                action=(crate::admin::ROUTE_CHAT_SEND) novalidate
+                enctype="multipart/form-data" {
+                input type="hidden" name="conversation" value=(view.conversation);
                 label .sr-only for="composer" { "Message" }
                 textarea id="composer" name="message" rows="1" spellcheck="false"
                     placeholder="Message Eris" {}
                 div .composer-bar {
                     div .composer-pick {
+                        label .attach for="attachment" title="Attach a file" {
+                            span aria-hidden="true" { "+" }
+                            span .sr-only { "Attach a file" }
+                        }
+                        input type="file" id="attachment" name="file" .attach-input
+                            aria-label="Attach a file";
+                        span .attach-name id="attach-name" {}
                         label .sr-only for="model" { "Model" }
                         select id="model" name="model" aria-label="Model" {
                             @for id in &view.models {
@@ -2955,6 +3016,9 @@ const CHAT_JS: &str = r##"(function () {
     if (text === "" || busy) { return; }
     var picker = document.getElementById("model");
     var chosen = picker === null ? "" : picker.value;
+    var attachment = document.getElementById("attachment");
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
     var userLine = document.createElement("article");
     userLine.className = "msg user";
     var userWho = document.createElement("div");
@@ -2983,7 +3047,16 @@ const CHAT_JS: &str = r##"(function () {
           "Accept": "text/event-stream",
           "Content-Type": "application/x-www-form" + "-urlencoded"
         },
-        body: new URLSearchParams({ message: text, model: chosen }),
+        body: (function () {
+          var body = new FormData();
+          body.append("message", text);
+          body.append("model", chosen);
+          body.append("conversation", conversation);
+          if (attachment && attachment.files.length > 0) {
+            body.append("file", attachment.files[0], attachment.files[0].name);
+          }
+          return body;
+        })(),
         signal: controller.signal
       });
       if (response.ok === false) { throw new Error("HTTP " + response.status); }
@@ -3030,6 +3103,12 @@ const CHAT_JS: &str = r##"(function () {
     target.article.className = "msg assistant";
     setBusy(false);
     toBottom();
+    await refreshRail();
+    if (attachment) {
+      attachment.value = "";
+      var cleared = document.getElementById("attach-name");
+      if (cleared) { cleared.textContent = ""; }
+    }
     box.focus();
   }
 
@@ -3044,6 +3123,57 @@ const CHAT_JS: &str = r##"(function () {
       send();
     }
   });
+
+  // The rail is a server-rendered list, so a conversation that earns its name
+  // during this turn would not show up until a reload. One small JSON read after
+  // the turn keeps the list honest.
+  async function refreshRail() {
+    var rail = document.getElementById("rail-sessions");
+    var shell = document.querySelector(".chat-shell");
+    if (rail === null || shell === null) { return; }
+    try {
+      var response = await fetch("/dashboard/chat/sessions.json", {
+        headers: { "Accept": "application/json" }
+      });
+      if (response.ok === false) { return; }
+      var payload = await response.json();
+      var open = shell.getAttribute("data-conversation");
+      rail.textContent = "";
+      if (payload.sessions.length === 0) {
+        var empty = document.createElement("span");
+        empty.className = "side-empty";
+        empty.textContent = "No conversations yet";
+        rail.appendChild(empty);
+        return;
+      }
+      for (var index = 0; index < payload.sessions.length; index += 1) {
+        var session = payload.sessions[index];
+        var link = document.createElement("a");
+        link.href = "/dashboard/chat/" + session.id;
+        link.title = session.title;
+        if (session.id === open) { link.setAttribute("aria-current", "page"); }
+        var title = document.createElement("span");
+        title.className = "session-title";
+        title.textContent = session.title;
+        var stamp = document.createElement("span");
+        stamp.className = "session-stamp";
+        stamp.textContent = session.stamp;
+        link.appendChild(title);
+        link.appendChild(stamp);
+        rail.appendChild(link);
+      }
+    } catch (error) {
+      // A rail that cannot refresh is not worth interrupting the conversation for.
+    }
+  }
+
+  if (attachment) {
+    attachment.addEventListener("change", function () {
+      var label = document.getElementById("attach-name");
+      if (label === null) { return; }
+      label.textContent = attachment.files.length > 0 ? attachment.files[0].name : "";
+    });
+  }
 
   if (stop) {
     stop.addEventListener("click", function () {

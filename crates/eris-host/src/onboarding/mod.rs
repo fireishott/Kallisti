@@ -58,6 +58,14 @@ pub const SETTING_PROVIDER_BASE_URL: &str = "provider.base_url";
 pub const SETTING_PROVIDER_KEY_REF: &str = "provider.api_key_ref";
 
 /// `settings` key: the JSON array of model ids the probe listed.
+/// `settings` key: whether the dashboard may select full host sandbox mode.
+///
+/// The command line flag is still the override: `--allow-full` turns this on for
+/// the life of the process. This row is the operator's own switch, written from
+/// the dashboard behind a typed confirmation and audited, so enabling it does not
+/// need a shell.
+pub const SETTING_ALLOW_FULL: &str = "permissions.allow_full";
+
 pub const SETTING_PROVIDER_MODELS: &str = "provider.models";
 
 /// `settings` key: the context window each probed model declared, as a JSON
