@@ -3796,6 +3796,7 @@ async fn chat_send(
             &state,
             config,
             conversation.clone(),
+            text,
             answer_id,
             history,
             None,
@@ -3809,6 +3810,7 @@ async fn chat_send(
         &state,
         config,
         conversation.clone(),
+        text,
         answer_id,
         history,
         Some(tx),
@@ -4106,6 +4108,7 @@ fn spawn_turn(
     state: &AppState,
     config: chat::TurnConfig,
     conversation: String,
+    question: String,
     answer_id: String,
     history: Vec<core_runtime::provider::ChatMessage>,
     sender: Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
@@ -4147,6 +4150,12 @@ fn spawn_turn(
             .flatten()
             .as_deref(),
     );
+    // A role on the primary is a no-op, so this is None unless the operator
+    // pinned a model for naming conversations.
+    let title_config = chat::aux_pinned_config(&state.engine, "title_generation")
+        .ok()
+        .flatten();
+    let title_audit = state.engine.auth().clone();
     let tool_rounds = crate::tools::max_rounds(
         state
             .engine
@@ -4285,6 +4294,23 @@ fn spawn_turn(
                         "duration_ms": accounting.duration_ms,
                     }),
                 );
+                // Rename only after the operator already has the answer: a title
+                // is a nicety and must never sit between them and the reply.
+                if let Some(config) = &title_config {
+                    let suggested = chat::suggest_title(config, &question, &turn.text);
+                    let renamed = suggested.as_deref().and_then(|title| {
+                        chat::set_title(&db, &conversation, &question, title)
+                            .ok()
+                            .map(|rows| (title, rows))
+                    });
+                    // Recorded either way: a role that never lands is exactly the
+                    // kind of quiet no-op this platform refuses to ship.
+                    let detail = match &renamed {
+                        Some((title, rows)) => format!("title=`{title}`; rows={rows}"),
+                        None => "no title suggested".to_owned(),
+                    };
+                    let _ = title_audit.audit("loopback", "chat.title", Some(&detail));
+                }
             }
             Err((code, message)) => {
                 let _ = chat::fail(&db, &answer_id, &code, &streamed);

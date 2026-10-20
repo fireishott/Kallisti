@@ -2120,9 +2120,9 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "that model when the primary moves."
             }
             p .small {
-                "Stored now, read by nothing yet: this build routes every turn through the primary "
-                "model. Each row says so, so a pinned model is a note for later rather than a switch "
-                "that is quietly doing nothing."
+                "Pinning a model to a role is what turns that role on: left on primary, the role does "
+                "nothing, because re-running the primary model for a job the turn already did would be "
+                "cost with no answer behind it. Each row states whether anything reads it yet."
             }
             (aux_group(view))
         }

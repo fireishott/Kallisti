@@ -58,7 +58,7 @@ pub const ROLES: &[Role] = &[
         key: "title_generation",
         label: "Title generation",
         purpose: "Names a conversation from its first exchange.",
-        consumed_by: None,
+        consumed_by: Some("a settled turn, once this role is pinned to a model"),
     },
     Role {
         key: "approval",
@@ -247,15 +247,14 @@ mod tests {
     }
 
     #[test]
-    fn no_role_claims_a_consumer_this_build_does_not_have() {
-        // The day a role is wired, this assertion is the thing to edit - and
+    fn only_the_roles_with_a_real_consumer_claim_one() {
+        // The day another role is wired, this list is the thing to edit - and
         // editing it is a reminder to update the page's honesty note too.
-        for role in ROLES {
-            assert!(
-                role.consumed_by.is_none(),
-                "{} claims a consumer, but nothing reads aux rows yet",
-                role.key
-            );
-        }
+        let wired: Vec<&str> = ROLES
+            .iter()
+            .filter(|role| role.consumed_by.is_some())
+            .map(|role| role.key)
+            .collect();
+        assert_eq!(wired, vec!["title_generation"]);
     }
 }

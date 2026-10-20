@@ -356,10 +356,153 @@ pub fn name_from_first_message(db: &Db, id: &str, text: &str) -> Result<(), DbEr
     })
 }
 
+/// The configuration an auxiliary role resolves to, when the operator pinned it.
+///
+/// `None` means the role is left on the primary model, and a role on the primary
+/// is a no-op by design: paying a second request to re-derive what the primary
+/// already produced would be a cost with no answer behind it. Pinning a model is
+/// the switch that turns a role on, and the settings page says so on the row.
+///
+/// # Errors
+///
+/// A settings read failure.
+pub fn aux_pinned_config(
+    engine: &SetupEngine,
+    role: &str,
+) -> Result<Option<TurnConfig>, OnboardingError> {
+    let stored_model = engine.setting(&crate::aux::setting_key(role))?;
+    if crate::aux::inherits(stored_model.as_deref()) {
+        return Ok(None);
+    }
+
+    let registry = provider_registry(engine)?;
+    let primary = engine
+        .setting(crate::providers::SETTING_PRIMARY)?
+        .unwrap_or_else(|| crate::providers::DEFAULT_ID.to_owned());
+    let stored_provider = engine.setting(&crate::aux::provider_key(role))?;
+    let Some(provider) = crate::aux::provider_for(stored_provider.as_deref(), &registry, &primary)
+    else {
+        return Ok(None);
+    };
+    let Ok(key_ref) = SecretRef::try_from(provider.key_ref.as_str()) else {
+        return Ok(None);
+    };
+    let primary_model = engine.setting(SETTING_MODEL)?.unwrap_or_default();
+    Ok(Some(TurnConfig {
+        base_url: provider.base_url.clone(),
+        key_ref,
+        model: crate::aux::effective(stored_model.as_deref(), &primary_model),
+    }))
+}
+
+/// Replace a conversation title a model suggested.
+///
+/// Two titles are fair game: the placeholder, and the truncation of the first
+/// question. The truncation is written before the turn runs, so matching only the
+/// placeholder would mean a suggestion never landed - which is exactly the bug
+/// this condition exists to avoid. Anything else is the operator's own words and
+/// is left alone.
+pub fn set_title(db: &Db, id: &str, question: &str, title: &str) -> Result<usize, DbError> {
+    let title = scrub_title(title);
+    if title.is_empty() {
+        return Ok(0);
+    }
+    let truncated = title_from(question);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations
+                SET title = ?2
+              WHERE id = ?1 AND title IN (?3, ?4)",
+            params![id, title, NEW_CONVERSATION_TITLE, truncated],
+        )
+    })
+}
+
 /// A title from the first question: one line, trimmed, bounded.
 #[must_use]
 pub fn title_from(text: &str) -> String {
     let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= TITLE_LIMIT {
+        return collapsed;
+    }
+    let mut cut: String = collapsed.chars().take(TITLE_LIMIT).collect();
+    cut.push('…');
+    cut
+}
+
+/// Ask the resolved role for a title.
+///
+/// Best effort by design: a title is a nicety, so a provider that is down or a
+/// reply that is unusable leaves the truncated title in place rather than
+/// failing a turn that already answered.
+#[must_use]
+pub fn suggest_title(config: &TurnConfig, question: &str, answer: &str) -> Option<String> {
+    let profile = ProviderProfile::new(
+        "title-generation",
+        config.base_url.clone(),
+        config.key_ref.clone(),
+    )
+    .ok()?;
+    let provider = OpenAiCompatProvider::new(
+        profile,
+        ModelProfile::new(config.model.clone()),
+        Capabilities::openai_compatible(),
+    )
+    .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    let excerpt = |text: &str| -> String { text.chars().take(600).collect() };
+    let request = ChatRequest {
+        system: Some(
+            "You name conversations. Reply with only a title of at most six words. \
+             No quotes, no trailing punctuation, no explanation."
+                .to_owned(),
+        ),
+        messages: vec![ChatMessage::text(
+            ChatRole::User,
+            format!(
+                "Question:\n{}\n\nAnswer:\n{}",
+                excerpt(question),
+                excerpt(answer)
+            ),
+        )],
+        // No cap: a short cap is spent on a thinking model's reasoning before it
+        // ever writes the title, which produced an empty answer and a rename that
+        // silently did nothing.
+        ..ChatRequest::default()
+    };
+
+    let mut sink = |_event: ProviderEvent| {};
+    let completion = runtime
+        .block_on(provider.stream_chat(&request, &key, &mut sink))
+        .ok()?;
+    let title = scrub_title(&completion.text);
+    (!title.is_empty()).then_some(title)
+}
+
+/// Make a model's suggestion usable as a title.
+///
+/// Models like to answer with a quoted line, a trailing period, or two lines. A
+/// title is one line of plain words, so quotes and trailing punctuation are
+/// dropped and the whole thing is bounded.
+#[must_use]
+pub fn scrub_title(raw: &str) -> String {
+    let line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    // Punctuation first, then quotes: a model that writes `"A title".` puts the
+    // stop outside the quote, so trimming quotes first would leave the `"` behind.
+    let without_stop = line.trim().trim_end_matches(['.', '!', '?', ':']);
+    let unquoted = without_stop
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+        .trim();
+    let collapsed: String = unquoted.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= TITLE_LIMIT {
         return collapsed;
     }
@@ -1210,6 +1353,95 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn a_suggested_title_is_reduced_to_one_plain_line() {
+        // Quotes, a trailing full stop and a second line all go.
+        assert_eq!(
+            scrub_title("\"Warehouse data health\"."),
+            "Warehouse data health"
+        );
+        assert_eq!(
+            scrub_title("  Kill the rail  \nsecond line"),
+            "Kill the rail"
+        );
+        assert_eq!(scrub_title("`backticked`"), "backticked");
+        assert_eq!(
+            scrub_title("Why is the build broken?"),
+            "Why is the build broken"
+        );
+        assert_eq!(scrub_title(""), "");
+    }
+
+    #[test]
+    fn a_suggested_title_is_bounded_like_a_truncated_one() {
+        let long = "word ".repeat(40);
+        let title = scrub_title(&long);
+        assert_eq!(
+            title.chars().count(),
+            TITLE_LIMIT + 1,
+            "cut plus its ellipsis"
+        );
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn a_rename_replaces_the_placeholder_and_the_truncation_but_nothing_else() {
+        let db = db();
+        let question = "Compare the disk usage of the workspace against the warehouse";
+
+        // Placeholder: a suggestion lands.
+        let first = create_conversation(&db).unwrap();
+        assert_eq!(
+            set_title(&db, &first, question, "Warehouse versus workspace").unwrap(),
+            1
+        );
+
+        // The truncation the turn wrote: a suggestion still lands, because that
+        // is the state every real conversation is in by the time it settles.
+        let second = create_conversation(&db).unwrap();
+        name_from_first_message(&db, &second, question).unwrap();
+        assert_eq!(
+            set_title(&db, &second, question, "Warehouse versus workspace").unwrap(),
+            1,
+            "the truncated title is a placeholder too"
+        );
+
+        // A title that is neither is the operator's, and is left alone.
+        assert_eq!(
+            set_title(&db, &second, question, "Something else").unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_role_on_the_primary_resolves_to_nothing_so_it_costs_nothing() {
+        let (_dir, engine, _app, _cookie) = super::super::harness::ready_app();
+
+        // Unset means inherit.
+        assert!(
+            aux_pinned_config(&engine, "title_generation")
+                .expect("config")
+                .is_none(),
+            "an unpinned role must not spend a request"
+        );
+
+        engine
+            .set_setting(&crate::aux::setting_key("title_generation"), "m/cheap")
+            .unwrap();
+        let pinned = aux_pinned_config(&engine, "title_generation")
+            .expect("config")
+            .expect("a pinned role resolves");
+        assert_eq!(pinned.model, "m/cheap");
+        assert_eq!(
+            pinned.base_url,
+            engine
+                .setting(SETTING_PROVIDER_BASE_URL)
+                .unwrap()
+                .unwrap_or_default(),
+            "an unpinned provider follows the primary endpoint"
+        );
     }
 
     #[test]
