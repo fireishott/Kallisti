@@ -24,9 +24,19 @@ credentials, the sandbox and the tools. Clients are replaceable views onto it.
 | **Needs** | A browser | A paired device |
 
 Lite is the whole product today and it is not a demo: streaming chat, tools, MCP,
-approvals, memory and backups all work through it. Pro is where the suite goes -
-the `ios-host` crate is the seam it plugs into, with a UniFFI surface and no I/O of
-its own.
+approvals, memory and backups all work through it.
+
+Pro is not "Lite in an app". Pro's point is that **the phone becomes a capability
+provider to the daemon**: the assistant keeps its brain, its tools and its memory on
+the host, and gains the senses and surfaces of the device it is paired with. The
+`ios-host` crate is the seam - a UniFFI surface with no I/O of its own, so the core
+never imports a device framework and every permission prompt belongs to the iOS
+shell, not to a Rust dependency.
+
+Capabilities the suite is built around: health and sensors, camera and photos,
+handwriting and OCR on iPad, voice, push notifications, widgets and Live Activities,
+and gateway control. Each one is a device-side capability the host can call, which
+is why Pro is a suite rather than a view.
 
 ## What it does
 
@@ -115,9 +125,11 @@ secret **references** only. Everything else is
 ## Roadmap
 
 - **Beta: Lite alone.** Harden the daemon, the tool boundary and the approval gate.
-- **After beta: Pro.** The iOS suite on the `ios-host` seam: on-device pairing, a
-  first-party chat surface, and the device capabilities a phone can offer that a
-  browser cannot.
+- **After beta: Pro.** The iOS suite on the `ios-host` seam: pairing, a first-party
+  chat surface, and the device capabilities a browser cannot reach - health and
+  sensors, camera and photos, OCR, voice, notifications, widgets, Live Activities
+  and gateway control. The long-term play is not a prettier client; it is the
+  assistant gaining the phone's senses while its brain stays on hardware you own.
 
 Six of the twelve auxiliary roles are not wired yet, and the reason differs. Five -
 skills hub, triage specifier, kanban decomposer, profile describer, curator - have
