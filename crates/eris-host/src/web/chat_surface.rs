@@ -264,6 +264,183 @@ fn a_tool_call_renders_as_a_closed_window_that_can_be_opened() {
     );
 }
 
+/// A settled answer in the fixture conversation, with the calls given.
+fn settle_with_calls(engine: &SetupEngine, tools: &[chat::ToolRecord]) {
+    let db = engine.db();
+    chat::append(db, CONVERSATION_ID, Role::User, "run it", State::Complete).unwrap();
+    let answer = chat::append_answer(db, CONVERSATION_ID, "m/one", None).unwrap();
+    chat::settle(
+        db,
+        &answer,
+        "ran it",
+        None,
+        tools,
+        None,
+        chat::Accounting::default(),
+    )
+    .unwrap();
+}
+
+fn one_call() -> chat::ToolRecord {
+    chat::ToolRecord {
+        name: "run_command".to_owned(),
+        arguments: r#"{"command":"ls"}"#.to_owned(),
+        output: "a b c".to_owned(),
+        is_error: false,
+    }
+}
+
+/// The run log's two controls exist exactly where they control something: under
+/// the summary of a log that has calls, and nowhere else.
+#[test]
+fn the_run_log_offers_expand_and_collapse_only_when_it_has_calls() {
+    let (_dir, engine, app, cookie) = ready_app();
+    settle_with_calls(&engine, &[one_call()]);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        body.contains(r#"<div class="runctl" hidden role="group" aria-label="Run log controls">"#),
+        "the controls are a named group, and hidden until a script can use them: {body}"
+    );
+    assert!(
+        body.contains(r#"<button class="run-btn" type="button" data-run="open""#),
+        "Expand all is a plain button, not a submit: {body}"
+    );
+    assert!(
+        body.contains(r#"<button class="run-btn" type="button" data-run="shut""#),
+        "Collapse all is a plain button, not a submit: {body}"
+    );
+    assert!(
+        body.contains(r#"aria-label="Expand every tool call in this run log""#)
+            && body.contains(r#"aria-label="Collapse every tool call in this run log""#),
+        "both controls carry an accessible name: {body}"
+    );
+    assert!(
+        body.contains(">Expand all</button>") && body.contains(">Collapse all</button>"),
+        "both controls are labelled in sight: {body}"
+    );
+    assert!(
+        body.contains(r#"<summary><span class="exec-label">Run log</span>"#),
+        "the log's own summary keeps its name and stays a bare disclosure: {body}"
+    );
+}
+
+#[test]
+fn a_message_without_calls_carries_no_run_log_controls() {
+    let (_dir, engine, app, cookie) = ready_app();
+    settle_with_calls(&engine, &[]);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        !body.contains(r#"class="runctl""#),
+        "no log means no controls to press: {body}"
+    );
+    assert!(
+        !body.contains(r#"data-run="open""#),
+        "and no Expand all either: {body}"
+    );
+}
+
+/// One log element, one script, and the script is the one that carries the
+/// controls and the memory. A bang would be text on the page, so there is none.
+#[test]
+fn the_run_log_is_one_details_and_its_controls_ride_the_one_script() {
+    let (_dir, engine, app, cookie) = ready_app();
+    settle_with_calls(&engine, &[one_call()]);
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert_eq!(
+        body.matches(r#"<details class="exec""#).count(),
+        1,
+        "the answer carries one run log, and the calls are exec-call: {body}"
+    );
+    assert_eq!(
+        body.matches("<script").count(),
+        1,
+        "the controls ride the page's one script: {body}"
+    );
+    let script = body
+        .split("<script>")
+        .nth(1)
+        .and_then(|rest| rest.split("</script>").next())
+        .expect("the chat page carries its inline script");
+    assert!(
+        !script.contains('!'),
+        "the script is written without a bang, like the rest of the page"
+    );
+    assert!(
+        script.contains(r#"kallisti.runlog"#),
+        "the remembered choice lives in the one script"
+    );
+    assert!(
+        script.contains(r#".run-btn"#),
+        "the same script wires the two controls"
+    );
+}
+
+/// The rendered page is still the script-free reading: every call closed, the log
+/// itself open, and nothing gained in height.
+#[test]
+fn the_rendered_run_log_starts_with_every_call_collapsed() {
+    let (_dir, engine, app, cookie) = ready_app();
+    settle_with_calls(
+        &engine,
+        &[
+            one_call(),
+            chat::ToolRecord {
+                name: "run_command".to_owned(),
+                arguments: r#"{"command":"nope"}"#.to_owned(),
+                output: "exit 127".to_owned(),
+                is_error: true,
+            },
+        ],
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    assert!(
+        body.contains(r#"<details class="exec" open>"#),
+        "the log is one open panel: {body}"
+    );
+    assert_eq!(
+        body.matches(r#"<details class="exec-call"#).count(),
+        2,
+        "each call is its own window: {body}"
+    );
+    assert!(
+        body.contains(r#"<details class="exec-call failed""#)
+            && !body.contains(r#"<details class="exec-call failed" open"#),
+        "an erroring call is closed too: {body}"
+    );
+    assert!(
+        !body.contains(r#"<details class="exec-call" open"#),
+        "no call starts open, so a long stdout cannot take over the page: {body}"
+    );
+    assert!(
+        body.contains(r#"<div class="exec-body">"#),
+        "the calls stay in the bounded body that scrolls: {body}"
+    );
+}
+
 #[test]
 fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
     let (_dir, engine, app, cookie) = ready_app();

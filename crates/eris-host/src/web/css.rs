@@ -1102,6 +1102,30 @@ pre.code {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The run log's two controls: open every call, or close every one. A row of its
+   own under the summary, because a focusable button inside a summary competes
+   with the disclosure's own Enter and Space. Hidden until the page script
+   reveals it: with no script a button cannot open anything, and the calls are
+   already native disclosures. */
+.msg .runctl {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 9px;
+}
+.msg .runctl[hidden] { display: none; }
+.msg .run-btn {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.msg .run-btn:hover { color: var(--text); border-color: var(--line-strong); }
 .msg .exec-call {
   padding: 9px 12px;
   border-top: 1px dashed var(--line);

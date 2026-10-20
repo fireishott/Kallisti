@@ -3838,6 +3838,49 @@ fn tool_window(tool: &crate::web::chat::ToolRecord) -> Markup {
     }
 }
 
+/// The two controls that open or close every call in one run log.
+///
+/// They live in a row directly under the log's summary, not inside it. A
+/// focusable button inside a `summary` competes with the disclosure's own Enter
+/// and Space, and the summary's accessible name would become the buttons'
+/// labels instead of "Run log, n calls". Under the summary the log keeps its own
+/// name and a keyboard user has one disclosure and two plain buttons, in that
+/// order.
+///
+/// The row is rendered `hidden` and the page script reveals it. A reader without
+/// the script cannot press a button into doing anything, so a dead control is
+/// worse than no control: every call is already its own native disclosure, and
+/// the whole log opens and closes natively too.
+fn run_log_controls() -> Markup {
+    html! {
+        div .runctl hidden role="group" aria-label="Run log controls" {
+            button type="button" .run-btn data-run="open"
+                aria-label="Expand every tool call in this run log" { "Expand all" }
+            button type="button" .run-btn data-run="shut"
+                aria-label="Collapse every tool call in this run log" { "Collapse all" }
+        }
+    }
+}
+
+/// Every call of one run log, each a closed window that opens itself.
+///
+/// Closed by default in both modes: one line naming the call, and the reading is
+/// one press away. The body scrolls rather than growing the conversation, so a
+/// long log costs one window.
+fn run_log_calls(tools: &[crate::web::chat::ToolRecord]) -> Markup {
+    html! {
+        @for tool in tools {
+            details .exec-call .failed[tool.is_error] {
+                summary .exec-head {
+                    span .exec-name { (tool.name) }
+                    span .exec-args { (tool.arguments) }
+                }
+                (tool_window(tool))
+            }
+        }
+    }
+}
+
 pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell .new-chat[view.messages.is_empty()]
@@ -3884,17 +3927,8 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                             }
                                         }
                                     }
-                                    div .exec-body {
-                                        @for tool in &line.tools {
-                                            details .exec-call .failed[tool.is_error] {
-                                                summary .exec-head {
-                                                    span .exec-name { (tool.name) }
-                                                    span .exec-args { (tool.arguments) }
-                                                }
-                                                (tool_window(tool))
-                                            }
-                                        }
-                                    }
+                                    (run_log_controls())
+                                    div .exec-body { (run_log_calls(&line.tools)) }
                                 }
                             } @else {
                                 details .exec open {
@@ -3905,17 +3939,8 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                             @if line.tools.len() == 1 { " call" } @else { " calls" }
                                         }
                                     }
-                                    div .exec-body {
-                                        @for tool in &line.tools {
-                                            details .exec-call .failed[tool.is_error] {
-                                                summary .exec-head {
-                                                    span .exec-name { (tool.name) }
-                                                    span .exec-args { (tool.arguments) }
-                                                }
-                                                (tool_window(tool))
-                                            }
-                                        }
-                                    }
+                                    (run_log_controls())
+                                    div .exec-body { (run_log_calls(&line.tools)) }
                                 }
                             }
                         }
@@ -4086,6 +4111,90 @@ const CHAT_JS: &str = r##"(function () {
   var stop = document.getElementById("stop");
   var status = document.getElementById("composer-status");
   var attachmentInput = document.getElementById("attachment");
+
+  // ---- The run log: two controls, and the choice they remember ------------
+  // Two buttons open or close every call of one log, and the choice carries into
+  // the next answer. It is a preference, not a fourth Settings mode: the server
+  // still renders the default from `full` or `summary`, and this only refines the
+  // per-call state of a full log. Storage can be unavailable (a private window, a
+  // blocked origin), and a browser that refuses to remember is not an error worth
+  // showing, so every read and write is guarded.
+  var RUNLOG_KEY = "kallisti.runlog";
+
+  function rememberedRunLog() {
+    try {
+      var stored = window.localStorage.getItem(RUNLOG_KEY);
+      if (stored === "expanded") { return true; }
+      if (stored === "collapsed") { return false; }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function rememberRunLog(expanded) {
+    try {
+      window.localStorage.setItem(RUNLOG_KEY, expanded ? "expanded" : "collapsed");
+    } catch (error) {
+      return;
+    }
+  }
+
+  function runLogButton(kind, label, name) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "run-btn";
+    button.setAttribute("data-run", kind);
+    button.setAttribute("aria-label", name);
+    button.textContent = label;
+    return button;
+  }
+
+  // Open or close every call of one log. The log itself is left as the operator
+  // put it: closing all the calls is not the same request as closing the log.
+  function setRunLogCalls(log, expanded) {
+    var calls = log.querySelectorAll(".exec-call");
+    for (var index = 0; index < calls.length; index += 1) {
+      calls[index].open = expanded;
+    }
+  }
+
+  // The server renders the two controls hidden, because without this script a
+  // button cannot open anything. Revealing them, and honouring a remembered
+  // Expand all, happens before the composer guard below: a transcript outlives
+  // the provider that wrote it, and its run logs still work.
+  var runLogs = document.querySelectorAll(".msg .exec");
+  var remembersAll = rememberedRunLog();
+  for (var logIndex = 0; logIndex < runLogs.length; logIndex += 1) {
+    var bar = runLogs[logIndex].querySelector(".runctl");
+    if (bar) { bar.hidden = false; }
+    // A remembered Expand all carries onto the page as it was rendered: the
+    // operator left the calls open, so that is how they come back. A summary
+    // strip is one deliberate line and is not touched; the default there is
+    // still the server's.
+    if (remembersAll === true && runLogs[logIndex].classList.contains("compact") === false) {
+      setRunLogCalls(runLogs[logIndex], true);
+    }
+  }
+
+  // One listener for every run log control, present and future, so a streamed
+  // answer and a re-rendered transcript behave the same. The row is outside the
+  // summary, so nothing here competes with the disclosure's own toggle; the
+  // handler still stops the event so a click cannot reach the summary.
+  if (thread) {
+    thread.addEventListener("click", function (event) {
+      var button = event.target.closest(".run-btn");
+      if (button === null) { return; }
+      event.preventDefault();
+      event.stopPropagation();
+      var log = button.closest(".exec");
+      if (log === null) { return; }
+      var expanded = button.getAttribute("data-run") === "open";
+      setRunLogCalls(log, expanded);
+      rememberRunLog(expanded);
+    });
+  }
+
   if (form === null || box === null || thread === null) { return; }
 
   var busy = false;
@@ -4249,6 +4358,18 @@ const CHAT_JS: &str = r##"(function () {
     execSummary.appendChild(execLabel);
     execSummary.appendChild(execCount);
     exec.appendChild(execSummary);
+    // The same two controls the server renders, in the same place: under the
+    // summary, never in it. This builder is only reachable with the script, so
+    // here they are live immediately.
+    var execCtl = document.createElement("div");
+    execCtl.className = "runctl";
+    execCtl.setAttribute("role", "group");
+    execCtl.setAttribute("aria-label", "Run log controls");
+    execCtl.appendChild(runLogButton("open", "Expand all",
+      "Expand every tool call in this run log"));
+    execCtl.appendChild(runLogButton("shut", "Collapse all",
+      "Collapse every tool call in this run log"));
+    exec.appendChild(execCtl);
     var body = document.createElement("div");
     body.className = "exec-body";
     exec.appendChild(body);
@@ -4336,6 +4457,11 @@ const CHAT_JS: &str = r##"(function () {
         entry.args = attachHead(entry.head, tool.name);
         entry.call.appendChild(entry.head);
         entry.parts = windowFor(entry.call);
+        // A call that printed nothing before it settled was never opened by a
+        // stream, so it takes the state the operator last chose. A provisional
+        // call that already showed its output stays open: the reading is what
+        // they were watching.
+        entry.call.open = rememberedRunLog() === true;
         body.appendChild(entry.call);
       }
       if (tool.is_error === true) {
