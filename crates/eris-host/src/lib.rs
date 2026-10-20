@@ -38,6 +38,7 @@ pub mod memory;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;
+pub mod projects;
 pub mod providers;
 pub mod tools;
 pub mod web;

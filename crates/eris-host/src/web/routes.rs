@@ -28,12 +28,12 @@ use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_FILE, ROUTE_CHAT_ID,
     ROUTE_CHAT_MODE, ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD,
-    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS,
-    ROUTE_SETTINGS, ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS,
-    ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING,
-    ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR,
-    VERSION, session_path,
+    ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN,
+    ROUTE_SECURITY, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_AUX,
+    ROUTE_SETTINGS_DEVICE, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -129,6 +129,8 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT_FILE, get(chat_file))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
         .route(ROUTE_CHAT_DELETE, post(chat_delete))
+        .route(ROUTE_PROJECTS, post(save_project))
+        .route(ROUTE_PROJECTS_ASSIGN, post(save_project_assignment))
         .route(wallpaper::ROUTE_WALLPAPER_SAVE, post(save_wallpaper))
         .route(wallpaper::ROUTE_WALLPAPER_UPLOAD, post(upload_wallpaper))
         .route("/dashboard/provider/rotate", post(rotate_provider))
@@ -2800,6 +2802,33 @@ fn store_failure(request_id: &str, what: &str, error: crate::db::DbError) -> Res
     .into_response()
 }
 
+/// One failure on the chat surface: the page back, with the message in the live
+/// region the page already has.
+///
+/// The rail's project forms live on the chat page, so that is the page that has
+/// to report a refused name or a refused assignment. `requested` is the
+/// conversation the caller was looking at, when it named one, so a refusal does
+/// not silently move the operator to a different transcript.
+fn fail_chat(
+    state: &AppState,
+    as_html: bool,
+    requested: Option<&str>,
+    error: FormError,
+) -> Response {
+    let status = failure_status(&error.code);
+    if as_html {
+        match build_chat_view(state, requested) {
+            Ok(mut view) => {
+                view.error = Some(error);
+                page_with_status(chat_page(&view), status)
+            }
+            Err(build_error) => refusal(build_error),
+        }
+    } else {
+        refusal(error)
+    }
+}
+
 /// An audit write failure, which is a 500 for the same reason: a settings change
 /// that was not recorded did not happen as far as the product is concerned.
 fn audit_failure(request_id: &str, action: &str, error: crate::auth::AuthError) -> Response {
@@ -3995,6 +4024,14 @@ async fn chat_sessions(
     );
     match chat::conversations(state.engine.db(), chat::SESSION_LIMIT) {
         Ok(rows) => {
+            // The rail draws the same headings the server does, so the payload
+            // carries the grouping, not only the rows: a script that was handed a
+            // flat list could only ever paint a flat rail.
+            let projects: Vec<serde_json::Value> = crate::projects::list(state.engine.db())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|project| serde_json::json!({ "id": project.id, "name": project.name }))
+                .collect();
             let sessions: Vec<serde_json::Value> = rows
                 .into_iter()
                 .map(|row| {
@@ -4002,10 +4039,11 @@ async fn chat_sessions(
                         "id": row.id,
                         "title": row.title,
                         "stamp": crate::zone::clock_in(&row.updated_at, offset),
+                        "project_id": row.project_id,
                     })
                 })
                 .collect();
-            ok_json(serde_json::json!({ "ok": true, "sessions": sessions }))
+            ok_json(serde_json::json!({ "ok": true, "projects": projects, "sessions": sessions }))
         }
         Err(error) => ApiError::internal(
             request_id.0,
@@ -4050,6 +4088,141 @@ async fn chat_delete(
             see_other(ROUTE_CHAT)
         }
         Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
+    }
+}
+
+/// `POST /dashboard/projects` - name a project, then go back to the rail it
+/// appears in.
+///
+/// The control that posts this is in the rail, and the rail is on the chat
+/// surface, so that is where the browser returns: the form stays a form rather
+/// than a JSON endpoint that happens to be rendered as one. A refusal is the chat
+/// page back, with the message in the page's own live region, because the field
+/// that failed is on that page.
+async fn save_project(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_chat(&state, as_html, None, error),
+    };
+
+    let name = field(&fields, "project_name").trim().to_owned();
+    match crate::projects::create(state.engine.db(), &name) {
+        Ok(id) => {
+            if let Err(error) = state.engine.auth().audit(
+                "loopback",
+                "projects.created",
+                Some(&format!("{name}; id={id}")),
+            ) {
+                return audit_failure(&request_id.0, "projects.created", error);
+            }
+            see_other(ROUTE_CHAT)
+        }
+        // A name that is blank, too long, or taken is the operator's to fix, so
+        // it is a field error on the page that offered the field - not a 500 and
+        // not a silent redirect that looks like it worked.
+        Err(crate::db::DbError::InvalidProjectName { max }) => fail_chat(
+            &state,
+            as_html,
+            None,
+            FormError::new(
+                Some("project_name"),
+                "project_name_invalid",
+                format!("a project name is 1 to {max} characters"),
+            ),
+        ),
+        Err(crate::db::DbError::DuplicateProjectName { name }) => fail_chat(
+            &state,
+            as_html,
+            None,
+            FormError::new(
+                Some("project_name"),
+                "project_name_duplicate",
+                format!("a project named `{name}` already exists"),
+            ),
+        ),
+        Err(error) => store_failure(&request_id.0, "the project", error),
+    }
+}
+
+/// `POST /dashboard/projects/assign` - file one conversation under a project, or
+/// take it out of one.
+///
+/// An empty `project` field is the select's "No project" entry, which is a clear
+/// rather than a missing value: a form that could only ever file conversations
+/// would make a mistake permanent.
+async fn save_project_assignment(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_chat(&state, as_html, None, error),
+    };
+
+    let conversation = field(&fields, "conversation").trim().to_owned();
+    if conversation.is_empty() {
+        return fail_chat(
+            &state,
+            as_html,
+            None,
+            FormError::new(
+                Some("conversation"),
+                "conversation_missing",
+                "the form did not name a conversation",
+            ),
+        );
+    }
+    let requested = field(&fields, "project").trim().to_owned();
+    let project = if requested.is_empty() {
+        None
+    } else {
+        Some(requested.as_str())
+    };
+
+    match crate::projects::assign(state.engine.db(), &conversation, project) {
+        // One row was updated, or none was: nothing changed is not a success, and
+        // saying so is the difference between a working form and one that lies.
+        Ok(0) => fail_chat(
+            &state,
+            as_html,
+            Some(&conversation),
+            FormError::new(
+                Some("project"),
+                "project_assign_refused",
+                "that conversation or that project is not one this daemon knows",
+            ),
+        ),
+        Ok(_) => {
+            let detail = match project {
+                Some(id) => format!("{conversation}; project={id}"),
+                None => format!("{conversation}; project=none"),
+            };
+            if let Err(error) =
+                state
+                    .engine
+                    .auth()
+                    .audit("loopback", "projects.assigned", Some(&detail))
+            {
+                return audit_failure(&request_id.0, "projects.assigned", error);
+            }
+            see_other(ROUTE_CHAT)
+        }
+        Err(error) => store_failure(&request_id.0, "the assignment", error),
     }
 }
 

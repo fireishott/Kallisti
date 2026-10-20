@@ -29,17 +29,17 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The fifteen tables the migrations create. `schema_migrations` is the
-/// fourteenth and is created by the runner, not by a migration. 0001 creates the
+/// The sixteen tables the migrations create. `schema_migrations` is the
+/// seventeenth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
-/// `chat_attachments`; 0009 adds `approvals`.
-pub const TABLES: [&str; 15] = [
+/// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`.
+pub const TABLES: [&str; 16] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -53,6 +53,7 @@ pub const TABLES: [&str; 15] = [
     "job_events",
     "jobs",
     "pairing_codes",
+    "projects",
     "sessions",
     "settings",
 ];
@@ -125,6 +126,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         name: "0012_approval_advice",
         sql: MIGRATION_0012,
+    },
+    Migration {
+        version: 13,
+        name: "0013_projects",
+        sql: MIGRATION_0013,
     },
 ];
 
@@ -473,6 +479,34 @@ const MIGRATION_0012: &str = r"
 ALTER TABLE approvals ADD COLUMN advice TEXT;
 ";
 
+/// Migration 0013: named projects, so a conversation can be grouped.
+///
+/// A project is a name and nothing else: the grouping lives on the conversation,
+/// in `chat_conversations.project_id`, because a conversation is in at most one
+/// project and a join table would only make that uniqueness something a caller
+/// has to remember. `NULL` is the honest default for every conversation that
+/// existed before this migration, and for one the operator never filed.
+///
+/// `name` is `UNIQUE` in the database rather than only in the form handler: two
+/// projects with one name would make the rail's headings ambiguous, and the
+/// constraint is the only place a concurrent second create can be refused.
+///
+/// Like 0004 this migration is not hand-runnable twice, because SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`; the `schema_migrations` row the runner writes in
+/// the same transaction is the guard.
+const MIGRATION_0013: &str = r"
+CREATE TABLE IF NOT EXISTS projects (
+    id         TEXT PRIMARY KEY NOT NULL,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+ALTER TABLE chat_conversations ADD COLUMN project_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_project
+    ON chat_conversations (project_id);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -558,6 +592,19 @@ pub enum DbError {
     /// The connection mutex was poisoned by a panic in another thread.
     #[error("database connection is unusable: a previous holder panicked")]
     Locked,
+    /// A project name is outside the rule: empty, or longer than
+    /// [`crate::projects::MAX_NAME_CHARS`].
+    #[error("a project name must be {max} characters or fewer, and not blank")]
+    InvalidProjectName {
+        /// The ceiling that was applied.
+        max: usize,
+    },
+    /// Two projects would carry one name, which the `UNIQUE` constraint refuses.
+    #[error("a project named {name:?} already exists")]
+    DuplicateProjectName {
+        /// The name that collided.
+        name: String,
+    },
 }
 
 /// A handle to the one database. Cheap to clone; the connection is shared.

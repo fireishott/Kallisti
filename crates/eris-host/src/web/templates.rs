@@ -312,6 +312,11 @@ pub struct Chrome {
     /// application's desk, not a chat decoration: Settings, Sessions and the
     /// dashboard all sit on the same surface.
     pub wallpaper_url: Option<String>,
+    /// The projects the rail can head a group with, by name.
+    ///
+    /// A rail with no projects is a rail with one flat list, which is what it
+    /// was before projects existed: nothing here is a prerequisite for history.
+    pub projects: Vec<crate::projects::Project>,
     /// The conversations the rail lists, newest first.
     pub sessions: Vec<ChatSession>,
     /// The conversation this page is showing, when it is showing one.
@@ -329,6 +334,10 @@ pub struct ChatSession {
     pub title: String,
     /// A short stamp for the rail.
     pub stamp: String,
+    /// The project it is filed under, when it is filed under one this rail knows.
+    pub project_id: Option<String>,
+    /// That project's name, so the row can state where it lives without a lookup.
+    pub project_name: Option<String>,
 }
 
 impl Default for Chrome {
@@ -343,6 +352,7 @@ impl Default for Chrome {
             // The documented default, so a page rendered without a resolved
             // settings row still paints the Kallisti backdrop.
             wallpaper_url: super::wallpaper::url(super::wallpaper::DEFAULT_WALLPAPER),
+            projects: Vec::new(),
             sessions: Vec::new(),
             current_conversation: None,
             rail_hidden: false,
@@ -452,24 +462,56 @@ pub fn shell(
                             form .side-action method="post" action=(crate::admin::ROUTE_CHAT_NEW) {
                                 button type="submit" { "+  New chat" }
                             }
+                            (new_project_control(chrome))
                             nav .sessions id="rail-sessions" aria-label="Conversations" {
                                 @if chrome.sessions.is_empty() {
                                     span .side-empty { "No conversations yet" }
                                 }
-                                @for session in &chrome.sessions {
-                                    @let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
-                                    div .session-row .open[open] {
-                                        a href=(format!("/dashboard/chat/{}", session.id))
-                                            aria-current=[open.then_some("page")]
-                                            title=(session.title) {
-                                            span .session-title { (session.title) }
-                                            span .session-stamp { (session.stamp) }
+                                @if chrome.projects.is_empty() {
+                                    /* No project has been named, so there is nothing to
+                                       head a group with: the list stays the flat one it
+                                       has always been. */
+                                    @for session in &chrome.sessions {
+                                        (rail_session_row(chrome, session))
+                                    }
+                                } @else {
+                                    @for project in &chrome.projects {
+                                        @let members: Vec<&ChatSession> = chrome
+                                            .sessions
+                                            .iter()
+                                            .filter(|session| {
+                                                session.project_id.as_deref()
+                                                    == Some(project.id.as_str())
+                                            })
+                                            .collect();
+                                        @if !members.is_empty() {
+                                            div .rail-group {
+                                                div .rail-group-head {
+                                                    span .rail-group-name { (project.name) }
+                                                    span .rail-group-count { (members.len()) }
+                                                }
+                                                @for session in members {
+                                                    (rail_session_row(chrome, session))
+                                                }
+                                            }
                                         }
-                                        @if open {
-                                            form .session-delete method="post"
-                                                action=(format!("/dashboard/chat/{}/delete", session.id)) {
-                                                button type="submit" title="Delete this conversation"
-                                                    aria-label="Delete this conversation" { "×" }
+                                    }
+                                    @let unfiled: Vec<&ChatSession> = chrome
+                                        .sessions
+                                        .iter()
+                                        .filter(|session| session.project_id.is_none())
+                                        .collect();
+                                    @if !unfiled.is_empty() {
+                                        /* The ungrouped heading keeps its own name: the
+                                           conversations that were here before projects
+                                           existed did not move anywhere. */
+                                        div .rail-group {
+                                            div .rail-group-head {
+                                                span .rail-group-name { "Conversations" }
+                                                span .rail-group-count { (unfiled.len()) }
+                                            }
+                                            @for session in unfiled {
+                                                (rail_session_row(chrome, session))
                                             }
                                         }
                                     }
@@ -539,6 +581,80 @@ pub fn shell(
                             span .sign { "to the most beautiful" }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The "New project" control, directly under "New chat".
+///
+/// It is a `details` element because that is the one disclosure the browser
+/// opens and closes without a script, and the rail may carry no script at all.
+/// The control is deliberately quieter than "New chat": starting a conversation
+/// is the common action, and naming a group to put one in is the occasional one.
+fn new_project_control(chrome: &Chrome) -> Markup {
+    html! {
+        details .rail-new-project {
+            summary title="New project" {
+                span .rail-add-glyph aria-hidden="true" { "+" }
+                span .rail-add-label { "New project" }
+            }
+            form method="post" action=(crate::admin::ROUTE_PROJECTS) {
+                label .sr-only for="project_name" { "Project name" }
+                input type="text" id="project_name" name="project_name"
+                    placeholder="Project name" autocomplete="off"
+                    maxlength=(crate::projects::MAX_NAME_CHARS);
+                button type="submit" { "Create" }
+                @if chrome.projects.is_empty() {
+                    span .rail-hint { "No projects yet" }
+                }
+            }
+        }
+    }
+}
+
+/// One conversation in the rail, with the menu that files it.
+///
+/// The menu is a `details` element as well, for the same reason: the select and
+/// its submit post a plain form, so "add to project" works with every script
+/// blocked. The menu only shows about its own row, which is why it sits inside
+/// the row rather than in one list-wide control.
+fn rail_session_row(chrome: &Chrome, session: &ChatSession) -> Markup {
+    let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
+    let field_id = format!("project-{}", slug(&session.id));
+    html! {
+        div .session-row .open[open] {
+            a href=(format!("/dashboard/chat/{}", session.id))
+                aria-current=[open.then_some("page")]
+                title=(session.title) {
+                span .session-title { (session.title) }
+                span .session-stamp { (session.stamp) }
+            }
+            details .session-menu {
+                summary title="Add to a project"
+                    aria-label=(format!("Add {} to a project", session.title)) {
+                    "\u{2026}"
+                }
+                form .session-menu-form method="post"
+                    action=(crate::admin::ROUTE_PROJECTS_ASSIGN) {
+                    input type="hidden" name="conversation" value=(session.id.as_str());
+                    label .sr-only for=(field_id.as_str()) { "Project" }
+                    select id=(field_id.as_str()) name="project" aria-label="Project" {
+                        option value="" selected[session.project_id.is_none()] { "No project" }
+                        @for project in &chrome.projects {
+                            @let current = session.project_id.as_deref() == Some(project.id.as_str());
+                            option value=(project.id.as_str()) selected[current] { (project.name) }
+                        }
+                    }
+                    button type="submit" { "Move" }
+                }
+            }
+            @if open {
+                form .session-delete method="post"
+                    action=(format!("/dashboard/chat/{}/delete", session.id)) {
+                    button type="submit" title="Delete this conversation"
+                        aria-label="Delete this conversation" { "×" }
                 }
             }
         }
@@ -4405,7 +4521,95 @@ const CHAT_JS: &str = r##"(function () {
 
   // The rail is a server-rendered list, so a conversation that earns its name
   // during this turn would not show up until a reload. One small JSON read after
-  // the turn keeps the list honest.
+  // the turn keeps the list honest, headings and menus included: the script never
+  // paints a rail the page itself would not have rendered.
+  function railLink(session, openId) {
+    var link = document.createElement("a");
+    link.href = "/dashboard/chat/" + session.id;
+    link.title = session.title;
+    if (session.id === openId) { link.setAttribute("aria-current", "page"); }
+    var title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = session.title;
+    var stamp = document.createElement("span");
+    stamp.className = "session-stamp";
+    stamp.textContent = session.stamp;
+    link.appendChild(title);
+    link.appendChild(stamp);
+    return link;
+  }
+
+  // The same select the server renders: one option per project, plus the empty
+  // "No project" entry a clear sends.
+  function railMenu(session, projects) {
+    var menu = document.createElement("details");
+    menu.className = "session-menu";
+    var summary = document.createElement("summary");
+    summary.title = "Add to a project";
+    summary.setAttribute("aria-label", "Add " + session.title + " to a project");
+    summary.textContent = "\u2026";
+    menu.appendChild(summary);
+    var form = document.createElement("form");
+    form.className = "session-menu-form";
+    form.method = "post";
+    form.action = "/dashboard/projects/assign";
+    var hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.name = "conversation";
+    hidden.value = session.id;
+    form.appendChild(hidden);
+    var field = document.createElement("select");
+    field.name = "project";
+    field.setAttribute("aria-label", "Project");
+    var none = document.createElement("option");
+    none.value = "";
+    none.textContent = "No project";
+    if (session.project_id === null) { none.selected = true; }
+    field.appendChild(none);
+    for (var index = 0; index < projects.length; index += 1) {
+      var option = document.createElement("option");
+      option.value = projects[index].id;
+      option.textContent = projects[index].name;
+      if (session.project_id === projects[index].id) { option.selected = true; }
+      field.appendChild(option);
+    }
+    form.appendChild(field);
+    var submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = "Move";
+    form.appendChild(submit);
+    menu.appendChild(form);
+    return menu;
+  }
+
+  function railRow(session, projects, openId) {
+    var row = document.createElement("div");
+    row.className = session.id === openId ? "session-row open" : "session-row";
+    row.appendChild(railLink(session, openId));
+    row.appendChild(railMenu(session, projects));
+    return row;
+  }
+
+  function railGroup(name, sessions, projects, openId) {
+    var group = document.createElement("div");
+    group.className = "rail-group";
+    var head = document.createElement("div");
+    head.className = "rail-group-head";
+    var label = document.createElement("span");
+    label.className = "rail-group-name";
+    label.textContent = name;
+    var count = document.createElement("span");
+    count.className = "rail-group-count";
+    count.textContent = String(sessions.length);
+    head.appendChild(label);
+    head.appendChild(count);
+    group.appendChild(head);
+    for (var index = 0; index < sessions.length; index += 1) {
+      group.appendChild(railRow(sessions[index], projects, openId));
+    }
+    return group;
+  }
+
   async function refreshRail() {
     var rail = document.getElementById("rail-sessions");
     if (rail === null) { return; }
@@ -4417,6 +4621,7 @@ const CHAT_JS: &str = r##"(function () {
       var payload = await response.json();
       var shell = document.querySelector(".chat-shell");
       var openId = shell === null ? "" : shell.getAttribute("data-conversation");
+      var projects = payload.projects || [];
       rail.textContent = "";
       if (payload.sessions.length === 0) {
         var empty = document.createElement("span");
@@ -4425,21 +4630,33 @@ const CHAT_JS: &str = r##"(function () {
         rail.appendChild(empty);
         return;
       }
-      for (var index = 0; index < payload.sessions.length; index += 1) {
-        var session = payload.sessions[index];
-        var link = document.createElement("a");
-        link.href = "/dashboard/chat/" + session.id;
-        link.title = session.title;
-        if (session.id === openId) { link.setAttribute("aria-current", "page"); }
-        var title = document.createElement("span");
-        title.className = "session-title";
-        title.textContent = session.title;
-        var stamp = document.createElement("span");
-        stamp.className = "session-stamp";
-        stamp.textContent = session.stamp;
-        link.appendChild(title);
-        link.appendChild(stamp);
-        rail.appendChild(link);
+      if (projects.length === 0) {
+        for (var flat = 0; flat < payload.sessions.length; flat += 1) {
+          rail.appendChild(railRow(payload.sessions[flat], projects, openId));
+        }
+        return;
+      }
+      for (var p = 0; p < projects.length; p += 1) {
+        var members = [];
+        for (var s = 0; s < payload.sessions.length; s += 1) {
+          if (payload.sessions[s].project_id === projects[p].id) {
+            members.push(payload.sessions[s]);
+          }
+        }
+        if (members.length > 0) {
+          rail.appendChild(railGroup(projects[p].name, members, projects, openId));
+        }
+      }
+      var unfiled = [];
+      for (var u = 0; u < payload.sessions.length; u += 1) {
+        var known = false;
+        for (var k = 0; k < projects.length; k += 1) {
+          if (payload.sessions[u].project_id === projects[k].id) { known = true; }
+        }
+        if (known === false) { unfiled.push(payload.sessions[u]); }
+      }
+      if (unfiled.length > 0) {
+        rail.appendChild(railGroup("Conversations", unfiled, projects, openId));
       }
     } catch (error) {
       // A rail that cannot refresh is not worth interrupting the conversation for.

@@ -1497,3 +1497,216 @@ fn an_auxiliary_role_can_be_pinned_to_a_provider_in_the_registry() {
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
     assert_eq!(refused.json()["field"], "aux_provider_vision");
 }
+
+/// A project is created from the rail, filed by a conversation, and refused by
+/// name when it is a duplicate - all through the real router.
+///
+/// The rail's forms are the no-script path, so this drives them the way a browser
+/// with JavaScript blocked does: one form post, one redirect, and a page that
+/// already states the grouping when it is rendered.
+#[test]
+fn a_project_is_created_from_the_rail_and_files_a_conversation() {
+    use crate::admin::{ROUTE_PROJECTS, ROUTE_PROJECTS_ASSIGN};
+
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+    let conversation = chat::create_conversation(db).expect("a conversation row");
+    let cookie = Some(cookie.as_str());
+
+    // Behind the admin session, like every other dashboard write.
+    let anonymous = block_on(send(&app, Call::post(ROUTE_PROJECTS, "project_name=Work")));
+    assert_eq!(anonymous.status, StatusCode::FORBIDDEN);
+    assert_eq!(anonymous.json()["code"], "no_session");
+
+    let created = block_on(send(
+        &app,
+        Call::post(ROUTE_PROJECTS, "project_name=Work").cookie(cookie),
+    ));
+    assert_eq!(created.status, StatusCode::SEE_OTHER, "{}", created.body);
+    assert_eq!(created.location().as_deref(), Some(ROUTE_CHAT));
+
+    let projects = crate::projects::list(db).expect("the project list reads");
+    assert_eq!(projects.len(), 1, "one project exists: {projects:?}");
+    assert_eq!(projects[0].name, "Work");
+    let project_id = projects[0].id.clone();
+
+    // A second create with the same name is a named refusal, not a 500 and not a
+    // silent redirect that looks like it worked.
+    let duplicate = block_on(send(
+        &app,
+        Call::post(ROUTE_PROJECTS, "project_name=Work").cookie(cookie),
+    ));
+    assert_eq!(
+        duplicate.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        duplicate.body
+    );
+    assert_eq!(duplicate.json()["field"], "project_name");
+    assert_eq!(duplicate.json()["code"], "project_name_duplicate");
+
+    let blank = block_on(send(
+        &app,
+        Call::post(ROUTE_PROJECTS, "project_name=%20%20").cookie(cookie),
+    ));
+    assert_eq!(blank.json()["code"], "project_name_invalid");
+
+    // Filing the conversation, which is the per-row menu's whole job.
+    let assigned = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_PROJECTS_ASSIGN,
+            &format!(
+                "conversation={}&project={}",
+                encode(&conversation),
+                encode(&project_id)
+            ),
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(assigned.status, StatusCode::SEE_OTHER, "{}", assigned.body);
+    assert_eq!(assigned.location().as_deref(), Some(ROUTE_CHAT));
+
+    let filed = chat::conversations(db, 10).expect("the rail list reads");
+    let row = filed
+        .iter()
+        .find(|row| row.id == conversation)
+        .expect("the conversation is still listed");
+    assert_eq!(row.project_id.as_deref(), Some(project_id.as_str()));
+
+    // A second, unfiled conversation, so the page has both headings to render.
+    let loose = chat::create_conversation(db).expect("a second conversation row");
+    let page = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+
+    assert!(
+        body.contains(r#"<span class="rail-group-name">Work</span>"#),
+        "the project heads a group in the rail: {body}"
+    );
+    assert!(
+        body.contains(r#"<span class="rail-group-name">Conversations</span>"#),
+        "the unfiled conversations keep a heading: {body}"
+    );
+    let group_at = body
+        .find(r#"<span class="rail-group-name">Work</span>"#)
+        .expect("the project heading");
+    let filed_at = body
+        .find(&format!(r#"href="/dashboard/chat/{conversation}""#))
+        .expect("the filed conversation is linked");
+    let loose_at = body
+        .find(&format!(r#"href="/dashboard/chat/{loose}""#))
+        .expect("the unfiled conversation is linked");
+    assert!(
+        group_at < filed_at && filed_at < loose_at,
+        "the filed conversation sits under its project, above the unfiled heading"
+    );
+
+    // The menu is a details element with a form in it: the whole affordance works
+    // with no script at all.
+    assert!(
+        body.contains(r#"<details class="session-menu">"#),
+        "each session row carries the add-to-project menu: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"action="{ROUTE_PROJECTS_ASSIGN}""#)),
+        "the menu posts the assignment form: {body}"
+    );
+    assert!(
+        body.contains(r#"<option value="" selected>No project</option>"#),
+        "the select offers the clear: {body}"
+    );
+    assert!(
+        body.contains(&format!(
+            r#"<option value="{project_id}" selected>Work</option>"#
+        )),
+        "the select marks the project the conversation is in: {body}"
+    );
+    // The new-project control is a disclosure above the list.
+    assert!(
+        body.contains(r#"<details class="rail-new-project">"#),
+        "the rail carries the new-project control: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"action="{ROUTE_PROJECTS}""#)),
+        "the control posts to the project route: {body}"
+    );
+    assert!(
+        !body.contains("No projects yet"),
+        "the hint is gone once a project exists"
+    );
+
+    // And it clears again, which is what the empty option is for.
+    let cleared = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_PROJECTS_ASSIGN,
+            &format!("conversation={}&project=", encode(&conversation)),
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(cleared.status, StatusCode::SEE_OTHER, "{}", cleared.body);
+    let filed = chat::conversations(db, 10).expect("the rail list reads");
+    let row = filed
+        .iter()
+        .find(|row| row.id == conversation)
+        .expect("the conversation is still listed");
+    assert_eq!(row.project_id, None, "it is ungrouped again");
+}
+
+/// Nothing changed is not a success: an assignment to a project that does not
+/// exist is a refusal that names the field.
+#[test]
+fn an_assignment_to_an_unknown_project_is_refused() {
+    use crate::admin::ROUTE_PROJECTS_ASSIGN;
+
+    let (_dir, engine, app, cookie) = ready_app();
+    let conversation = chat::create_conversation(engine.db()).expect("a conversation row");
+
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            ROUTE_PROJECTS_ASSIGN,
+            &format!(
+                "conversation={}&project=no-such-project",
+                encode(&conversation)
+            ),
+        )
+        .cookie(Some(&cookie)),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "project_assign_refused");
+    assert_eq!(
+        chat::conversations(engine.db(), 10).expect("the rail list reads")[0].project_id,
+        None,
+        "the refused assignment wrote nothing"
+    );
+
+    let unnamed = block_on(send(
+        &app,
+        Call::post(ROUTE_PROJECTS_ASSIGN, "project=").cookie(Some(&cookie)),
+    ));
+    assert_eq!(unnamed.json()["code"], "conversation_missing");
+}
+
+/// A fresh rail states that there are no projects, in the disclosure that makes
+/// one: an empty control with no explanation reads as a broken control.
+#[test]
+fn a_rail_with_no_projects_says_so() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("No projects yet"),
+        "the rail says there are none: {}",
+        page.body
+    );
+    assert!(
+        !page.body.contains(r#"<span class="rail-group-name">"#),
+        "with no projects the list stays flat: {}",
+        page.body
+    );
+}

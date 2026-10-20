@@ -309,6 +309,85 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 }
 .side-action button:hover { background: var(--raise); filter: none; }
 
+/* New project: a disclosure under "New chat", closed until it is wanted.
+   `details` is the disclosure the browser opens with no script at all, so the
+   control is a summary the rail can afford: the `+` and two words, quieter than
+   the New chat button above it, because starting a conversation is the common
+   action and naming a group for one is the occasional one. */
+.rail-new-project { margin: -18px 0 0; }
+.rail-new-project summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.3;
+  cursor: pointer;
+  list-style: none;
+}
+.rail-new-project summary::-webkit-details-marker { display: none; }
+.rail-new-project summary:hover { color: var(--text); border-color: var(--muted); }
+.rail-new-project summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; }
+.rail-new-project[open] summary { color: var(--text); border-color: var(--line-strong); }
+.rail-add-glyph { font-size: 12.5px; line-height: 1; }
+.rail-new-project form {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.rail-new-project input[type=text] {
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+.rail-new-project button {
+  justify-self: start;
+  padding: 5px 10px;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+}
+.rail-new-project button:hover { background: var(--raise); filter: none; }
+.rail-hint { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; opacity: 0.85; }
+
+/* Project headings in the rail. A group is one heading and the rows under it, so
+   the list reads as files rather than as one scroll with no landmarks. The head
+   is the same muted uppercase as every other label in the product. */
+.rail-group { display: flex; flex-direction: column; gap: 1px; }
+.rail-group + .rail-group { margin-top: 10px; }
+.rail-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px 3px;
+}
+.rail-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.rail-group-count {
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  opacity: 0.7;
+}
+
 .sessions {
   display: flex;
   flex-direction: column;
@@ -318,9 +397,17 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   margin: -12px 0 0;
   padding: 0 0 4px;
 }
-.session-row { display: flex; align-items: center; gap: 2px; }
-.session-row a { flex: 1 1 auto; min-width: 0; }
-.session-delete { margin: 0; flex: 0 0 auto; }
+/* A row is a grid rather than a flex line so the menu can span it: the glyph is
+   a column while the disclosure is closed, and the whole row wide once it is
+   open, which is the only way a select and a submit fit in a 236px rail. */
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 2px;
+}
+.session-row a { min-width: 0; }
+.session-delete { margin: 0; justify-self: end; }
 .session-delete button {
   padding: 2px 7px;
   border: 0;
@@ -331,6 +418,54 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   border-radius: 6px;
 }
 .session-delete button:hover { color: var(--bad); background: var(--raise); filter: none; }
+
+/* The per-session menu: the "add to project" affordance, in the row it acts on.
+   A summary glyph while it is closed, so forty rows are forty glyphs rather than
+   forty selects; the form inside is the plainer thing a browser posts with every
+   script blocked. */
+.session-menu { margin: 0; grid-column: 2; }
+.session-menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+}
+.session-menu summary::-webkit-details-marker { display: none; }
+.session-menu summary:hover { color: var(--text); background: var(--raise); }
+.session-menu summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 1px; }
+.session-menu[open] {
+  grid-column: 1 / -1;
+  margin: 4px 0 6px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.session-menu[open] summary { color: var(--text); background: var(--raise); }
+.session-menu-form { display: grid; gap: 6px; margin: 6px 0 0; }
+.session-menu-form select {
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+.session-menu-form button {
+  justify-self: start;
+  padding: 5px 10px;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+}
+.session-menu-form button:hover { background: var(--raise); filter: none; }
 .sessions a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1496,6 +1631,13 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   .sessions { flex-direction: row; overflow-x: auto; gap: 4px; width: 100%; margin: 0; }
   .sessions a { border-left-width: 1px; border-radius: 8px; white-space: nowrap; }
   .sessions .session-stamp { display: none; }
+  /* The rail is a strip here, so the groups flatten into it: `display: contents`
+     drops the wrapper and leaves the headings and rows in the one scrolling row,
+     which keeps every conversation reachable in a single swipe. */
+  .rail-new-project { margin: 0; }
+  .rail-new-project form { min-width: 210px; }
+  .rail-group, .rail-group-head { display: contents; }
+  .rail-group-name { white-space: nowrap; }
   .side-foot { flex-direction: row; align-items: center; margin-top: 0; padding-top: 0; border-top: 0; margin-left: auto; gap: 10px; }
   .side-foot .ver { display: none; }
   .wrap { padding: 22px 18px 56px; }

@@ -345,13 +345,15 @@ pub struct Conversation {
     pub title: String,
     /// The database stamp of the last message, for ordering and for the rail.
     pub updated_at: String,
+    /// The project this conversation is filed under, when it is filed.
+    pub project_id: Option<String>,
 }
 
 /// The newest conversations, newest first.
 pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError> {
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, title, updated_at
+            "SELECT id, title, updated_at, project_id
                FROM chat_conversations
               ORDER BY updated_at DESC, rowid DESC
               LIMIT ?1",
@@ -361,6 +363,7 @@ pub fn conversations(db: &Db, limit: usize) -> Result<Vec<Conversation>, DbError
                 id: row.get(0)?,
                 title: row.get(1)?,
                 updated_at: row.get(2)?,
+                project_id: row.get(3)?,
             })
         })?;
         rows.collect()
@@ -1948,6 +1951,14 @@ pub enum GateDecision {
     },
 }
 
+/// The tool executor a turn drives: one call, and a sink for the output it
+/// streams while it runs.
+///
+/// Named rather than spelled inline because the closure takes a closure, which
+/// is exactly the nested type a reader needs a name for.
+pub type ToolExecute<'a> =
+    dyn FnMut(&core_domain::ToolCall, &mut dyn FnMut(&str)) -> crate::tools::ToolResult + 'a;
+
 /// Drive one turn: stream, run whatever the model asked for, stream again.
 ///
 /// `stream` is handed the prompt for each round trip and returns that round's
@@ -1958,10 +1969,7 @@ pub enum GateDecision {
 /// be stopped from touching the filesystem. It is called even for read-only
 /// tools so a policy can decide for itself; the shipped policy parks writes.
 pub fn drive_tool_loop(
-    execute: &mut dyn FnMut(
-        &core_domain::ToolCall,
-        &mut dyn FnMut(&str),
-    ) -> crate::tools::ToolResult,
+    execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,

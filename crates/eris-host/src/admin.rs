@@ -119,6 +119,13 @@ pub const ROUTE_CHAT_NEW: &str = "/dashboard/chat/new";
 /// `POST /dashboard/chat/{id}/delete` - drop a conversation.
 pub const ROUTE_CHAT_DELETE: &str = "/dashboard/chat/{id}/delete";
 
+/// `POST /dashboard/projects` - start a project, from the rail.
+pub const ROUTE_PROJECTS: &str = "/dashboard/projects";
+
+/// `POST /dashboard/projects/assign` - file one conversation under a project, or
+/// take it out of one. The form's empty `project` value means "no project".
+pub const ROUTE_PROJECTS_ASSIGN: &str = "/dashboard/projects/assign";
+
 /// `GET /dashboard/settings` - the three settings forms.
 pub const ROUTE_SETTINGS: &str = "/dashboard/settings";
 
@@ -394,10 +401,20 @@ impl AppState {
             listeners: self.bound_listeners(),
             public_url: self.access.public_url.clone(),
             wallpaper_url: self.wallpaper_url(),
+            projects: self.rail_projects(),
             sessions: self.rail_sessions(),
             current_conversation: None,
             rail_hidden: self.rail_hidden(),
         }
+    }
+
+    /// Every project the rail can head a group with, by name.
+    ///
+    /// Empty when the table cannot be read, for the same reason the session list
+    /// is: a rail that cannot offer groups is a rail with one heading, not a
+    /// failed page.
+    fn rail_projects(&self) -> Vec<crate::projects::Project> {
+        crate::projects::list(self.engine.db()).unwrap_or_default()
     }
 
     /// The conversations the rail lists: newest first, bounded.
@@ -422,11 +439,34 @@ impl AppState {
         let Ok(rows) = chat::conversations(self.engine.db(), chat::SESSION_LIMIT) else {
             return Vec::new();
         };
+        // One project read for the whole rail, not one per conversation: the name
+        // a heading shows is resolved here so the template never has to look it
+        // up, and a conversation filed under a project that is gone is grouped
+        // with the unfiled ones rather than vanishing from the rail.
+        let projects = self.rail_projects();
+        let name_of = |id: &str| {
+            projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| project.name.clone())
+        };
         rows.into_iter()
-            .map(|row| ChatSession {
-                id: row.id,
-                title: row.title,
-                stamp: crate::zone::clock_in(&row.updated_at, offset),
+            .map(|row| {
+                let project_name = row.project_id.as_deref().and_then(name_of);
+                // A dangling id is not a group: the rail files it with the
+                // conversations that have no project at all.
+                let project_id = if project_name.is_some() {
+                    row.project_id.clone()
+                } else {
+                    None
+                };
+                ChatSession {
+                    id: row.id,
+                    title: row.title,
+                    stamp: crate::zone::clock_in(&row.updated_at, offset),
+                    project_id,
+                    project_name,
+                }
             })
             .collect()
     }
