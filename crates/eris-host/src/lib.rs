@@ -22,12 +22,17 @@
 //! worker and its lease, the SSE stream with resume and a bounded retention
 //! window, cancellation, and idempotency. The listener binds only when asked to,
 //! and there is still no service unit, because that is P9.
+//!
+//! P9 also adds `commands`: the slash commands a message may be instead of a
+//! prompt. They are parsed and answered inside the chat send handler, before a
+//! turn is built, so a command cannot reach a provider by any path.
 
 pub mod admin;
 pub mod approvals;
 pub mod auth;
 pub mod aux;
 pub mod backup;
+pub mod commands;
 pub mod config;
 pub mod db;
 pub mod device;

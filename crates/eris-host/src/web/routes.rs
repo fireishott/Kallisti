@@ -4154,6 +4154,299 @@ fn see_other_owned(location: String) -> Response {
         .into_response()
 }
 
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+/// Answer a message that is a slash command.
+///
+/// The caller reaches this before a turn exists, so no provider is called and no
+/// context is built: there is no turn for a command to spend a token on.
+///
+/// The answer is written as an assistant transcript row and the operator is
+/// redirected to the conversation it belongs in. That is the same mechanism a
+/// settled turn uses, so a command's result is read exactly like an answer: it
+/// survives a refresh, it appears in the rail's transcript, and nothing had to
+/// invent a second place to put it. `append` with [`chat::State::Complete`] says
+/// the text is whole already, which it is.
+///
+/// A refusal is answered the same way rather than as a failed request. The command
+/// was handled, and "that model id is not in the list" is the answer to it, not an
+/// error in the form: the operator typed a command, and the transcript is where
+/// the daemon speaks.
+fn run_command(
+    state: &AppState,
+    requested: &str,
+    command: &crate::commands::Command,
+    request_id: &str,
+) -> Response {
+    let db = state.engine.db().clone();
+    // Resolved before the match: every command but `/new` answers into the
+    // conversation the operator is looking at, and `/new` answers into the one it
+    // has just created.
+    let current = match chat::resolve_conversation(&db, Some(requested)) {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
+        }
+    };
+
+    let answered = match crate::commands::immediate(command) {
+        Some(crate::commands::Outcome::Reply(text)) => Ok((current.clone(), text)),
+        Some(crate::commands::Outcome::Unsupported(name)) => {
+            Ok((current.clone(), crate::commands::unsupported(&name)))
+        }
+        None => command_effect(state, &current, command),
+    };
+    let (conversation, text) = match answered {
+        Ok(pair) => pair,
+        Err(error) => return refusal(error),
+    };
+
+    // Recorded before the row is written, because a command that changed a
+    // setting and was not recorded did not happen as far as this product is
+    // concerned. The detail is the command itself, never the answer, so the audit
+    // log stays a log of actions rather than a second transcript.
+    if let Err(error) =
+        state
+            .engine
+            .auth()
+            .audit("loopback", "chat.command", Some(&command_detail(command)))
+    {
+        return audit_failure(request_id, "chat.command", error);
+    }
+
+    let _ = chat::touch_conversation(&db, &conversation);
+    match chat::append(
+        &db,
+        &conversation,
+        chat::Role::Assistant,
+        &text,
+        chat::State::Complete,
+    ) {
+        Ok(_) => see_other_owned(conversation_path(&conversation)),
+        Err(error) => refusal(FormError::new(None, "chat_write_failed", error.to_string())),
+    }
+}
+
+/// The audit detail for one command: the name and the argument it carried.
+///
+/// Bounded, because the argument is operator text and an audit row is not the
+/// place for a paragraph.
+fn command_detail(command: &crate::commands::Command) -> String {
+    let argument: String = command.argument.chars().take(120).collect();
+    if argument.is_empty() {
+        format!("/{}", command.name)
+    } else {
+        format!("/{} {}", command.name, argument)
+    }
+}
+
+/// The commands that read or write the store.
+///
+/// Each returns the conversation the answer belongs to and the text to write into
+/// it. `Err` is reserved for a store that could not be read or written: a command
+/// that refuses on its own terms ("that id is not in the list") is still an
+/// answer, and it carries the reason in its own words.
+fn command_effect(
+    state: &AppState,
+    current: &str,
+    command: &crate::commands::Command,
+) -> Result<(String, String), FormError> {
+    match command.name.as_str() {
+        // Same effect as the new-chat route: one new conversation, and the answer
+        // lands in it, so the operator is looking at the empty transcript the
+        // command promised.
+        "new" => match chat::create_conversation(state.engine.db()) {
+            Ok(id) => Ok((
+                id,
+                "Started a new conversation, and this is it. The last one is untouched and \
+                 still in the session list."
+                    .to_owned(),
+            )),
+            Err(error) => Err(FormError::new(None, "chat_write_failed", error.to_string())),
+        },
+        // The same clear the clear button runs, so there is one behaviour and not
+        // two that drift.
+        "clear" => match chat::clear(state.engine.db(), current) {
+            Ok(removed) => Ok((
+                current.to_owned(),
+                format!(
+                    "Cleared this conversation: {} removed. This line is the only one left in it.",
+                    message_count(removed)
+                ),
+            )),
+            Err(error) => Err(FormError::new(None, "chat_write_failed", error.to_string())),
+        },
+        "stop" => stop_turn(state.engine.db(), current),
+        "model" => set_model(state, current, &command.argument),
+        "memory" => set_memory(state, current, &command.argument),
+        // Unreachable while `immediate` handles every name outside the list, and
+        // answered honestly rather than with a panic if that ever changes.
+        other => Ok((current.to_owned(), crate::commands::unsupported(other))),
+    }
+}
+
+/// A count of transcript rows, for copy that has to read like a sentence.
+fn message_count(count: usize) -> String {
+    if count == 1 {
+        "1 message".to_owned()
+    } else {
+        format!("{count} messages")
+    }
+}
+
+/// Cancel a turn that is running in this conversation.
+///
+/// A running turn is a row still marked `streaming`, read from the database: that
+/// row is the daemon's own record that the turn is writing it, and it is what the
+/// streaming task checks before it settles. Marking it `cancelled` here is
+/// therefore the whole cancellation: when the turn finishes it finds the row no
+/// longer streaming and writes nothing over it. The provider call already in
+/// flight is not aborted mid-flight, and this command does not claim to abort it -
+/// what stops is the answer landing, which is the part the operator asked about.
+fn stop_turn(db: &crate::db::Db, conversation: &str) -> Result<(String, String), FormError> {
+    let running = match chat::streaming(db, conversation) {
+        Ok(ids) => ids,
+        Err(error) => return Err(FormError::new(None, "chat_unreadable", error.to_string())),
+    };
+    if running.is_empty() {
+        return Ok((
+            conversation.to_owned(),
+            "Nothing was running in this conversation, so there was nothing to stop.".to_owned(),
+        ));
+    }
+    for id in &running {
+        if let Err(error) = chat::fail(
+            db,
+            id,
+            "cancelled",
+            "Stopped by the operator before it finished.",
+        ) {
+            return Err(FormError::new(None, "chat_write_failed", error.to_string()));
+        }
+    }
+    let stopped = if running.len() == 1 {
+        "the turn that was running".to_owned()
+    } else {
+        format!("the {} that were running", message_count(running.len()))
+    };
+    Ok((
+        conversation.to_owned(),
+        format!("Stopped {stopped}. Its answer will not be written into the transcript."),
+    ))
+}
+
+/// Set the stored default model, if the id is one the endpoint published.
+///
+/// An id outside the list is refused by name and the stored model is left alone:
+/// a default that silently changed to something the endpoint never offered would
+/// fail on the next turn, which is the worst place to discover a typo.
+fn set_model(
+    state: &AppState,
+    current: &str,
+    argument: &str,
+) -> Result<(String, String), FormError> {
+    let id = argument.trim();
+    if id.is_empty() {
+        return Ok((
+            current.to_owned(),
+            "That needs a model id: /model <id>. The stored default was not changed.".to_owned(),
+        ));
+    }
+    if id.len() > 200 {
+        return Ok((
+            current.to_owned(),
+            "That model id is longer than any endpoint serves, so the stored default was not \
+             changed."
+                .to_owned(),
+        ));
+    }
+    let known = match state.engine.provider_models() {
+        Ok(known) => known,
+        Err(error) => {
+            return Err(FormError::new(
+                None,
+                "settings_unreadable",
+                error.to_string(),
+            ));
+        }
+    };
+    if known.is_empty() {
+        return Ok((
+            current.to_owned(),
+            format!(
+                "No model list has been stored yet, so {id} cannot be checked against one and \
+                 the stored default was not changed. Run the probe on the settings page, then \
+                 ask again."
+            ),
+        ));
+    }
+    if !known.iter().any(|known| known == id) {
+        return Ok((
+            current.to_owned(),
+            format!(
+                "{id} is not in the model list this endpoint returned, so the stored default was \
+                 not changed. /model takes an id from that list."
+            ),
+        ));
+    }
+    match store::settings_put(state.engine.db(), SETTING_MODEL, id) {
+        Ok(()) => Ok((
+            current.to_owned(),
+            format!("The stored default model is now {id}."),
+        )),
+        Err(error) => Err(FormError::new(
+            None,
+            "settings_write_failed",
+            error.to_string(),
+        )),
+    }
+}
+
+/// Set the memory backend, refusing anything outside the three that exist.
+///
+/// Choosing `vault` without a directory is allowed and then reported: the setting
+/// is the backend, not the path, and a host that has not given a path yet should
+/// hear that from the answer rather than be told its command was invalid.
+fn set_memory(
+    state: &AppState,
+    current: &str,
+    argument: &str,
+) -> Result<(String, String), FormError> {
+    let backend = match crate::commands::memory_backend(argument) {
+        Ok(backend) => backend,
+        Err(refusal) => return Ok((current.to_owned(), refusal)),
+    };
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::memory::SETTING_BACKEND,
+        backend.as_str(),
+    ) {
+        return Err(FormError::new(
+            None,
+            "settings_write_failed",
+            error.to_string(),
+        ));
+    }
+    let mut text = format!("The memory backend is now {}.", backend.as_str());
+    if backend == crate::memory::Backend::Vault {
+        let stored = state
+            .engine
+            .setting(crate::memory::SETTING_VAULT)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if stored.is_empty() || !std::path::Path::new(&stored).is_dir() {
+            text.push_str(
+                " No vault directory is set, so a turn will recall nothing until one is: set it \
+                 on the settings page.",
+            );
+        }
+    }
+    Ok((current.to_owned(), text))
+}
+
 /// `POST /dashboard/chat/send`.
 ///
 /// Two modes, one validation path. A browser that asked for the event stream gets
@@ -4200,6 +4493,19 @@ async fn chat_send(
             return fail_dashboard(&state, wants_html(&headers), error);
         }
     };
+
+    // A message that begins with a slash is a command, not a prompt. It is
+    // dispatched here, before a turn is built and before the provider is even
+    // read: a command has no turn to spend a token on, so the guarantee is
+    // structural rather than a rule somebody has to remember.
+    if let Some(command) = crate::commands::parse(&text) {
+        return run_command(
+            &state,
+            field(&fields, "conversation"),
+            &command,
+            &request_id.0,
+        );
+    }
 
     // The provider is checked before anything is written: a daemon with no
     // endpoint has not accepted the message, so the transcript does not gain a
@@ -4995,6 +5301,24 @@ fn spawn_turn(
 
         match outcome {
             Ok(turn) => {
+                // The row is the record, so its state decides whether this answer
+                // belongs in the transcript. `/stop` marks a running row failed,
+                // and settling over that would replace the operator's decision
+                // with the answer they already cancelled. Only a definite "no
+                // longer streaming" stops the write: a read that failed leaves the
+                // answer to land, because losing a finished turn to a transient
+                // read error is the worse of the two failures.
+                if matches!(chat::still_streaming(&db, &answer_id), Ok(false)) {
+                    send_terminal(
+                        &sender,
+                        "error",
+                        serde_json::json!({
+                            "code": "cancelled",
+                            "message": "the operator stopped this turn, so its answer was not written",
+                        }),
+                    );
+                    return;
+                }
                 let usage = turn.usage;
                 let accounting = chat::Accounting {
                     prompt_tokens: usage.input_tokens(),
