@@ -214,6 +214,30 @@ fn the_run_log_can_be_switched_off_and_then_the_page_does_not_carry_it() {
 }
 
 #[test]
+fn a_dropped_stream_is_described_in_words_the_operator_can_use() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+
+    assert!(
+        body.contains("Lost the connection to the daemon"),
+        "a dropped stream says what happened"
+    );
+    assert!(
+        body.contains("reload to see the transcript"),
+        "and what to do about it"
+    );
+    assert!(
+        !body.contains(r#""The turn failed: " + error.message"#),
+        "the browser's own words are not passed through as a diagnosis"
+    );
+}
+
+#[test]
 fn a_calls_output_renders_as_a_window_with_lights_and_a_size() {
     let (_dir, engine, app, cookie) = ready_app();
     let db = engine.db();

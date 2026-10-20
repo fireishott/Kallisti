@@ -3770,8 +3770,14 @@ const CHAT_JS: &str = r##"(function () {
       if (controller && controller.signal.aborted) {
         target.text.textContent = answer + " [stopped]";
       } else {
+        // A dropped stream is not a failed turn. The daemon keeps working after
+        // the browser lets go, so the answer is very likely on its way to the
+        // transcript. Printing the browser's own words ("Load failed") would be
+        // jargon standing in for a fact the operator can act on.
         target.bubble.className = "bubble failed";
-        target.text.textContent = "The turn failed: " + error.message;
+        target.text.textContent =
+          "Lost the connection to the daemon. The turn may have finished anyway - " +
+          "reload to see the transcript, or send again.";
       }
     }
     controller = null;
