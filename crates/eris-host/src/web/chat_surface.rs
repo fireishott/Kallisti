@@ -2048,6 +2048,123 @@ fn a_stop_command_refuses_when_nothing_runs_and_cancels_a_row_that_does() {
     );
 }
 
+/// A ready daemon, plus the steering queue the router's own state holds.
+///
+/// The queue is in-process, so a test reaches it the way the handlers do: through
+/// the `AppState` the router was built from. No new plumbing, and the assertion is
+/// about the same object the send handler consults.
+fn ready_app_steered() -> (
+    tempfile::TempDir,
+    crate::onboarding::SetupEngine,
+    axum::Router,
+    String,
+    chat::Steering,
+) {
+    let (dir, engine, passphrase) = crate::web::harness::ready_engine();
+    let state = crate::admin::AppState::new(engine.clone(), false);
+    let steering = state.steering.clone();
+    let app = crate::admin::router_with(state);
+    let cookie = crate::web::harness::sign_in(&app, &passphrase);
+    (dir, engine, app, cookie, steering)
+}
+
+/// Hold a conversation the way a running turn does, or fail loudly.
+fn hold(steering: &chat::Steering) -> chat::TurnLease {
+    match steering.claim(CONVERSATION_ID, "a running turn") {
+        chat::Claim::Turn(lease) => lease,
+        chat::Claim::Steered(_) => panic!("the conversation was free"),
+    }
+}
+
+#[test]
+fn a_message_during_a_turn_is_queued_for_it_instead_of_starting_a_second_one() {
+    let (_dir, engine, app, cookie, steering) = ready_app_steered();
+    let db = engine.db();
+    let before = chat::count(db, CONVERSATION_ID).expect("a readable transcript");
+
+    // A turn is streaming into this conversation.
+    let lease = hold(&steering);
+
+    let reply = block_on(send(
+        &app,
+        Call::post(ROUTE_CHAT_SEND, "message=wait+for+the+logs")
+            .cookie(Some(&cookie))
+            .header(header::ACCEPT.as_str(), "text/html"),
+    ));
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+
+    // One row, the operator's: no second turn was started behind the first.
+    let transcript = chat::load(db, CONVERSATION_ID).expect("a readable transcript");
+    assert_eq!(
+        chat::count(db, CONVERSATION_ID).expect("a count"),
+        before + 1,
+        "a steer writes the message and nothing else"
+    );
+    assert_eq!(
+        transcript.last().expect("a last row").role,
+        chat::Role::User
+    );
+    assert!(
+        chat::streaming(db, CONVERSATION_ID)
+            .expect("a readable queue")
+            .is_empty(),
+        "no second answer row was opened"
+    );
+    assert_eq!(
+        steering.queued(CONVERSATION_ID),
+        1,
+        "the message waits for the turn that is running"
+    );
+
+    // The page the redirect lands on says so, rather than looking like the
+    // message went nowhere.
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("1 message queued for the running turn"),
+        "{}",
+        page.body
+    );
+
+    // And the running turn is handed the words at its boundary, once.
+    match lease.signal() {
+        chat::TurnSignal::Steer(text) => assert_eq!(text, "wait for the logs"),
+        other => panic!("expected the steer, got {other:?}"),
+    }
+    assert_eq!(steering.queued(CONVERSATION_ID), 0);
+}
+
+#[test]
+fn the_stop_command_stops_the_row_and_asks_the_running_turn_to_stop() {
+    let (_dir, engine, app, cookie, steering) = ready_app_steered();
+    let db = engine.db();
+    let lease = hold(&steering);
+    // The row a running turn leaves behind, so both halves of the cancellation
+    // are exercised: the record and the turn.
+    let running = chat::append_answer(db, CONVERSATION_ID, "m/one", None).expect("a running row");
+
+    let reply = post_command(&app, &cookie, "/stop");
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+    assert!(
+        !chat::still_streaming(db, &running).expect("a readable row"),
+        "the row stops streaming"
+    );
+    assert_eq!(
+        lease.signal(),
+        chat::TurnSignal::Stop,
+        "the turn that is running is asked to stop as well"
+    );
+    let body = newest_row(&engine, CONVERSATION_ID).body;
+    assert!(body.contains("Stopped"), "{body}");
+    assert!(
+        body.contains("next boundary"),
+        "the copy states the honest limit: {body}"
+    );
+}
+
 #[test]
 fn an_empty_chat_shows_the_generated_line_only_when_it_is_switched_on() {
     let (_dir, engine, app, cookie) = ready_app();

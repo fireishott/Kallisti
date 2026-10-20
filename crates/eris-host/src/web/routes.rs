@@ -3964,6 +3964,10 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         })
         .unwrap_or_else(|| chat::NEW_CONVERSATION_TITLE.to_owned());
 
+    // Read live, so the page a steer redirects to says a message is waiting for
+    // the turn that is still running in it.
+    let queued = state.steering.queued(&conversation);
+
     Ok(ChatView {
         chrome,
         conversation,
@@ -4023,6 +4027,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
             .unwrap_or_else(|_| crate::onboarding::SandboxMode::DEFAULT.as_str().to_owned()),
         allow_full: state.allow_full(),
         context_window,
+        queued,
     })
 }
 
@@ -4650,7 +4655,7 @@ fn command_effect(
             )),
             Err(error) => Err(FormError::new(None, "chat_write_failed", error.to_string())),
         },
-        "stop" => stop_turn(state.engine.db(), current),
+        "stop" => stop_turn(state, current),
         "model" => set_model(state, current, &command.argument),
         "memory" => set_memory(state, current, &command.argument),
         // Unreachable while `immediate` handles every name outside the list, and
@@ -4670,19 +4675,28 @@ fn message_count(count: usize) -> String {
 
 /// Cancel a turn that is running in this conversation.
 ///
-/// A running turn is a row still marked `streaming`, read from the database: that
-/// row is the daemon's own record that the turn is writing it, and it is what the
-/// streaming task checks before it settles. Marking it `cancelled` here is
-/// therefore the whole cancellation: when the turn finishes it finds the row no
-/// longer streaming and writes nothing over it. The provider call already in
-/// flight is not aborted mid-flight, and this command does not claim to abort it -
-/// what stops is the answer landing, which is the part the operator asked about.
-fn stop_turn(db: &crate::db::Db, conversation: &str) -> Result<(String, String), FormError> {
+/// Two halves, and both are needed now.
+///
+/// The row half: a running turn is a row still marked `streaming`, read from the
+/// database, and it is what the streaming task checks before it settles. Marking
+/// it `cancelled` means the answer that is being written stops landing.
+///
+/// The turn half: the row being failed does not, on its own, stop a turn that is
+/// in the middle of a provider round trip, so the running turn is also asked to
+/// stop at its next boundary. That is the honest limit and this copy states it -
+/// the provider request already streaming is not aborted mid-flight, because
+/// `stream_chat` is one blocking call with no seam inside it to interrupt. What
+/// stops, promptly, is everything after it: no further round trips, no further
+/// tool calls, and no answer written.
+fn stop_turn(state: &AppState, conversation: &str) -> Result<(String, String), FormError> {
+    // Asked first, so a turn that finishes while this is running still sees it.
+    let signalled = state.steering.stop(conversation);
+    let db = state.engine.db();
     let running = match chat::streaming(db, conversation) {
         Ok(ids) => ids,
         Err(error) => return Err(FormError::new(None, "chat_unreadable", error.to_string())),
     };
-    if running.is_empty() {
+    if running.is_empty() && !signalled {
         return Ok((
             conversation.to_owned(),
             "Nothing was running in this conversation, so there was nothing to stop.".to_owned(),
@@ -4698,14 +4712,21 @@ fn stop_turn(db: &crate::db::Db, conversation: &str) -> Result<(String, String),
             return Err(FormError::new(None, "chat_write_failed", error.to_string()));
         }
     }
-    let stopped = if running.len() == 1 {
-        "the turn that was running".to_owned()
+    let stopped = match running.len() {
+        // A signalled turn whose row is already gone is still the turn that was
+        // running: the row is what the answer writes to, not what runs.
+        0 | 1 => "the turn that was running".to_owned(),
+        count => format!("the {} that were running", message_count(count)),
+    };
+    let limit = if signalled {
+        " It stops at its next boundary: no further provider round trips, and no answer \
+         written. The request already streaming is not interrupted."
     } else {
-        format!("the {} that were running", message_count(running.len()))
+        " Its answer will not be written into the transcript."
     };
     Ok((
         conversation.to_owned(),
-        format!("Stopped {stopped}. Its answer will not be written into the transcript."),
+        format!("Stopped {stopped}.{limit}"),
     ))
 }
 
@@ -4913,6 +4934,56 @@ async fn chat_send(
             return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
         }
     };
+
+    // One turn at a time, per conversation. The claim below is taken before the
+    // first row is written, so two sends that arrive together cannot both start a
+    // turn: one owns the conversation and the other is queued for it. That is what
+    // a second message during streaming is - a steer, not a second turn.
+    let mut steer_text = text.clone();
+    // A file rides with a steer exactly the way it rides with a question: the
+    // running turn cannot see its bytes, so it is told what came with the message.
+    if !files.is_empty() {
+        let described = chat::describe_attachments(&files);
+        if !described.trim().is_empty() {
+            steer_text.push_str("\n\n");
+            steer_text.push_str(&described);
+        }
+    }
+    let lease = match state.steering.claim(&conversation, &steer_text) {
+        chat::Claim::Turn(lease) => lease,
+        chat::Claim::Steered(waiting) => {
+            // The operator's words are recorded either way. What changes is who
+            // answers them: the turn that is already streaming, at its next
+            // boundary, instead of a second turn starting behind it and billing
+            // the same conversation twice.
+            let steered = match chat::append(
+                &db,
+                &conversation,
+                chat::Role::User,
+                &text,
+                chat::State::Complete,
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    return refusal(FormError::new(None, "chat_write_failed", error.to_string()));
+                }
+            };
+            let attachment_ids: Vec<String> = files.iter().map(|file| file.id.clone()).collect();
+            let _ = chat::claim_attachments(&db, &conversation, &steered, &attachment_ids);
+            let _ = chat::touch_conversation(&db, &conversation);
+            // Recorded without the words, like every other chat audit row: a steer
+            // is an action on a turn, and the transcript is not the audit log.
+            let _ = state.engine.auth().audit(
+                "loopback",
+                "chat.steer",
+                Some(&format!("queued={waiting}")),
+            );
+            // The normal redirect, to the page that now says a message is waiting
+            // for the turn that is running in it.
+            return see_other(ROUTE_CHAT);
+        }
+    };
+
     let question_id = match chat::append(
         &db,
         &conversation,
@@ -4992,6 +5063,7 @@ async fn chat_send(
                 dropped,
                 history,
             },
+            lease,
             None,
         );
         let _ = task.await;
@@ -5012,6 +5084,7 @@ async fn chat_send(
             dropped,
             history,
         },
+        lease,
         Some(tx),
     );
     Sse::new(UnboundedReceiverStream::new(rx))
@@ -5348,10 +5421,16 @@ struct TurnJob {
 /// The sink forwards each fragment to the channel when there is one, and the
 /// final row is written before the terminal event is sent, so a browser that
 /// reloads right after `done` reads the same text it just saw.
+///
+/// The lease is the conversation's claim while this turn runs, and the turn's ear
+/// while it streams: it is moved into the blocking task so the entry lives exactly
+/// as long as the turn does. Dropping it at the end of the task is what makes the
+/// next message a turn of its own again.
 fn spawn_turn(
     state: &AppState,
     config: chat::TurnConfig,
     job: TurnJob,
+    lease: chat::TurnLease,
     sender: Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
 ) -> tokio::task::JoinHandle<()> {
     let TurnJob {
@@ -5652,6 +5731,10 @@ fn spawn_turn(
                 }
             }
         };
+        // The turn's ear: the same lease that claims the conversation answers
+        // what the operator typed while it runs. A `&mut dyn FnMut` closure rather
+        // than a second copy of the loop, so the steer lands inside this turn.
+        let mut poll = || lease.signal();
         let started = std::time::Instant::now();
         let outcome = chat::run_turn(
             &config,
@@ -5666,10 +5749,15 @@ fn spawn_turn(
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
             },
+            &mut poll,
             &mut sink,
         );
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
+        // Anything still waiting had no round left to join, and is said out loud
+        // rather than dropped. It is a race measured in microseconds, and the row
+        // it already wrote stays in the transcript.
+        let stranded = lease.drain();
 
         match outcome {
             Ok(turn) => {
@@ -5689,6 +5777,7 @@ fn spawn_turn(
                             "message": "the operator stopped this turn, so its answer was not written",
                         }),
                     );
+                    send_stranded(&sender, &stranded);
                     return;
                 }
                 let usage = turn.usage;
@@ -5739,6 +5828,7 @@ fn spawn_turn(
                     };
                     let _ = title_audit.audit("loopback", "chat.title", Some(&detail));
                 }
+                send_stranded(&sender, &stranded);
             }
             Err((code, message)) => {
                 let _ = chat::fail(&db, &answer_id, &code, &streamed);
@@ -5750,9 +5840,41 @@ fn spawn_turn(
                         "message": message,
                     }),
                 );
+                send_stranded(&sender, &stranded);
             }
         }
     })
+}
+
+/// Tell the page about a steer that lost the race with the end of its turn.
+///
+/// The loop checks for a steer at its last boundary and then writes the answer, so
+/// a message sent in between has no round left to join. That is microseconds, and
+/// it is still reported: an operator who typed something is owed the fact that it
+/// did not land, rather than a message that quietly disappears.
+fn send_stranded(
+    sender: &Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
+    stranded: &[String],
+) {
+    if stranded.is_empty() {
+        return;
+    }
+    let message = if stranded.len() == 1 {
+        "A steering message arrived after the turn had finished, so nothing applied it. \
+         Send it again and it starts a turn of its own."
+            .to_owned()
+    } else {
+        format!(
+            "{} steering messages arrived after the turn had finished, so nothing applied \
+             them. Send them again and they start a turn of their own.",
+            stranded.len()
+        )
+    };
+    send_terminal(
+        sender,
+        "notice",
+        serde_json::json!({ "code": "steer_not_applied", "message": message }),
+    );
 }
 
 /// One event, when somebody is listening. A plain form post has no channel and

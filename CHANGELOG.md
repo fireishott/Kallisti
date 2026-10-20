@@ -6,6 +6,18 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A second message steers the running turn.** Sending while an answer streams no
+  longer starts a second turn: the message is queued for the turn that already owns
+  the conversation, and that turn appends it and answers it as a continuation at its
+  next boundary, before the next provider round trip and between the tool calls of a
+  round. One turn, one bill, and the answer the operator just redirected is the one
+  that lands. The composer stays usable while streaming and its send control reads
+  `Steer`, with the queued count stated on the page a plain form post lands on.
+  `/stop` and the Stop button now also ask the running turn to stop, so it ends at
+  its next boundary instead of finishing the round and settling an answer the
+  operator already declined. The provider request already in flight is not aborted
+  mid-stream: that seam is one blocking call, and the copy does not pretend
+  otherwise.
 - **Conversations over `/v1`.** A paired device can list its conversations, start
   one, read a transcript and clear it, so a client shows history instead of firing
   one-shot turns into the void. `GET /v1/conversations` is newest first and capped

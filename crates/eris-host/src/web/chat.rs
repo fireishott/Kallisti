@@ -1721,6 +1721,248 @@ pub struct TurnSettings {
     pub max_rounds: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Steering a turn that is already running
+// ---------------------------------------------------------------------------
+
+/// What a running turn should do about the operator, asked at a round boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnSignal {
+    /// Nothing was typed: carry on exactly as the turn was going.
+    Continue,
+    /// The operator asked it to stop.
+    ///
+    /// This is a boundary, not a socket close. The provider request that is
+    /// already streaming is not aborted mid-flight - `stream_chat` is one blocking
+    /// call and there is no seam inside it to interrupt - so what stops is the
+    /// turn: no further round trips, no answer written. See [`drive_tool_loop`].
+    Stop,
+    /// The operator typed this while the turn ran. The current round ends, the
+    /// message is appended, and a fresh round answers it as a continuation.
+    Steer(String),
+}
+
+/// How a turn hears the operator: a question with three answers, asked between
+/// rounds.
+///
+/// A `&mut dyn FnMut` rather than a new generic parameter. `drive_tool_loop`,
+/// `run_turn` and `run_turn_with_key` all take this by reference, so the seam is
+/// one more argument instead of one more type parameter threaded through every
+/// caller, and a turn that has nothing to hear passes a closure that says so.
+/// The turn asks; the queue answers; neither knows the other exists.
+pub type TurnPoll<'a> = dyn FnMut() -> TurnSignal + 'a;
+
+/// One running turn's stop flag and the messages waiting for it.
+#[derive(Debug, Default)]
+struct Control {
+    steers: std::collections::VecDeque<String>,
+    stop: bool,
+}
+
+impl Control {
+    /// What the operator asked for, in one answer.
+    ///
+    /// A stop outranks a steer: an operator who asked to stop does not want one
+    /// more round trip run first.
+    fn signal(&mut self) -> TurnSignal {
+        if self.stop {
+            return TurnSignal::Stop;
+        }
+        match self.steers.pop_front() {
+            Some(text) => TurnSignal::Steer(text),
+            None => TurnSignal::Continue,
+        }
+    }
+}
+
+/// The lock around one turn's [`Control`].
+///
+/// A poisoned lock is recovered rather than propagated: the only writer is this
+/// module, and a panic inside it must not turn a steer into a stuck turn.
+#[derive(Debug, Default)]
+struct TurnControl {
+    inner: std::sync::Mutex<Control>,
+}
+
+impl TurnControl {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Control> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn signal(&self) -> TurnSignal {
+        self.lock().signal()
+    }
+
+    fn push(&self, text: String) -> usize {
+        let mut control = self.lock();
+        control.steers.push_back(text);
+        control.steers.len()
+    }
+
+    fn queued(&self) -> usize {
+        self.lock().steers.len()
+    }
+
+    /// Whatever was still waiting when the turn stopped listening.
+    fn drain(&self) -> Vec<String> {
+        self.lock().steers.drain(..).collect()
+    }
+
+    fn request_stop(&self) -> bool {
+        let mut control = self.lock();
+        let first = !control.stop;
+        control.stop = true;
+        first
+    }
+}
+
+type Running = std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<TurnControl>>>;
+
+/// Which conversation is running a turn, and what has been said to it.
+///
+/// One entry per conversation, taken before the turn's first row is written and
+/// released when its blocking task returns. The entry is what makes a second
+/// message a steer instead of a second turn: the claim and the queue are one
+/// operation under one lock, so a message can never fall between "is anything
+/// running here" and "queue it for that turn".
+#[derive(Debug, Clone, Default)]
+pub struct Steering {
+    running: std::sync::Arc<Running>,
+}
+
+/// Where a message went: into a new turn, or into the one already running.
+#[derive(Debug)]
+pub enum Claim {
+    /// The conversation was free. The lease is the claim on it, held for as long
+    /// as the turn runs.
+    Turn(TurnLease),
+    /// A turn is already streaming here. The message is queued for it, and the
+    /// number is how many are now waiting.
+    Steered(usize),
+}
+
+impl Steering {
+    /// An empty queue: nothing is running anywhere yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Claim the conversation for a turn, or hand the message to the turn that
+    /// already holds it.
+    pub fn claim(&self, conversation: &str, text: &str) -> Claim {
+        let mut running = self.lock();
+        if let Some(control) = running.get(conversation) {
+            return Claim::Steered(control.push(text.to_owned()));
+        }
+        let control = std::sync::Arc::new(TurnControl::default());
+        running.insert(conversation.to_owned(), std::sync::Arc::clone(&control));
+        Claim::Turn(TurnLease {
+            steering: self.clone(),
+            conversation: conversation.to_owned(),
+            control,
+        })
+    }
+
+    /// Queue a message for the running turn. `None` when nothing is running,
+    /// which is the honest answer to "did it land".
+    pub fn queue(&self, conversation: &str, text: &str) -> Option<usize> {
+        let running = self.lock();
+        running
+            .get(conversation)
+            .map(|control| control.push(text.to_owned()))
+    }
+
+    /// Ask the running turn to stop. False when nothing is running, or when it
+    /// was already asked.
+    pub fn stop(&self, conversation: &str) -> bool {
+        let running = self.lock();
+        running
+            .get(conversation)
+            .is_some_and(|control| control.request_stop())
+    }
+
+    /// How many messages are waiting for the running turn.
+    #[must_use]
+    pub fn queued(&self, conversation: &str) -> usize {
+        let running = self.lock();
+        running
+            .get(conversation)
+            .map_or(0, |control| control.queued())
+    }
+
+    /// Whether a turn is running in this conversation at all.
+    #[must_use]
+    pub fn running(&self, conversation: &str) -> bool {
+        self.lock().contains_key(conversation)
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, std::sync::Arc<TurnControl>>>
+    {
+        self.running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Drop one turn's entry, and only that turn's: a lease that somehow outlived
+    /// a replacement must not evict the turn that took over.
+    fn release(&self, conversation: &str, control: &std::sync::Arc<TurnControl>) {
+        let mut running = self.lock();
+        if running
+            .get(conversation)
+            .is_some_and(|held| std::sync::Arc::ptr_eq(held, control))
+        {
+            running.remove(conversation);
+        }
+    }
+}
+
+/// A conversation claimed for one running turn.
+///
+/// Dropping it releases the claim, which is what makes the next message a turn of
+/// its own again. The lease is also the turn's ear: [`TurnLease::signal`] is the
+/// hook [`drive_tool_loop`] calls between rounds.
+#[derive(Debug)]
+pub struct TurnLease {
+    steering: Steering,
+    conversation: String,
+    control: std::sync::Arc<TurnControl>,
+}
+
+impl TurnLease {
+    /// What the operator has asked for since the last boundary.
+    #[must_use]
+    pub fn signal(&self) -> TurnSignal {
+        self.control.signal()
+    }
+
+    /// How many messages are waiting right now.
+    #[must_use]
+    pub fn queued(&self) -> usize {
+        self.control.queued()
+    }
+
+    /// Messages that arrived after the turn stopped listening.
+    ///
+    /// A steer that lands between the last boundary check and the write of the
+    /// answer has no round left to join. It is taken here so the caller can say
+    /// so, rather than let the operator's words disappear.
+    #[must_use]
+    pub fn drain(&self) -> Vec<String> {
+        self.control.drain()
+    }
+}
+
+impl Drop for TurnLease {
+    fn drop(&mut self) {
+        self.steering.release(&self.conversation, &self.control);
+    }
+}
+
 /// One thing the turn produced while it was still running.
 ///
 /// The two are kept apart all the way to the database because they mean different
@@ -1766,9 +2008,16 @@ pub enum StreamPart<'a> {
 /// The key is resolved here, from the daemon's own environment. A caller that
 /// resolves it elsewhere - the device surface injects its lookup so a test can
 /// prove the path - calls [`run_turn_with_key`] with the key it already has.
-// Eight arguments is the seam: provider, prompt, sandbox, gate, pool, settings,
-// sink. Bundling them into a struct would only move the same fields behind a
-// name, and every one of them is independently optional at the call site.
+///
+/// `poll` is the turn's ear: a caller that has something to say to a running turn
+/// passes its queue, and a caller that does not passes a closure that always says
+/// [`TurnSignal::Continue`]. Nothing else about the turn changes, so there is one
+/// loop whether or not anybody is steering it.
+// The argument list is the seam: provider, prompt, sandbox, gate, pool, settings,
+// poll, sink. Bundling them into a struct would only move the same fields behind a
+// name, and every one of them is independently optional at the call site. `poll`
+// stays a `&mut dyn FnMut` for the same reason: one more reference, not one more
+// type parameter threaded through every caller.
 #[allow(clippy::too_many_arguments)]
 pub fn run_turn(
     config: &TurnConfig,
@@ -1780,6 +2029,7 @@ pub fn run_turn(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     settings: TurnSettings,
+    poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
     let key = core_runtime::provider::resolve_api_key(&config.key_ref)
@@ -1795,6 +2045,7 @@ pub fn run_turn(
         web_extract,
         image,
         settings,
+        poll,
         sink,
     )
 }
@@ -1817,6 +2068,7 @@ pub fn run_turn_with_key(
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
     settings: TurnSettings,
+    poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
     let profile =
@@ -1921,6 +2173,7 @@ pub fn run_turn_with_key(
         gate,
         settings.max_rounds,
         sink,
+        poll,
         |round, tools_allowed, emit| {
             let mut forward = |event: ProviderEvent| match event {
                 ProviderEvent::Text(fragment) if !fragment.is_empty() => {
@@ -2131,12 +2384,26 @@ pub type ToolExecute<'a> =
 /// `gate` is consulted before every call runs and is the only place a turn can
 /// be stopped from touching the filesystem. It is called even for read-only
 /// tools so a policy can decide for itself; the shipped policy parks writes.
+///
+/// `poll` is consulted at three boundaries: before each provider round trip,
+/// between the tool calls of a round, and once more after the last round trip
+/// returns. That third one is what makes a steer land on a one-round answer,
+/// which is most answers: a turn makes one long round trip, and a steer typed
+/// while it streamed would otherwise arrive after there was nothing left to
+/// steer.
+///
+/// These are boundaries, not interruptions. A provider stream already in flight
+/// runs to its end - `stream_chat` is a single blocking call with no seam inside
+/// it - so a stop takes effect when the current call returns: no further round
+/// trip, no tool calls after the one that is running, and no answer written. No
+/// socket is closed, and this function does not claim one is.
 pub fn drive_tool_loop(
     execute: &mut ToolExecute<'_>,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,
     sink: &mut dyn FnMut(StreamPart<'_>),
+    poll: &mut TurnPoll<'_>,
     mut stream: impl FnMut(
         &[ChatMessage],
         bool,
@@ -2150,6 +2417,17 @@ pub fn drive_tool_loop(
     let mut rounds = 0usize;
 
     let mut text = loop {
+        // The first boundary: nothing has been sent for this round yet, so a stop
+        // here costs nothing and a steer joins the prompt before it is billed.
+        match poll() {
+            TurnSignal::Stop => return Err(stopped()),
+            TurnSignal::Steer(instruction) => {
+                messages.push(ChatMessage::text(ChatRole::User, instruction));
+                continue;
+            }
+            TurnSignal::Continue => {}
+        }
+
         // The last attempt is tool-free on purpose. A model that answered every
         // round with another call used to end the turn with nothing; instead it
         // now has to say what it found with what it already has, which is a
@@ -2182,6 +2460,22 @@ pub fn drive_tool_loop(
         }
 
         if completion.tool_calls.is_empty() {
+            // The last boundary: the operator may have typed while that round was
+            // streaming, and an answer is not final until nobody is still talking.
+            // What the model already said is kept as its own turn, so the new
+            // instruction is answered as a continuation rather than a restart, and
+            // the round that produced it is not run again.
+            match poll() {
+                TurnSignal::Stop => return Err(stopped()),
+                TurnSignal::Steer(instruction) => {
+                    if !completion.text.trim().is_empty() {
+                        messages.push(ChatMessage::text(ChatRole::Assistant, completion.text));
+                    }
+                    messages.push(ChatMessage::text(ChatRole::User, instruction));
+                    continue;
+                }
+                TurnSignal::Continue => {}
+            }
             break completion.text;
         }
 
@@ -2194,6 +2488,11 @@ pub fn drive_tool_loop(
         rounds += 1;
         messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
         for call in &completion.tool_calls {
+            // A boundary between calls as well: a round that asked for five
+            // commands stops before the second one rather than after the fifth.
+            if matches!(poll(), TurnSignal::Stop) {
+                return Err(stopped());
+            }
             // A running call may write while it runs. The chunk goes out ahead of
             // the result, on the same sink, so a live turn and a reloaded
             // transcript tell the same story in the same order.
@@ -2248,6 +2547,19 @@ pub fn drive_tool_loop(
         rounds,
         tools: records,
     })
+}
+
+/// What a stopped turn returns.
+///
+/// A failure rather than an answer, because the answer is exactly what the
+/// operator declined to wait for: the caller records the row as cancelled and the
+/// partial text that had already streamed stays as the record of what they saw.
+#[must_use]
+pub fn stopped() -> TurnFailure {
+    (
+        "cancelled".to_owned(),
+        "the operator stopped this turn before it finished".to_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -2378,6 +2690,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
             &mut |_part| {},
+            &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
                 offered += 1;
                 // Markup once, then an answer: a stub that always returns markup
@@ -2416,6 +2729,228 @@ mod tests {
             !outcome.text.contains("DSML"),
             "markup never reaches the operator"
         );
+    }
+
+    /// A claim on a conversation, for the steering tests below.
+    fn claimed(steering: &Steering) -> TurnLease {
+        match steering.claim("c", "ignored") {
+            Claim::Turn(lease) => lease,
+            Claim::Steered(_) => panic!("the conversation was free"),
+        }
+    }
+
+    #[test]
+    fn a_second_message_queues_for_the_turn_that_holds_the_conversation() {
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        assert!(steering.running("c"), "the turn holds the conversation");
+
+        // A second message is not a second turn: it is queued for the first one.
+        match steering.claim("c", "check the logs") {
+            Claim::Steered(waiting) => assert_eq!(waiting, 1),
+            Claim::Turn(_) => panic!("a running turn must not be joined by a second one"),
+        }
+        assert_eq!(steering.queued("c"), 1);
+
+        // Handed over exactly once, oldest first.
+        assert_eq!(
+            lease.signal(),
+            TurnSignal::Steer("check the logs".to_owned())
+        );
+        assert_eq!(lease.signal(), TurnSignal::Continue);
+        assert_eq!(steering.queued("c"), 0, "a steer is delivered once");
+
+        // Releasing the lease is what frees the conversation for the next turn.
+        drop(lease);
+        assert!(!steering.running("c"));
+        assert_eq!(
+            steering.queue("c", "too late"),
+            None,
+            "nothing is running, so there is nothing to steer"
+        );
+        assert!(matches!(steering.claim("c", "a turn"), Claim::Turn(_)));
+    }
+
+    #[test]
+    fn a_stop_outranks_what_is_waiting_and_is_asked_only_once() {
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        assert_eq!(steering.queue("c", "wait"), Some(1));
+        assert!(steering.stop("c"));
+        assert!(
+            !steering.stop("c"),
+            "the second request is not a second request"
+        );
+        assert_eq!(
+            lease.signal(),
+            TurnSignal::Stop,
+            "the operator who asked to stop does not want a round run first"
+        );
+        assert_eq!(
+            lease.queued(),
+            1,
+            "the queued message is still on record, not silently eaten"
+        );
+        assert_eq!(lease.drain(), vec!["wait".to_owned()]);
+        assert_eq!(steering.queued("c"), 0);
+    }
+
+    #[test]
+    fn a_steer_queued_while_the_answer_streams_is_answered_in_a_fresh_round() {
+        // The ordinary shape of an answer: one round trip that is done. The
+        // operator types while it streams, and the loop must append that text and
+        // run exactly one more round, rather than dropping the message or starting
+        // the turn over.
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut calls = 0usize;
+        let outcome = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+                crate::tools::ToolResult::ok(serde_json::json!({}))
+            },
+            vec![ChatMessage::text(ChatRole::User, "start")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            &mut |_part| {},
+            &mut || lease.signal(),
+            |messages, _tools, _emit| {
+                seen.push(messages.to_vec());
+                calls += 1;
+                if calls == 1 {
+                    // Typed while this round was streaming.
+                    steering.queue("c", "check the logs");
+                    Ok(completion_with_calls(Vec::new(), "the first answer"))
+                } else {
+                    Ok(completion_with_calls(Vec::new(), "the second answer"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(calls, 2, "a steer buys one more round trip and no more");
+        assert_eq!(outcome.text, "the second answer");
+        let second = &seen[1];
+        assert_eq!(second.len(), 3, "question, what was said, then the steer");
+        assert_eq!(second[1].role, ChatRole::Assistant);
+        assert_eq!(
+            second[1].content, "the first answer",
+            "the model keeps what it already said"
+        );
+        assert_eq!(second[2].role, ChatRole::User);
+        assert_eq!(second[2].content, "check the logs");
+        assert_eq!(steering.queued("c"), 0, "the steer was taken once");
+    }
+
+    #[test]
+    fn a_steer_queued_before_a_tool_round_joins_the_next_round_trip() {
+        // The other boundary: the model asked for a tool, and a steer arrived
+        // while that call ran. It must join before the next provider call.
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        let call = core_domain::ToolCall::new(0, "call_1", "read_file", serde_json::json!({}))
+            .expect("a call");
+        let mut second_round: Vec<ChatMessage> = Vec::new();
+        let mut calls = 0usize;
+        let outcome = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+                steering.queue("c", "actually read b.txt");
+                crate::tools::ToolResult::ok(serde_json::json!({ "rows": 1 }))
+            },
+            vec![ChatMessage::text(ChatRole::User, "read a.txt")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            &mut |_part| {},
+            &mut || lease.signal(),
+            |messages, _tools, _emit| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    second_round = messages.to_vec();
+                    Ok(completion_with_calls(Vec::new(), "read"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(calls, 2);
+        assert_eq!(outcome.text, "read");
+        let last = second_round.last().expect("a last message");
+        assert_eq!(last.role, ChatRole::User);
+        assert_eq!(last.content, "actually read b.txt");
+    }
+
+    #[test]
+    fn a_stop_ends_the_turn_at_its_next_boundary_without_writing_an_answer() {
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        let mut calls = 0usize;
+        let stopped = drive_tool_loop(
+            &mut |_call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+                crate::tools::ToolResult::ok(serde_json::json!({}))
+            },
+            vec![ChatMessage::text(ChatRole::User, "count to a billion")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            &mut |_part| {},
+            &mut || lease.signal(),
+            |_messages, _tools, _emit| {
+                calls += 1;
+                // Asked for while this round was streaming. The round finishes -
+                // there is no seam inside it to interrupt - and nothing after it
+                // runs.
+                steering.stop("c");
+                Ok(completion_with_calls(Vec::new(), "half an answer"))
+            },
+        )
+        .expect_err("a stopped turn is not an answer");
+
+        assert_eq!(calls, 1, "the round in flight is not repeated");
+        assert_eq!(stopped.0, "cancelled");
+        assert!(
+            stopped.1.contains("stopped"),
+            "the reason says what happened: {}",
+            stopped.1
+        );
+    }
+
+    #[test]
+    fn a_stop_between_two_calls_of_one_round_skips_the_second_call() {
+        let steering = Steering::new();
+        let lease = claimed(&steering);
+        let first = core_domain::ToolCall::new(0, "call_1", "read_file", serde_json::json!({}))
+            .expect("a call");
+        let second = core_domain::ToolCall::new(1, "call_2", "list_dir", serde_json::json!({}))
+            .expect("a call");
+        let mut executed: Vec<String> = Vec::new();
+        let stopped = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall, _chunks: &mut dyn FnMut(&str)| {
+                executed.push(call.name.clone());
+                // The operator stops the turn while the first call is running.
+                steering.stop("c");
+                crate::tools::ToolResult::ok(serde_json::json!({}))
+            },
+            vec![ChatMessage::text(ChatRole::User, "look at two things")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            &mut |_part| {},
+            &mut || lease.signal(),
+            |_messages, _tools, _emit| {
+                Ok(completion_with_calls(
+                    vec![first.clone(), second.clone()],
+                    "",
+                ))
+            },
+        )
+        .expect_err("a stopped turn is not an answer");
+
+        assert_eq!(
+            executed,
+            vec!["read_file".to_owned()],
+            "the second never ran"
+        );
+        assert_eq!(stopped.0, "cancelled");
     }
 
     #[test]
@@ -3067,6 +3602,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
             &mut |_part| {},
+            &mut || TurnSignal::Continue,
             |messages, _tools, _emit| {
                 seen.push(messages.to_vec());
                 round += 1;
@@ -3132,6 +3668,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
             &mut |_part| {},
+            &mut || TurnSignal::Continue,
             |_messages, tools, _emit| {
                 round += 1;
                 tools_offered.push(tools);
@@ -3190,6 +3727,7 @@ mod tests {
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
             &mut |_part| {},
+            &mut || TurnSignal::Continue,
             |_messages, _tools, _emit| Ok(completion_with_calls(Vec::new(), "ok")),
         )
         .expect("a turn");
@@ -3234,6 +3772,7 @@ mod tests {
             },
             MAX_TOOL_ROUNDS,
             &mut |_part| {},
+            &mut || TurnSignal::Continue,
             |messages, _tools, _emit| {
                 seen.push(messages.to_vec());
                 round += 1;

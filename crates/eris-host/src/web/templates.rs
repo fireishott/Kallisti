@@ -3615,6 +3615,11 @@ pub struct ChatView {
     pub allow_full: bool,
     /// The window declared for the selected model, when one is known.
     pub context_window: Option<u64>,
+    /// How many messages are waiting for a turn that is already running here.
+    ///
+    /// Rendered so a form post that steered a turn lands on a page that says so,
+    /// rather than on one that looks like the message was ignored.
+    pub queued: usize,
 }
 
 /// The greeting a fresh conversation opens with, from the hour of the day.
@@ -3978,6 +3983,20 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     }
                     div .composer-send {
                         span .hint id="composer-status" {}
+                        // The send control is never disabled by a running turn: a
+                        // second message steers it. The hint says so while the
+                        // turn streams, and this one states the count a reloaded
+                        // page also knows about.
+                        @if view.queued > 0 {
+                            span .hint id="composer-queued" {
+                                (view.queued)
+                                @if view.queued == 1 {
+                                    " message queued for the running turn"
+                                } @else {
+                                    " messages queued for the running turn"
+                                }
+                            }
+                        }
                         button type="button" id="stop" class="secondary" hidden { "Stop" }
                         button type="submit" id="send" { "Send" }
                     }
@@ -4295,6 +4314,37 @@ const CHAT_JS: &str = r##"(function () {
     };
   }
 
+  // The operator's own line, in the shape the server renders, so a live turn and
+  // a reloaded transcript put the message in the same place. Used by a send and by
+  // a steer, because both are a message the operator typed.
+  function appendUser(text, files) {
+    var article = document.createElement("article");
+    article.className = "msg user";
+    var who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "You";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    var body = document.createElement("p");
+    body.textContent = text;
+    bubble.appendChild(body);
+    if (files.length > 0) {
+      var listed = document.createElement("div");
+      listed.className = "attached";
+      files.forEach(function (file) {
+        var chip = document.createElement("span");
+        chip.className = "attached-chip";
+        chip.textContent = file.name + " \u00b7 " + humanSize(file.size);
+        listed.appendChild(chip);
+      });
+      bubble.appendChild(listed);
+    }
+    article.appendChild(who);
+    article.appendChild(bubble);
+    thread.appendChild(article);
+    return article;
+  }
+
   // One listener for every thinking bubble on the page: present and future, so
   // a streamed reply and a re-rendered transcript behave the same.
   thread.addEventListener("click", function (event) {
@@ -4336,13 +4386,21 @@ const CHAT_JS: &str = r##"(function () {
     return parts.join(" \u00b7 ");
   }
 
+  // While a turn streams the composer stays usable, and the send control says
+  // what a second message does: it steers the running turn instead of starting a
+  // second one. Nothing here is disabled, because the operator's correction is
+  // the most useful thing they can send mid-turn.
   function setBusy(next) {
     busy = next;
-    box.disabled = next;
     var send = document.getElementById("send");
-    if (send) { send.disabled = next; }
+    if (send) {
+      send.textContent = next ? "Steer" : "Send";
+      send.disabled = false;
+    }
     if (stop) { stop.hidden = next === false; }
-    if (status) { status.textContent = next ? "streaming" : ""; }
+    if (status) {
+      status.textContent = next ? "streaming - a second message steers this turn" : "";
+    }
   }
 
   function parseFrame(frame) {
@@ -4474,40 +4532,62 @@ const CHAT_JS: &str = r##"(function () {
     }
   });
 
+  // A message sent while a turn is streaming steers it. It goes to the same route
+  // the composer posts to, and the daemon queues it for the turn that is already
+  // running: one turn, one bill, and the instruction the operator just typed is
+  // what the model continues with at its next boundary.
+  async function steer(text) {
+    var shell = document.querySelector(".chat-shell");
+    var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+    var body = new URLSearchParams();
+    body.append("message", text);
+    body.append("conversation", conversation);
+    box.value = "";
+    appendUser(text, []);
+    toBottom();
+    // The count a reloaded page rendered is about to be wrong, so it goes: the
+    // status line below carries the live answer instead.
+    var stale = document.getElementById("composer-queued");
+    if (stale) { stale.remove(); }
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form" + "-urlencoded"
+        },
+        body: body
+      });
+      if (response.ok === false) {
+        if (status) { status.textContent = "that message was not queued"; }
+        return;
+      }
+      if (status) {
+        // A steer is text: the running turn built its prompt before any newly
+        // picked file existed, so the files stay queued for the next turn rather
+        // than pretending to have been read.
+        status.textContent = queue.length > 0
+          ? "queued - the files stay queued for the next turn"
+          : "queued - steers the turn that is running";
+      }
+    } catch (error) {
+      if (status) { status.textContent = "that message was not queued"; }
+    }
+  }
+
   async function send() {
     var text = box.value.trim();
-    if (text === "" || busy) { return; }
+    if (text === "") { return; }
+    if (busy) {
+      await steer(text);
+      return;
+    }
     leaveEmptyState();
     var picker = document.getElementById("model");
     var chosen = picker === null ? "" : picker.value;
     var shell = document.querySelector(".chat-shell");
     var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
-    var userLine = document.createElement("article");
-    userLine.className = "msg user";
-    var userWho = document.createElement("div");
-    userWho.className = "who";
-    userWho.textContent = "You";
-    var userBubble = document.createElement("div");
-    userBubble.className = "bubble";
-    var userText = document.createElement("p");
-    userText.textContent = text;
-    userBubble.appendChild(userText);
-    if (queue.length > 0) {
-      var listed = document.createElement("div");
-      listed.className = "attached";
-      queue.forEach(function (file) {
-        var chip = document.createElement("span");
-        chip.className = "attached-chip";
-        chip.textContent = file.name + " \u00b7 " + humanSize(file.size);
-        listed.appendChild(chip);
-      });
-      userBubble.appendChild(listed);
-    }
-    userLine.appendChild(userWho);
-    userLine.appendChild(userBubble);
-    thread.appendChild(userLine);
-
     var sending = queue.slice();
+    var userLine = appendUser(text, sending);
     box.value = "";
     setBusy(true);
     toBottom();
@@ -4605,6 +4685,12 @@ const CHAT_JS: &str = r##"(function () {
             target.text.textContent = failure.message;
             target.meta.textContent = failure.code;
           }
+          // Not a failure of the answer: a message that arrived after the turn had
+          // finished, said out loud rather than left to disappear.
+          if (parsed.event === "notice") {
+            var notice = JSON.parse(parsed.data);
+            if (status) { status.textContent = notice.message || ""; }
+          }
         }
       }
       target.text.textContent = answer;
@@ -4625,6 +4711,10 @@ const CHAT_JS: &str = r##"(function () {
     controller = null;
     target.article.className = "msg assistant";
     setBusy(false);
+    // Nothing is waiting any more: the turn this page said had a message queued
+    // for it has just ended, so the count goes rather than going stale.
+    var drained = document.getElementById("composer-queued");
+    if (drained) { drained.remove(); }
     toBottom();
     await refreshRail();
     box.focus();
@@ -4816,7 +4906,33 @@ const CHAT_JS: &str = r##"(function () {
   }
 
   if (stop) {
-    stop.addEventListener("click", function () {
+    stop.addEventListener("click", async function () {
+      // The daemon stops the turn, not the browser: a page that stops reading a
+      // stream leaves the turn running on the server. This is the same `/stop`
+      // command the composer accepts, so there is one cancellation path, and the
+      // turn stops at its next boundary - the copy says so rather than implying a
+      // socket was cut.
+      stop.disabled = true;
+      if (status) { status.textContent = "stopping at the next boundary"; }
+      var shell = document.querySelector(".chat-shell");
+      var conversation = shell === null ? "" : shell.getAttribute("data-conversation");
+      var body = new URLSearchParams();
+      body.append("message", "/stop");
+      body.append("conversation", conversation);
+      try {
+        await fetch("/dashboard/chat/send", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-url" + "-urlencoded"
+          },
+          body: body
+        });
+      } catch (error) {
+        // The abort below is still the operator's own answer if the post fails.
+      }
+      stop.disabled = false;
+      // Then stop listening, so the page is not left waiting on a stream whose
+      // answer has already been decided.
       if (controller) { controller.abort(); }
     });
   }
