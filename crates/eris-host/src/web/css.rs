@@ -553,7 +553,19 @@ footer {
   font-size: 11.5px;
   letter-spacing: 0.03em;
 }
-footer .facts { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; }
+/* The app's own facts now live in the rail's foot, not under every page. */
+.side-foot .listener,
+.side-foot .sign {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.side-foot .sign { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.5; }
 footer .sign {
   text-transform: uppercase;
   letter-spacing: 0.2em;

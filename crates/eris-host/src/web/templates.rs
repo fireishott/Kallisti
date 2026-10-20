@@ -534,6 +534,19 @@ pub fn shell(
                             }
                             span class=(state_class) { (state.as_str()) }
                             span .ver { "Eris " (VERSION) " build " (BUILD) }
+                            /* The version strip that used to sit under every page, here
+                               instead: the content column is for content, and this is
+                               the app talking about itself. */
+                            span .listener title=(format!(
+                                "admin listener {} | configured in config.toml",
+                                chrome.footer_line(),
+                            )) {
+                                (chrome.footer_line())
+                            }
+                            @if let Some(url) = &chrome.public_url {
+                                span .listener title=(url) { (url) }
+                            }
+                            span .sign { "to the most beautiful" }
                         }
                     }
                     div .wrap {
@@ -569,17 +582,6 @@ pub fn shell(
                             div .top-nav { (nav_bar(current)) }
                         }
                         (body)
-                        footer {
-                            span .facts {
-                                "Eris " (VERSION) " build " (BUILD)
-                                " | admin listener " (chrome.footer_line())
-                                @if let Some(url) = &chrome.public_url {
-                                    " | public URL " (url)
-                                }
-                                " | configured in config.toml"
-                            }
-                            span .sign { "to the most beautiful" }
-                        }
                     }
                 }
             }
