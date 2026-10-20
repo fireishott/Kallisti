@@ -110,6 +110,41 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
     );
 }
 
+/// The send control is the row's one submit, and it is named by its own label,
+/// so a screen reader says "Send" rather than "button".
+#[test]
+fn the_send_control_is_the_named_submit_of_the_composer_row() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    let row = body
+        .split(r#"<div class="composer-send">"#)
+        .nth(1)
+        .and_then(|rest| rest.split("</form>").next())
+        .expect("the composer row carries the send group");
+    assert!(
+        row.contains(r#"id="send""#),
+        "the row holds the send control: {row}"
+    );
+    assert!(
+        row.contains(r#"type="submit""#),
+        "the send control submits the form: {row}"
+    );
+    assert!(
+        row.contains(">Send</button>"),
+        "the send control is named by its own label: {row}"
+    );
+    assert_eq!(
+        row.matches(r#"type="submit""#).count(),
+        1,
+        "the row carries one primary action: {row}"
+    );
+}
+
 #[test]
 fn a_tool_call_renders_as_a_closed_window_that_can_be_opened() {
     let (_dir, engine, app, cookie) = ready_app();

@@ -1267,6 +1267,11 @@ pre.code {
   position: relative;
   z-index: 2;
   display: grid;
+  /* One column, and that column may not grow past the padding box. The implicit
+     `auto` track is max-content sized, so a wide row would push the last control
+     out over the composer's right edge - the classic grid blowout. The minimum of
+     zero is what lets the row below shrink instead. */
+  grid-template-columns: minmax(0, 1fr);
   flex: 0 0 auto;
   gap: 8px;
   margin-top: 10px;
@@ -1279,6 +1284,10 @@ pre.code {
 .composer:focus-within { border-color: var(--platinum); }
 .composer textarea {
   width: 100%;
+  /* Box sizing is border-box globally, so 100% already covers the 6px side
+     padding. The minimum of zero is the belt to that brace: a grid item's
+     automatic minimum is its min-content width, which would win over 100%. */
+  min-width: 0;
   min-height: 46px;
   max-height: 240px;
   padding: 6px 6px 2px;
@@ -1374,13 +1383,28 @@ pre.code {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  /* The row is a flex child of the composer's single column. Without this it
+     takes its max-content width and overruns the column. */
+  min-width: 0;
 }
-.composer-pick { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.composer-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
 .composer-pick #mode { max-width: 150px; }
 .composer-pick select {
   width: auto;
   max-width: 260px;
-  padding: 6px 10px;
+  /* A select's automatic minimum is the width of its widest option, so a long
+     model id used to hold the row open no matter how little room was left. At
+     zero it shrinks and elides instead, which is what keeps the send control
+     inside the composer at tablet widths. */
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
   border-radius: 8px;
   border: 1px solid var(--line-strong);
   background: var(--raise);
@@ -1389,7 +1413,44 @@ pre.code {
   font-size: 11.5px;
 }
 .composer-pick .nowrap { white-space: nowrap; }
-.composer-send { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.composer-send {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The buttons keep their size and the auto margin keeps them flush right; the
+     pick above gives up width first, so this row does not wrap at tablet widths. */
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* The send control is a control in this row, not a slab beside it: one control
+   height across the attach button, the two selects and the buttons, the same
+   eight-pixel corner, and a quiet raise surface instead of an inverted block.
+   It still reads as the submit because it is the only control wearing the
+   platinum border and the platinum label at rest. */
+.composer-send button {
+  height: 28px;
+  padding: 0 13px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 620;
+  line-height: 1;
+}
+#send {
+  border: 1px solid var(--platinum);
+  background: var(--raise);
+  color: var(--platinum);
+}
+#send:hover {
+  border-color: var(--platinum);
+  background: var(--line);
+  color: var(--text);
+  filter: none;
+}
+#send:focus-visible {
+  outline: 2px solid var(--platinum);
+  outline-offset: 2px;
+}
 
 /* The attach control: a labelled + that opens the picker, and the queued name
    beside it so a turn never carries a file the operator forgot about. */
@@ -1427,7 +1488,10 @@ pre.code {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  flex: 1 1 220px;
+  /* The chips take a line of their own. A 220px basis beside the controls was
+     enough to push the row over and leave the send control on a line by itself,
+     which reads as detached rather than as part of the composer. */
+  flex: 1 1 100%;
   order: 5;
 }
 .attach-queue[hidden] { display: none; }
@@ -1653,12 +1717,15 @@ a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
   .chat-shell { height: calc(100dvh - 132px); }
   .thread { max-height: none; }
   /* Two selects, an attach control and a button do not fit on one row of a
-     phone. They wrap onto a second row instead of pushing Send off the edge. */
-  .composer-bar { flex-wrap: wrap; row-gap: 8px; }
-  .composer-pick { flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+     phone. The row wraps rather than pushing Send off the edge, and the pick
+     gives up width first. Send keeps its place in the row: `margin-left: auto`
+     already puts it flush right, so a forced full-width line was only ever
+     making the button look like it had come loose. */
+  .composer-bar { row-gap: 8px; }
   .composer-pick select { max-width: 100%; }
   .composer-pick #mode { max-width: 132px; }
-  .composer-send { width: 100%; justify-content: flex-end; }
+  .composer-send { justify-content: flex-end; }
+  .composer-send button { flex: 0 0 auto; }
   /* The figure sits right of centre in the artwork. Cropped to a phone's width
      the centre of the frame is empty sky, so the frame is anchored where she is. */
   .app-wall { background-position: 88% center; }
@@ -1688,6 +1755,115 @@ mod tests {
     const PURPLE_DENYLIST: [&str; 6] = [
         "#800080", "#7B1FA2", "#6A1B9A", "#9C27B0", "#8E24AA", "#673AB7",
     ];
+
+    /// One rule, from its selector to the closing brace. The selector is matched
+    /// at the start of a line, so `.composer` never picks up
+    /// `.chat-shell.new-chat > .composer`. Panics when the selector is absent, so
+    /// a renamed rule fails the test that reads it.
+    fn rule(selector: &str) -> &'static str {
+        let opening = format!("\n{selector} {{");
+        let start = APP_CSS
+            .find(&opening)
+            .unwrap_or_else(|| panic!("the {selector} rule exists"));
+        let rest = &APP_CSS[start..];
+        let end = rest.find('}').expect("the rule closes");
+        &rest[..end]
+    }
+
+    /// The composer is a single grid column, and the row inside it can only
+    /// shrink: no child of the row may widen the column past the padding box.
+    /// Without the zero minimums the send control hangs over the right edge,
+    /// which is the defect this pins.
+    #[test]
+    fn the_composer_row_cannot_grow_out_of_its_padding_box() {
+        let composer = rule(".composer");
+        assert!(
+            composer.contains("grid-template-columns: minmax(0, 1fr)"),
+            "the composer's one column is bounded by its content box: {composer}"
+        );
+        assert!(
+            rule(".composer textarea").contains("min-width: 0"),
+            "a grid item's automatic minimum must not beat the textarea's 100% width"
+        );
+        for selector in [".composer-bar", ".composer-pick", ".composer-pick select"] {
+            assert!(
+                rule(selector).contains("min-width: 0"),
+                "{selector} has to be allowed to shrink below its content"
+            );
+        }
+        assert!(
+            rule(".composer-pick").contains("flex-wrap: wrap"),
+            "the pick breaks its own line before the row overflows"
+        );
+        // The chips sit on their own line. A 220px basis beside the controls was
+        // enough to push the send control onto a line by itself.
+        assert!(
+            rule(".attach-queue").contains("flex: 1 1 100%"),
+            "the attachment chips take a line of their own"
+        );
+        // A full-width send group was the small-screen layout, and it is what
+        // made the button look detached from the row rather than flush in it.
+        assert!(
+            APP_CSS.contains(".composer-send { justify-content: flex-end; }"),
+            "the small-screen send rule keeps the button in the row"
+        );
+        assert!(
+            !APP_CSS.contains(".composer-send { width: 100%"),
+            "the send group is not forced onto a full-width line"
+        );
+    }
+
+    /// The send control is a control in the row: one height, one corner, a quiet
+    /// surface, and the platinum channel kept for the label so it still reads as
+    /// the submit. It also keeps a focus ring.
+    #[test]
+    fn the_send_control_wears_the_row_metrics_and_stays_the_primary() {
+        let attach = rule(".attach");
+        assert!(
+            attach.contains("height: 28px") && attach.contains("border-radius: 8px"),
+            "the attach control sets the row's height and corner: {attach}"
+        );
+        assert!(
+            rule(".composer-pick select").contains("height: 28px"),
+            "the selects share the row height"
+        );
+        let button = rule(".composer-send button");
+        assert!(
+            button.contains("height: 28px"),
+            "the send control is the same height as the attach control: {button}"
+        );
+        assert!(
+            button.contains("border-radius: 8px"),
+            "the send control speaks the row's radius language: {button}"
+        );
+        let send = rule("#send");
+        assert!(
+            send.contains("background: var(--raise)"),
+            "the resting surface is the quiet raise fill, not an inverted block: {send}"
+        );
+        assert!(
+            send.contains("color: var(--platinum)"),
+            "the label carries the primary channel: {send}"
+        );
+        assert!(
+            send.contains("border: 1px solid var(--platinum)"),
+            "the primary border is what marks the submit: {send}"
+        );
+        assert!(
+            rule("#send:focus-visible").contains("outline: 2px solid var(--platinum)"),
+            "the send control keeps a visible focus ring"
+        );
+    }
+
+    /// The stylesheet is inlined into every page, and a rendered page carries no
+    /// `!` outside the doctype, so the stylesheet cannot carry one either.
+    #[test]
+    fn the_stylesheet_carries_no_bang() {
+        assert!(
+            !APP_CSS.contains('!'),
+            "the inlined stylesheet carries no ! anywhere"
+        );
+    }
 
     /// The wallpaper is fixed, and fixed means fixed: sized by a viewport unit
     /// that does not change when mobile chrome collapses, on its own layer.
