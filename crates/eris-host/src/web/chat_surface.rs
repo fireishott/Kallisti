@@ -153,15 +153,16 @@ fn the_page_shows_the_usage_the_transcript_carries() {
     ));
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     let body = &page.body;
-    // Per answer: the model, both token counts, the cache share, the duration.
+    // Per answer: the model, both token counts, the duration. Cache and context
+    // are conversation facts and are not repeated here.
     assert!(body.contains("m/watch"), "the model that answered is named");
     assert!(body.contains("1.2k in"), "prompt tokens are shown");
     assert!(body.contains("18 out"), "completion tokens are shown");
-    assert!(
-        body.contains("48% cache"),
-        "cache share is derived from the row"
-    );
     assert!(body.contains("900ms"), "duration is shown");
+    assert!(
+        !body.contains("48% cache"),
+        "the per-reply line must not carry the cache share: {body}"
+    );
     // Per conversation: the totals ride inside the last reply, not in a bar.
     assert!(
         body.contains(r#"class="meta-session""#),
@@ -177,8 +178,54 @@ fn the_page_shows_the_usage_the_transcript_carries() {
     );
     assert!(
         body.contains("cache hit 48%"),
-        "the folded line repeats the cache share"
+        "the conversation line is the one place the cache share appears"
     );
+    assert!(
+        body.matches("cache hit").count() == 1,
+        "the cache share is stated once, not once per line: {body}"
+    );
+    assert!(body.contains("1 turn"), "a single turn is singular: {body}");
+}
+
+#[test]
+fn the_sidebar_can_be_collapsed_and_comes_back_where_it_was() {
+    let (_dir, _engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    let shown = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert_eq!(shown.status, StatusCode::OK);
+    assert!(
+        shown.body.contains("Hide the sidebar"),
+        "the rail offers a way to collapse it"
+    );
+    assert!(
+        !shown.body.contains("app rail-hidden"),
+        "the rail starts open"
+    );
+
+    let collapsed = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SIDEBAR, "rail=hidden").cookie(cookie),
+    ));
+    assert_eq!(collapsed.status, StatusCode::SEE_OTHER);
+
+    let hidden = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert!(
+        hidden.body.contains("app rail-hidden"),
+        "the shell renders collapsed"
+    );
+    assert!(
+        hidden.body.contains("Show the sidebar"),
+        "a control outside the rail brings it back"
+    );
+
+    let reopened = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SIDEBAR, "rail=shown").cookie(cookie),
+    ));
+    assert_eq!(reopened.status, StatusCode::SEE_OTHER);
+    let back = block_on(send(&app, Call::get(ROUTE_CHAT).html().cookie(cookie)));
+    assert!(!back.body.contains("app rail-hidden"), "the rail returns");
 }
 
 #[test]

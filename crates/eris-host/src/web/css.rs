@@ -73,6 +73,47 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   min-height: 100vh;
 }
 
+/* Collapsing the rail. The transcript takes the whole width, and the control to
+   bring the rail back lives in the content column, because a control that only
+   exists inside the thing you just hid is a one-way door. */
+.app.rail-hidden { grid-template-columns: minmax(0, 1fr); }
+.app.rail-hidden .side { display: none; }
+
+.rail-hide {
+  position: absolute;
+  top: 16px;
+  right: 10px;
+  margin: 0;
+}
+.rail-hide button,
+.rail-show button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rail-hide button:hover,
+.rail-show button:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.rail-show {
+  position: sticky;
+  top: 8px;
+  z-index: 3;
+  display: inline-block;
+  margin: 0 0 10px;
+}
+
 /* A raster wallpaper is a picture, and a picture at full strength competes with
    the conversation. The chrome is opaque on its own; the art is dimmed so it
    reads as a room, not as a poster. */

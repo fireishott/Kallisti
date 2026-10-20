@@ -465,6 +465,15 @@ fn run_serve(
         }
     };
 
+    // A `streaming` row means a turn was writing it when the process went away.
+    // At boot there is no such turn, so those rows are settled now rather than
+    // rendered as a bubble that fills in forever.
+    match eris_host::web::chat::fail_orphaned(&db) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: settled {count} interrupted chat row(s)"),
+        Err(error) => eprintln!("eris serve: could not settle interrupted chat rows: {error}"),
+    }
+
     let engine = SetupEngine::new(db, paths.clone());
 
     // First boot: reconcile the state against the credential table, then

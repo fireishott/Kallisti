@@ -31,7 +31,7 @@ use crate::admin::{
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
-    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
+    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -100,6 +100,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
+        .route(ROUTE_SIDEBAR, post(toggle_sidebar))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -2624,6 +2625,53 @@ async fn save_timezone(
     }
 
     see_other(SAVED_TIMEZONE)
+}
+
+/// `POST /dashboard/sidebar` - show or hide the conversation rail.
+///
+/// Server-rendered and stored, so the choice survives a reload and applies to
+/// every page rather than to one tab's memory.
+async fn toggle_sidebar(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    let stored = if matches!(field(&fields, "rail"), "hidden") {
+        "true"
+    } else {
+        "false"
+    };
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::admin::SETTING_RAIL_HIDDEN, stored)
+    {
+        return store_failure(&request_id.0, crate::admin::SETTING_RAIL_HIDDEN, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "sidebar.toggle", Some(stored))
+    {
+        return audit_failure(&request_id.0, "sidebar.toggle", error);
+    }
+
+    // Back where the button was. Only a local path is honoured, so a crafted
+    // Referer cannot turn this into a redirect anywhere else.
+    let back = headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once("://").map(|(_scheme, rest)| rest))
+        .and_then(|rest| rest.find('/').map(|at| rest[at..].to_owned()))
+        .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+        .unwrap_or_else(|| crate::admin::ROUTE_CHAT.to_owned());
+    see_other_to(back)
 }
 
 /// `POST /dashboard/settings/permissions` - the closed permission tuple.

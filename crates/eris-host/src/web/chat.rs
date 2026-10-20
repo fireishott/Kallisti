@@ -635,6 +635,26 @@ pub fn fail(db: &Db, id: &str, code: &str, body: &str) -> Result<(), DbError> {
     })
 }
 
+/// Fail every row that was still streaming when this process started.
+///
+/// A `streaming` row means "a turn is writing this right now". At boot no such
+/// turn exists, so any row left in that state is orphaned by a restart. Left
+/// alone it renders as a bubble that never fills in, and it suppresses the
+/// conversation totals beneath it because the line only renders behind a settled
+/// answer.
+///
+/// Returns how many rows were settled, so startup can say so.
+pub fn fail_orphaned(db: &Db) -> Result<usize, DbError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages
+                SET state = 'failed', error_code = 'interrupted'
+              WHERE state = 'streaming'",
+            [],
+        )
+    })
+}
+
 /// How many rows a conversation has.
 pub fn count(db: &Db, conversation: &str) -> Result<i64, DbError> {
     db.with_conn(|conn| {
@@ -1075,6 +1095,37 @@ mod tests {
         assert_eq!(ids, vec![first.as_str(), second.as_str(), third.as_str()]);
         assert_eq!(transcript[1].role, Role::Assistant);
         assert_eq!(transcript[1].body, "hi");
+    }
+
+    #[test]
+    fn a_row_left_streaming_by_a_restart_is_failed_rather_than_left_pending() {
+        let db = db();
+        let orphan = append(&db, CONVERSATION_ID, Role::Assistant, "", State::Streaming).unwrap();
+        let settled = append(
+            &db,
+            CONVERSATION_ID,
+            Role::Assistant,
+            "already done",
+            State::Complete,
+        )
+        .unwrap();
+
+        let swept = fail_orphaned(&db).expect("swept");
+        assert_eq!(swept, 1, "one orphan, and the settled row is not touched");
+
+        let transcript = load(&db, CONVERSATION_ID).unwrap();
+        let orphan = transcript
+            .iter()
+            .find(|message| message.id == orphan)
+            .unwrap();
+        assert_eq!(orphan.state, State::Failed);
+        assert_eq!(orphan.error_code.as_deref(), Some("interrupted"));
+        let settled = transcript
+            .iter()
+            .find(|message| message.id == settled)
+            .unwrap();
+        assert_eq!(settled.state, State::Complete);
+        assert_eq!(settled.error_code, None);
     }
 
     #[test]

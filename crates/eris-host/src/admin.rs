@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 21;
+pub const BUILD: u32 = 23;
 
 /// `1.0.9 build 10`, for the places that state the whole identity.
 #[must_use]
@@ -135,6 +135,12 @@ pub const ROUTE_SETTINGS_REASONING: &str = "/dashboard/settings/reasoning";
 
 /// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
 pub const ROUTE_SETTINGS_TIMEZONE: &str = "/dashboard/settings/timezone";
+
+/// `POST /dashboard/sidebar` - show or hide the conversation rail.
+pub const ROUTE_SIDEBAR: &str = "/dashboard/sidebar";
+
+/// The `settings` row that remembers whether the rail is collapsed.
+pub const SETTING_RAIL_HIDDEN: &str = "display.rail_hidden";
 
 /// `POST /dashboard/settings/full-access` - the operator's own switch for full
 /// host sandbox mode, behind a typed confirmation.
@@ -228,6 +234,7 @@ pub const POST_ROUTES: &[&str] = &[
     ROUTE_SETTINGS_PERSONA,
     ROUTE_SETTINGS_REASONING,
     ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SIDEBAR,
     "/dashboard/provider/rotate",
     "/dashboard/device/revoke",
     "/dashboard/mode",
@@ -337,6 +344,7 @@ impl AppState {
             wallpaper_url: self.wallpaper_url(),
             sessions: self.rail_sessions(),
             current_conversation: None,
+            rail_hidden: self.rail_hidden(),
         }
     }
 
@@ -348,6 +356,17 @@ impl AppState {
     fn rail_sessions(&self) -> Vec<crate::web::templates::ChatSession> {
         use crate::web::chat;
         use crate::web::templates::ChatSession;
+        // The rail reads the same clock as the transcript. Two lists of the same
+        // timestamps in two zones is how a product looks broken while both are
+        // individually correct.
+        let zone = crate::zone::Zone::parse(
+            self.engine
+                .setting(crate::zone::SETTING_TIMEZONE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        let offset = crate::zone::offset_minutes(self.engine.db(), zone);
         let Ok(rows) = chat::conversations(self.engine.db(), chat::SESSION_LIMIT) else {
             return Vec::new();
         };
@@ -355,9 +374,23 @@ impl AppState {
             .map(|row| ChatSession {
                 id: row.id,
                 title: row.title,
-                stamp: crate::web::templates::clock(&row.updated_at),
+                stamp: crate::zone::clock_in(&row.updated_at, offset),
             })
             .collect()
+    }
+
+    /// Whether the operator collapsed the rail. Absent means shown.
+    #[must_use]
+    pub fn rail_hidden(&self) -> bool {
+        matches!(
+            self.engine
+                .setting(SETTING_RAIL_HIDDEN)
+                .ok()
+                .flatten()
+                .as_deref()
+                .map(str::trim),
+            Some("true")
+        )
     }
 
     /// The backdrop every signed-in page sits on.

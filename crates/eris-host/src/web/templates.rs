@@ -298,6 +298,8 @@ pub struct Chrome {
     pub sessions: Vec<ChatSession>,
     /// The conversation this page is showing, when it is showing one.
     pub current_conversation: Option<String>,
+    /// True when the operator collapsed the rail.
+    pub rail_hidden: bool,
 }
 
 /// One conversation in the rail.
@@ -325,6 +327,7 @@ impl Default for Chrome {
             wallpaper_url: super::wallpaper::url(super::wallpaper::DEFAULT_WALLPAPER),
             sessions: Vec::new(),
             current_conversation: None,
+            rail_hidden: false,
         }
     }
 }
@@ -413,7 +416,7 @@ pub fn shell(
                     div class=(if art { "app-wall art" } else { "app-wall" })
                         style=(format!("background-image:url('{url}')")) {}
                 }
-                div .app {
+                div class=(if chrome.rail_hidden { "app rail-hidden" } else { "app" }) {
                     header .side {
                         div .brand {
                             span .mark aria-hidden="true" { "K" }
@@ -423,6 +426,11 @@ pub fn shell(
                             }
                         }
                         @if nav.is_some() {
+                            form .rail-hide method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                input type="hidden" name="rail" value="hidden";
+                                button type="submit" title="Hide the sidebar"
+                                    aria-label="Hide the sidebar" { "\u{00AB}" }
+                            }
                             form .side-action method="post" action=(crate::admin::ROUTE_CHAT_NEW) {
                                 button type="submit" { "+  New chat" }
                             }
@@ -469,6 +477,13 @@ pub fn shell(
                         }
                     }
                     div .wrap {
+                        @if chrome.rail_hidden {
+                            form .rail-show method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                input type="hidden" name="rail" value="shown";
+                                button type="submit" title="Show the sidebar"
+                                    aria-label="Show the sidebar" { "\u{00BB}" }
+                            }
+                        }
                         (body)
                         footer {
                             span .facts {
@@ -2741,14 +2756,12 @@ pub struct ChatLine {
 }
 
 impl ChatLine {
-    /// The numbers this answer cost, as one line:
-    /// `1.2k in / 18 out / 97% cache / 21% ctx / 900ms`.
+    /// What this one reply cost: `1.2k in / 18 out / 900ms`.
     ///
-    /// This is the whole of the usage story on the page: 1.0.3 put a summary bar
-    /// above the transcript, and a bar of zeros above an empty conversation said
-    /// nothing. The numbers belong to the answer that produced them, so they ride
-    /// with it. A number the provider did not report is left out rather than
-    /// shown as zero.
+    /// Deliberately narrow. Cache share and context fill describe the whole
+    /// conversation, so they are stated once, in the conversation line, instead
+    /// of appearing here with a per-reply value that disagrees with it. A number
+    /// the provider did not report is left out rather than shown as zero.
     #[must_use]
     pub fn usage_line(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
@@ -2757,17 +2770,6 @@ impl ChatLine {
         }
         if let Some(out) = self.completion_tokens {
             parts.push(format!("{} out", human_tokens(out)));
-        }
-        if let (Some(cached), Some(prompt)) = (self.cached_tokens, self.prompt_tokens)
-            && let Some(pct) = (cached * 100).checked_div(prompt + cached)
-        {
-            parts.push(format!("{pct}% cache"));
-        }
-        if let (Some(cached), Some(prompt), Some(window)) =
-            (self.cached_tokens, self.prompt_tokens, self.context_window)
-            && let Some(pct) = ((prompt + cached) * 100).checked_div(window)
-        {
-            parts.push(format!("{}% ctx", pct.min(100)));
         }
         if let Some(ms) = self.duration_ms {
             if ms >= 1000 {
@@ -2850,20 +2852,6 @@ pub fn greeting_for(hour: u32) -> &'static str {
     }
 }
 
-/// The clock time from a database timestamp, for the line under a bubble.
-///
-/// The database stamps RFC 3339 with a `T` and a `Z`, so the time is the five
-/// characters after the `T`. Anything unexpected falls back to the raw value
-/// rather than hiding the row.
-#[must_use]
-pub fn clock(stamp: &str) -> String {
-    stamp
-        .split_once('T')
-        .map(|(_date, rest)| rest.chars().take(5).collect::<String>())
-        .filter(|time| time.len() == 5)
-        .unwrap_or_else(|| stamp.to_owned())
-}
-
 /// Render message text into blocks: paragraphs, and fenced code as code.
 ///
 /// This is deliberately not a markdown engine. A fence is the one structure an
@@ -2915,9 +2903,18 @@ pub fn blocks(text: &str) -> Markup {
 ///
 /// These used to sit in a bar under the composer, floating over the wallpaper and
 /// saying nothing about which turn produced them. They belong to the answer being
-/// read, so they ride inside it.
+/// The conversation totals, stated once.
+///
+/// This is the only place cache share and context fill appear, so the numbers on
+/// a page cannot contradict each other. A value with no denominator is said to be
+/// unknown rather than printed as a confident zero, and a context share under one
+/// percent keeps a decimal instead of rounding to nothing.
 fn session_line(view: &ChatView) -> Markup {
     let stats = &view.stats;
+    let turns = match stats.turns {
+        1 => "1 turn".to_owned(),
+        count => format!("{count} turns"),
+    };
     let rate = match stats.tokens_per_second {
         Some(rate) => format!("{rate} tok/s"),
         None => "tok/s unknown".to_owned(),
@@ -2926,17 +2923,12 @@ fn session_line(view: &ChatView) -> Markup {
         Some(pct) => format!("cache hit {pct}%"),
         None => "cache unknown".to_owned(),
     };
-    let context = match stats.context_pct {
-        Some(pct) => format!("context {pct}%"),
-        None => "context unknown".to_owned(),
-    };
+    let context = context_share(stats.context_used, stats.context_window);
     html! {
         div .meta-session aria-label="Conversation totals" {
-            span { (stats.turns) " turns" }
+            span { (turns) }
             span .dot { "·" }
-            span { (human_tokens(stats.prompt_tokens)) " in" }
-            span .dot { "·" }
-            span { (human_tokens(stats.completion_tokens)) " out" }
+            span { (human_tokens(stats.total_tokens)) " tokens" }
             span .dot { "·" }
             span { (rate) }
             span .dot { "·" }
@@ -2944,6 +2936,31 @@ fn session_line(view: &ChatView) -> Markup {
             span .dot { "·" }
             span { (context) }
         }
+    }
+}
+
+/// How full the model's window is, with enough precision to be useful.
+///
+/// A transcript of a few thousand tokens against a million-token window is a
+/// fifth of a percent: printing that as `0%` reads as a bug even though the
+/// arithmetic is right.
+#[must_use]
+pub fn context_share(used: Option<u64>, window: Option<u64>) -> String {
+    let (Some(used), Some(window)) = (used, window) else {
+        return "context unknown".to_owned();
+    };
+    if window == 0 {
+        return "context unknown".to_owned();
+    }
+    let pct = used as f64 * 100.0 / window as f64;
+    if pct >= 10.0 {
+        format!("context {pct:.0}%")
+    } else if pct >= 1.0 {
+        format!("context {pct:.1}%")
+    } else if pct > 0.0 {
+        format!("context {pct:.2}%")
+    } else {
+        "context 0%".to_owned()
     }
 }
 
@@ -3419,6 +3436,32 @@ const CHAT_JS: &str = r##"(function () {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tiny_context_share_keeps_enough_precision_to_not_read_as_zero() {
+        // 2.2k of a 1M window is a fifth of a percent.
+        assert_eq!(
+            super::context_share(Some(2_200), Some(1_000_000)),
+            "context 0.22%"
+        );
+        assert_eq!(
+            super::context_share(Some(50_000), Some(1_000_000)),
+            "context 5.0%"
+        );
+        assert_eq!(
+            super::context_share(Some(250_000), Some(1_000_000)),
+            "context 25%"
+        );
+        assert_eq!(
+            super::context_share(None, Some(1_000_000)),
+            "context unknown"
+        );
+        assert_eq!(
+            super::context_share(Some(2_200), None),
+            "context unknown",
+            "a share with no denominator is unknown, not zero"
+        );
+    }
+
     use super::*;
     use crate::onboarding::Wizard;
 
@@ -3480,8 +3523,12 @@ mod tests {
 
     #[test]
     fn the_clock_comes_from_the_database_stamp() {
-        assert_eq!(clock("2026-10-19T23:41:43.937Z"), "23:41");
-        assert_eq!(clock("nonsense"), "nonsense");
+        // The clock lives in `crate::zone` so every surface shares one conversion.
+        assert_eq!(
+            crate::zone::clock_in("2026-10-19T23:41:43.937Z", 0),
+            "23:41"
+        );
+        assert_eq!(crate::zone::clock_in("nonsense", 0), "nonsense");
     }
 
     #[test]
