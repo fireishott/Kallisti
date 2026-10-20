@@ -599,6 +599,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
                     .as_deref()
                     .map(crate::aux::store_value)
                     .unwrap_or_else(|| crate::aux::INHERIT.to_owned()),
+                provider_selected: engine
+                    .setting(&crate::aux::provider_key(role.key))
+                    .ok()
+                    .flatten()
+                    .map(|id| crate::aux::store_value(&id))
+                    .unwrap_or_else(|| crate::aux::INHERIT.to_owned()),
                 consumed_by: role.consumed_by.map(str::to_owned),
             }
         })
@@ -2902,6 +2908,7 @@ async fn save_aux(
         Err(error) => return fail_settings(&state, as_html, error),
     };
     let known = state.engine.provider_models().unwrap_or_default();
+    let providers = chat::provider_registry(&state.engine).unwrap_or_default();
 
     let mut stored_any = 0usize;
     for role in crate::aux::ROLES {
@@ -2920,12 +2927,36 @@ async fn save_aux(
                 ),
             );
         }
+        let provider_field = format!("aux_provider_{}", role.key);
+        let provider = crate::aux::store_value(field(&fields, &provider_field));
+        if provider != crate::aux::INHERIT
+            && !providers.iter().any(|candidate| candidate.id == provider)
+        {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some(&provider_field),
+                    "aux_provider_unknown",
+                    format!(
+                        "`{provider}` is not in the provider registry, so the role could not run"
+                    ),
+                ),
+            );
+        }
         if let Err(error) = store::settings_put(
             state.engine.db(),
             &crate::aux::setting_key(role.key),
             &value,
         ) {
             return store_failure(&request_id.0, &crate::aux::setting_key(role.key), error);
+        }
+        if let Err(error) = store::settings_put(
+            state.engine.db(),
+            &crate::aux::provider_key(role.key),
+            &provider,
+        ) {
+            return store_failure(&request_id.0, &crate::aux::provider_key(role.key), error);
         }
         stored_any += 1;
     }

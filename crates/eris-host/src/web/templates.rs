@@ -1349,6 +1349,8 @@ pub struct AuxRow {
     pub purpose: String,
     /// The model chosen, or `primary`.
     pub selected: String,
+    /// The provider chosen, or `primary`.
+    pub provider_selected: String,
     /// What consumes it today, when anything does.
     pub consumed_by: Option<String>,
 }
@@ -1902,8 +1904,19 @@ fn aux_group(view: &SettingsView) -> Markup {
         form method="post" action=(crate::admin::ROUTE_SETTINGS_AUX) novalidate {
             @for row in &view.aux_roles {
                 div .field {
-                    label for=(format!("aux_{}", row.key)) { (row.label) }
-                    select id=(format!("aux_{}", row.key)) name=(format!("aux_{}", row.key)) {
+                    label for=(format!("aux_provider_{}", row.key)) { (row.label) }
+                    select id=(format!("aux_provider_{}", row.key))
+                        name=(format!("aux_provider_{}", row.key)) {
+                        option value=(crate::aux::INHERIT)
+                            selected[row.provider_selected == crate::aux::INHERIT] {
+                            "primary provider"
+                        }
+                        @for id in &view.provider_ids {
+                            option value=(id) selected[row.provider_selected == *id] { (id) }
+                        }
+                    }
+                    select id=(format!("aux_{}", row.key)) name=(format!("aux_{}", row.key))
+                        aria-label=(format!("{} model", row.label)) {
                         @for option in &options {
                             option value=(option) selected[row.selected == *option] { (option) }
                         }

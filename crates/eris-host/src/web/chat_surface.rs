@@ -1049,3 +1049,43 @@ fn the_settings_page_lists_the_registry_and_its_primary() {
         "the primary is preselected"
     );
 }
+
+#[test]
+fn an_auxiliary_role_can_be_pinned_to_a_provider_in_the_registry() {
+    let (_dir, engine, app, cookie) = ready_app();
+    engine
+        .set_setting(crate::onboarding::SETTING_PROVIDER_MODELS, r#"["m/one"]"#)
+        .unwrap();
+    engine
+        .set_setting(
+            crate::providers::SETTING_REGISTRY,
+            r#"[{"id":"alpha","name":"Alpha","base_url":"http://127.0.0.1:20001/v1","key_ref":"env:A"},{"id":"beta","name":"Beta","base_url":"http://127.0.0.1:20002/v1","key_ref":"env:B"}]"#,
+        )
+        .unwrap();
+    engine
+        .set_setting(crate::providers::SETTING_PRIMARY, "alpha")
+        .unwrap();
+    let cookie = Some(cookie.as_str());
+
+    let body = "aux_vision=m/one&aux_provider_vision=beta";
+    let saved = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SETTINGS_AUX, body).cookie(cookie),
+    ));
+    assert_eq!(saved.status, StatusCode::SEE_OTHER, "{}", saved.body);
+    assert_eq!(
+        engine.setting(&crate::aux::provider_key("vision")).unwrap(),
+        Some("beta".to_owned())
+    );
+
+    let refused = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_SETTINGS_AUX,
+            "aux_vision=m/one&aux_provider_vision=gamma",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "aux_provider_vision");
+}

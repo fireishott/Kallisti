@@ -110,6 +110,33 @@ pub fn setting_key(role: &str) -> String {
     format!("aux.{role}.model")
 }
 
+/// The `settings` row that holds one role's provider id.
+#[must_use]
+pub fn provider_key(role: &str) -> String {
+    format!("aux.{role}.provider")
+}
+
+/// The provider a role should run on.
+///
+/// An unset row, or the inherit sentinel, follows the primary provider. An id
+/// that is no longer in the registry falls back to the primary rather than
+/// disabling the role, and the settings page shows the id it stored so the
+/// mismatch is visible.
+#[must_use]
+pub fn provider_for<'a>(
+    stored: Option<&str>,
+    registry: &'a [crate::providers::Provider],
+    primary: &str,
+) -> Option<&'a crate::providers::Provider> {
+    match stored.map(str::trim) {
+        None | Some("") | Some(INHERIT) => crate::providers::resolve(registry, primary),
+        Some(id) => registry
+            .iter()
+            .find(|provider| provider.id == id)
+            .or_else(|| crate::providers::resolve(registry, primary)),
+    }
+}
+
 /// The role with this key, when this build knows it.
 #[must_use]
 pub fn role(key: &str) -> Option<&'static Role> {
@@ -183,6 +210,40 @@ mod tests {
         assert_eq!(setting_key("vision"), "aux.vision.model");
         assert!(role("vision").is_some());
         assert!(role("nope").is_none());
+    }
+
+    #[test]
+    fn a_role_follows_the_primary_provider_until_it_is_pointed_elsewhere() {
+        use crate::providers::Provider;
+        let registry = vec![
+            Provider {
+                id: "alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                base_url: "http://a/v1".to_owned(),
+                key_ref: "env:A".to_owned(),
+            },
+            Provider {
+                id: "beta".to_owned(),
+                name: "Beta".to_owned(),
+                base_url: "http://b/v1".to_owned(),
+                key_ref: "env:B".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            provider_for(None, &registry, "alpha").map(|p| p.id.as_str()),
+            Some("alpha")
+        );
+        assert_eq!(
+            provider_for(Some("beta"), &registry, "alpha").map(|p| p.id.as_str()),
+            Some("beta")
+        );
+        assert_eq!(
+            provider_for(Some("gone"), &registry, "alpha").map(|p| p.id.as_str()),
+            Some("alpha"),
+            "a provider that left the registry falls back rather than breaking the role"
+        );
+        assert_eq!(provider_key("vision"), "aux.vision.provider");
     }
 
     #[test]
