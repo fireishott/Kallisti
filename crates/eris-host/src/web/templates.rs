@@ -2910,9 +2910,11 @@ pub struct ChatLine {
     pub context_window: Option<u64>,
     /// The model's own reasoning for this reply, when it streamed any.
     ///
-    /// Rendered in a collapsed bubble above the answer, and only when the
-    /// thinking bubble is switched on.
+    /// Rendered above the answer, and only when the thinking bubble is switched
+    /// on.
     pub reasoning: Option<String>,
+    /// The tool calls behind this reply, in the order they ran.
+    pub tools: Vec<crate::web::chat::ToolRecord>,
 }
 
 impl ChatLine {
@@ -3150,9 +3152,35 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     div .who { (line.who) }
                     @if view.show_reasoning {
                         @if let Some(reasoning) = line.reasoning.as_ref().filter(|text| !text.trim().is_empty()) {
-                            details .think {
-                                summary { span .think-label { "Thinking" } }
+                            details .think open {
+                                summary {
+                                    span .think-label { "Thinking" }
+                                    div .think-actions {
+                                        button type="button" .think-max
+                                            title="Expand" aria-label="Expand the thinking bubble" { "\u{2922}" }
+                                    }
+                                }
                                 div .think-body { (reasoning) }
+                            }
+                        }
+                    }
+                    @if !line.tools.is_empty() {
+                        details .exec open {
+                            summary {
+                                span .exec-label { "Run log" }
+                                span .exec-count {
+                                    (line.tools.len())
+                                    @if line.tools.len() == 1 { " call" } @else { " calls" }
+                                }
+                            }
+                            @for tool in &line.tools {
+                                div .exec-call .failed[tool.is_error] {
+                                    div .exec-head {
+                                        span .exec-name { (tool.name) }
+                                        span .exec-args { (tool.arguments) }
+                                    }
+                                    pre .exec-out { (tool.output) }
+                                }
                             }
                         }
                     }
@@ -3278,12 +3306,66 @@ const CHAT_JS: &str = r##"(function () {
     var think = document.createElement("details");
     think.className = "think";
     think.hidden = true;
+    think.open = true;
     var thinkSummary = document.createElement("summary");
-    thinkSummary.textContent = "Thinking";
+    var thinkLabel = document.createElement("span");
+    thinkLabel.className = "think-label";
+    thinkLabel.textContent = "Thinking";
+    var thinkActions = document.createElement("div");
+    thinkActions.className = "think-actions";
+    var thinkMax = document.createElement("button");
+    thinkMax.type = "button";
+    thinkMax.className = "think-max";
+    thinkMax.title = "Expand";
+    thinkMax.setAttribute("aria-label", "Expand the thinking bubble");
+    thinkMax.textContent = "\u2922";
+    thinkActions.appendChild(thinkMax);
+    thinkSummary.appendChild(thinkLabel);
+    thinkSummary.appendChild(thinkActions);
     var thinkBody = document.createElement("div");
     thinkBody.className = "think-body";
     think.appendChild(thinkSummary);
     think.appendChild(thinkBody);
+
+    // The run log starts hidden and appears at the first executed call, so a
+    // turn that called nothing does not leave an empty panel behind.
+    var exec = document.createElement("details");
+    exec.className = "exec";
+    exec.hidden = true;
+    exec.open = true;
+    var execSummary = document.createElement("summary");
+    var execLabel = document.createElement("span");
+    execLabel.className = "exec-label";
+    execLabel.textContent = "Run log";
+    var execCount = document.createElement("span");
+    execCount.className = "exec-count";
+    execSummary.appendChild(execLabel);
+    execSummary.appendChild(execCount);
+    exec.appendChild(execSummary);
+    var calls = 0;
+    function addTool(tool) {
+      calls += 1;
+      execCount.textContent = calls + (calls === 1 ? " call" : " calls");
+      var call = document.createElement("div");
+      call.className = "exec-call" + (tool.is_error === true ? " failed" : "");
+      var head = document.createElement("div");
+      head.className = "exec-head";
+      var name = document.createElement("span");
+      name.className = "exec-name";
+      name.textContent = tool.name;
+      var args = document.createElement("span");
+      args.className = "exec-args";
+      args.textContent = tool.arguments;
+      head.appendChild(name);
+      head.appendChild(args);
+      var out = document.createElement("pre");
+      out.className = "exec-out";
+      out.textContent = tool.output;
+      call.appendChild(head);
+      call.appendChild(out);
+      exec.appendChild(call);
+      exec.hidden = false;
+    }
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     var text = document.createElement("p");
@@ -3292,6 +3374,7 @@ const CHAT_JS: &str = r##"(function () {
     meta.className = "meta";
     article.appendChild(label);
     article.appendChild(think);
+    article.appendChild(exec);
     article.appendChild(bubble);
     article.appendChild(meta);
     thread.appendChild(article);
@@ -3301,9 +3384,22 @@ const CHAT_JS: &str = r##"(function () {
       text: text,
       meta: meta,
       think: think,
-      thinkBody: thinkBody
+      thinkBody: thinkBody,
+      addTool: addTool
     };
   }
+
+  // One listener for every thinking bubble on the page: present and future, so
+  // a streamed reply and a re-rendered transcript behave the same.
+  thread.addEventListener("click", function (event) {
+    var button = event.target.closest(".think-max");
+    if (button === null) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    var think = button.closest(".think");
+    if (think === null) { return; }
+    think.classList.toggle("max");
+  });
 
   function human(count) {
     if (count === null || count === undefined) { return ""; }
@@ -3446,6 +3542,10 @@ const CHAT_JS: &str = r##"(function () {
           if (parsed.event === "delta") {
             answer += JSON.parse(parsed.data).text;
             target.text.textContent = answer;
+            toBottom();
+          }
+          if (parsed.event === "tool") {
+            target.addTool(JSON.parse(parsed.data));
             toBottom();
           }
           if (parsed.event === "reasoning") {

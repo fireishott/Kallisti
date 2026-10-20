@@ -784,9 +784,9 @@ pre.code {
 .msg .bubble p { margin: 0 0 10px; white-space: pre-wrap; }
 .msg .bubble > *:last-child { margin-bottom: 0; }
 
-/* The thinking bubble. Deliberately opaque: dim, italic, no border colour of its
-   own, and collapsed by default, so it reads as machinery behind the answer
-   rather than as the answer. It never competes with the reply for attention. */
+/* The thinking bubble. Open by default, because the first thing an operator asks
+   about a slow answer is what it was doing. Dim and italic so it still reads as
+   machinery behind the answer rather than as the answer. */
 .msg .think {
   margin: 0 0 8px;
   padding: 8px 12px;
@@ -800,11 +800,81 @@ pre.code {
 .msg .think > summary {
   cursor: pointer;
   list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
   opacity: 0.8;
+}
+.msg .think-actions { margin-left: auto; display: flex; gap: 4px; }
+.msg .think-max {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.msg .think-max:hover { color: var(--text); border-color: var(--line-strong); }
+/* Maximized: the bubble takes the room it needs instead of a fixed 320px. */
+.msg .think.max {
+  position: fixed;
+  inset: 4vh 5vw;
+  z-index: 40;
+  margin: 0;
+  background: var(--bg);
+  border-color: var(--line-strong);
+  overflow: auto;
+}
+.msg .think.max .think-body { max-height: none; font-size: 14.5px; }
+
+/* The run log: what the turn actually executed. Monospace and full-width so a
+   command reads like a command and its output reads like output. */
+.msg .exec {
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+}
+.msg .exec > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.msg .exec > summary::-webkit-details-marker { display: none; }
+.msg .exec-count { margin-left: auto; opacity: 0.7; }
+.msg .exec-call {
+  padding: 9px 12px;
+  border-top: 1px dashed var(--line);
+}
+.msg .exec-head { display: flex; flex-wrap: wrap; gap: 8px; }
+.msg .exec-name { color: var(--text); }
+.msg .exec-args { color: var(--muted); overflow-wrap: anywhere; }
+.msg .exec-call.failed .exec-name { color: var(--bad); }
+.msg .exec-out {
+  margin: 7px 0 0;
+  padding: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  opacity: 0.9;
+  max-height: 280px;
+  overflow-y: auto;
 }
 .msg .think > summary::-webkit-details-marker { display: none; }
 .msg .think > summary::before {

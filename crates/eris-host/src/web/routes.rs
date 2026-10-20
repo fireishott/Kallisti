@@ -3257,6 +3257,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 duration_ms: message.duration_ms,
                 context_window: message.context_window,
                 reasoning: message.reasoning.clone(),
+                tools: message.tools.clone(),
             }
         })
         .collect();
@@ -4088,6 +4089,25 @@ fn spawn_turn(
                     );
                 }
             }
+            chat::StreamPart::Tool {
+                name,
+                arguments,
+                output,
+                is_error,
+            } => {
+                // Always sent: this is what the turn is doing, not what the model
+                // is thinking, so it does not sit behind the reasoning toggle.
+                send_terminal(
+                    &sender,
+                    "tool",
+                    serde_json::json!({
+                        "name": name,
+                        "arguments": arguments,
+                        "output": output,
+                        "is_error": is_error,
+                    }),
+                );
+            }
         };
         let started = std::time::Instant::now();
         let outcome = chat::run_turn(
@@ -4120,6 +4140,7 @@ fn spawn_turn(
                     &answer_id,
                     &turn.text,
                     Some(&turn.reasoning),
+                    &turn.tools,
                     raw.as_ref(),
                     accounting,
                 );

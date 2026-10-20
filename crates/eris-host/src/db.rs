@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -115,6 +115,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "0010_chat_reasoning",
         sql: MIGRATION_0010,
+    },
+    Migration {
+        version: 11,
+        name: "0011_chat_tools",
+        sql: MIGRATION_0011,
     },
 ];
 
@@ -441,6 +446,16 @@ CREATE INDEX IF NOT EXISTS idx_approvals_status
 /// rather than an empty string pretending to be reasoning.
 const MIGRATION_0010: &str = r"
 ALTER TABLE chat_messages ADD COLUMN reasoning TEXT;
+";
+
+/// Migration 0011: what a turn did, beside what it said.
+///
+/// One JSON array of `{name, arguments, output, is_error}` records, in the order
+/// the calls ran. Kept out of `body` for the same reason reasoning is: the answer
+/// is what the operator asked for, and the command output is evidence for how it
+/// was reached. Null when a turn called nothing, which is most turns.
+const MIGRATION_0011: &str = r"
+ALTER TABLE chat_messages ADD COLUMN tools TEXT;
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

@@ -439,6 +439,23 @@ impl State {
     }
 }
 
+/// One tool call a turn ran, as the transcript keeps it.
+///
+/// `arguments` is kept as the model sent it, and `output` is what the tool
+/// returned. Both are shown to the operator, so a command that failed is visible
+/// as a failure rather than as an answer that quietly ignored it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolRecord {
+    /// The tool name.
+    pub name: String,
+    /// The arguments, as JSON.
+    pub arguments: String,
+    /// What the tool returned, already truncated by the tool.
+    pub output: String,
+    /// Whether the tool reported a failure.
+    pub is_error: bool,
+}
+
 /// One transcript row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
@@ -471,6 +488,8 @@ pub struct Message {
     /// Never the answer, never sent back into a later prompt, and never shown
     /// unless the operator leaves the thinking bubble switched on.
     pub reasoning: Option<String>,
+    /// The tool calls this turn ran, in order. Empty when it ran none.
+    pub tools: Vec<ToolRecord>,
 }
 
 /// A count from SQLite, which stores signed integers and holds no negative ones.
@@ -487,7 +506,7 @@ fn collect(conn: &mut Connection, conversation: &str) -> Result<Vec<Message>, ru
     let mut statement = conn.prepare(
         "SELECT id, role, body, state, error_code, created_at, model,
                 prompt_tokens, completion_tokens, cached_tokens, context_window,
-                duration_ms, reasoning
+                duration_ms, reasoning, tools
            FROM chat_messages
           WHERE conversation_id = ?1
           ORDER BY created_at ASC, rowid ASC",
@@ -509,6 +528,10 @@ fn collect(conn: &mut Connection, conversation: &str) -> Result<Vec<Message>, ru
             context_window: tokens(row.get(10)?),
             duration_ms: tokens(row.get(11)?),
             reasoning: row.get(12)?,
+            tools: row
+                .get::<_, Option<String>>(13)?
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default(),
         })
     })?;
     rows.collect()
@@ -587,6 +610,7 @@ pub fn settle(
     id: &str,
     body: &str,
     reasoning: Option<&str>,
+    tools: &[ToolRecord],
     usage: Option<&serde_json::Value>,
     accounting: Accounting,
 ) -> Result<(), DbError> {
@@ -600,12 +624,17 @@ pub fn settle(
         duration_ms,
     } = accounting;
     let reasoning = reasoning.filter(|text| !text.trim().is_empty());
+    // Null rather than "[]" for a turn that called nothing: absent and empty are
+    // the same fact, and a column full of empty arrays is noise to read by hand.
+    let tools_json = (!tools.is_empty())
+        .then(|| serde_json::to_string(tools).ok())
+        .flatten();
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE chat_messages
                 SET body = ?2, state = 'complete', usage_json = ?3, error_code = NULL,
                     prompt_tokens = ?4, completion_tokens = ?5, cached_tokens = ?6,
-                    duration_ms = ?7, reasoning = ?8
+                    duration_ms = ?7, reasoning = ?8, tools = ?9
               WHERE id = ?1",
             params![
                 id,
@@ -616,6 +645,7 @@ pub fn settle(
                 cached_tokens.map(|count| count as i64),
                 duration_ms.map(|count| count as i64),
                 reasoning,
+                tools_json,
             ],
         )?;
         Ok(())
@@ -789,6 +819,17 @@ pub enum StreamPart<'a> {
     Text(&'a str),
     /// The model's own reasoning, when the provider streams one.
     Reasoning(&'a str),
+    /// A tool call that just ran, so the operator can watch the work.
+    Tool {
+        /// The tool name.
+        name: &'a str,
+        /// The arguments, as JSON.
+        arguments: &'a str,
+        /// What it returned.
+        output: &'a str,
+        /// Whether it reported a failure.
+        is_error: bool,
+    },
 }
 
 /// Run one turn to completion, handing each fragment to `sink`.
@@ -830,22 +871,22 @@ pub fn run_turn(
 
     let system = system.filter(|text| !text.trim().is_empty());
 
-    let mut forward = |event: ProviderEvent| match event {
-        ProviderEvent::Text(fragment) if !fragment.is_empty() => {
-            sink(StreamPart::Text(&fragment));
-        }
-        ProviderEvent::Reasoning(fragment) if !fragment.is_empty() => {
-            sink(StreamPart::Reasoning(&fragment));
-        }
-        _ => {}
-    };
-
     let outcome = drive_tool_loop(
         sandbox,
         messages,
         gate,
         settings.max_rounds,
-        |round, tools_allowed| {
+        sink,
+        |round, tools_allowed, emit| {
+            let mut forward = |event: ProviderEvent| match event {
+                ProviderEvent::Text(fragment) if !fragment.is_empty() => {
+                    emit(StreamPart::Text(&fragment));
+                }
+                ProviderEvent::Reasoning(fragment) if !fragment.is_empty() => {
+                    emit(StreamPart::Reasoning(&fragment));
+                }
+                _ => {}
+            };
             let request = ChatRequest {
                 system: system.clone(),
                 messages: round.to_vec(),
@@ -980,6 +1021,8 @@ pub struct TurnOutcome {
     pub usage: core_domain::Usage,
     /// How many tool rounds ran.
     pub rounds: usize,
+    /// What the tools actually did, in order, for the transcript.
+    pub tools: Vec<ToolRecord>,
 }
 
 /// What happens to a call before it runs.
@@ -1016,14 +1059,17 @@ pub fn drive_tool_loop(
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,
+    sink: &mut dyn FnMut(StreamPart<'_>),
     mut stream: impl FnMut(
         &[ChatMessage],
         bool,
+        &mut dyn FnMut(StreamPart<'_>),
     ) -> Result<core_runtime::provider::Completion, TurnFailure>,
 ) -> Result<TurnOutcome, TurnFailure> {
     let max_rounds = max_rounds.max(1);
     let mut usage: Option<core_domain::Usage> = None;
     let mut reasoning = String::new();
+    let mut records: Vec<ToolRecord> = Vec::new();
     let mut rounds = 0usize;
 
     let mut text = loop {
@@ -1032,7 +1078,7 @@ pub fn drive_tool_loop(
         // now has to say what it found with what it already has, which is a
         // usable answer rather than a shrug.
         let tools_allowed = rounds < max_rounds;
-        let completion = stream(&messages, tools_allowed)?;
+        let completion = stream(&messages, tools_allowed, &mut *sink)?;
 
         usage = Some(match usage {
             None => completion.usage,
@@ -1067,6 +1113,21 @@ pub fn drive_tool_loop(
                 }
                 GateDecision::Refuse { reason } => crate::tools::ToolResult::refused(&reason),
             };
+            let record = ToolRecord {
+                name: call.name.clone(),
+                arguments: call.arguments.to_string(),
+                output: result.content.clone(),
+                is_error: result.is_error,
+            };
+            // Shown as it happens: a turn that runs a command should not look
+            // like a turn that is thinking very hard about nothing.
+            sink(StreamPart::Tool {
+                name: &record.name,
+                arguments: &record.arguments,
+                output: &record.output,
+                is_error: record.is_error,
+            });
+            records.push(record);
             messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
         }
     };
@@ -1087,6 +1148,7 @@ pub fn drive_tool_loop(
             core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent)
         }),
         rounds,
+        tools: records,
     })
 }
 
@@ -1155,6 +1217,7 @@ mod tests {
             &id,
             "the answer",
             Some("thinking about it"),
+            &[],
             Some(&serde_json::json!({"output": 3})),
             Accounting {
                 prompt_tokens: Some(1_200),
@@ -1336,6 +1399,7 @@ mod tests {
                 context_window: None,
                 duration_ms: None,
                 reasoning: None,
+                tools: Vec::new(),
             },
             Message {
                 id: "a1".into(),
@@ -1351,6 +1415,7 @@ mod tests {
                 context_window: Some(10_000),
                 duration_ms: Some(2_000),
                 reasoning: None,
+                tools: Vec::new(),
             },
             Message {
                 id: "a2".into(),
@@ -1366,6 +1431,7 @@ mod tests {
                 context_window: Some(10_000),
                 duration_ms: None,
                 reasoning: None,
+                tools: Vec::new(),
             },
             Message {
                 id: "u2".into(),
@@ -1381,6 +1447,7 @@ mod tests {
                 context_window: None,
                 duration_ms: None,
                 reasoning: None,
+                tools: Vec::new(),
             },
         ];
 
@@ -1525,7 +1592,8 @@ mod tests {
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
-            |messages, _tools| {
+            &mut |_part| {},
+            |messages, _tools, _emit| {
                 seen.push(messages.to_vec());
                 round += 1;
                 if round == 1 {
@@ -1587,7 +1655,8 @@ mod tests {
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
-            |_messages, tools| {
+            &mut |_part| {},
+            |_messages, tools, _emit| {
                 round += 1;
                 tools_offered.push(tools);
                 Ok(completion_with_calls(vec![call.clone()], ""))
@@ -1642,7 +1711,8 @@ mod tests {
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
-            |_messages, _tools| Ok(completion_with_calls(Vec::new(), "ok")),
+            &mut |_part| {},
+            |_messages, _tools, _emit| Ok(completion_with_calls(Vec::new(), "ok")),
         )
         .expect("a turn");
 
@@ -1683,7 +1753,8 @@ mod tests {
                 approval_id: "ap_1".to_owned(),
             },
             MAX_TOOL_ROUNDS,
-            |messages, _tools| {
+            &mut |_part| {},
+            |messages, _tools, _emit| {
                 seen.push(messages.to_vec());
                 round += 1;
                 if round == 1 {
