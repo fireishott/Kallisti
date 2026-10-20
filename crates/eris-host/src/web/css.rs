@@ -75,12 +75,26 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 
 .app-wall {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /*
+   * Stationary has to be spelled out. Sizing this layer to the visual viewport
+   * makes mobile Safari recompute the `cover` scale as the browser chrome hides,
+   * so the picture breathes while you scroll. The large-viewport unit is the one
+   * that does not move, so the scale is constant and the wallpaper stays put.
+   */
+  height: 100lvh;
   z-index: 0;
   background-position: center;
   background-size: cover;
   background-repeat: no-repeat;
   pointer-events: none;
+  /* Its own compositing layer: a fixed background repainted with the document
+     underneath the rail is the other way this image appears to drift. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .side {
@@ -1013,6 +1027,30 @@ mod tests {
     const PURPLE_DENYLIST: [&str; 6] = [
         "#800080", "#7B1FA2", "#6A1B9A", "#9C27B0", "#8E24AA", "#673AB7",
     ];
+
+    /// The wallpaper is fixed, and fixed means fixed: sized by a viewport unit
+    /// that does not change when mobile chrome collapses, on its own layer.
+    #[test]
+    fn the_wallpaper_is_pinned_to_the_stable_viewport_unit() {
+        assert!(APP_CSS.contains("height: 100lvh;"), "the wall uses lvh");
+        let wall = APP_CSS
+            .split(".app-wall {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("the app-wall rule exists");
+        assert!(
+            !wall.contains("inset: 0"),
+            "inset would size the wall to the collapsing visual viewport: {wall}"
+        );
+        assert!(
+            wall.contains("position: fixed"),
+            "the wall does not scroll with the document: {wall}"
+        );
+        assert!(
+            wall.contains("translateZ(0)"),
+            "the wall has its own layer, so it is not repainted with the page: {wall}"
+        );
+    }
 
     #[test]
     fn the_stylesheet_carries_no_purple() {
