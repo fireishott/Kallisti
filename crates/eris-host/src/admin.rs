@@ -64,7 +64,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// on every ship, so a fix can land without telling the world the product is a
 /// different version. It rides in the footer, `--version`, and the wallpaper
 /// fingerprint, which is what makes a rebuild visible to a cached browser.
-pub const BUILD: u32 = 31;
+pub const BUILD: u32 = 37;
 
 /// `1.1.0 build 24`, for the places that state the whole identity.
 #[must_use]
@@ -270,6 +270,8 @@ pub const POST_ROUTES: &[&str] = &[
 pub struct AppState {
     /// The onboarding engine (and the database underneath it).
     pub engine: SetupEngine,
+    /// The configured MCP servers, started on demand.
+    pub mcp: Arc<crate::mcp::Pool>,
     /// The admin cookie sessions.
     pub sessions: AdminSessions,
     /// Claim attempt limiter, in process on purpose: it guards one form, so it
@@ -302,8 +304,28 @@ impl AppState {
         let db = engine.db().clone();
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
         let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env());
+        // Read once at construction: the list only changes through a settings
+        // save, and a turn should not pay for a database read per tool call.
+        let servers = match engine.setting(crate::mcp::SETTING_SERVERS) {
+            Ok(Some(raw)) => match crate::mcp::parse(&raw) {
+                Ok(servers) => servers,
+                Err(error) => {
+                    eprintln!("eris: the MCP server list is invalid: {}", error.message);
+                    Vec::new()
+                }
+            },
+            Ok(None) => Vec::new(),
+            Err(error) => {
+                eprintln!("eris: cannot read the MCP server list: {error}");
+                Vec::new()
+            }
+        };
+        if !servers.is_empty() {
+            eprintln!("eris: {} MCP server(s) configured", servers.len());
+        }
         Self {
             engine,
+            mcp: Arc::new(crate::mcp::Pool::new(servers)),
             sessions: AdminSessions::new(db),
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
@@ -804,7 +826,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.3.0");
+        assert_eq!(VERSION, "1.4.0");
     }
 
     #[test]

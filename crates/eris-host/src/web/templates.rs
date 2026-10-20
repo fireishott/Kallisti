@@ -1418,6 +1418,8 @@ pub struct SettingsView {
     pub models: Vec<String>,
     /// The stored MCP server list, as the editor shows it.
     pub mcp_servers: String,
+    /// The last start or call failure per server, so a broken one is visible.
+    pub mcp_errors: Vec<(String, String)>,
     /// The sentence stating that no MCP client exists in this build.
     pub mcp_status: String,
     /// The failure to show, when this render follows a refused post.
@@ -1461,6 +1463,7 @@ impl SettingsView {
             aux_roles: Vec::new(),
             models: Vec::new(),
             mcp_servers: "[]".to_owned(),
+            mcp_errors: Vec::new(),
             mcp_status: crate::mcp::STATUS.to_owned(),
             error: None,
             notice: None,
@@ -1955,6 +1958,14 @@ fn mcp_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "A JSON array of {\"name\", \"command\", \"args\"}. Validation rejects a "
                     "missing name or command and a duplicate name."
+                }
+            }
+            @if !view.mcp_errors.is_empty() {
+                dl .kv {
+                    @for (name, error) in &view.mcp_errors {
+                        dt { (name) }
+                        dd .warn { (error) }
+                    }
                 }
             }
             p .small .warn { (view.mcp_status) }

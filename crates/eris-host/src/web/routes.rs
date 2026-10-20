@@ -609,6 +609,7 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             }
         })
         .collect();
+    view.mcp_errors = state.mcp.errors();
     view.mcp_servers = engine
         .setting(crate::mcp::SETTING_SERVERS)
         .map_err(|error| form_error(&error))?
@@ -4129,6 +4130,7 @@ fn spawn_turn(
             .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
         crate::tools::Sandbox::new(workspace, mode)
     };
+    let mcp = state.mcp.clone();
     let approval_policy = state
         .engine
         .permissions()
@@ -4193,9 +4195,11 @@ fn spawn_turn(
         // queue that cannot be written refuses the call rather than running it
         // unapproved, because an unrecordable policy is not permission.
         let mut gate = |call: &core_domain::ToolCall| -> chat::GateDecision {
-            if call.name != "write_file"
-                || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
-            {
+            // A write, or any call into an MCP server: both are code the operator
+            // installed acting on their behalf, so both wait under `ask`.
+            let gated = call.name == "write_file"
+                || crate::mcp::protocol::split_qualified(&call.name).is_some();
+            if !gated || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never {
                 return chat::GateDecision::Run;
             }
             match crate::approvals::queue(&db, &conversation, &call.name, &call.arguments) {
@@ -4252,6 +4256,7 @@ fn spawn_turn(
             history,
             &sandbox,
             &mut gate,
+            Some(&mcp),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,

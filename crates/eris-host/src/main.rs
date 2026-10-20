@@ -365,7 +365,24 @@ fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsComma
                 .unwrap_or(eris_host::onboarding::permissions::SandboxMode::ReadOnly);
             let sandbox = eris_host::tools::Sandbox::new(workspace, mode);
 
-            let result = eris_host::tools::execute(&row.tool, &arguments, &sandbox);
+            // A namespaced name is an MCP tool: approving it has to reach the
+            // server, not the local file executor, or an approval would report a
+            // refusal for a tool that exists.
+            let result = if eris_host::mcp::protocol::split_qualified(&row.tool).is_some() {
+                let servers = engine
+                    .setting(eris_host::mcp::SETTING_SERVERS)
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| eris_host::mcp::parse(&raw).ok())
+                    .unwrap_or_default();
+                let pool = eris_host::mcp::Pool::new(servers);
+                match pool.call(&row.tool, &arguments) {
+                    Ok(outcome) => eris_host::tools::ToolResult::from_mcp(&row.tool, &outcome),
+                    Err(error) => eris_host::tools::ToolResult::refused(&error.message),
+                }
+            } else {
+                eris_host::tools::execute(&row.tool, &arguments, &sandbox)
+            };
             if result.is_error {
                 eprintln!(
                     "eris approvals: {} was not run, so it stays pending: {}",

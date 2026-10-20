@@ -234,6 +234,23 @@ impl ToolResult {
         }
     }
 
+    /// A result returned by an MCP server.
+    ///
+    /// Wrapped rather than passed through raw so the run log can tell which
+    /// server produced it, and so a server that reports a failure still renders
+    /// as a failure.
+    #[must_use]
+    pub fn from_mcp(tool: &str, outcome: &crate::mcp::protocol::CallOutcome) -> Self {
+        Self {
+            content: serde_json::json!({
+                "tool": tool,
+                "output": outcome.text,
+            })
+            .to_string(),
+            is_error: outcome.is_error,
+        }
+    }
+
     /// A call the gate refused before it ran.
     ///
     /// Used when the call could not even be parked. Doing nothing is the safe
@@ -261,8 +278,8 @@ impl ToolResult {
                 "status": "pending_approval",
                 "approval_id": approval_id,
                 "tool": tool,
-                "message": "This write is waiting for the operator to approve it. \
-                            Nothing has been written yet.",
+                "message": "This call is waiting for the operator to approve it. \
+                            Nothing has run yet.",
             })
             .to_string(),
             is_error: false,
@@ -758,6 +775,32 @@ mod tests {
                 result.content
             );
         }
+    }
+
+    #[test]
+    fn an_mcp_result_keeps_its_server_and_its_failure_flag() {
+        let ok = super::ToolResult::from_mcp(
+            "echo__ping",
+            &crate::mcp::protocol::CallOutcome {
+                text: "pong".to_owned(),
+                is_error: false,
+            },
+        );
+        assert!(!ok.is_error);
+        assert!(ok.content.contains("echo__ping"), "{}", ok.content);
+        assert!(ok.content.contains("pong"), "{}", ok.content);
+
+        let failed = super::ToolResult::from_mcp(
+            "vault__read",
+            &crate::mcp::protocol::CallOutcome {
+                text: "permission denied".to_owned(),
+                is_error: true,
+            },
+        );
+        assert!(
+            failed.is_error,
+            "a server-marked failure must not read as success"
+        );
     }
 
     #[test]

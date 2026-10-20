@@ -1016,12 +1016,17 @@ pub enum StreamPart<'a> {
 /// device turn: `stream_chat` takes `&mut dyn FnMut`, which is not `Send`, so the
 /// sink must not be held across an await. The caller runs this inside
 /// `spawn_blocking`.
+// Eight arguments is the seam: provider, prompt, sandbox, gate, pool, settings,
+// sink. Bundling them into a struct would only move the same fields behind a
+// name, and every one of them is independently optional at the call site.
+#[allow(clippy::too_many_arguments)]
 pub fn run_turn(
     config: &TurnConfig,
     system: Option<String>,
     messages: Vec<ChatMessage>,
     sandbox: &crate::tools::Sandbox,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    mcp: Option<&crate::mcp::Pool>,
     settings: TurnSettings,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
@@ -1049,8 +1054,26 @@ pub fn run_turn(
 
     let system = system.filter(|text| !text.trim().is_empty());
 
+    // A namespaced name belongs to an MCP server; anything else is a local tool.
+    // The split is by shape, not by a lookup, so a server that failed to start
+    // still reports "that tool is MCP" rather than "unknown tool".
+    let mut execute = |call: &core_domain::ToolCall| -> crate::tools::ToolResult {
+        if crate::mcp::protocol::split_qualified(&call.name).is_some() {
+            let Some(pool) = mcp else {
+                return crate::tools::ToolResult::refused(
+                    "no MCP server is configured, so this tool cannot run",
+                );
+            };
+            return match pool.call(&call.name, &call.arguments) {
+                Ok(outcome) => crate::tools::ToolResult::from_mcp(&call.name, &outcome),
+                Err(error) => crate::tools::ToolResult::refused(&error.message),
+            };
+        }
+        crate::tools::execute(&call.name, &call.arguments, sandbox)
+    };
+
     let outcome = drive_tool_loop(
-        sandbox,
+        &mut execute,
         messages,
         gate,
         settings.max_rounds,
@@ -1072,7 +1095,11 @@ pub fn run_turn(
                 // them again to answer the result it just received. Withheld on the
                 // last round so the turn ends in an answer instead of a refusal.
                 tools: if tools_allowed && settings.tools {
-                    crate::tools::specs(sandbox.mode())
+                    let mut offered = crate::tools::specs(sandbox.mode());
+                    if let Some(pool) = mcp {
+                        offered.extend(pool.specs());
+                    }
+                    offered
                 } else {
                     Vec::new()
                 },
@@ -1233,7 +1260,7 @@ pub enum GateDecision {
 /// be stopped from touching the filesystem. It is called even for read-only
 /// tools so a policy can decide for itself; the shipped policy parks writes.
 pub fn drive_tool_loop(
-    sandbox: &crate::tools::Sandbox,
+    execute: &mut dyn FnMut(&core_domain::ToolCall) -> crate::tools::ToolResult,
     mut messages: Vec<ChatMessage>,
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     max_rounds: usize,
@@ -1285,7 +1312,7 @@ pub fn drive_tool_loop(
         messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
         for call in &completion.tool_calls {
             let result = match gate(call) {
-                GateDecision::Run => crate::tools::execute(&call.name, &call.arguments, sandbox),
+                GateDecision::Run => execute(call),
                 GateDecision::Park { approval_id } => {
                     crate::tools::ToolResult::parked(&approval_id, &call.name)
                 }
@@ -1855,7 +1882,9 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &sandbox,
+            &mut |call: &core_domain::ToolCall| {
+                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            },
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
@@ -1918,7 +1947,9 @@ mod tests {
         let mut round = 0usize;
         let mut tools_offered: Vec<bool> = Vec::new();
         let outcome = drive_tool_loop(
-            &sandbox,
+            &mut |call: &core_domain::ToolCall| {
+                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            },
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
@@ -1974,7 +2005,9 @@ mod tests {
 
         let mut offered: Vec<String> = Vec::new();
         let _ = drive_tool_loop(
-            &sandbox,
+            &mut |call: &core_domain::ToolCall| {
+                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            },
             vec![ChatMessage::text(ChatRole::User, "hi")],
             &mut |_call| GateDecision::Run,
             MAX_TOOL_ROUNDS,
@@ -2014,7 +2047,9 @@ mod tests {
         let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
         let mut round = 0usize;
         let outcome = drive_tool_loop(
-            &sandbox,
+            &mut |call: &core_domain::ToolCall| {
+                crate::tools::execute(&call.name, &call.arguments, &sandbox)
+            },
             vec![ChatMessage::text(ChatRole::User, "write x")],
             &mut |_call| GateDecision::Park {
                 approval_id: "ap_1".to_owned(),
