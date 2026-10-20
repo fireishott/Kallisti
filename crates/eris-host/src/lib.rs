@@ -34,4 +34,5 @@ pub mod error;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;
+pub mod tools;
 pub mod web;
