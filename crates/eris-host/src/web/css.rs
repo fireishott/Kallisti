@@ -1580,26 +1580,65 @@ pre.code {
   gap: 8px;
   margin-top: 10px;
 }
+/* The chip a file that cannot be shown gets: its type badge, its name, its size.
+   The name truncates rather than wrapping, so a long filename does not push the
+   bubble wider than the column. */
 .msg .attached-chip {
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 3px 9px 3px 4px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   color: var(--muted);
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 10px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.5;
   text-decoration: none;
 }
+.msg .attached-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  color: var(--platinum);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.msg .attached-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg .attached-size {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+}
 a.attached-chip:hover { color: var(--text); border-color: var(--platinum); }
+/* A rendered-size thumbnail, not a generated one. There is no image library in
+   this build and none is added: the browser scales the stored bytes with
+   max-width, max-height and object-fit, so the file on disk stays the exact file
+   that was uploaded and nothing is re-encoded or written. */
 .msg .attached-image {
   display: block;
   max-width: 260px;
+  max-height: 200px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   overflow: hidden;
   line-height: 0;
 }
-.msg .attached-image img { display: block; width: 100%; height: auto; }
+.msg .attached-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 260px;
+  max-height: 200px;
+  object-fit: cover;
+}
 .msg .attached-image:hover { border-color: var(--platinum); }
 
 /* The one control that undoes following the bottom. It sits above the composer,

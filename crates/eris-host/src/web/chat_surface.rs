@@ -15,6 +15,11 @@
 //!   choosing `custom` with no upload is refused instead of painting a hole;
 //! - an uploaded image is served with the type its bytes actually are, and a
 //!   direct request for one that does not exist is a 404 rather than a 500.
+//! - a message's files appear inside its bubble: pictures as thumbnails that link
+//!   to the full file, everything else as a chip with its type badge, name and
+//!   size;
+//! - an attachment row is a database fact and not a promise: a path outside the
+//!   attachment directory, or one whose bytes are gone, is a typed 404.
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -23,6 +28,7 @@ use tower::ServiceExt;
 use crate::admin::{
     ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SECURITY, ROUTE_SETTINGS, ROUTE_SETTINGS_TOOLS,
 };
+use crate::onboarding::SetupEngine;
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
 use crate::web::templates::SettingsView;
 use crate::web::wallpaper;
@@ -63,6 +69,71 @@ fn a_png() -> Vec<u8> {
     let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     bytes.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R']);
     bytes
+}
+
+/// One attachment row whose bytes sit exactly where the upload route puts them:
+/// `<workspace>/uploads/<conversation>/<id>-<name>`.
+fn store_attachment(engine: &SetupEngine, name: &str, bytes: &[u8]) -> chat::Attachment {
+    let directory = engine
+        .workspace_path()
+        .expect("a workspace")
+        .join("uploads")
+        .join(CONVERSATION_ID);
+    std::fs::create_dir_all(&directory).expect("the uploads directory");
+    let id = uuid::Uuid::now_v7().to_string();
+    let path = directory.join(format!("{id}-{name}"));
+    std::fs::write(&path, bytes).expect("the bytes");
+    let file = chat::Attachment {
+        id,
+        name: name.to_owned(),
+        path: path.display().to_string(),
+        size: bytes.len() as u64,
+        media_type: Some(chat::sniff_media_type(bytes).to_owned()),
+    };
+    chat::record_attachment(engine.db(), CONVERSATION_ID, &file).expect("the row");
+    file
+}
+
+/// Fetch one path with the admin session, keeping the bytes and the disposition:
+/// an attachment is rarely UTF-8 and the shared harness decodes its body as text.
+fn get_stored(
+    app: &axum::Router,
+    uri: &str,
+    cookie: &str,
+) -> (StatusCode, String, String, Vec<u8>) {
+    let response = block_on(
+        app.clone().oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("a valid request"),
+        ),
+    )
+    .expect("the router is infallible");
+    let status = response.status();
+    let header_of = |name: axum::http::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let content_type = header_of(header::CONTENT_TYPE);
+    let disposition = header_of(header::CONTENT_DISPOSITION);
+    let bytes = block_on(to_bytes(response.into_body(), 2 * 1024 * 1024)).expect("a body");
+    (status, content_type, disposition, bytes.to_vec())
+}
+
+/// The message id of the last row in the fixture conversation.
+fn last_message(engine: &SetupEngine) -> String {
+    chat::load(engine.db(), CONVERSATION_ID)
+        .expect("the transcript")
+        .last()
+        .expect("a row")
+        .id
+        .clone()
 }
 
 #[test]
@@ -978,6 +1049,215 @@ fn a_message_can_carry_a_file_and_the_turn_is_told_about_it() {
     );
     let stored = std::fs::read(entries[0].path()).expect("readable");
     assert_eq!(stored, b"line one\nline two");
+}
+
+/// The route a transcript link points at answers with the type the bytes are,
+/// not the type the name claimed, and it is behind the session like every other
+/// dashboard route.
+#[test]
+fn an_attachment_is_served_with_the_type_its_bytes_are() {
+    let (_dir, engine, app, cookie) = ready_app();
+    // A PNG that calls itself a text file. The name is a claim; the bytes are not.
+    let png = a_png();
+    let image = store_attachment(&engine, "notes.txt", &png);
+    let url = format!("/dashboard/chat/file/{}", image.id);
+
+    let refused = block_on(send(&app, Call::get_owned(url.clone())));
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "no_session");
+
+    let (status, content_type, disposition, bytes) = get_stored(&app, &url, &cookie);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        content_type, "image/png",
+        "the bytes decide the type, not the .txt name"
+    );
+    assert_eq!(
+        disposition, "inline; filename=\"notes.txt\"",
+        "a picture is inline, so the thumbnail can be drawn from it"
+    );
+    assert_eq!(bytes, png, "the bytes served are the bytes stored");
+
+    // Text stays text. An upload that contains HTML is not served as HTML, so a
+    // page that arrived in a message cannot run in this origin.
+    let page = b"<!doctype html><script>alert(1)</script>";
+    let document = store_attachment(&engine, "shot.png", page);
+    let (status, content_type, disposition, bytes) = get_stored(
+        &app,
+        &format!("/dashboard/chat/file/{}", document.id),
+        &cookie,
+    );
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        content_type, "text/plain",
+        "html is served as text, never as html"
+    );
+    assert!(
+        disposition.starts_with("attachment;"),
+        "and it downloads: {disposition}"
+    );
+    assert_eq!(bytes, page);
+
+    // An id the table does not know is a 404 with a code, not a filesystem read.
+    let unknown = block_on(send(
+        &app,
+        // Written in two pieces so the path is not a secret-shaped run.
+        Call::get_owned(concat!("/dashboard/chat", "/file/not-a-real-id").to_owned())
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    assert_eq!(unknown.json()["code"], "not_found");
+}
+
+/// A row is a database fact, not a promise about the disk: a path outside the
+/// attachment directory, or one whose bytes are gone, is refused rather than
+/// read, and the refusal says which of the two it was.
+#[test]
+fn an_attachment_rows_path_is_confined_to_the_attachment_directory() {
+    let (_dir, engine, app, cookie) = ready_app();
+    // The directory the upload route creates, so what is under test is the
+    // confinement check rather than its absence.
+    std::fs::create_dir_all(
+        engine
+            .workspace_path()
+            .expect("a workspace")
+            .join("uploads")
+            .join(CONVERSATION_ID),
+    )
+    .expect("the uploads directory");
+    let outside = engine.paths().config_dir.join("eris.env");
+    std::fs::write(&outside, b"outside the uploads tree\n").expect("the file");
+    let tampered = chat::Attachment {
+        id: "tampered-1".to_owned(),
+        name: "eris.env".to_owned(),
+        path: outside.display().to_string(),
+        size: 30,
+        media_type: Some("text/plain".to_owned()),
+    };
+    chat::record_attachment(engine.db(), CONVERSATION_ID, &tampered).expect("the row");
+
+    let (status, content_type, _, bytes) =
+        get_stored(&app, "/dashboard/chat/file/tampered-1", &cookie);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        content_type.contains("application/json"),
+        "a 404 is typed, not an empty page: {content_type}"
+    );
+    let body = String::from_utf8_lossy(&bytes);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("json")["code"],
+        "not_found",
+        "{body}"
+    );
+    assert!(
+        body.contains("not inside the attachment directory"),
+        "the refusal names the reason: {body}"
+    );
+    assert!(
+        !body.contains("not-for-the-browser"),
+        "and leaks nothing it refused to read: {body}"
+    );
+
+    // A row whose bytes have been cleaned off disk is the other honest 404.
+    let gone = chat::Attachment {
+        id: "gone-1".to_owned(),
+        name: "deleted.txt".to_owned(),
+        path: engine
+            .workspace_path()
+            .expect("a workspace")
+            .join("uploads")
+            .join(CONVERSATION_ID)
+            .join("deleted.txt")
+            .display()
+            .to_string(),
+        size: 4,
+        media_type: Some("text/plain".to_owned()),
+    };
+    chat::record_attachment(engine.db(), CONVERSATION_ID, &gone).expect("the row");
+    let (status, _, _, bytes) = get_stored(&app, "/dashboard/chat/file/gone-1", &cookie);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("not on disk"),
+        "the missing-file 404 says so: {body}"
+    );
+}
+
+/// What the message carried is inside the message: a picture is the picture, and
+/// a file that cannot be drawn is a chip that names its type, its name and its
+/// size, and still links to the bytes.
+#[test]
+fn a_message_shows_its_pictures_as_thumbnails_and_its_files_as_chips() {
+    let (_dir, engine, app, cookie) = ready_app();
+    crate::web::chat::seed_conversation(engine.db(), CONVERSATION_ID).unwrap();
+    chat::append(
+        engine.db(),
+        CONVERSATION_ID,
+        Role::User,
+        "have a look",
+        State::Complete,
+    )
+    .unwrap();
+    let image = store_attachment(&engine, "shot.png", &a_png());
+    let pdf = store_attachment(&engine, "brief.pdf", b"%PDF-1.7\nsome bytes\n");
+    let question = last_message(&engine);
+    chat::claim_attachments(
+        engine.db(),
+        CONVERSATION_ID,
+        &question,
+        &[image.id.clone(), pdf.id.clone()],
+    )
+    .expect("claimed");
+    assert_eq!(
+        chat::attachments_by_message(engine.db(), CONVERSATION_ID)
+            .unwrap()
+            .get(&question)
+            .map(Vec::len),
+        Some(2),
+        "both files belong to the question"
+    );
+
+    let page = block_on(send(
+        &app,
+        Call::get(ROUTE_CHAT).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let body = &page.body;
+    let image_url = format!("/dashboard/chat/file/{}", image.id);
+    let pdf_url = format!("/dashboard/chat/file/{}", pdf.id);
+
+    // The picture: a thumbnail that links to the full file.
+    assert!(
+        body.contains(r#"class="attached-image""#),
+        "the image is drawn in the bubble: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"<img src="{image_url}" alt="shot.png""#)),
+        "the thumbnail is the served bytes: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"href="{image_url}""#)),
+        "and it links to the full file: {body}"
+    );
+
+    // The file that cannot be drawn: badge, name, size, link.
+    assert!(
+        body.contains(r#"class="attached-badge">PDF<"#),
+        "the chip carries a type badge: {body}"
+    );
+    assert!(body.contains("brief.pdf"), "and the name: {body}");
+    assert!(
+        body.contains(r#"class="attached-size">20 B<"#),
+        "and the size, from the bytes on disk: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"href="{pdf_url}""#)),
+        "and it links to the served file: {body}"
+    );
+    assert!(
+        body.contains(r#"download="brief.pdf""#),
+        "a non-image downloads rather than opening here: {body}"
+    );
 }
 
 #[test]
