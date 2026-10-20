@@ -6,6 +6,16 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A device can administer, if the operator says so.** Minting a pairing code grows
+  one unchecked box: tick it and the redeemed token carries the admin scope, leave it
+  and the device chats and files conversations and nothing more. The decision travels
+  with the code (migration 0015), so it is made once by a person rather than inferred,
+  and the devices table reads "can administer" or "chat only". `GET /v1/settings`
+  returns the operator-facing settings with no credential, key, path or base URL, and
+  `POST /v1/settings` accepts any subset of model, sandbox, memory and approval with
+  all-or-nothing validation and an audit row per change. A token without the scope is
+  refused with a sentence that says the device was paired without administration and
+  how to fix it, rather than "forbidden".
 - **Subagents.** A turn in Full mode can call `dispatch_agent` and get a real child
   turn back: its own provider call, the parent's persona, memory and summary, its own
   token accounting, its result stored on a row. Four run at once daemon-wide and eight
