@@ -130,6 +130,11 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Review the writes a turn parked, and settle one.
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommand,
+    },
     /// Report what this process verified: config, database, provider reachability.
     Doctor,
     /// Placeholder. The evaluation harness is not part of this build.
@@ -149,6 +154,23 @@ enum DeviceCommand {
         /// Print the token and nothing else on stdout.
         #[arg(long)]
         print: bool,
+    },
+}
+
+/// The `approvals` subcommands.
+#[derive(Debug, Subcommand)]
+enum ApprovalsCommand {
+    /// List the writes a turn parked and nobody has answered.
+    List,
+    /// Approve one and run it now. Writes only if the sandbox allows it.
+    Approve {
+        /// The approval id shown by `approvals list`.
+        id: String,
+    },
+    /// Refuse one. Nothing is written and the row is settled.
+    Deny {
+        /// The approval id shown by `approvals list`.
+        id: String,
     },
 }
 
@@ -176,6 +198,7 @@ fn main() -> ExitCode {
                  The listener itself is `eris serve --device-listen`",
             ),
         },
+        Some(Command::Approvals { command }) => run_approvals(cli.json, cli.state_dir, command),
         Some(Command::Eval) => not_implemented(
             cli.json,
             "eval",
@@ -228,6 +251,163 @@ fn resolve_paths(state_dir: Option<PathBuf>) -> Result<Paths, String> {
     match state_dir {
         Some(root) => Ok(Paths::for_root(root)),
         None => Paths::from_home().map_err(|error| error.to_string()),
+    }
+}
+
+/// `eris approvals` - review the writes a turn parked, and settle one.
+///
+/// Approving runs the call before it settles the row, so a row that the sandbox
+/// still refuses stays pending instead of reading as approved work that never
+/// happened.
+fn run_approvals(json: bool, state_dir: Option<PathBuf>, command: ApprovalsCommand) -> ExitCode {
+    let paths = match resolve_paths(state_dir) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("eris approvals: {message}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let db = match Db::open(&paths.db_file) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!(
+                "eris approvals: cannot open {}: {error}",
+                paths.db_file.display()
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+
+    match command {
+        ApprovalsCommand::List => {
+            let waiting = match eris_host::approvals::pending(&db) {
+                Ok(waiting) => waiting,
+                Err(error) => {
+                    eprintln!("eris approvals: {error}");
+                    return ExitCode::from(EXIT_FAILURE);
+                }
+            };
+            if json {
+                let rows: Vec<serde_json::Value> = waiting
+                    .iter()
+                    .map(|row| {
+                        serde_json::json!({
+                            "id": row.id,
+                            "conversation": row.conversation,
+                            "tool": row.tool,
+                            "arguments": row.arguments,
+                            "created_at": row.created_at,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({ "pending": rows }));
+            } else if waiting.is_empty() {
+                println!("no writes are waiting for approval");
+            } else {
+                for row in &waiting {
+                    println!("{}  {}  {}", row.id, row.tool, row.arguments);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        ApprovalsCommand::Deny { id } => {
+            match eris_host::approvals::decide(
+                &db,
+                &id,
+                eris_host::approvals::Decision::Denied,
+                "operator",
+            ) {
+                Ok(true) => {
+                    println!("denied {id}");
+                    ExitCode::SUCCESS
+                }
+                Ok(false) => {
+                    eprintln!("eris approvals: {id} is not pending, so nothing changed");
+                    ExitCode::from(EXIT_FAILURE)
+                }
+                Err(error) => {
+                    eprintln!("eris approvals: {error}");
+                    ExitCode::from(EXIT_FAILURE)
+                }
+            }
+        }
+        ApprovalsCommand::Approve { id } => {
+            let row = match eris_host::approvals::get(&db, &id) {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    eprintln!("eris approvals: no approval with id {id}");
+                    return ExitCode::from(EXIT_FAILURE);
+                }
+                Err(error) => {
+                    eprintln!("eris approvals: {error}");
+                    return ExitCode::from(EXIT_FAILURE);
+                }
+            };
+
+            let arguments: serde_json::Value = match serde_json::from_str(&row.arguments) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    eprintln!(
+                        "eris approvals: {} has unreadable arguments: {error}",
+                        row.id
+                    );
+                    return ExitCode::from(EXIT_FAILURE);
+                }
+            };
+
+            let engine = SetupEngine::new(db.clone(), paths.clone());
+            let workspace = engine
+                .workspace_path()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mode = engine
+                .permissions()
+                .map(|permissions| permissions.sandbox_mode)
+                .unwrap_or(eris_host::onboarding::permissions::SandboxMode::ReadOnly);
+            let sandbox = eris_host::tools::Sandbox::new(workspace, mode);
+
+            let result = eris_host::tools::execute(&row.tool, &arguments, &sandbox);
+            if result.is_error {
+                eprintln!(
+                    "eris approvals: {} was not run, so it stays pending: {}",
+                    row.id, result.content
+                );
+                return ExitCode::from(EXIT_FAILURE);
+            }
+
+            match eris_host::approvals::decide(
+                &db,
+                &id,
+                eris_host::approvals::Decision::Approved,
+                "operator",
+            ) {
+                Ok(true) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "id": row.id,
+                                "status": "approved",
+                                "result": result.content,
+                            })
+                        );
+                    } else {
+                        println!("approved {id}: {}", result.content);
+                    }
+                    ExitCode::SUCCESS
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "eris approvals: {} was already settled; the work ran but no row changed",
+                        row.id
+                    );
+                    ExitCode::from(EXIT_FAILURE)
+                }
+                Err(error) => {
+                    eprintln!("eris approvals: {error}");
+                    ExitCode::from(EXIT_FAILURE)
+                }
+            }
+        }
     }
 }
 

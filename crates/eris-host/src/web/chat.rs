@@ -733,6 +733,7 @@ pub fn run_turn(
     system: Option<String>,
     messages: Vec<ChatMessage>,
     sandbox: &crate::tools::Sandbox,
+    gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     sink: &mut dyn FnMut(&str),
 ) -> Result<(String, core_domain::Usage), TurnFailure> {
     let profile =
@@ -767,7 +768,7 @@ pub fn run_turn(
         }
     };
 
-    let outcome = drive_tool_loop(sandbox, messages, |round| {
+    let outcome = drive_tool_loop(sandbox, messages, gate, |round| {
         let request = ChatRequest {
             system: system.clone(),
             messages: round.to_vec(),
@@ -896,14 +897,39 @@ pub struct TurnOutcome {
     pub rounds: usize,
 }
 
+/// What happens to a call before it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    /// Run it now.
+    Run,
+    /// Park it for a human. The model is told it is waiting.
+    Park {
+        /// The approval row this call is waiting on.
+        approval_id: String,
+    },
+    /// Refuse it outright, without running it.
+    ///
+    /// The fallback when the call cannot even be parked - a queue that cannot be
+    /// written is a reason to do nothing, never a reason to go ahead unapproved.
+    Refuse {
+        /// Why it was refused, for the model and the operator.
+        reason: String,
+    },
+}
+
 /// Drive one turn: stream, run whatever the model asked for, stream again.
 ///
 /// `stream` is handed the prompt for each round trip and returns that round's
 /// completion. Text reaches the operator through whatever `stream` does with it;
 /// this function only decides when to stop and what was spent.
+///
+/// `gate` is consulted before every call runs and is the only place a turn can
+/// be stopped from touching the filesystem. It is called even for read-only
+/// tools so a policy can decide for itself; the shipped policy parks writes.
 pub fn drive_tool_loop(
     sandbox: &crate::tools::Sandbox,
     mut messages: Vec<ChatMessage>,
+    gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     mut stream: impl FnMut(&[ChatMessage]) -> Result<core_runtime::provider::Completion, TurnFailure>,
 ) -> Result<TurnOutcome, TurnFailure> {
     let mut usage: Option<core_domain::Usage> = None;
@@ -914,9 +940,8 @@ pub fn drive_tool_loop(
     loop {
         if calls >= MAX_TOOL_ROUNDS {
             if text.trim().is_empty() {
-                text = format!(
-                    "Stopped after {MAX_TOOL_ROUNDS} tool rounds without a final answer."
-                );
+                text =
+                    format!("Stopped after {MAX_TOOL_ROUNDS} tool rounds without a final answer.");
             }
             break;
         }
@@ -936,7 +961,13 @@ pub fn drive_tool_loop(
         rounds += 1;
         messages.push(ChatMessage::assistant_calls(completion.tool_calls.clone()));
         for call in &completion.tool_calls {
-            let result = crate::tools::execute(&call.name, &call.arguments, sandbox);
+            let result = match gate(call) {
+                GateDecision::Run => crate::tools::execute(&call.name, &call.arguments, sandbox),
+                GateDecision::Park { approval_id } => {
+                    crate::tools::ToolResult::parked(&approval_id, &call.name)
+                }
+                GateDecision::Refuse { reason } => crate::tools::ToolResult::refused(&reason),
+            };
             messages.push(ChatMessage::tool_result(call.id.clone(), result.content));
         }
     }
@@ -1313,10 +1344,8 @@ mod tests {
     }
 
     fn scratch_workspace(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "kallisti-loop-{name}-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("kallisti-loop-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
         root
@@ -1344,6 +1373,7 @@ mod tests {
         let outcome = drive_tool_loop(
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "read a.txt")],
+            &mut |_call| GateDecision::Run,
             |messages| {
                 seen.push(messages.to_vec());
                 round += 1;
@@ -1403,6 +1433,7 @@ mod tests {
         let outcome = drive_tool_loop(
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "loop forever")],
+            &mut |_call| GateDecision::Run,
             |_messages| {
                 round += 1;
                 Ok(completion_with_calls(vec![call.clone()], ""))
@@ -1437,9 +1468,8 @@ mod tests {
         let _ = drive_tool_loop(
             &sandbox,
             vec![ChatMessage::text(ChatRole::User, "hi")],
-            |_messages| {
-                Ok(completion_with_calls(Vec::new(), "ok"))
-            },
+            &mut |_call| GateDecision::Run,
+            |_messages| Ok(completion_with_calls(Vec::new(), "ok")),
         )
         .expect("a turn");
 
@@ -1447,6 +1477,70 @@ mod tests {
         assert!(offered.contains(&"read_file".to_owned()));
         assert!(offered.contains(&"write_file".to_owned()));
         assert!(offered.contains(&"list_dir".to_owned()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_write_the_gate_parks_never_touches_the_disk_and_says_so() {
+        let root = scratch_workspace("parked");
+        let sandbox = crate::tools::Sandbox::new(
+            root.clone(),
+            crate::onboarding::permissions::SandboxMode::WorkspaceWrite,
+        );
+
+        let call = core_domain::ToolCall::new(
+            0,
+            "call_1",
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "hi"}),
+        )
+        .expect("a call");
+
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        let mut round = 0usize;
+        let outcome = drive_tool_loop(
+            &sandbox,
+            vec![ChatMessage::text(ChatRole::User, "write x")],
+            &mut |_call| GateDecision::Park {
+                approval_id: "ap_1".to_owned(),
+            },
+            |messages| {
+                seen.push(messages.to_vec());
+                round += 1;
+                if round == 1 {
+                    Ok(completion_with_calls(vec![call.clone()], ""))
+                } else {
+                    Ok(completion_with_calls(
+                        Vec::new(),
+                        "That write is waiting for your approval.",
+                    ))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert!(
+            !root.join("x.txt").exists(),
+            "a parked write must not touch the disk"
+        );
+
+        let second = seen.get(1).expect("a second request");
+        let result = second
+            .iter()
+            .find(|message| message.role == ChatRole::Tool)
+            .expect("a tool result");
+        assert!(
+            result.content.contains("pending_approval"),
+            "the model is told it is waiting: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("ap_1"),
+            "the approval id travels with it: {}",
+            result.content
+        );
+        assert!(outcome.text.contains("approval"), "{}", outcome.text);
 
         let _ = std::fs::remove_dir_all(&root);
     }

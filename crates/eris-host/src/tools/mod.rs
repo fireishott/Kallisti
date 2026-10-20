@@ -190,6 +190,41 @@ impl ToolResult {
             is_error: true,
         }
     }
+
+    /// A call the gate refused before it ran.
+    ///
+    /// Used when the call could not even be parked. Doing nothing is the safe
+    /// answer; a policy that could not be recorded is not permission to proceed.
+    #[must_use]
+    pub fn refused(reason: &str) -> Self {
+        Self {
+            content: serde_json::json!({
+                "status": "refused",
+                "error": reason,
+            })
+            .to_string(),
+            is_error: true,
+        }
+    }
+
+    /// A call that was parked for approval instead of run.
+    ///
+    /// Not an error: nothing went wrong, and the model should tell the operator
+    /// that the write is waiting rather than retry it or claim it succeeded.
+    #[must_use]
+    pub fn parked(approval_id: &str, tool: &str) -> Self {
+        Self {
+            content: serde_json::json!({
+                "status": "pending_approval",
+                "approval_id": approval_id,
+                "tool": tool,
+                "message": "This write is waiting for the operator to approve it. \
+                            Nothing has been written yet.",
+            })
+            .to_string(),
+            is_error: false,
+        }
+    }
 }
 
 /// The tools offered to the model this build.
@@ -382,10 +417,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "kallisti-tools-{name}-{}",
-                std::process::id()
-            ));
+            let root =
+                std::env::temp_dir().join(format!("kallisti-tools-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).expect("scratch workspace");
             Self { root }
@@ -445,7 +478,11 @@ mod tests {
     #[test]
     fn a_symlink_pointing_out_of_the_workspace_is_refused() {
         let scratch = Scratch::new("symlink");
-        let outside = scratch.workspace().parent().expect("parent").join("kallisti-outside.txt");
+        let outside = scratch
+            .workspace()
+            .parent()
+            .expect("parent")
+            .join("kallisti-outside.txt");
         fs::write(&outside, "secret").expect("outside file");
         std::os::unix::fs::symlink(&outside, scratch.workspace().join("link")).expect("symlink");
 
@@ -533,8 +570,7 @@ mod tests {
         scratch.file("a.txt", "hello there");
         let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
 
-        let result =
-            super::execute("read_file", &serde_json::json!({"path": "a.txt"}), &sandbox);
+        let result = super::execute("read_file", &serde_json::json!({"path": "a.txt"}), &sandbox);
 
         assert!(!result.is_error, "{result:?}");
         assert!(
@@ -551,8 +587,7 @@ mod tests {
         scratch.file("notes/two.txt", "2");
         let sandbox = sandbox(&scratch, super::SandboxMode::ReadOnly);
 
-        let result =
-            super::execute("list_dir", &serde_json::json!({"path": "notes"}), &sandbox);
+        let result = super::execute("list_dir", &serde_json::json!({"path": "notes"}), &sandbox);
 
         assert!(!result.is_error, "{result:?}");
         assert!(result.content.contains("one.txt"), "{}", result.content);

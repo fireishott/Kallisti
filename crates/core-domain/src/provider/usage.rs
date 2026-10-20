@@ -320,14 +320,17 @@ impl Usage {
 /// Sum two token counts, or keep whichever one is unknown.
 fn accrue_count(first: TokenCount, second: TokenCount) -> TokenCount {
     match (first, second) {
-        (
-            TokenCount::Reported { tokens: a },
-            TokenCount::Reported { tokens: b },
-        ) => TokenCount::Reported {
-            tokens: a.saturating_add(b),
-        },
-        (TokenCount::ProviderUnavailable { reason }, _) => TokenCount::ProviderUnavailable { reason },
-        (_, TokenCount::ProviderUnavailable { reason }) => TokenCount::ProviderUnavailable { reason },
+        (TokenCount::Reported { tokens: a }, TokenCount::Reported { tokens: b }) => {
+            TokenCount::Reported {
+                tokens: a.saturating_add(b),
+            }
+        }
+        (TokenCount::ProviderUnavailable { reason }, _) => {
+            TokenCount::ProviderUnavailable { reason }
+        }
+        (_, TokenCount::ProviderUnavailable { reason }) => {
+            TokenCount::ProviderUnavailable { reason }
+        }
     }
 }
 

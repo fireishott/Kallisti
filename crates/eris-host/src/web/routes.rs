@@ -3272,13 +3272,27 @@ async fn chat_send(
         .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
 
     if !streaming {
-        let task = spawn_turn(&state, config, answer_id, history, None);
+        let task = spawn_turn(
+            &state,
+            config,
+            conversation.clone(),
+            answer_id,
+            history,
+            None,
+        );
         let _ = task.await;
         return see_other(ROUTE_CHAT);
     }
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<SseEvent, Infallible>>();
-    spawn_turn(&state, config, answer_id, history, Some(tx));
+    spawn_turn(
+        &state,
+        config,
+        conversation.clone(),
+        answer_id,
+        history,
+        Some(tx),
+    );
     Sse::new(UnboundedReceiverStream::new(rx))
         .keep_alive(SseKeepAlive::default())
         .into_response()
@@ -3571,6 +3585,7 @@ async fn chat_clear(
 fn spawn_turn(
     state: &AppState,
     config: chat::TurnConfig,
+    conversation: String,
     answer_id: String,
     history: Vec<core_runtime::provider::ChatMessage>,
     sender: Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
@@ -3591,6 +3606,11 @@ fn spawn_turn(
             .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
         crate::tools::Sandbox::new(workspace, mode)
     };
+    let approval_policy = state
+        .engine
+        .permissions()
+        .map(|permissions| permissions.approval_policy)
+        .unwrap_or(crate::onboarding::permissions::ApprovalPolicy::Ask);
     let stored_enabled = state
         .engine
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
@@ -3615,13 +3635,33 @@ fn spawn_turn(
             }
         };
 
+        // The only place a write can be stopped from reaching the filesystem.
+        // `Never` runs in-sandbox work unattended; `Ask` parks every write. A
+        // queue that cannot be written refuses the call rather than running it
+        // unapproved, because an unrecordable policy is not permission.
+        let mut gate = |call: &core_domain::ToolCall| -> chat::GateDecision {
+            if call.name != "write_file"
+                || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
+            {
+                return chat::GateDecision::Run;
+            }
+            match crate::approvals::queue(&db, &conversation, &call.name, &call.arguments) {
+                Ok(approval_id) => chat::GateDecision::Park { approval_id },
+                Err(error) => chat::GateDecision::Refuse {
+                    reason: format!(
+                        "the approval queue is unavailable ({error}), so nothing was written"
+                    ),
+                },
+            }
+        };
+
         let mut streamed = String::new();
         let mut sink = |fragment: &str| {
             streamed.push_str(fragment);
             send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
         };
         let started = std::time::Instant::now();
-        let outcome = chat::run_turn(&config, system, history, &sandbox, &mut sink);
+        let outcome = chat::run_turn(&config, system, history, &sandbox, &mut gate, &mut sink);
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         drop(sink);
 

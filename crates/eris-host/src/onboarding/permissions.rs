@@ -65,7 +65,7 @@ impl SandboxMode {
                 "Turns can create and edit files inside the workspace, and nothing outside it."
             }
             Self::Full => {
-                "Turns can run commands and touch the whole host. Only a restart of eris with --allow-full can select this."
+                "Only a restart of eris with --allow-full can select this, and 1.0 still confines every write to the workspace: command execution is not implemented."
             }
         }
     }

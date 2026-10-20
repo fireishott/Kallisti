@@ -24,6 +24,7 @@
 //! and there is still no service unit, because that is P9.
 
 pub mod admin;
+pub mod approvals;
 pub mod auth;
 pub mod backup;
 pub mod config;

@@ -29,19 +29,21 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The fourteen tables the migrations create. `schema_migrations` is the
-/// thirteenth and is created by the runner, not by a migration. 0001 creates the
+/// The fifteen tables the migrations create. `schema_migrations` is the
+/// fourteenth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
-/// columns to `jobs` and no table at all; 0005 adds `chat_messages`.
-pub const TABLES: [&str; 14] = [
+/// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
+/// `chat_attachments`; 0009 adds `approvals`.
+pub const TABLES: [&str; 15] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
+    "approvals",
     "audit_log",
     "auth_tokens",
     "chat_attachments",
@@ -103,6 +105,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "0008_chat_attachments",
         sql: MIGRATION_0008,
+    },
+    Migration {
+        version: 9,
+        name: "0009_approvals",
+        sql: MIGRATION_0009,
     },
 ];
 
@@ -386,6 +393,36 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation
     ON chat_attachments (conversation_id, created_at);
+";
+
+/// Migration 0009: the approvals queue.
+///
+/// A row here is a write the model asked for and the operator has not answered.
+/// It exists so `approval_policy = ask` is a boundary instead of a sentence: the
+/// turn parks the call, says so to the model, and nothing touches the filesystem
+/// until a decision is recorded.
+///
+/// `status` is a closed set, and a decision is one-way: the update that settles a
+/// row also requires it to still be `pending`, so two operators racing cannot both
+/// approve and deny the same call.
+///
+/// `arguments` holds what the model asked to do. It is operator data, not a
+/// system secret: the same bytes would otherwise have been written to a file.
+const MIGRATION_0009: &str = r"
+CREATE TABLE IF NOT EXISTS approvals (
+    id           TEXT PRIMARY KEY NOT NULL,
+    conversation TEXT NOT NULL,
+    tool         TEXT NOT NULL,
+    arguments    TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'approved', 'denied', 'expired')),
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at   TEXT,
+    decided_by   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status
+    ON approvals (status, created_at);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.
