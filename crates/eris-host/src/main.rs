@@ -526,6 +526,15 @@ fn run_serve(
         Err(error) => eprintln!("eris serve: could not settle interrupted chat rows: {error}"),
     }
 
+    // The same argument, for the same reason: a `queued` or `running` subagent at
+    // boot belongs to a task this process never started. Left alone it would spend
+    // the concurrency cap forever and sit in the top bar as work still happening.
+    match eris_host::subagents::fail_orphaned(&db) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("eris serve: settled {count} interrupted subagent(s)"),
+        Err(error) => eprintln!("eris serve: could not settle interrupted subagents: {error}"),
+    }
+
     let engine = SetupEngine::new(db, paths.clone());
 
     // First boot: reconcile the state against the credential table, then

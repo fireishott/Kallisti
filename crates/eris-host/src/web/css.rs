@@ -273,6 +273,10 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   position: sticky;
   top: 0;
   z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   padding: 6px 0 10px;
   background: linear-gradient(to bottom, var(--bg) 70%, transparent);
 }
@@ -293,6 +297,95 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   background: var(--raise);
   border-color: var(--platinum);
   font-weight: 620;
+}
+
+/* The subagents control --------------------------------------------------- */
+
+/* Dispatched work, reported where the app talks about itself. The control is a
+   `details` element so it opens with no script, and it is not rendered at all
+   when there is nothing to report, so the row keeps its width. */
+.subagents {
+  position: relative;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.subagents summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  cursor: pointer;
+  list-style: none;
+}
+.subagents summary::-webkit-details-marker { display: none; }
+.subagents summary:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; border-radius: 999px; }
+.subagents[open] summary { color: var(--text); }
+.subagents-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-variant-numeric: tabular-nums;
+  font-weight: 620;
+  text-align: center;
+}
+.subagents-live { color: var(--warn); }
+.subagents-list {
+  position: absolute;
+  right: 0;
+  z-index: 6;
+  width: min(480px, 88vw);
+  margin-top: 6px;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px var(--black);
+}
+.subagent {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  font-size: 12px;
+  color: var(--muted);
+}
+.subagent-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.subagent-label { color: var(--text); font-weight: 560; }
+.subagent-status { font-size: 11.5px; }
+.subagent-status.running { color: var(--warn); }
+.subagent-status.succeeded { color: var(--ok); }
+.subagent-status.failed { color: var(--bad); }
+.subagent-status.cancelled { color: var(--bad); }
+.subagent-elapsed { font-variant-numeric: tabular-nums; }
+.subagent-model {
+  margin-left: auto;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.subagent-result {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  max-height: 168px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
 }
 
 /* The rail: new chat, the conversations, the cog -------------------------- */

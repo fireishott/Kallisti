@@ -29,17 +29,18 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The sixteen tables the migrations create. `schema_migrations` is the
-/// seventeenth and is created by the runner, not by a migration. 0001 creates the
+/// The seventeen tables the migrations create. `schema_migrations` is the
+/// eighteenth and is created by the runner, not by a migration. 0001 creates the
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
-/// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`.
-pub const TABLES: [&str; 16] = [
+/// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`; 0014 adds
+/// `subagents`.
+pub const TABLES: [&str; 17] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
@@ -56,6 +57,7 @@ pub const TABLES: [&str; 16] = [
     "projects",
     "sessions",
     "settings",
+    "subagents",
 ];
 
 /// One forward migration. Never edited once released; add a new version.
@@ -131,6 +133,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "0013_projects",
         sql: MIGRATION_0013,
+    },
+    Migration {
+        version: 14,
+        name: "0014_subagents",
+        sql: MIGRATION_0014,
     },
 ];
 
@@ -507,6 +514,53 @@ CREATE INDEX IF NOT EXISTS idx_chat_conversations_project
     ON chat_conversations (project_id);
 ";
 
+/// Migration 0014: dispatched work, one row per subagent.
+///
+/// A row is the whole life of one handoff: what the model asked for, which
+/// conversation and which answer it belongs to, what it cost, and how it ended.
+/// The table is the record rather than a cache of one, so a row that finished
+/// while nobody was looking is still readable afterwards.
+///
+/// Three columns carry rules rather than prose:
+///
+/// - `status` is a closed set, and the terminal transitions are conditional in
+///   the queries, so a row cannot be resurrected by a late write. A watcher that
+///   times a child out settles the row; the child's own write then finds nothing
+///   to update and does nothing.
+/// - `parent_turn` is the parent's answer row id, which is what the per-turn
+///   dispatch budget counts. It is nullable because a turn may have no row yet,
+///   and because the device surface has no browser answer to point at.
+/// - the three token columns are nullable: a provider that reports no usage
+///   leaves them null rather than recording a zero it did not measure.
+///
+/// There is no foreign key to `chat_conversations`, for the same reason
+/// `chat_messages` has none: this is an audit record, and deleting a
+/// conversation must not silently delete the evidence that work ran under it.
+const MIGRATION_0014: &str = r"
+CREATE TABLE IF NOT EXISTS subagents (
+    id                  TEXT PRIMARY KEY NOT NULL,
+    parent_conversation TEXT NOT NULL,
+    parent_turn         TEXT,
+    label               TEXT NOT NULL,
+    prompt              TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+    result              TEXT,
+    error_code          TEXT,
+    model               TEXT NOT NULL,
+    prompt_tokens       INTEGER,
+    completion_tokens   INTEGER,
+    cached_tokens       INTEGER,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at          TEXT,
+    finished_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents (status);
+CREATE INDEX IF NOT EXISTS idx_subagents_parent_turn ON subagents (parent_turn);
+CREATE INDEX IF NOT EXISTS idx_subagents_created_at ON subagents (created_at);
+";
+
 /// Where 1.0 lives, for the reader who lands here first.
 pub const DEFAULT_DB_RELATIVE_PATH: &str = ".local/share/kallisti/eris.db";
 
@@ -604,6 +658,12 @@ pub enum DbError {
     DuplicateProjectName {
         /// The name that collided.
         name: String,
+    },
+    /// `subagents.status` holds a value outside the CHECK constraint.
+    #[error("subagents.status is {value:?}, which is not a status this build knows")]
+    UnexpectedSubagentStatus {
+        /// The value that was found.
+        value: String,
     },
 }
 

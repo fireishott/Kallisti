@@ -57,3 +57,7 @@ mod persona;
 /// the streaming POST's refusals, and the preset and upload paths.
 #[cfg(test)]
 mod chat_surface;
+
+/// The subagents control in the top bar, and the setting that arms the tool.
+#[cfg(test)]
+mod bar;

@@ -417,7 +417,17 @@ impl AppState {
             sessions: self.rail_sessions(),
             current_conversation: None,
             rail_hidden: self.rail_hidden(),
+            subagents: self.bar_subagents(),
         }
+    }
+
+    /// The subagents the top bar reports: anything still working, plus anything
+    /// that finished recently.
+    ///
+    /// Empty when the table cannot be read, for the same reason the session list
+    /// is: a bar that cannot say is a bar with nothing on it, not a failed page.
+    fn bar_subagents(&self) -> Vec<crate::subagents::Subagent> {
+        crate::subagents::bar(self.engine.db(), crate::subagents::BAR_LIMIT).unwrap_or_default()
     }
 
     /// Every project the rail can head a group with, by name.

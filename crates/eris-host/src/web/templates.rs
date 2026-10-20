@@ -323,6 +323,12 @@ pub struct Chrome {
     pub current_conversation: Option<String>,
     /// True when the operator collapsed the rail.
     pub rail_hidden: bool,
+    /// The subagents worth reporting: anything still working, plus anything that
+    /// finished recently. Empty means no control is rendered at all.
+    ///
+    /// The rows themselves rather than a copy, so the bar and a page that queries
+    /// the table cannot disagree about a status or an elapsed time.
+    pub subagents: Vec<crate::subagents::Subagent>,
 }
 
 /// One conversation in the rail.
@@ -356,6 +362,7 @@ impl Default for Chrome {
             sessions: Vec::new(),
             current_conversation: None,
             rail_hidden: false,
+            subagents: Vec::new(),
         }
     }
 }
@@ -578,8 +585,21 @@ pub fn shell(
                            chips above the transcript fights it. Every other page
                            carries the row, and the cog in the rail reaches
                            settings from chat. */
-                        @if let Some(current) = nav.filter(|current| *current != Nav::Chat) {
-                            div .top-nav { (nav_bar(current)) }
+                        @let sections = nav.is_some_and(|current| current != Nav::Chat);
+                        @if sections || !chrome.subagents.is_empty() {
+                            /* The subagents control sits in this row because that is
+                               where the app talks about itself, and on the
+                               conversation it is the only thing in the row: a
+                               dispatch from a chat turn is exactly when the operator
+                               needs to see it. */
+                            div .top-nav {
+                                @if sections {
+                                    @if let Some(current) = nav {
+                                        (nav_bar(current))
+                                    }
+                                }
+                                (subagents_control(chrome))
+                            }
                         }
                         (body)
                     }
@@ -737,6 +757,62 @@ fn nav_bar(current: Nav) -> Markup {
                 a href=(entry.path()) aria-current=[(current == entry).then_some("page")] {
                     (entry.label())
                 }
+            }
+        }
+    }
+}
+
+/// The top-bar control that reports dispatched work.
+///
+/// A `details` element, for the same reason the rail's menus are: it is the one
+/// disclosure a browser opens and closes with no script at all, and this control
+/// exists to be readable with JavaScript blocked. Nothing here links anywhere,
+/// because a subagent has no page of its own: the row is the whole record, and its
+/// result is the text it produced.
+///
+/// It renders nothing when there is nothing to report, so the top bar is exactly
+/// as wide as it was before a dispatch existed.
+fn subagents_control(chrome: &Chrome) -> Markup {
+    if chrome.subagents.is_empty() {
+        return Markup::default();
+    }
+    let running = chrome
+        .subagents
+        .iter()
+        .filter(|row| !row.status.settled())
+        .count();
+    html! {
+        details .subagents {
+            summary title="Work the model dispatched, newest first" {
+                span .subagents-word { "Subagents" }
+                span .subagents-count { (chrome.subagents.len()) }
+                @if running > 0 {
+                    span .subagents-live { (running) " running" }
+                }
+            }
+            div .subagents-list aria-label="Dispatched subagents" {
+                @for row in &chrome.subagents {
+                    (subagent_entry(row))
+                }
+            }
+        }
+    }
+}
+
+/// One subagent in the bar: what it is, where it is, and what came back.
+fn subagent_entry(row: &crate::subagents::Subagent) -> Markup {
+    html! {
+        div .subagent {
+            div .subagent-head {
+                span .subagent-label { (row.label) }
+                span class=(format!("subagent-status {}", row.status.as_str())) {
+                    (row.status.as_str())
+                }
+                span .subagent-elapsed { (row.elapsed_label()) }
+                span .subagent-model { (row.model) }
+            }
+            @if let Some(result) = row.result_preview() {
+                pre .subagent-result { (result) }
             }
         }
     }
@@ -1629,6 +1705,8 @@ pub struct SettingsView {
     pub tools_enabled: bool,
     /// How many tool rounds one turn may take.
     pub tool_rounds: String,
+    /// Whether a turn may dispatch subagents.
+    pub agents_enabled: bool,
     /// Whether a generated line is written on an empty conversation at all.
     pub greeting_enabled: bool,
     /// The model that writes it, or `primary` to follow the chat model.
@@ -1690,6 +1768,7 @@ impl SettingsView {
             provider_ids: Vec::new(),
             tools_enabled: true,
             tool_rounds: crate::tools::DEFAULT_TOOL_ROUNDS.to_string(),
+            agents_enabled: true,
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
@@ -2233,6 +2312,22 @@ fn tools_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "Off means the model is offered nothing and answers from the prompt alone. "
                     "On, it can read, write and run commands within the sandbox mode above."
+                }
+            }
+            div .field {
+                label for="agents_enabled" {
+                    input type="checkbox" id="agents_enabled" name="agents_enabled" value="true"
+                        checked[view.agents_enabled];
+                    " Let a turn dispatch subagents"
+                }
+                span .hint {
+                    "Offers dispatch_agent, and only in Full sandbox mode. Each subagent is a "
+                    "background turn with this daemon's own system prompt and its own budget. It "
+                    "gets no tools: it cannot read or write files, run commands, or dispatch "
+                    "another subagent. At most " (crate::subagents::MAX_RUNNING) " run at once and "
+                    (crate::subagents::MAX_PER_TURN) " per turn, each with a "
+                    (crate::subagents::DEADLINE.as_secs()) " second deadline. What it produced "
+                    "appears in the subagents control in the top bar, which needs no script."
                 }
             }
             div .field {
@@ -4603,6 +4698,23 @@ const CHAT_JS: &str = r##"(function () {
     return { event: event, data: data };
   }
 
+  // ---- Subagents: the bar's count, without a reload ----------------------
+  // The control is rendered by the daemon, so this only ever adjusts a number
+  // that is already on the page. A turn that dispatched nothing has no control,
+  // and a page with no control simply does nothing: the next load renders the
+  // row, which is the same answer a browser with no script gets.
+  var subagentsSeen = {};
+  function noteSubagent(change) {
+    if (change.id === undefined) { return; }
+    if (subagentsSeen[change.id] === true) { return; }
+    subagentsSeen[change.id] = true;
+    var control = document.querySelector(".subagents");
+    if (control === null) { return; }
+    var count = control.querySelector(".subagents-count");
+    if (count === null) { return; }
+    count.textContent = String(parseInt(count.textContent, 10) + 1);
+  }
+
   // A conversation stops being new the moment a turn starts: drop the empty
   // state layout so the transcript is visible.
   function leaveEmptyState() {
@@ -4875,6 +4987,12 @@ const CHAT_JS: &str = r##"(function () {
           if (parsed.event === "notice") {
             var notice = JSON.parse(parsed.data);
             if (status) { status.textContent = notice.message || ""; }
+          }
+          // A subagent started or finished. The count is the only thing a stream
+          // can be sure of: the row itself is rendered on the next load, which is
+          // what an operator with no script sees.
+          if (parsed.event === "subagent") {
+            noteSubagent(JSON.parse(parsed.data));
           }
         }
       }

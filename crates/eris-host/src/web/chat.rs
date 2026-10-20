@@ -1751,6 +1751,13 @@ pub struct TurnSettings {
     pub tools: bool,
     /// How many tool rounds it may take before the last one is forced to answer.
     pub max_rounds: usize,
+    /// Whether the turn may dispatch subagents.
+    ///
+    /// Separate from `tools` because dispatching is not a tool the sandbox runs:
+    /// it writes a row and starts a child turn. Keeping it apart is what lets a
+    /// child turn be built with both switches off, which is the whole guarantee
+    /// that a subagent can neither use a tool nor dispatch another subagent.
+    pub agents: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -2060,6 +2067,7 @@ pub fn run_turn(
     mcp: Option<&crate::mcp::Pool>,
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
+    agents: Option<&crate::subagents::Desk>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2076,6 +2084,7 @@ pub fn run_turn(
         mcp,
         web_extract,
         image,
+        agents,
         settings,
         poll,
         sink,
@@ -2099,6 +2108,7 @@ pub fn run_turn_with_key(
     mcp: Option<&crate::mcp::Pool>,
     web_extract: Option<&TurnConfig>,
     image: Option<&TurnConfig>,
+    agents: Option<&crate::subagents::Desk>,
     settings: TurnSettings,
     poll: &mut TurnPoll<'_>,
     sink: &mut dyn FnMut(StreamPart<'_>),
@@ -2179,6 +2189,48 @@ pub fn run_turn_with_key(
             }));
         }
 
+        // Dispatching is not a sandbox tool: it writes a row and starts a child
+        // turn, so it is answered here, before the sandbox layer, exactly as
+        // drawing is. The refusal is explicit rather than silent, because a call
+        // the model made and nothing ran is a fact it has to be able to report.
+        if call.name == crate::subagents::TOOL {
+            let Some(desk) = agents.filter(|_| settings.agents) else {
+                return crate::tools::ToolResult::refused(
+                    "dispatching is not available in this turn: it needs the operator's \
+                     switch on and the Full sandbox mode, so nothing was dispatched",
+                );
+            };
+            let argument = |key: &str| {
+                call.arguments
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let prompt = argument("prompt");
+            let label = argument("label");
+            return match desk.dispatch(&label, &prompt) {
+                Ok(id) => crate::tools::ToolResult::ok(serde_json::json!({
+                    "status": "dispatched",
+                    "id": id,
+                    "label": crate::subagents::label_for(&label, &prompt),
+                    "model": desk.model(),
+                    "note": "The subagent is running in the background with no tools. \
+                             Its result appears in the subagents control in the top bar; \
+                             do not wait for it in this turn.",
+                })),
+                Err(error) => crate::tools::ToolResult {
+                    content: serde_json::json!({
+                        "status": "refused",
+                        "code": error.code(),
+                        "reason": error.reason(),
+                    })
+                    .to_string(),
+                    is_error: true,
+                },
+            };
+        }
+
         let result = crate::tools::execute_streaming(&call.name, &call.arguments, sandbox, chunks);
         // A fetched page is a wall of navigation until something reads it. With
         // the role pinned, its model reads it; without one the tool's own text
@@ -2223,7 +2275,7 @@ pub fn run_turn_with_key(
                 // them again to answer the result it just received. Withheld on the
                 // last round so the turn ends in an answer instead of a refusal.
                 tools: if tools_allowed && settings.tools {
-                    let mut offered = crate::tools::specs(sandbox.mode());
+                    let mut offered = crate::tools::specs_offering(sandbox.mode(), settings.agents);
                     if let Some(pool) = mcp {
                         offered.extend(pool.specs());
                     }

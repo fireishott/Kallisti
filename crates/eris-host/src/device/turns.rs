@@ -1225,7 +1225,15 @@ impl TurnHub {
                         .to_owned(),
                 }
             };
-            let settings = crate::web::chat::TurnSettings { tools, max_rounds };
+            let settings = crate::web::chat::TurnSettings {
+                tools,
+                max_rounds,
+                // A device turn has no browser to report a child to and no answer
+                // row to count one against, so it dispatches nothing. The tool is
+                // never offered, which is the honest shape: a capability the
+                // surface cannot show is one it should not have.
+                agents: false,
+            };
             let mut sink = |part: crate::web::chat::StreamPart<'_>| match part {
                 crate::web::chat::StreamPart::Text(fragment) => {
                     if !fragment.is_empty() {
@@ -1273,6 +1281,7 @@ impl TurnHub {
                 messages,
                 &sandbox,
                 &mut gate,
+                None,
                 None,
                 None,
                 None,

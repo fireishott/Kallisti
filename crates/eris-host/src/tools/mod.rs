@@ -301,11 +301,29 @@ impl ToolResult {
 
 /// The tools offered to the model this build.
 ///
-/// Three, deliberately. A file tool that works beats a catalogue of half-built
+/// Four, deliberately. A file tool that works beats a catalogue of half-built
 /// ones, and every name here is dispatchable by [`execute`] - a spec the model
 /// can call but the daemon cannot run is the bug this module exists to prevent.
+///
+/// `dispatch_agent` is the one that needs more than a sandbox to run: it writes a
+/// row and spawns a child turn, which means a database and a parent turn, neither
+/// of which the sandbox holds. [`execute`] therefore answers it with an explicit
+/// refusal rather than "unknown tool", and the turn itself intercepts it before
+/// this layer, exactly like `generate_image`. It is listed here because "which
+/// tools may this turn call" is the question this function answers, and the answer
+/// in `Full` mode is: these.
 #[must_use]
 pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
+    specs_offering(mode, true)
+}
+
+/// The same list, with the operator's dispatch switch applied.
+///
+/// `agents` off means the dispatching tool is not offered, for the same reason
+/// `run_command` is not offered outside `Full`: a tool the daemon will not run
+/// must never reach the model's list.
+#[must_use]
+pub fn specs_offering(mode: SandboxMode, agents: bool) -> Vec<ToolSpec> {
     let mut offered = vec![
         ToolSpec {
             name: "list_dir".to_owned(),
@@ -389,6 +407,13 @@ pub fn specs(mode: SandboxMode) -> Vec<ToolSpec> {
                 "required": ["command"]
             }),
         });
+        // Dispatching is a Full-mode capability for the same reason command
+        // execution is: it spends the host's resources on the model's say-so. Off
+        // by setting, and off outside Full always, because a confined turn that
+        // could spawn children could reach past its own confinement through them.
+        if agents {
+            offered.push(crate::subagents::spec());
+        }
     }
 
     offered
@@ -417,6 +442,15 @@ pub fn execute_streaming(
         "write_file" => write_file(arguments, sandbox),
         "run_command" => run_command(arguments, sandbox, sink),
         "fetch_url" => fetch_url(arguments, sandbox),
+        // Named rather than unknown: this layer cannot dispatch, because a
+        // dispatch needs a database and a parent turn. The turn that offered the
+        // spec intercepts the call before it reaches here, so this is the answer a
+        // direct caller gets, and it says why instead of pretending the tool does
+        // not exist.
+        "dispatch_agent" => ToolResult::refused(
+            "dispatching needs the turn that offered it, so this call did nothing; \
+             it runs inside a conversation turn and not in the sandbox layer",
+        ),
         other => ToolResult::error(format!("unknown tool: {other}")),
     }
 }
@@ -1075,6 +1109,52 @@ mod tests {
                 result.content
             );
         }
+
+        // The same claim in the widest mode, where dispatching is offered. That
+        // tool needs a database and a parent turn, so this layer refuses it by
+        // name rather than by pretending it does not exist: the turn that offered
+        // the spec answers it before it reaches here.
+        let wide = super::Sandbox::new(scratch.workspace().to_path_buf(), super::SandboxMode::Full);
+        for spec in super::specs(super::SandboxMode::Full) {
+            let result = super::execute(&spec.name, &serde_json::json!({}), &wide);
+            assert!(
+                !result.content.contains("unknown tool"),
+                "{} is named but the layer calls it unknown: {}",
+                spec.name,
+                result.content
+            );
+        }
+    }
+
+    /// Dispatching is a Full-mode capability, and its absence elsewhere is the
+    /// mode gate rather than a settings value.
+    #[test]
+    fn dispatching_is_offered_in_full_mode_and_nowhere_else() {
+        let names = |mode: super::SandboxMode| -> Vec<String> {
+            super::specs(mode)
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect()
+        };
+        assert!(
+            names(super::SandboxMode::Full).contains(&crate::subagents::TOOL.to_owned()),
+            "a Full turn may dispatch"
+        );
+        for mode in [
+            super::SandboxMode::ReadOnly,
+            super::SandboxMode::WorkspaceWrite,
+        ] {
+            assert!(
+                !names(mode).contains(&crate::subagents::TOOL.to_owned()),
+                "{mode:?} is offered no dispatching"
+            );
+        }
+        // And the operator's switch removes it from the one list it appears in.
+        let off: Vec<String> = super::specs_offering(super::SandboxMode::Full, false)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(!off.contains(&crate::subagents::TOOL.to_owned()), "{off:?}");
     }
 
     #[test]

@@ -640,6 +640,12 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .map(|stored| crate::tools::max_rounds(Some(&stored)))
         .unwrap_or_else(|| crate::tools::DEFAULT_TOOL_ROUNDS)
         .to_string();
+    view.agents_enabled = crate::subagents::enabled(
+        engine
+            .setting(crate::subagents::SETTING_AGENTS_ENABLED)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    );
     view.greeting_enabled = crate::greeting::enabled(
         engine
             .setting(crate::greeting::SETTING_GREETING_ENABLED)
@@ -3232,11 +3238,26 @@ async fn save_tools(
     if let Err(error) = store::settings_put(state.engine.db(), chat::SETTING_SHOW_TOOL_LOG, mode) {
         return store_failure(&request_id.0, chat::SETTING_SHOW_TOOL_LOG, error);
     }
+    // Dispatching lives in this form because it is a tool switch: it decides what
+    // the model is offered, and the page group that owns "what a turn may call" is
+    // the only place an operator would look for it.
+    let agents = flag(&fields, "agents_enabled");
+    if let Err(error) = store::settings_put(
+        state.engine.db(),
+        crate::subagents::SETTING_AGENTS_ENABLED,
+        if agents { "true" } else { "false" },
+    ) {
+        return store_failure(
+            &request_id.0,
+            crate::subagents::SETTING_AGENTS_ENABLED,
+            error,
+        );
+    }
     if let Err(error) = state.engine.auth().audit(
         "loopback",
         "settings.tools",
         Some(&format!(
-            "enabled={enabled}; max_rounds={rounds}; run_log={mode}"
+            "enabled={enabled}; max_rounds={rounds}; run_log={mode}; agents={agents}"
         )),
     ) {
         return audit_failure(&request_id.0, "settings.tools", error);
@@ -5605,6 +5626,25 @@ fn spawn_turn(
         .setting(crate::persona::SETTING_PERSONA_ENABLED)
         .ok()
         .flatten();
+    // Read before the blocking task, like every other setting: the closure owns
+    // strings, not a borrow of the app state.
+    let agents_enabled = crate::subagents::enabled(
+        state
+            .engine
+            .setting(crate::subagents::SETTING_AGENTS_ENABLED)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    // The parent's stream hears about every status change, so a live page can
+    // recount the bar without polling. A plain form post has no channel and needs
+    // none: the row in the database is the answer, and the next page load reads
+    // it.
+    let notify_sender = sender.clone();
+    let notify: crate::subagents::Notify =
+        std::sync::Arc::new(move |report: &crate::subagents::Report<'_>| {
+            send_terminal(&notify_sender, "subagent", subagent_frame(report));
+        });
 
     tokio::task::spawn_blocking(move || {
         let system = match persona.load(stored_enabled.as_deref()) {
@@ -5737,6 +5777,25 @@ fn spawn_turn(
             (system, None) => system,
         };
 
+        // The dispatch surface, when this turn may dispatch at all. Both gates
+        // are checked here and again in the turn: the operator's switch, and the
+        // sandbox mode. A confined turn cannot spawn children, because a child
+        // runs with the daemon's own reach and confinement that can be escaped by
+        // proxy is not confinement.
+        let desk = (agents_enabled
+            && sandbox.mode() == crate::onboarding::permissions::SandboxMode::Full)
+            .then(|| {
+                crate::subagents::Desk::new(
+                    db.clone(),
+                    config.clone(),
+                    system.clone(),
+                    sandbox.workspace().to_path_buf(),
+                    conversation.clone(),
+                    Some(answer_id.clone()),
+                )
+                .with_notify(notify.clone())
+            });
+
         let mut streamed = String::new();
         let mut sink = |part: chat::StreamPart<'_>| match part {
             chat::StreamPart::Text(fragment) => {
@@ -5809,9 +5868,11 @@ fn spawn_turn(
             Some(&mcp),
             web_extract.as_ref(),
             image.as_ref(),
+            desk.as_ref(),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,
+                agents: agents_enabled,
             },
             &mut poll,
             &mut sink,
@@ -5951,6 +6012,20 @@ fn send_terminal(
     if let Some(sender) = sender {
         let _ = sender.send(Ok(SseEvent::default().event(event).data(data.to_string())));
     }
+}
+
+/// The `subagent` frame a live page recounts the bar from.
+///
+/// Three fields, because three is what the bar needs: the id to match the row,
+/// the label to show before a reload, and the status to count. The result is not
+/// in the frame: it is in the row, and a live page that wanted it would have to
+/// re-render the control anyway, which is what the next page load does.
+pub(crate) fn subagent_frame(report: &crate::subagents::Report<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "id": report.id,
+        "label": report.label,
+        "status": report.status,
+    })
 }
 
 // ---------------------------------------------------------------------------

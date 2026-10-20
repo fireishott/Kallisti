@@ -26,6 +26,9 @@
 //! P9 also adds `commands`: the slash commands a message may be instead of a
 //! prompt. They are parsed and answered inside the chat send handler, before a
 //! turn is built, so a command cannot reach a provider by any path.
+//!
+//! The subagent lane adds `subagents`: one row per dispatched child turn, the
+//! caps that bound it, and the rows the top bar renders.
 
 pub mod admin;
 pub mod approvals;
@@ -46,6 +49,7 @@ pub mod persona;
 pub mod probe;
 pub mod projects;
 pub mod providers;
+pub mod subagents;
 pub mod tools;
 pub mod web;
 pub mod zone;
