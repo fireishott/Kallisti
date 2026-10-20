@@ -1,71 +1,102 @@
 # Kallisti
 
-A self-hosted assistant daemon. One long-running process that holds a conversation,
-runs tools on the machine it lives on, and keeps what it knows in local files and a
-local database.
+**A client host for your own assistant.** One daemon on hardware you own, one
+interface wherever you are, and a model endpoint you choose. No account, no cloud
+control plane, no telemetry sink.
 
-No cloud control plane, no account, no telemetry sink. The only network calls are
-the ones a turn makes to the model endpoint you configure.
+Two ways to drive it: **Lite**, the web UI in any browser, shipping today. **Pro**,
+the Kallisti iOS suite, currently a stub crate and the long-term play after beta.
 
-**Version 1.4.0.** Design constraints from before the first line of code live in
-[`docs/amendments.md`](docs/amendments.md). Architecture decisions live in
-[`docs/adr/`](docs/adr).
+`eris 1.4.0` · Rust · MIT
+
+---
+
+## The shape of it
+
+Kallisti is a **client host**, not a chat wrapper. The daemon holds the state, the
+credentials, the sandbox and the tools. Clients are replaceable views onto it.
+
+| | **Lite** | **Pro** |
+|---|---|---|
+| **Interface** | Web UI, any browser | Native iOS suite |
+| **Where it runs** | The host, loopback or tailnet | On-device, against the host |
+| **Status** | **Shipping** in 1.4.0 | Crate stub; after beta |
+| **Needs** | A browser | A paired device |
+
+Lite is the whole product today and it is not a demo: streaming chat, tools, MCP,
+approvals, memory and backups all work through it. Pro is where the suite goes -
+the `ios-host` crate is the seam it plugs into, with a UniFFI surface and no I/O of
+its own.
 
 ## What it does
 
-- **Conversation** with streaming replies, the model's reasoning shown beside the
-  answer when the provider sends it, and a run log of everything the turn executed.
-- **Tools** the model can call: read, write and list inside a workspace, run
-  commands, fetch a URL, and draw an image.
-- **MCP client** that speaks JSON-RPC over stdio to Model Context Protocol servers
-  you configure, offers their tools to the model as `server__tool`, and takes them
-  down with the daemon.
-- **Providers**: more than one endpoint can be configured. One is primary; each
-  auxiliary role may point at any of them.
-- **Auxiliary roles**: twelve named jobs beside the main answer - vision, image
-  generation, web extraction, context compression, conversation titles, approval
-  review and others. A role left on `primary` does nothing and costs nothing;
-  pinning a model is what switches it on.
-- **Approval gate**: under policy `ask`, writes and MCP calls park in a queue until
-  a person decides. A pinned approval role adds a one-line reading of the call, and
-  that reading never decides anything.
+- **Streaming chat** with the model's reasoning shown beside the answer, and a run
+  log of every call the turn executed.
+- **Tools with a boundary.** Read, write and list inside a workspace, run commands,
+  fetch a URL, draw an image, and call any MCP server you configure.
+- **MCP client.** Real stdio JSON-RPC: `initialize`, `tools/list`, `tools/call`,
+  one owned child process per server, a deadline on every request, tools offered to
+  the model as `server__tool`, children reaped on shutdown.
+- **More than one provider.** A validated registry with a primary; every auxiliary
+  role can point at any endpoint on it.
+- **Twelve auxiliary roles.** Vision, image generation, web extraction, context
+  compression, conversation titles, approval review, and more. A role left on
+  `primary` costs nothing - pinning a model is what switches it on.
+- **Memory that is yours.** Before answering, the turn recalls from gbrain (the
+  default), a directory of markdown, or nothing at all.
+- **An approval gate that is a boundary.** With policy `ask`, writes and MCP calls
+  park until a person decides. A pinned approval role adds a one-line reading of the
+  call. The reading never decides anything.
+- **A run log with three modes.** Full, Summary, or Off - and off means the output is
+  never streamed to the browser at all.
+- **Timezones, personas, wallpapers.** Because a daily driver should not feel like a
+  control panel.
+
+## The security model is enforced, not asserted
+
+- **Secrets are references.** Provider keys are stored as `env:NAME`; a literal key
+  in that field is refused by name. Tokens, pairing codes and passphrases are stored
+  only as salted verifiers. A stolen state directory yields no usable credential.
+- **The sandbox decides.** `read-only` refuses every write at the tool.
+  `workspace-write` confines writes to the workspace and refuses an escaping path by
+  name, including a symlink that points outside it. `full` runs commands, and only a
+  restart with `--allow-full` can select it.
+- **Fetching is guarded.** `fetch_url` refuses loopback, link-local and private
+  address literals before a socket is opened.
+- **Backups cannot leak the key.** An archive is exactly three members - the
+  database, the env file of references, the config. The setup passphrase is excluded
+  unconditionally, and the workspace is opt-in.
+- **A dropped connection is not a failed turn.** The daemon finishes the work and
+  writes the answer; the page says so instead of quoting a browser error.
+
+Known gap, stated where the guard lives: `fetch_url` does not resolve a public
+hostname that points at a private address. That needs resolution-time checking.
 
 ## Architecture
 
-Four crates. The seams are the point.
+Four crates, and the seams are the point:
 
 | Crate | Holds |
 |---|---|
 | `core-domain` | ids, events, capabilities, provider types, errors. No I/O. |
 | `core-runtime` | event log, prompt compilation, the provider seam, the turn machine. |
-| `eris-host` | config, SQLite state, the admin listener, tools, MCP, onboarding. |
-| `ios-host` | on-device surface stub. One exported function. |
+| `eris-host` | config, SQLite state, admin listener, tools, MCP, memory, onboarding. |
+| `ios-host` | on-device surface stub. UniFFI export, zero I/O by design. |
 
-`eris-host` is where the daemon lives. The binary is thin; everything testable sits
-in the library so the acceptance tests drive the same router the process serves.
+The binary is thin. Everything testable lives in the library, so the acceptance
+tests drive the same router the process serves - the tests are not a mock of the
+product, they are the product.
 
-## Security model
+```sh
+cargo test --workspace        # 496 tests
+cargo clippy --workspace --all-targets
+cargo fmt --check
+```
 
-Enforced in code, not asserted in a settings page.
+MCP is exercised against a shell fixture that speaks JSON-RPC, so the framing is
+real rather than mocked.
 
-- **Secrets are references.** A provider's key is stored as `env:NAME`; a literal
-  key value in that field is refused by name. Tokens, pairing codes and passphrases
-  are stored only as salted verifiers, so a stolen state directory yields no usable
-  credential.
-- **The sandbox decides.** `read-only` refuses every write at the tool.
-  `workspace-write` confines writes to the workspace and refuses an escaping path
-  by name, including a symlink that points outside it.
-- **The approval gate is a boundary.** Writes and MCP calls park under `ask`.
-  Approving one rewrites that call's record in the transcript with what actually
-  ran, so a decided row never still reads as pending.
-- **Fetching is guarded.** `fetch_url` refuses loopback, link-local and private
-  address literals before a socket is opened.
-
-Known gap, stated rather than papered over: the fetch guard does not resolve a
-public hostname that points at a private address. That needs resolution-time
-checking, which is not implemented.
-
-## Running it
+## Run it
 
 ```sh
 cargo build --release
@@ -74,43 +105,31 @@ cargo build --release
 
 First boot generates a six-word passphrase once, prints it, and writes it to
 `~/.config/kallisti/first-run.txt` at mode 0600. Onboarding then walks through
-provider, models, permissions, workspace and the admin listener. The dashboard
-lives at `http://127.0.0.1:7340` by default.
+provider, models, permissions, workspace and the admin listener. The dashboard is at
+`http://127.0.0.1:7340`.
 
-Configuration is two optional files:
+Two optional config files: `config.toml` for non-secret settings, `eris.env` for
+secret **references** only. Everything else is
+`~/.local/share/kallisti/eris.db` - SQLite in WAL mode, forward-only migrations.
 
-- `config.toml` - non-secret settings: listeners, trusted proxies, persona.
-- `eris.env` - secret **references** only, at mode 0600.
+## Roadmap
 
-Everything else lives in `~/.local/share/kallisti/eris.db`, SQLite in WAL mode with
-forward-only migrations.
+- **Beta: Lite alone.** Harden the daemon, the tool boundary and the approval gate.
+- **After beta: Pro.** The iOS suite on the `ios-host` seam: on-device pairing, a
+  first-party chat surface, and the device capabilities a phone can offer that a
+  browser cannot.
 
-## Testing
-
-```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets
-cargo fmt --check
-```
-
-The suite covers the protocol seam, the turn loop, the sandbox, approvals, MCP
-framing and the HTTP surface. The MCP client is exercised against a shell fixture
-that speaks JSON-RPC, so its framing is real rather than mocked.
-
-## Not in this build
-
-Named so that no surface has to pretend:
-
-- No iOS or macOS client ships. `ios-host` is a stub.
-- Five auxiliary roles - skills hub, triage specifier, kanban decomposer, profile
-  describer, curator - have no feature behind them yet. Their settings rows say so
-  rather than looking wired.
-- Command execution needs `full` sandbox mode, which only a restart with
-  `--allow-full` can select.
-- No telemetry, and no cloud sink exists to enable.
+Six of the twelve auxiliary roles are not wired yet, and the reason differs. Five -
+skills hub, triage specifier, kanban decomposer, profile describer, curator - have
+no feature behind them at all. The sixth, an `mcp` reasoning pass, waits on a
+feature rather than being an oversight. Every settings row states which case it is
+instead of looking wired.
 
 ## Licence
 
-MIT. See [`LICENSE`](LICENSE). In short: use it, change it, ship it, sell it, as
-long as the copyright notice and permission notice travel with it and the software
-comes with no warranty.
+MIT. See [`LICENSE`](LICENSE). Use it, change it, ship it, sell it, as long as the
+notice travels with it and the software comes with no warranty.
+
+Design constraints from before the first line of code live in
+[`docs/amendments.md`](docs/amendments.md). Architecture decisions live in
+[`docs/adr/`](docs/adr). Changes are in [`CHANGELOG.md`](CHANGELOG.md).
