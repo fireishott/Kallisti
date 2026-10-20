@@ -29,10 +29,10 @@ use crate::admin::{
     ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_PERMISSIONS,
-    ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_PROVIDERS,
-    ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE, ROUTE_SETTINGS_TOOLS,
-    ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
+    ROUTE_SETTINGS_AUX, ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_MCP, ROUTE_SETTINGS_MEMORY,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_SETTINGS_PROVIDERS, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_TOOLS, ROUTE_SETTINGS_WORKSPACE, ROUTE_SIDEBAR, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -100,6 +100,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
+        .route(ROUTE_SETTINGS_MEMORY, post(save_memory))
         .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SIDEBAR, post(toggle_sidebar))
         .route(ROUTE_SETTINGS_TOOLS, post(save_tools))
@@ -616,6 +617,22 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .and_then(|stored| crate::mcp::parse(&stored).ok())
         .map(|servers| crate::mcp::to_json(&servers))
         .unwrap_or_else(|| "[]".to_owned());
+    view.memory_backend = crate::memory::backend(
+        state
+            .engine
+            .setting(crate::memory::SETTING_BACKEND)
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+    .as_str()
+    .to_owned();
+    view.memory_vault = state
+        .engine
+        .setting(crate::memory::SETTING_VAULT)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     view.tool_log_mode = {
         let stored = state
             .engine
@@ -2467,6 +2484,9 @@ const SAVED_MCP: &str = "/dashboard/settings?saved=mcp";
 
 /// Where the clock setting returns to.
 const SAVED_TIMEZONE: &str = "/dashboard/settings?saved=timezone";
+
+/// Where the memory form returns to.
+const SAVED_MEMORY: &str = "/dashboard/settings?saved=memory";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 
@@ -2671,6 +2691,80 @@ async fn save_reasoning(
 /// A typo is refused next to the field rather than silently replaced with the
 /// host zone, because a clock that quietly ignores what was typed is worse than
 /// one that says it did not understand.
+/// `POST /dashboard/settings/memory` - which brain a turn recalls from.
+///
+/// The vault directory is only meaningful for the vault backend, but it is stored
+/// whichever is chosen: an operator switching back should not have to re-type a
+/// path they already gave once.
+async fn save_memory(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+
+    let backend = match field(&fields, "memory_backend").trim() {
+        "vault" => "vault",
+        "off" => "off",
+        _ => "gbrain",
+    };
+    let vault = field(&fields, "memory_vault").trim().to_owned();
+    // A path that does not exist is refused here rather than at recall time: a
+    // backend that silently returns nothing looks exactly like a brain that is
+    // empty.
+    if backend == "vault" {
+        if vault.is_empty() {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("memory_vault"),
+                    "memory_vault_missing",
+                    "the vault backend needs a directory of markdown".to_owned(),
+                ),
+            );
+        }
+        if !std::path::Path::new(&vault).is_dir() {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(
+                    Some("memory_vault"),
+                    "memory_vault_missing",
+                    format!("`{vault}` is not a directory on this host"),
+                ),
+            );
+        }
+    }
+
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::memory::SETTING_BACKEND, backend)
+    {
+        return store_failure(&request_id.0, crate::memory::SETTING_BACKEND, error);
+    }
+    if let Err(error) = store::settings_put(state.engine.db(), crate::memory::SETTING_VAULT, &vault)
+    {
+        return store_failure(&request_id.0, crate::memory::SETTING_VAULT, error);
+    }
+    if let Err(error) = state.engine.auth().audit(
+        "loopback",
+        "settings.memory",
+        Some(&format!("backend={backend}; vault={vault}")),
+    ) {
+        return audit_failure(&request_id.0, "settings.memory", error);
+    }
+
+    see_other(SAVED_MEMORY)
+}
+
 async fn save_timezone(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -4269,6 +4363,30 @@ fn spawn_turn(
     let image = chat::aux_pinned_config(&state.engine, "image")
         .ok()
         .flatten();
+    // Read before the blocking task: the closure owns strings, not a borrow of
+    // the app state.
+    let memory_backend = crate::memory::backend(
+        state
+            .engine
+            .setting(crate::memory::SETTING_BACKEND)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let memory_vault = state
+        .engine
+        .setting(crate::memory::SETTING_VAULT)
+        .ok()
+        .flatten();
+    // The unit's PATH does not carry ~/.bun/bin, so the binary is resolved here
+    // rather than trusted to the shell.
+    let memory_gbrain = state
+        .engine
+        .setting(crate::memory::SETTING_GBRAIN_BIN)
+        .ok()
+        .flatten()
+        .and_then(|configured| crate::memory::gbrain_binary(Some(&configured)))
+        .or_else(|| crate::memory::gbrain_binary(None));
     let tool_rounds = crate::tools::max_rounds(
         state
             .engine
@@ -4365,6 +4483,22 @@ fn spawn_turn(
             ));
         }
 
+        // What the daemon already knows, before it is asked to answer.
+        let backend = memory_backend;
+        let (recalls, recall_error) = crate::memory::recall_with(
+            backend,
+            memory_gbrain.as_deref(),
+            memory_vault.as_deref().map(std::path::Path::new),
+            &question,
+            crate::memory::MAX_RECALLS,
+        );
+        let detail = match &recall_error {
+            Some(reason) => format!("backend={}; recalled=0; reason={reason}", backend.as_str()),
+            None => format!("backend={}; recalled={}", backend.as_str(), recalls.len()),
+        };
+        let _ = title_audit.audit("loopback", "memory.recall", Some(&detail));
+        let recalled = crate::memory::render(&recalls);
+
         let summary = compression
             .as_ref()
             .and_then(|config| chat::summarise(config, &dropped));
@@ -4376,6 +4510,18 @@ fn spawn_turn(
             };
             let _ = title_audit.audit("loopback", "chat.compression", Some(&detail));
         }
+        let system = match (
+            system,
+            if recalled.is_empty() {
+                None
+            } else {
+                Some(recalled)
+            },
+        ) {
+            (Some(system), Some(recalled)) => Some(format!("{system}\n\n{recalled}")),
+            (None, Some(recalled)) => Some(recalled),
+            (system, None) => system,
+        };
         let system = match (system, summary) {
             (Some(system), Some(summary)) => Some(format!(
                 "{system}\n\nEarlier in this conversation, summarised:\n{summary}"

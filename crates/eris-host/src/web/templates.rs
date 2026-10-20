@@ -1398,6 +1398,10 @@ pub struct SettingsView {
     pub show_tool_log: bool,
     /// `full`, `summary` or `off`, for the select.
     pub tool_log_mode: String,
+    /// Which memory backend a turn recalls from.
+    pub memory_backend: String,
+    /// The vault directory, when the vault backend is chosen.
+    pub memory_vault: String,
     /// The clock every stamp is shown in: `host`, `UTC`, or an offset.
     pub timezone: String,
     /// The file the persona lives in, stated on the page.
@@ -1457,6 +1461,8 @@ impl SettingsView {
             show_reasoning: true,
             show_tool_log: true,
             tool_log_mode: "full".to_owned(),
+            memory_backend: crate::memory::DEFAULT_BACKEND.to_owned(),
+            memory_vault: String::new(),
             timezone: crate::zone::HOST.to_owned(),
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
@@ -1758,6 +1764,49 @@ fn persona_group(view: &SettingsView) -> Markup {
 ///
 /// Presentational only. With it off the reasoning is neither rendered nor
 /// streamed, which is the difference between "hidden" and "not sent".
+/// Where the daemon's memory comes from.
+fn memory_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_MEMORY) novalidate {
+            div .field {
+                label for="memory_backend" { "Backend" }
+                select id="memory_backend" name="memory_backend" {
+                    option value="gbrain" selected[view.memory_backend == "gbrain"] {
+                        "gbrain - the page store on this host"
+                    }
+                    option value="vault" selected[view.memory_backend == "vault"] {
+                        "Vault - a directory of markdown"
+                    }
+                    option value="off" selected[view.memory_backend == "off"] {
+                        "Off - answer from the prompt alone"
+                    }
+                }
+                span .hint {
+                    "Before a turn answers, the daemon asks this backend what it already knows and "
+                    "adds what it finds to the prompt. gbrain is the default because it is already "
+                    "the long-term brain here."
+                }
+            }
+            div .field {
+                label for="memory_vault" { "Vault directory" }
+                input id="memory_vault" type="text" name="memory_vault" value=(view.memory_vault)
+                    placeholder="~/.vault";
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("memory_vault")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "Only read by the vault backend. A path that does not exist is refused rather "
+                    "than left to return nothing."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save memory" }
+            }
+        }
+    }
+}
+
 fn reasoning_group(view: &SettingsView) -> Markup {
     html! {
         form method="post" action=(crate::admin::ROUTE_SETTINGS_REASONING) novalidate {
@@ -2116,6 +2165,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it appears above the answer in a collapsed, faded bubble you can open."
             }
             (reasoning_group(view))
+        }
+
+        section .card aria-labelledby="memory-heading" {
+            h2 id="memory-heading" { "Memory" }
+            p .small {
+                "Recalled notes are added to the prompt as context and marked as possibly out of "
+                "date. A backend that cannot answer is recorded and the turn goes on without it."
+            }
+            (memory_group(view))
         }
 
         section .card aria-labelledby="clock-heading" {

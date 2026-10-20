@@ -6,6 +6,15 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **Memory backends.** Before a turn answers, the daemon recalls from the operator's
+  own memory and adds what it finds to the prompt, marked as possibly stale context
+  rather than as instructions. Settings > Memory chooses the backend: **gbrain**
+  (default, the page store on this host), **vault** (a directory of markdown) or
+  **off** (prompt only, costs nothing).
+  Recall is best effort: a brain that is down leaves the turn exactly as it was, and
+  the reason is recorded as a `memory.recall` audit row instead of being swallowed.
+  The gbrain binary and its `bun` interpreter are resolved explicitly, because a
+  systemd user unit's PATH carries neither.
 - **MIT.** The repository now carries a `LICENSE` with the MIT terms, every crate
   declares `license = "MIT"`, and the README states it. The earlier README reserved
   all rights because no licence file existed; this replaces that.

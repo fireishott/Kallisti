@@ -34,6 +34,7 @@ pub mod device;
 pub mod doctor;
 pub mod error;
 pub mod mcp;
+pub mod memory;
 pub mod onboarding;
 pub mod persona;
 pub mod probe;
