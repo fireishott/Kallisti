@@ -104,6 +104,25 @@ pub fn parse(raw: &str) -> Result<Vec<Server>, McpError> {
     Ok(servers)
 }
 
+/// What this process actually observed about one configured server.
+///
+/// Three states, not two. `healthy: None` means the server was never started
+/// here, so the daemon has nothing to say about it: a client that painted that
+/// green would be claiming something nobody observed, which is worse than a
+/// client that says "unknown".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHealth {
+    /// The configured name.
+    pub name: String,
+    /// The command as configured, so a row can be matched back to a config.
+    pub command: String,
+    /// `Some(true)` running with no recorded failure, `Some(false)` the last
+    /// start or call failed, `None` never attempted.
+    pub healthy: Option<bool>,
+    /// The failure behind `healthy: Some(false)`, in the server's own words.
+    pub last_error: Option<String>,
+}
+
 /// Render a list for the editor.
 #[must_use]
 pub fn to_json(servers: &[Server]) -> String {
@@ -167,6 +186,55 @@ impl Pool {
                 rows
             })
             .unwrap_or_default()
+    }
+
+    /// What this process knows about every configured server, in list order.
+    ///
+    /// A server that was never started reports `healthy: None` rather than a
+    /// boolean: health is a fact about an attempt, and the daemon has made none.
+    /// A recorded failure stands until a later success clears it, even while the
+    /// child is still up, because a server that answers in errors is not a server
+    /// that is working.
+    ///
+    /// A poisoned lock reports every server as unknown. A panic is not a bill of
+    /// health.
+    #[must_use]
+    pub fn health(&self) -> Vec<ServerHealth> {
+        let Ok(mut state) = self.inner.lock() else {
+            return self
+                .servers
+                .iter()
+                .map(|server| ServerHealth {
+                    name: server.name.clone(),
+                    command: server.command.clone(),
+                    healthy: None,
+                    last_error: None,
+                })
+                .collect();
+        };
+        self.servers
+            .iter()
+            .map(|server| {
+                let last_error = state.errors.get(&server.name).cloned();
+                let running = state
+                    .clients
+                    .get_mut(&server.name)
+                    .is_some_and(client::Client::is_alive);
+                let healthy = if last_error.is_some() {
+                    Some(false)
+                } else if running {
+                    Some(true)
+                } else {
+                    None
+                };
+                ServerHealth {
+                    name: server.name.clone(),
+                    command: server.command.clone(),
+                    healthy,
+                    last_error,
+                }
+            })
+            .collect()
     }
 
     /// Every tool from every server that started, namespaced `server__tool`.
@@ -370,6 +438,48 @@ done
                 .call("read_file", &serde_json::json!({}))
                 .expect_err("not an MCP name");
             assert!(error.message.contains("namespaced"), "{}", error.message);
+        }
+
+        #[test]
+        fn health_is_unknown_until_an_attempt_is_made() {
+            let dir = tempfile::tempdir().expect("temp");
+            let pool = super::super::Pool::new(vec![super::fixture_server(dir.path(), "fake")]);
+
+            // Nothing has started it, so nothing is claimed about it.
+            let before = pool.health();
+            assert_eq!(before.len(), 1);
+            assert_eq!(before[0].name, "fake");
+            assert_eq!(
+                before[0].healthy, None,
+                "a server that was never started has no health to report"
+            );
+            assert!(before[0].last_error.is_none());
+
+            // A successful start is the attempt that makes it known.
+            let _ = pool.specs();
+            let after = pool.health();
+            assert_eq!(after[0].healthy, Some(true));
+            assert!(after[0].last_error.is_none());
+        }
+
+        #[test]
+        fn a_failed_start_is_a_known_failure_and_not_an_unknown() {
+            let pool = super::super::Pool::new(vec![super::super::Server {
+                name: "ghost".to_owned(),
+                command: "/nonexistent/mcp-server".to_owned(),
+                args: Vec::new(),
+            }]);
+
+            let _ = pool.specs();
+            let health = pool.health();
+            assert_eq!(health.len(), 1);
+            assert_eq!(
+                health[0].healthy,
+                Some(false),
+                "a server that cannot start is known to be broken"
+            );
+            let error = health[0].last_error.as_deref().expect("the reason");
+            assert!(error.contains("cannot start"), "{error}");
         }
     }
 

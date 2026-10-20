@@ -1207,11 +1207,11 @@ impl TurnHub {
                 show_tool_log,
             } = policy;
             // The one place a device turn can be stopped from writing. The
-            // approvals queue is not reachable over `/v1`, so a call that would be
-            // parked cannot be parked: under `ask` it is refused with the reason,
-            // and the model is told so rather than left waiting on a human who has
-            // no surface to answer from. `never` runs it, as it does in the
-            // browser.
+            // approvals queue can be read and answered over `/v1`, but a running
+            // turn does not park a call: nothing on this surface resumes a turn
+            // after a decision lands, so a parked call would end as a turn that
+            // silently did nothing. Under `ask` it is refused with the reason and
+            // the model is told so; `never` runs it, as it does in the browser.
             let mut gate = |call: &core_domain::ToolCall| -> crate::web::chat::GateDecision {
                 let gated = call.name == "write_file";
                 if !gated
@@ -1220,8 +1220,9 @@ impl TurnHub {
                     return crate::web::chat::GateDecision::Run;
                 }
                 crate::web::chat::GateDecision::Refuse {
-                    reason: "a device turn cannot park a write for approval: the approvals \
-                             queue is not reachable over /v1, so nothing was written"
+                    reason: "a device turn cannot park a write for approval: the queue is \
+                             readable and answerable over /v1, but a running turn does not \
+                             wait for a decision, so nothing was written"
                         .to_owned(),
                 }
             };

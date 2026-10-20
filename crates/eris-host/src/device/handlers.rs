@@ -22,12 +22,14 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::approvals::{self, Decision};
 use crate::auth::{
     PairingService, Scope, ScopeSet, TokenOrigin, TokenService, VerifiedToken, format_timestamp,
 };
 use crate::device::turns::{ConversationTurn, FrameKind, TurnFrame, TurnPolicy};
 use crate::device::{
-    CONVERSATION_LIST_LIMIT, CONVERSATION_MESSAGE_LIMIT, DeviceError, DeviceService,
+    APPROVAL_LIST_LIMIT, CONVERSATION_LIST_LIMIT, CONVERSATION_MESSAGE_LIMIT, DeviceError,
+    DeviceService,
 };
 use crate::onboarding::{PermissionError, Permissions, SetupEngine};
 use crate::web::chat;
@@ -1422,6 +1424,13 @@ pub const SETTINGS_FIELDS: [&str; 4] = ["model", "sandbox", "memory", "approval"
 /// The values `approval` accepts, for a refusal that names them.
 const APPROVAL_ALLOWED: &str = "ask or never";
 
+/// The values a decision accepts, read from [`Decision`] itself.
+///
+/// The spellings are the ones the wire and the database already use, so a
+/// decision a phone sends is the same word a browser row holds: `approved` and
+/// `denied`.
+const DECISION_ALLOWED: &str = "approved or denied";
+
 /// One field a settings write will change, as the audit row records it.
 struct SettingsChange {
     /// The field name the request used.
@@ -1793,6 +1802,246 @@ fn shown_value(raw: &str) -> String {
 /// A settings read or write that the state store refused.
 fn settings_unavailable(error: impl std::fmt::Display) -> DeviceError {
     DeviceError::db_unavailable(format!("cannot reach the settings: {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// The approvals queue, behind the admin scope
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/approvals` - the calls a turn parked, newest first.
+///
+/// Behind the bearer and the `admin` scope, because answering a parked call is
+/// exactly the authority a phone was paired with the administration box for.
+/// Every row is what the turn already asked for: the tool, its arguments, the
+/// advice the approval role wrote and the two timestamps. No credential, no key
+/// reference and no workspace path, so a queue read over a shoulder leaks
+/// nothing that the same call would not have written into a file.
+pub async fn approvals(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    match read_approvals(&service) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// `POST /v1/approvals/{id}/decide` - settle one parked call.
+///
+/// Settling is the whole route: it flips the row, records who flipped it, and
+/// appends one audit row with the device as the actor, so the queue has one
+/// history whichever surface answered. It deliberately does not run the call -
+/// running a parked write is the operator surfaces' job, and a decision is a
+/// decision.
+pub async fn decide_approval(
+    State(service): State<DeviceService>,
+    Path(approval_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let decision = match parse_decision(field(&fields, "decision")) {
+        Ok(decision) => decision,
+        Err(error) => return error.into_response(),
+    };
+
+    let db = service.engine().db();
+    // Read first, so the audit row can name the tool the decision settled. The
+    // read is not the guard: [`approvals::decide`] re-checks that the row is
+    // still pending and reports `false` when a racing decision got there first.
+    let row = match approvals::get(db, &approval_id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return DeviceError::approval_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!(
+                "cannot read the approval with that id: {error}"
+            ))
+            .into_response();
+        }
+    };
+    match approvals::decide(db, &approval_id, decision, token.device_id()) {
+        Ok(true) => {}
+        Ok(false) => return DeviceError::approval_not_found().into_response(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot record the decision: {error}"))
+                .into_response();
+        }
+    }
+
+    // The queue's own audit row, appended after the row moved so a failure here
+    // is reported rather than passed off as a decision that left no trace.
+    let detail = format!(
+        "approval={approval_id}; tool={}; decision={}",
+        row.tool,
+        decision.as_str()
+    );
+    if let Err(error) =
+        service
+            .engine()
+            .auth()
+            .audit(token.device_id(), "chat.approval.decided", Some(&detail))
+    {
+        return DeviceError::db_unavailable(format!(
+            "{approval_id} was settled but the audit row could not be appended: {error}"
+        ))
+        .into_response();
+    }
+
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "id": approval_id,
+        "decision": decision.as_str(),
+    }))
+    .into_response()
+}
+
+/// The list `GET /v1/approvals` answers with.
+fn read_approvals(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
+    let mut waiting = approvals::pending(service.engine().db()).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the approvals queue: {error}"))
+    })?;
+    // `pending` is oldest first, for the dashboard's reading order. A phone wants
+    // the call that just stopped a turn at the top, so the same rows are reversed
+    // and then bounded: the oldest of a long queue falls off, not the newest.
+    waiting.reverse();
+    let truncated = waiting.len() > APPROVAL_LIST_LIMIT;
+    waiting.truncate(APPROVAL_LIST_LIMIT);
+    let rows: Vec<serde_json::Value> = waiting
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "tool": row.tool,
+                "arguments": arguments_json(&row.arguments),
+                // The approval role's reading, when one is pinned. It is advice
+                // and never a decision, so it rides along named as advice is.
+                "reason": row.advice,
+                "created_at": row.created_at,
+                // The queue does not expire a row: nothing sweeps it and nothing
+                // waits on a clock, so the honest value is null rather than a
+                // timestamp this daemon would have to invent.
+                "expires_at": serde_json::Value::Null,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "ok": true,
+        "count": rows.len(),
+        "truncated": truncated,
+        "approvals": rows,
+    }))
+}
+
+/// A parked call's arguments as JSON rather than as quoted JSON text.
+///
+/// The column holds the bytes the turn parked. They are parsed back for a client
+/// that has to show the call; text that no longer parses is passed through as the
+/// text it is, because dropping the row would hide a queue entry and answering
+/// `null` would hide that it is unreadable.
+fn arguments_json(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
+}
+
+/// The decision a body names, in the spellings [`Decision`] already uses.
+fn parse_decision(raw: &str) -> Result<Decision, DeviceError> {
+    match raw {
+        "approved" => Ok(Decision::Approved),
+        "denied" => Ok(Decision::Denied),
+        other => Err(refuse_value(
+            "decision",
+            "decision_invalid",
+            other,
+            DECISION_ALLOWED,
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MCP health, behind the sessions scope
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/mcp` - the configured servers and the health this daemon observed.
+///
+/// Behind the bearer and the `sessions` scope, not `admin`: what is configured
+/// and whether it answered is the same class of read as the transcript, and none
+/// of it is a credential.
+///
+/// `health_known` is true only when every listed server has a state this process
+/// actually observed. A server that was never started reports `healthy: null`, and
+/// any such row makes `health_known` false: a green dot the daemon cannot back up
+/// is worse than a client that says "unknown".
+pub async fn mcp_servers(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    match read_mcp(&service) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// The list and the health `GET /v1/mcp` answers with.
+///
+/// The names come from the stored list, so a server the operator saved after
+/// start-up still appears; the health comes from the pool, so a server that was
+/// never started in this process is reported as unknown rather than assumed good
+/// or bad.
+fn read_mcp(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
+    let stored = service
+        .engine()
+        .setting(crate::mcp::SETTING_SERVERS)
+        .map_err(|error| {
+            DeviceError::db_unavailable(format!("cannot read the MCP server list: {error}"))
+        })?;
+    let servers = crate::mcp::parse(stored.as_deref().unwrap_or("")).map_err(|error| {
+        DeviceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "mcp_list_invalid",
+            format!(
+                "the stored MCP server list does not parse, so no health can be reported for it: {}",
+                error.message
+            ),
+        )
+    })?;
+    let health = service.mcp().map(|pool| pool.health()).unwrap_or_default();
+    let mut rows = Vec::with_capacity(servers.len());
+    let mut health_known = true;
+    for server in &servers {
+        let known = health.iter().find(|row| row.name == server.name);
+        let per_server = known.and_then(|row| row.healthy);
+        if per_server.is_none() {
+            health_known = false;
+        }
+        rows.push(serde_json::json!({
+            "name": server.name,
+            "command": server.command,
+            "healthy": per_server,
+            "last_error": known.and_then(|row| row.last_error.clone()),
+        }));
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "health_known": health_known,
+        "servers": rows,
+    }))
 }
 
 #[cfg(test)]

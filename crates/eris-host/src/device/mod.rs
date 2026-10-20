@@ -11,6 +11,12 @@
 //! closed-set values, and only for a token whose pairing code was minted with the
 //! administration box ticked.
 //!
+//! The approval queue and the MCP servers are reachable too: `GET /v1/approvals`
+//! and `POST /v1/approvals/{id}/decide` behind `admin`, and `GET /v1/mcp` behind
+//! `sessions`. They settle a row and report health. They do not run a parked call,
+//! and they do not make a device turn park one: a turn on this surface refuses a
+//! gated call instead of waiting, because it has no resume path over here.
+//!
 //! Three things have to be true before a turn is accepted, in this order:
 //!
 //! 1. a bearer access token that verifies against a stored Argon2id verifier and
@@ -90,6 +96,30 @@ pub const ROUTE_CONVERSATION_CLEAR: &str = "/v1/conversations/{id}/clear";
 /// `GET /v1/settings` and `POST /v1/settings` - the operator-facing settings,
 /// behind the `admin` scope.
 pub const ROUTE_SETTINGS: &str = "/v1/settings";
+
+/// `GET /v1/approvals` - the calls a turn parked, behind the `admin` scope.
+///
+/// The queue was reachable from the dashboard's count and from `eris approvals`
+/// on the host until this route existed: a phone could start a turn but could not
+/// see the write it stopped on, so answering one meant walking to the machine.
+pub const ROUTE_APPROVALS: &str = "/v1/approvals";
+
+/// `POST /v1/approvals/{id}/decide` - settle one parked call, behind `admin`.
+pub const ROUTE_APPROVAL_DECIDE: &str = "/v1/approvals/{id}/decide";
+
+/// `GET /v1/mcp` - the configured MCP servers and the health the daemon
+/// observed, behind the `sessions` scope.
+///
+/// Not `admin`: reading what is configured and whether it answered is the same
+/// class of read as the transcript, and the server list carries no credential.
+pub const ROUTE_MCP: &str = "/v1/mcp";
+
+/// How many approvals one page of `GET /v1/approvals` reports.
+///
+/// A queue is a shortlist for a person holding a phone, not an archive: the
+/// newest fifty are enough to answer, and a client is told when it is looking at
+/// part of a longer list.
+pub const APPROVAL_LIST_LIMIT: usize = 50;
 
 /// How many conversations one page of `GET /v1/conversations` reports.
 ///
@@ -212,6 +242,20 @@ impl DeviceError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "db_unavailable", message)
     }
 
+    /// 404 for an approval id that is not waiting.
+    ///
+    /// One code for both "never existed" and "already decided", because a row
+    /// that a decision has settled is no longer an approval anybody can answer:
+    /// telling the two apart would let a client poll for which ids were real.
+    #[must_use]
+    pub fn approval_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "approval_not_found",
+            "no approval with that id is waiting: it was never queued, or a decision already settled it",
+        )
+    }
+
     /// The status this error answers with.
     #[must_use]
     pub fn status(&self) -> StatusCode {
@@ -247,6 +291,12 @@ pub struct DeviceService {
     /// Where the listener binds. Loopback by default; a paired phone cannot reach
     /// loopback, so this is the setting that makes pairing possible off-host.
     bind: Arc<std::sync::Mutex<Vec<std::net::SocketAddr>>>,
+    /// The daemon's MCP pool, when one was handed over at start-up.
+    ///
+    /// `/v1/mcp` reports health from here. A service built without a pool says
+    /// so rather than guessing: a pooled daemon knows which servers started, and
+    /// a bare service knows nothing, which is not the same as healthy.
+    mcp: Option<Arc<crate::mcp::Pool>>,
 }
 
 impl DeviceService {
@@ -268,7 +318,23 @@ impl DeviceService {
                     .parse()
                     .expect("the default is a literal ip:port"),
             ])),
+            mcp: None,
         }
+    }
+
+    /// Attach the daemon's MCP pool, so `/v1/mcp` can report observed health
+    /// instead of "unknown" for everything. Called once by [`crate::admin`] while
+    /// it builds its state; nothing else needs it.
+    #[must_use]
+    pub fn with_mcp(mut self, pool: Arc<crate::mcp::Pool>) -> Self {
+        self.mcp = Some(pool);
+        self
+    }
+
+    /// The MCP pool this service was handed, if any.
+    #[must_use]
+    pub fn mcp(&self) -> Option<&Arc<crate::mcp::Pool>> {
+        self.mcp.as_ref()
     }
 
     /// Set the addresses the listener binds. Takes effect on the next `start`,
@@ -311,6 +377,7 @@ impl DeviceService {
                     .parse()
                     .expect("the default is a literal ip:port"),
             ])),
+            mcp: None,
         }
     }
 
@@ -428,6 +495,9 @@ pub fn router(service: DeviceService) -> Router {
             ROUTE_SETTINGS,
             get(handlers::settings).post(handlers::update_settings),
         )
+        .route(ROUTE_APPROVALS, get(handlers::approvals))
+        .route(ROUTE_APPROVAL_DECIDE, post(handlers::decide_approval))
+        .route(ROUTE_MCP, get(handlers::mcp_servers))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -501,6 +571,9 @@ mod tests {
             ROUTE_CONVERSATION,
             ROUTE_CONVERSATION_CLEAR,
             ROUTE_SETTINGS,
+            ROUTE_APPROVALS,
+            ROUTE_APPROVAL_DECIDE,
+            ROUTE_MCP,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

@@ -335,7 +335,6 @@ impl AppState {
     pub fn new(engine: SetupEngine, allow_full: bool) -> Self {
         let db = engine.db().clone();
         let persona = PersonaConfig::at_path(engine.paths().persona_file());
-        let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env());
         // Read once at construction: the list only changes through a settings
         // save, and a turn should not pay for a database read per tool call.
         let servers = match engine.setting(crate::mcp::SETTING_SERVERS) {
@@ -355,9 +354,15 @@ impl AppState {
         if !servers.is_empty() {
             eprintln!("eris: {} MCP server(s) configured", servers.len());
         }
+        let mcp = Arc::new(crate::mcp::Pool::new(servers));
+        // The device surface answers `GET /v1/mcp` from the same pool the turns
+        // use, so a phone sees the health this process observed rather than a
+        // guess. Same process, same pool: one daemon, one answer.
+        let device = DeviceService::new(engine.clone(), TurnStore::buffer_from_env())
+            .with_mcp(Arc::clone(&mcp));
         Self {
             engine,
-            mcp: Arc::new(crate::mcp::Pool::new(servers)),
+            mcp,
             sessions: AdminSessions::new(db),
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
