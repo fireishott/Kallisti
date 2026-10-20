@@ -21,6 +21,12 @@ pub struct Role {
     pub label: &'static str,
     /// What the job does, in one line.
     pub purpose: &'static str,
+    /// Whether the stored model must appear in the chat-model probe.
+    ///
+    /// False for a role that does not call a chat endpoint: the image role posts
+    /// to an image endpoint, so a chat-model catalogue is the wrong list to hold
+    /// it to and refusing the pin would be checking the wrong thing.
+    pub probe_validated: bool,
     /// What consumes it today, or `None` when nothing does yet.
     ///
     /// Stated rather than implied: a settings row that looks wired and is not is
@@ -33,6 +39,7 @@ pub const ROLES: &[Role] = &[
     Role {
         key: "vision",
         label: "Vision",
+        probe_validated: true,
         purpose: "Reads an image attached to a turn.",
         consumed_by: Some("a turn that carries an image, once this role is pinned"),
     },
@@ -40,65 +47,76 @@ pub const ROLES: &[Role] = &[
         key: "image",
         label: "Image generation",
         purpose: "Draws an image when a turn asks for one.",
-        consumed_by: None,
+        probe_validated: false,
+        consumed_by: Some("a turn that asks for a picture, once this role is pinned"),
     },
     Role {
         key: "web_extract",
         label: "Web extract",
+        probe_validated: true,
         purpose: "Pulls the readable text out of a fetched page.",
         consumed_by: Some("a turn that fetches a URL, once this role is pinned"),
     },
     Role {
         key: "compression",
         label: "Compression",
+        probe_validated: true,
         purpose: "Summarises context that no longer fits the window.",
         consumed_by: Some("a turn whose history has outgrown the window, once this role is pinned"),
     },
     Role {
         key: "title_generation",
         label: "Title generation",
+        probe_validated: true,
         purpose: "Names a conversation from its first exchange.",
         consumed_by: Some("a settled turn, once this role is pinned to a model"),
     },
     Role {
         key: "approval",
         label: "Approval",
+        probe_validated: true,
         purpose: "Reads a parked tool call and says what it would do.",
         consumed_by: Some("a call parked for approval, once this role is pinned"),
     },
     Role {
         key: "mcp",
         label: "MCP",
+        probe_validated: true,
         purpose: "Reasons over a tool result returned by an MCP server.",
         consumed_by: None,
     },
     Role {
         key: "skills_hub",
         label: "Skills hub",
+        probe_validated: true,
         purpose: "Picks the skill that fits a request.",
         consumed_by: None,
     },
     Role {
         key: "triage_specifier",
         label: "Triage",
+        probe_validated: true,
         purpose: "Classifies an inbound request.",
         consumed_by: None,
     },
     Role {
         key: "kanban_decomposer",
         label: "Kanban decomposer",
+        probe_validated: true,
         purpose: "Breaks a request into tasks.",
         consumed_by: None,
     },
     Role {
         key: "profile_describer",
         label: "Profile describer",
+        probe_validated: true,
         purpose: "Writes the one-line description of something.",
         consumed_by: None,
     },
     Role {
         key: "curator",
         label: "Curator",
+        probe_validated: true,
         purpose: "Files and links notes.",
         consumed_by: None,
     },
@@ -247,6 +265,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_image_role_skips_the_chat_model_probe() {
+        for role in ROLES {
+            assert_eq!(
+                role.probe_validated,
+                role.key != "image",
+                "{} is validated against the wrong catalogue",
+                role.key
+            );
+        }
+    }
+
+    #[test]
     fn only_the_roles_with_a_real_consumer_claim_one() {
         // The day another role is wired, this list is the thing to edit - and
         // editing it is a reminder to update the page's honesty note too.
@@ -259,6 +289,7 @@ mod tests {
             wired,
             vec![
                 "vision",
+                "image",
                 "web_extract",
                 "compression",
                 "title_generation",

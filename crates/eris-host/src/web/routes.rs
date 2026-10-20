@@ -2915,7 +2915,14 @@ async fn save_aux(
     for role in crate::aux::ROLES {
         let field_name = format!("aux_{}", role.key);
         let value = crate::aux::store_value(field(&fields, &field_name));
-        if value != crate::aux::INHERIT && !known.is_empty() && !known.iter().any(|m| m == &value) {
+        // Only chat roles are checked against the chat-model probe. A role that
+        // posts to an image endpoint would be refused for appearing in the wrong
+        // catalogue, which is a check of the wrong thing.
+        if role.probe_validated
+            && value != crate::aux::INHERIT
+            && !known.is_empty()
+            && !known.iter().any(|m| m == &value)
+        {
             return fail_settings(
                 &state,
                 as_html,
@@ -4207,6 +4214,9 @@ fn spawn_turn(
     let approval_role = chat::aux_pinned_config(&state.engine, "approval")
         .ok()
         .flatten();
+    let image = chat::aux_pinned_config(&state.engine, "image")
+        .ok()
+        .flatten();
     let tool_rounds = crate::tools::max_rounds(
         state
             .engine
@@ -4370,6 +4380,7 @@ fn spawn_turn(
             &mut gate,
             Some(&mcp),
             web_extract.as_ref(),
+            image.as_ref(),
             chat::TurnSettings {
                 tools: tools_enabled,
                 max_rounds: tool_rounds,

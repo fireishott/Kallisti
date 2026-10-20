@@ -1208,6 +1208,114 @@ pub fn advise_approval(
     (!advice.trim().is_empty()).then_some(advice.trim().to_owned())
 }
 
+/// The most pixels of prompt kept when naming a generated file.
+pub const IMAGE_SLUG_CHARS: usize = 40;
+
+/// The extension that matches what the bytes actually are.
+///
+/// The image endpoint returns whatever its model draws - in practice JPEG - so a
+/// name is chosen from the magic bytes rather than assumed. A `.png` full of JPEG
+/// is a file that lies about itself to every tool that reads the name first.
+#[must_use]
+pub fn image_extension(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return "png";
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "jpg";
+    }
+    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "webp";
+    }
+    if bytes.starts_with(b"GIF8") {
+        return "gif";
+    }
+    "bin"
+}
+
+/// A filesystem-safe stem for a generated image, from its prompt.
+///
+/// Deterministic and boring on purpose: a filename derived from a prompt is a
+/// record of what was asked, and a slug that cannot contain `..` or a separator
+/// cannot walk out of the workspace.
+#[must_use]
+pub fn image_slug(prompt: &str, stamp: &str, extension: &str) -> String {
+    let mut stem: String = prompt
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    stem = stem
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    stem.truncate(IMAGE_SLUG_CHARS);
+    stem = stem.trim_end_matches('-').to_owned();
+    if stem.is_empty() {
+        stem = "image".to_owned();
+    }
+    format!("{stamp}-{stem}.{extension}")
+}
+
+/// Ask the image role to draw something.
+///
+/// Returns the decoded PNG bytes. Best effort like every role: a provider that
+/// cannot draw leaves the turn with a named failure instead of a broken file.
+#[must_use]
+pub fn generate_image(config: &TurnConfig, prompt: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+
+    let endpoint = format!(
+        "{}/images/generations",
+        config.base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": config.model,
+        "prompt": prompt,
+        "n": 1,
+        "response_format": "b64_json",
+    });
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref).ok()?;
+
+    let response = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .ok()?;
+        client
+            .post(&endpoint)
+            .bearer_auth(key.expose())
+            .json(&body)
+            .send()
+            .await
+            .ok()?
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+    })?;
+
+    let encoded = response
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("b64_json"))
+        .and_then(serde_json::Value::as_str)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+}
+
 /// Trim and validate what the browser typed.
 ///
 /// An empty message is a refusal by name rather than a silently dropped turn, and
@@ -1359,6 +1467,7 @@ pub fn run_turn(
     gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
     mcp: Option<&crate::mcp::Pool>,
     web_extract: Option<&TurnConfig>,
+    image: Option<&TurnConfig>,
     settings: TurnSettings,
     sink: &mut dyn FnMut(StreamPart<'_>),
 ) -> Result<TurnOutcome, TurnFailure> {
@@ -1401,6 +1510,43 @@ pub fn run_turn(
                 Err(error) => crate::tools::ToolResult::refused(&error.message),
             };
         }
+        // Drawing is not a local capability: with the image role pinned the
+        // request goes to its provider, and the file lands in the workspace so
+        // the operator can open it.
+        if call.name == "generate_image"
+            && let Some(config) = image
+            && let Some(prompt) = call
+                .arguments
+                .get("prompt")
+                .and_then(serde_json::Value::as_str)
+        {
+            let Some(bytes) = generate_image(config, prompt) else {
+                return crate::tools::ToolResult::refused(
+                    "the image role could not draw that, so nothing was written",
+                );
+            };
+            let stamp = uuid::Uuid::now_v7().to_string();
+            let name = format!(
+                "generated/{}",
+                image_slug(prompt, &stamp, image_extension(&bytes))
+            );
+            let Ok(path) = crate::tools::resolve(sandbox.workspace(), &name) else {
+                return crate::tools::ToolResult::refused("the image path escaped the workspace");
+            };
+            if let Some(parent) = path.parent()
+                && std::fs::create_dir_all(parent).is_err()
+            {
+                return crate::tools::ToolResult::refused("cannot create the image directory");
+            }
+            if std::fs::write(&path, &bytes).is_err() {
+                return crate::tools::ToolResult::refused("cannot write the image");
+            }
+            return crate::tools::ToolResult::ok(serde_json::json!({
+                "path": name,
+                "bytes": bytes.len(),
+            }));
+        }
+
         let result = crate::tools::execute(&call.name, &call.arguments, sandbox);
         // A fetched page is a wall of navigation until something reads it. With
         // the role pinned, its model reads it; without one the tool's own text
@@ -1447,6 +1593,26 @@ pub fn run_turn(
                     let mut offered = crate::tools::specs(sandbox.mode());
                     if let Some(pool) = mcp {
                         offered.extend(pool.specs());
+                    }
+                    // Only offered when the role is pinned: a tool the daemon
+                    // will refuse must never reach the model's list.
+                    if image.is_some() {
+                        offered.push(core_runtime::provider::ToolSpec {
+                            name: "generate_image".to_owned(),
+                            description:
+                                "Draw an image from a description and save it in the workspace."
+                                    .to_owned(),
+                            parameters: serde_json::json!({
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "description": "What to draw."
+                                    }
+                                },
+                                "required": ["prompt"]
+                            }),
+                        });
                     }
                     offered
                 } else {
@@ -1753,6 +1919,38 @@ mod tests {
         assert!(is_image(&png));
         assert!(is_image(&named_jpg), "a missing media type still counts");
         assert!(!is_image(&notes));
+    }
+
+    #[test]
+    fn a_generated_image_is_named_from_its_prompt_and_cannot_escape() {
+        let name = image_slug("A red square, on white", "stamp", "png");
+        assert_eq!(name, "stamp-a-red-square-on-white.png");
+
+        let hostile = image_slug("../../etc/passwd", "stamp", "jpg");
+        assert!(!hostile.contains('/'), "no separators survive: {hostile}");
+        assert!(!hostile.contains(".."), "no traversal survives: {hostile}");
+
+        let empty = image_slug("   ", "stamp", "png");
+        assert_eq!(
+            empty, "stamp-image.png",
+            "a blank prompt still names a file"
+        );
+
+        let long = image_slug(&"word ".repeat(40), "stamp", "png");
+        assert!(long.len() < 80, "the stem is bounded: {long}");
+    }
+
+    #[test]
+    fn an_images_extension_comes_from_its_bytes_not_from_hope() {
+        assert_eq!(image_extension(&[0x89, b'P', b'N', b'G', 0x0D]), "png");
+        assert_eq!(image_extension(&[0xFF, 0xD8, 0xFF, 0xE0]), "jpg");
+        assert_eq!(
+            image_extension(b"RIFF____WEBPVP8 "),
+            "webp",
+            "a webp announces itself at both ends"
+        );
+        assert_eq!(image_extension(b"GIF89a"), "gif");
+        assert_eq!(image_extension(b"not an image"), "bin");
     }
 
     #[test]
