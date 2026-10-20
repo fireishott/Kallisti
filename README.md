@@ -73,8 +73,15 @@ carries. Today:
 `/v1/turns/{id}/cancel` · `/v1/sessions/{id}`
 
 Pairing codes expire, device tokens are opaque and stored as salted verifiers, and a
-stolen state directory yields no usable credential. Turns stream events, so a phone
-sees the same run log a browser does.
+stolen state directory yields no usable credential.
+
+What a paired device gets today is narrower than what a browser gets, and it is
+worth being exact about it: a device turn streams text only. The reasoning, the tool
+loop and the run log that the browser shows are not forwarded - a device turn is a
+bare provider call, and a device that sends `/stop` spends tokens doing it. The full
+gap, capability by capability, is graded in
+[`docs/relay-readiness.md`](docs/relay-readiness.md): five of thirty-six capabilities
+exposed, and what each missing one would need.
 
 Not yet exposed to a device: settings, approvals, tool configuration and memory
 choice. Those are the control surfaces a relay needs before "full control" is a

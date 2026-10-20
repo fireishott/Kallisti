@@ -4,17 +4,10 @@
 //! server and answers requests with a deadline. This file holds the stored list
 //! and the pool the daemon keeps.
 //!
-//! The sentence this module used to carry - "this build has no MCP client" - is
-//! gone, because it is no longer true.
-//!
-//! This build has no MCP client. It cannot spawn a server, speak JSON-RPC to it,
-//! or offer its tools to a model. What it can do is keep the list of servers the
-//! operator wants, validated, so the configuration is not re-typed the day a
-//! client lands - and say plainly, in the place the operator edits it, that
-//! nothing runs it yet.
-//!
-//! Storing configuration ahead of the feature is only honest when the surface
-//! admits it. That is what [`STATUS`] exists for.
+//! This module used to say it had no client, and that was true then. It is not
+//! true now: a server is started on demand, its tools are offered to a turn as
+//! `server__tool`, and every call passes the approval gate. The stored list is no
+//! longer configuration waiting for a feature - it is the feature's input.
 
 pub mod client;
 pub mod protocol;

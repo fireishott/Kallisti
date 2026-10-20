@@ -6,6 +6,22 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A generated greeting line, off by default.** With it on, an empty conversation
+  shows one short line under the salutation, written by a model of the operator's
+  choosing (or the chat model) and rewritten on an hourly, daily or weekly window.
+  The prompt carries no name, path, hostname, memory or transcript - there is no
+  field that could carry one - and the line is scrubbed of bangs, em dashes, quotes
+  and length overruns. Cached in settings, so a render only asks a model when the
+  line is due, and a slow or failing provider falls back to the stored line rather
+  than hanging the page.
+- **The line under the salutation is editable.** It was a constant in a template;
+  it is now a setting, blank restores the default, and the composer row is unchanged.
+- **The composer row is one row.** The small-screen rule gave the send control a
+  100% basis, so it could never share the line and was forced onto its own full-width
+  row - the detached block that read as half off. Send, stop, both selects and the
+  attach control now share one height and radius, the composer is a `minmax(0, 1fr)`
+  grid so a long model id shrinks instead of blowing the box out, and Send keeps a
+  platinum border and focus ring while losing the inverted block.
 - **A generated greeting line.** The empty chat page can carry one short line under
   its salutation, written by a model. It is off by default and stays off until
   Settings > Greeting switches it on, because every rewrite is a billed provider

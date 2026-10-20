@@ -1633,6 +1633,8 @@ pub struct SettingsView {
     pub greeting_model: String,
     /// `hour`, `day` or `week`: how old the stored line may get.
     pub greeting_refresh: String,
+    /// The line under the salutation, as the form shows it.
+    pub chat_hint: String,
     /// One row per auxiliary role: what it is, what it does, what it uses.
     pub aux_roles: Vec<AuxRow>,
     /// The models the last probe returned, for every picker on the page.
@@ -1641,7 +1643,7 @@ pub struct SettingsView {
     pub mcp_servers: String,
     /// The last start or call failure per server, so a broken one is visible.
     pub mcp_errors: Vec<(String, String)>,
-    /// The sentence stating that no MCP client exists in this build.
+    /// The sentence stating what a configured server does, and that it is gated.
     pub mcp_status: String,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
@@ -1689,6 +1691,7 @@ impl SettingsView {
             greeting_enabled: false,
             greeting_model: crate::greeting::INHERIT.to_owned(),
             greeting_refresh: crate::greeting::Refresh::DEFAULT.as_str().to_owned(),
+            chat_hint: crate::greeting::DEFAULT_HINT.to_owned(),
             aux_roles: Vec::new(),
             models: Vec::new(),
             mcp_servers: "[]".to_owned(),
@@ -2089,6 +2092,19 @@ fn greeting_group(view: &SettingsView) -> Markup {
                 span .hint {
                     "primary follows whatever the provider section uses. A model pinned here keeps "
                     "that choice when the primary moves."
+                }
+            }
+            div .field {
+                label for="chat_hint" { "Line under the salutation" }
+                input id="chat_hint" type="text" name="chat_hint" value=(view.chat_hint)
+                    maxlength=(crate::greeting::MAX_HINT_CHARS)
+                    autofocus[focuses("chat_hint")];
+                @if let Some(error) = error.filter(|e| e.field.as_deref() == Some("chat_hint")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "The sentence that sits under the salutation on an empty conversation. Blank "
+                    "restores the default. The generated line, when it is on, appears above this."
                 }
             }
             div .field {
@@ -3584,6 +3600,8 @@ pub struct ChatView {
     pub tool_log_mode: String,
     /// The salutation an empty conversation opens with, from the hour.
     pub greeting: String,
+    /// The line under the salutation, editable in settings.
+    pub hint: String,
     /// The generated line under that salutation, when one is switched on and
     /// stored. `None` renders nothing extra at all.
     pub line: Option<String>,
@@ -3901,7 +3919,7 @@ pub fn chat_page(view: &ChatView) -> Markup {
                 @if let Some(line) = &view.line {
                     p .line { (line) }
                 }
-                p .hint { "Ask anything. The reply streams in." }
+                p .hint { (view.hint) }
             }
         }
         @if !view.provider_ready {

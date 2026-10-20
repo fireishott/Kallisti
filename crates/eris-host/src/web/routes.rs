@@ -650,6 +650,14 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
         .map_err(|error| form_error(&error))?
         .map(|stored| crate::greeting::store_model(&stored))
         .unwrap_or_else(|| crate::greeting::INHERIT.to_owned());
+    view.chat_hint = crate::greeting::hint(
+        state
+            .engine
+            .setting(crate::greeting::SETTING_HINT)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
     view.greeting_refresh = crate::greeting::Refresh::parse(
         engine
             .setting(crate::greeting::SETTING_GREETING_REFRESH)
@@ -3460,7 +3468,23 @@ async fn save_greeting(
     let refresh = crate::greeting::Refresh::parse(Some(field(&fields, "greeting_refresh")));
     let stored_enabled = if enabled { "true" } else { "false" };
 
+    let hint = field(&fields, "chat_hint").trim().to_owned();
+    if hint.chars().count() > crate::greeting::MAX_HINT_CHARS {
+        return fail_settings(
+            &state,
+            as_html,
+            FormError::new(
+                Some("chat_hint"),
+                "greeting_hint_too_long",
+                format!(
+                    "keep it under {} characters",
+                    crate::greeting::MAX_HINT_CHARS
+                ),
+            ),
+        );
+    }
     for (key, value) in [
+        (crate::greeting::SETTING_HINT, hint.as_str()),
         (crate::greeting::SETTING_GREETING_ENABLED, stored_enabled),
         (crate::greeting::SETTING_GREETING_MODEL, model.as_str()),
         (crate::greeting::SETTING_GREETING_REFRESH, refresh.as_str()),
@@ -3981,6 +4005,14 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         .as_str()
         .to_owned(),
         greeting: crate::web::templates::greeting_for(crate::zone::hour_in(offset)).to_owned(),
+        hint: crate::greeting::hint(
+            state
+                .engine
+                .setting(crate::greeting::SETTING_HINT)
+                .ok()
+                .flatten()
+                .as_deref(),
+        ),
         // Filled by the handlers, which are the only place a refresh can be
         // awaited. A view built anywhere else renders the salutation alone.
         line: None,

@@ -38,6 +38,27 @@ use crate::web::store;
 pub const SETTING_GREETING_ENABLED: &str = "greeting.enabled";
 
 /// The model the line is written with. [`INHERIT`] follows the chat model.
+/// The line under the salutation, editable by the operator.
+///
+/// A constant in the template was the wrong home for it: it is the first sentence a
+/// person reads on an empty page, and it should be theirs to change.
+pub const SETTING_HINT: &str = "chat.hint";
+
+/// What that line says before anyone changes it.
+pub const DEFAULT_HINT: &str = "Ask anything. The reply streams in.";
+
+/// The longest accepted hint.
+pub const MAX_HINT_CHARS: usize = 140;
+
+/// Read the stored hint, or the default when it is absent or blank.
+#[must_use]
+pub fn hint(stored: Option<&str>) -> String {
+    match stored.map(str::trim) {
+        Some(text) if !text.is_empty() => text.chars().take(MAX_HINT_CHARS).collect(),
+        _ => DEFAULT_HINT.to_owned(),
+    }
+}
+
 pub const SETTING_GREETING_MODEL: &str = "greeting.model";
 
 /// How often the line is rewritten: one of [`Refresh`]'s three values.
@@ -409,6 +430,15 @@ mod tests {
         store::settings_put(&db, SETTING_MADE_AT, "not-a-number").expect("stamp");
         assert_eq!(stored(&db).map(|cached| cached.made_at), Some(0));
         assert!(is_due(0, Refresh::Week, 1_800_000_000));
+    }
+
+    #[test]
+    fn the_line_under_the_salutation_is_the_operators_to_write() {
+        assert_eq!(hint(None), DEFAULT_HINT, "absent reads as the default");
+        assert_eq!(hint(Some("   ")), DEFAULT_HINT, "blank restores it too");
+        assert_eq!(hint(Some("  Say it plainly  ")), "Say it plainly");
+        let long = "x".repeat(MAX_HINT_CHARS + 40);
+        assert_eq!(hint(Some(&long)).chars().count(), MAX_HINT_CHARS);
     }
 
     #[test]
