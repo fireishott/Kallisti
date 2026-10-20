@@ -3520,6 +3520,49 @@ pub struct Attachment {
     pub is_image: bool,
     /// Where the browser may fetch it, when the file is one this route serves.
     pub url: Option<String>,
+    /// The three or four characters that stand in for a type icon.
+    ///
+    /// A picture is shown as the picture, so this is what a file that cannot be
+    /// shown gets instead of a blank square: `PDF`, `TXT`, `FILE`.
+    pub badge: &'static str,
+}
+
+/// The badge a chip shows for a file of this type.
+///
+/// Read from the type the bytes were sniffed to be when the file landed, so the
+/// chip names what a click actually downloads. A row recorded before sniffing
+/// existed carries an extension-derived value and may disagree with the bytes;
+/// the serving route is the authority either way.
+#[must_use]
+pub fn type_badge(media_type: Option<&str>) -> &'static str {
+    match media_type {
+        Some("image/png") => "PNG",
+        Some("image/jpeg") => "JPG",
+        Some("image/webp") => "WEBP",
+        Some("image/gif") => "GIF",
+        Some("application/pdf") => "PDF",
+        Some("text/plain") => "TXT",
+        Some("text/markdown") => "MD",
+        Some("text/csv") => "CSV",
+        Some("application/json") => "JSON",
+        Some("application/zip") => "ZIP",
+        _ => "FILE",
+    }
+}
+
+/// A size for a human: `812 B`, `14 kB`, `3.4 MB`.
+///
+/// The same rounding the composer's queue uses in its script, so a file's size
+/// before it is sent and after it is in the transcript read the same way.
+#[must_use]
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{} kB", (bytes as f64 / 1024.0).round() as u64);
+    }
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 impl ChatLine {
@@ -3877,18 +3920,34 @@ pub fn chat_page(view: &ChatView) -> Markup {
                                 @for file in &line.files {
                                     @if file.is_image {
                                         @if let Some(url) = &file.url {
-                                            a .attached-image href=(url) target="_blank" rel="noreferrer" {
+                                            a .attached-image href=(url) target="_blank"
+                                                rel="noreferrer" title=(file.name) {
                                                 img src=(url) alt=(file.name) loading="lazy";
                                             }
                                         } @else {
-                                            span .attached-chip { (file.name) }
+                                            span .attached-chip {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                            }
                                         }
                                     } @else {
                                         @if let Some(url) = &file.url {
                                             a .attached-chip href=(url)
-                                                download=(file.name) { (file.name) }
+                                                download=(file.name) title=(file.name) {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                                span .attached-size {
+                                                    (human_bytes(file.size))
+                                                }
+                                            }
                                         } @else {
-                                            span .attached-chip { (file.name) }
+                                            span .attached-chip title=(file.name) {
+                                                span .attached-badge { (file.badge) }
+                                                span .attached-name { (file.name) }
+                                                span .attached-size {
+                                                    (human_bytes(file.size))
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -4852,6 +4911,29 @@ mod tests {
 
     use super::*;
     use crate::onboarding::Wizard;
+
+    #[test]
+    fn a_chip_names_the_type_its_bytes_were_sniffed_to_be() {
+        assert_eq!(type_badge(Some("image/png")), "PNG");
+        assert_eq!(type_badge(Some("image/gif")), "GIF");
+        assert_eq!(type_badge(Some("application/pdf")), "PDF");
+        assert_eq!(type_badge(Some("text/plain")), "TXT");
+        assert_eq!(
+            type_badge(Some("application/octet-stream")),
+            "FILE",
+            "a format nothing recognised is a file, not a guess"
+        );
+        assert_eq!(type_badge(None), "FILE");
+    }
+
+    #[test]
+    fn a_chip_states_a_size_the_way_the_composer_did() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(812), "812 B");
+        assert_eq!(human_bytes(1024), "1 kB");
+        assert_eq!(human_bytes(14_336), "14 kB");
+        assert_eq!(human_bytes(3_565_158), "3.4 MB");
+    }
 
     fn ready_wizard() -> Wizard {
         Wizard {

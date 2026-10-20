@@ -60,7 +60,11 @@ pub struct Attachment {
     pub path: String,
     /// Size in bytes.
     pub size: u64,
-    /// What the bytes claim to be, from the extension.
+    /// What the bytes actually are, sniffed when the file landed.
+    ///
+    /// Recorded for the transcript's type badge and for the vision role, both of
+    /// which are display and dispatch decisions. The serving route sniffs again
+    /// rather than believing this column, because a row is not the bytes.
     pub media_type: Option<String>,
 }
 
@@ -92,29 +96,57 @@ const TEXT_EXTENSIONS: [&str; 18] = [
     "cfg", "rs", "py", "sh", "sql", "html",
 ];
 
-/// The media type from a filename, for the record. Never trusted for safety:
-/// what is stored is decided by the name, and what is served is decided by the
-/// route, so a lying extension is a filing problem rather than a security one.
+/// The media type these bytes actually are, decided by magic bytes.
+///
+/// A browser sends a `filename` and a `Content-Type`, and both are claims: a
+/// `.png` full of HTML is a `.png` that gets rendered as a page in this origin,
+/// and a model asked to look at a JPEG labelled `image/png` is a model looking at
+/// the wrong decoder. So the type comes from here and never from the name. What
+/// the sniffer does not recognise is `application/octet-stream`, which every
+/// browser downloads rather than renders.
+///
+/// This is the same decision the wallpaper route makes in
+/// [`crate::web::wallpaper::sniff_image`], widened to the formats a message can
+/// carry: the four picture formats, PDF, and text.
 #[must_use]
-pub fn media_type_for(name: &str) -> Option<String> {
-    let extension = name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())?;
-    let kind = match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "pdf" => "application/pdf",
-        "json" => "application/json",
-        "csv" => "text/csv",
-        "md" | "markdown" => "text/markdown",
-        "txt" | "log" | "toml" | "yaml" | "yml" | "ini" | "cfg" | "rs" | "py" | "sh" | "sql"
-        | "html" => "text/plain",
-        "zip" => "application/zip",
-        _ => return None,
-    };
-    Some(kind.to_owned())
+pub fn sniff_media_type(bytes: &[u8]) -> &'static str {
+    const PNG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if bytes.starts_with(&PNG) {
+        return "image/png";
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return "image/jpeg";
+    }
+    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "image/webp";
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return "image/gif";
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "application/pdf";
+    }
+    if is_probably_text(bytes) {
+        return "text/plain";
+    }
+    "application/octet-stream"
+}
+
+/// Whether a bounded head looks like text rather than a binary format.
+///
+/// A NUL byte is the one thing text nearly never contains, and it is exactly what
+/// a tar header, a compiled object and a database page start with. A UTF-8 error
+/// that is only a sequence cut off at the end of the sample is not evidence of
+/// binary: the read window ends mid-character, the file did not.
+fn is_probably_text(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(INLINE_TEXT_BYTES)];
+    if head.is_empty() || head.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(head) {
+        Ok(_) => true,
+        Err(error) => error.error_len().is_none(),
+    }
 }
 
 /// Whether the file's content is worth pasting into the prompt.
@@ -2361,6 +2393,66 @@ mod tests {
         );
         assert_eq!(image_extension(b"GIF89a"), "gif");
         assert_eq!(image_extension(b"not an image"), "bin");
+    }
+
+    #[test]
+    fn a_served_type_comes_from_the_bytes_and_never_from_the_name() {
+        assert_eq!(
+            sniff_media_type(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0]),
+            "image/png"
+        );
+        assert_eq!(sniff_media_type(&[0xff, 0xd8, 0xff, 0xe0]), "image/jpeg");
+        assert_eq!(
+            sniff_media_type(b"RIFF____WEBPVP8 "),
+            "image/webp",
+            "a webp announces itself at both ends"
+        );
+        for gif in [b"GIF87a".as_slice(), b"GIF89a".as_slice()] {
+            assert_eq!(sniff_media_type(gif), "image/gif");
+        }
+        assert_eq!(sniff_media_type(b"%PDF-1.7\n"), "application/pdf");
+        assert_eq!(sniff_media_type(b"line one\nline two\n"), "text/plain");
+        assert_eq!(
+            sniff_media_type("h\u{e9}llo, w\u{f6}rld".as_bytes()),
+            "text/plain",
+            "utf-8 that is not ascii is still text"
+        );
+    }
+
+    #[test]
+    fn a_type_nothing_recognises_is_an_octet_stream_rather_than_the_name() {
+        // An HTML page with a `.png` name would be rendered in this origin by a
+        // browser that believed the name, so the name is not consulted at all.
+        assert_eq!(
+            sniff_media_type(b"<!doctype html><script>alert(1)</script>"),
+            "text/plain",
+            "html is text, and text is never served as html"
+        );
+        assert_eq!(
+            sniff_media_type(&[0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]),
+            "application/octet-stream",
+            "a zip has a NUL in its header, so it is not text"
+        );
+        assert_eq!(sniff_media_type(&[]), "application/octet-stream");
+        assert_eq!(
+            sniff_media_type(&[0x00, 0x01, 0x02]),
+            "application/octet-stream",
+            "an empty or NUL-led sample is never text"
+        );
+    }
+
+    #[test]
+    fn a_utf8_sequence_cut_off_by_the_read_window_is_still_text() {
+        // The sample ends mid-character, which is a fact about the window rather
+        // than about the file, so the file is not called binary.
+        let mut bytes = vec![b'a'; INLINE_TEXT_BYTES];
+        bytes.truncate(INLINE_TEXT_BYTES - 1);
+        bytes.extend_from_slice(&[0xe2, 0x82]);
+        assert_eq!(sniff_media_type(&bytes), "text/plain");
+        // A real invalid sequence is not a cut-off sequence.
+        let mut broken = vec![b'a'; INLINE_TEXT_BYTES - 2];
+        broken.extend_from_slice(&[0xe2, 0x28]);
+        assert_eq!(sniff_media_type(&broken), "application/octet-stream");
     }
 
     #[test]

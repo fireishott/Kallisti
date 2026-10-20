@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use std::convert::Infallible;
+use std::io::Read as _;
 
 use axum::body::Body;
 use axum::extract::FromRequest;
@@ -54,7 +55,7 @@ use crate::web::templates::{
     DashboardView, DeviceRow, DevicesView, FormError, IssuedCodeView, SessionDetailView,
     SessionsView, SettingsGroup, SettingsView, SetupView, activity_page, backups_page, chat_page,
     dashboard_page, devices_page, error_page, login_page, session_page, sessions_page,
-    settings_page, setup_page,
+    settings_page, setup_page, type_badge,
 };
 use crate::web::wallpaper;
 
@@ -3912,6 +3913,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                             name: file.name.clone(),
                             size: file.size,
                             is_image: chat::is_image(file),
+                            badge: type_badge(file.media_type.as_deref()),
                             url: Some(format!("/dashboard/chat/file/{}", file.id)),
                         })
                         .collect()
@@ -4130,9 +4132,19 @@ async fn chat_conversation_handler(
 /// `GET /dashboard/chat/file/{id}` - one file that came with a message.
 ///
 /// Behind the same admin session as the transcript it appears in, because an
-/// uploaded screenshot is the operator's own material. The path comes from the
-/// attachment row, never from the URL: an id that is not in the table is a 404
-/// rather than a way to read a file by guessing its name.
+/// uploaded screenshot is the operator's own material. Four rules, in this order:
+///
+/// 1. The row comes from the attachment table. An id that is not in it is a 404,
+///    so the route cannot be used to read a file by guessing its name.
+/// 2. The path is resolved with symlinks followed and must still land inside the
+///    attachment directory, so a row that was tampered with, or a link planted
+///    in the uploads tree, is a refusal rather than a read of `/etc/passwd`.
+/// 3. The read is bounded by the ceiling the upload route enforces. The bytes
+///    were bounded on the way in; a row is not a promise about what is on disk
+///    now, so the read is bounded again on the way out.
+/// 4. The type is sniffed from the bytes. Neither the filename nor the stored
+///    `media_type` column decides it: a browser renders `text/html` in this
+///    origin, and an upload named `.png` is not evidence of a PNG.
 async fn chat_file(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -4145,47 +4157,99 @@ async fn chat_file(
     let row = match chat::attachment(state.engine.db(), &id) {
         Ok(Some(row)) => row,
         Ok(None) => {
-            return ApiError::not_found(
-                "file".to_owned(),
-                "no attachment with that id is recorded",
-            )
-            .into_response();
+            return ApiError::not_found(&request_id.0, "no attachment with that id is recorded")
+                .into_response();
         }
         Err(error) => {
             return refusal(FormError::new(None, "chat_unreadable", error.to_string()));
         }
     };
-    let bytes = match std::fs::read(&row.path) {
-        Ok(bytes) => bytes,
-        // A row whose bytes have been cleaned off disk is not a 500: the honest
-        // answer to a direct request is that the file is gone.
-        Err(_) => {
-            return ApiError::not_found(
-                "file".to_owned(),
-                "that attachment is recorded but its bytes are not on disk",
-            )
-            .into_response();
+    // The directory the upload route writes into, resolved once. Every attachment
+    // this daemon accepted is under it, so anything else is not one.
+    let root = match state.engine.workspace_path() {
+        Ok(workspace) => workspace.join("uploads"),
+        Err(error) => {
+            return refusal(FormError::new(
+                None,
+                "workspace_unreadable",
+                error.to_string(),
+            ));
         }
     };
-    let media_type = row
-        .media_type
-        .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return ApiError::not_found(&request_id.0, "no attachment directory exists")
+            .into_response();
+    };
+    let Ok(real) = std::fs::canonicalize(&row.path) else {
+        // A row whose bytes have been cleaned off disk is not a 500: the honest
+        // answer to a direct request is that the file is gone.
+        return ApiError::not_found(
+            &request_id.0,
+            "that attachment is recorded but its bytes are not on disk",
+        )
+        .into_response();
+    };
+    if !real.starts_with(&root) {
+        return ApiError::not_found(
+            &request_id.0,
+            "that attachment is not inside the attachment directory",
+        )
+        .into_response();
+    }
+    let Ok(file) = std::fs::File::open(&real) else {
+        return ApiError::not_found(
+            &request_id.0,
+            "that attachment is recorded but cannot be opened",
+        )
+        .into_response();
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    let budget = (chat::MAX_ATTACHMENT_BYTES as u64) + 1;
+    if file.take(budget).read_to_end(&mut bytes).is_err() {
+        return ApiError::not_found(
+            &request_id.0,
+            "that attachment is recorded but cannot be read",
+        )
+        .into_response();
+    }
+    if bytes.len() > chat::MAX_ATTACHMENT_BYTES {
+        return ApiError::not_found(
+            &request_id.0,
+            format!(
+                "that attachment is larger than the {} bytes this route serves",
+                chat::MAX_ATTACHMENT_BYTES
+            ),
+        )
+        .into_response();
+    }
+    let media_type = chat::sniff_media_type(&bytes);
     // An image is inline, because the transcript shows it. Anything else is an
-    // attachment, so a browser downloads a .html upload rather than executing it
-    // in this origin.
+    // attachment, so a browser downloads an upload rather than executing it in
+    // this origin. The name is stripped of the two characters that could end the
+    // header, because a row is data and a header is not.
     let disposition = if media_type.starts_with("image/") {
         "inline"
     } else {
         "attachment"
     };
+    let name: String = row
+        .name
+        .chars()
+        .map(|character| {
+            if character == '"' || character.is_control() {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect();
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, media_type),
+            (header::CONTENT_TYPE, media_type.to_owned()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("{disposition}; filename=\"{}\"", row.name),
+                format!("{disposition}; filename=\"{name}\""),
             ),
             (header::CACHE_CONTROL, "private, max-age=300".to_owned()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
@@ -5204,7 +5268,7 @@ async fn read_multipart_chat(
             name: safe,
             path: path.display().to_string(),
             size: bytes.len() as u64,
-            media_type: chat::media_type_for(&original),
+            media_type: Some(chat::sniff_media_type(&bytes).to_owned()),
         };
         chat::record_attachment(state.engine.db(), &conversation, &attachment)
             .map_err(|error| FormError::new(None, "chat_write_failed", error.to_string()))?;
