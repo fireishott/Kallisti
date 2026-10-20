@@ -308,6 +308,13 @@ pub struct AppState {
     /// the UI and the validator should use, because it also honours the stored
     /// switch an operator flipped from the dashboard.
     pub allow_full: bool,
+    /// Which conversation is running a turn, and what has been said to it.
+    ///
+    /// In process on purpose and shared by every handler: a steer is a message to
+    /// a thread that is already running in this process, so the queue is the same
+    /// kind of thing as the approval queue's own in-memory bookkeeping rather than
+    /// a row. A restart ends the turns, and with them the steers waiting for them.
+    pub steering: crate::web::chat::Steering,
     /// The device listener's service. It binds nothing until `start` is called:
     /// at boot when the flag or the setting asks for it, and from the dashboard
     /// toggle afterwards.
@@ -354,6 +361,7 @@ impl AppState {
             sessions: AdminSessions::new(db),
             limiter: Arc::new(ClaimLimiter::default()),
             allow_full,
+            steering: crate::web::chat::Steering::new(),
             device,
             access: Arc::new(AdminAccess::loopback_only()),
             persona,

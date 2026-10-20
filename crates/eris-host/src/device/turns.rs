@@ -1277,6 +1277,12 @@ impl TurnHub {
                 None,
                 None,
                 settings,
+                // Nothing hears this turn. Steering belongs to the browser: `/v1`
+                // has no surface for a second message into a running job, so a
+                // device turn polls a queue that is always empty rather than
+                // pretending to a knob it cannot turn. Cancellation is still real
+                // here, through the job's own cancel path and the row it fails.
+                &mut || crate::web::chat::TurnSignal::Continue,
                 &mut sink,
             );
             match outcome {
