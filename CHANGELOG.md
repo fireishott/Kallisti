@@ -6,6 +6,26 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **Subagents.** A turn in Full mode can call `dispatch_agent` and get a real child
+  turn back: its own provider call, the parent's persona, memory and summary, its own
+  token accounting, its result stored on a row. Four run at once daemon-wide and eight
+  per parent turn, and both refusals name the cap. A child is offered no tools at all
+  and cannot dispatch another - three independent layers say so, because a child that
+  can run commands is a host process spawned on a model's say-so. The top bar grows a
+  server-rendered dropdown listing each child with its status, model, elapsed time and
+  result, and the parent's stream gets a `subagent` frame as each one changes state.
+- **The run log expands all, collapses all, and remembers which.** The controls sit
+  under the log summary rather than inside it, since a focusable button inside a
+  summary fights the disclosure and rewrites its accessible name. The preference lives
+  in local storage, not in a settings row, so there is no fourth mode to explain.
+- **Steering.** A second message during a turn queues for that turn and is picked up at
+  the next boundary instead of starting a competing one; Send reads "Steer" while
+  streaming. Stop still stops at a boundary rather than aborting the socket, and both
+  the code and the copy say so.
+- **Attachments show themselves.** Images render as thumbnails in the bubble linking to
+  the full file, everything else as a chip with a type badge, name and size. The
+  serving route takes its type from the bytes, never the name, keeps the read bounded
+  and confines the path to the uploads root.
 - **A second message steers the running turn.** Sending while an answer streams no
   longer starts a second turn: the message is queued for the turn that already owns
   the conversation, and that turn appends it and answers it as a continuation at its
