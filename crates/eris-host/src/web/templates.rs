@@ -495,19 +495,22 @@ pub fn shell(
                         }
                     }
                     div .wrap {
+                        @if chrome.rail_hidden {
+                            /* The show control sits where the hide control sits - at
+                               the top of where the rail was - so the pair reads as
+                               one toggle that moves the rail, not as a stray button
+                               at the top of the page or a passenger on the cog. */
+                            form .rail-show .rail-show-top method="post" action=(crate::admin::ROUTE_SIDEBAR) {
+                                input type="hidden" name="rail" value="shown";
+                                button type="submit" title="Show the sidebar"
+                                    aria-label="Show the sidebar" { "\u{00BB}" }
+                            }
+                        }
                         @if chrome.rail_hidden && nav.is_some() {
-                            /* The rail's foot, collapsed. The word "Settings" is what
-                               the hidden sidebar took with it, so the cog stays in
-                               the corner it has always occupied and only the label
-                               goes. The control that brings the rail back sits
-                               beside it rather than floating at the top of the page,
-                               where it looked like part of the content. */
+                            /* The rail's foot, collapsed: the word "Settings" is what
+                               the hidden sidebar took, so the gear stays in the corner
+                               it has always occupied and only its label goes. */
                             div .rail-restore {
-                                form .rail-show method="post" action=(crate::admin::ROUTE_SIDEBAR) {
-                                    input type="hidden" name="rail" value="shown";
-                                    button type="submit" title="Show the sidebar"
-                                        aria-label="Show the sidebar" { "\u{00BB}" }
-                                }
                                 a .cog .cog-only href=(crate::admin::ROUTE_SETTINGS)
                                     aria-label="Settings"
                                     aria-current=[(nav == Some(Nav::Settings)).then_some("page")] {

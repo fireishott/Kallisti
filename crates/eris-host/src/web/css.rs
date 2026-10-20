@@ -68,16 +68,43 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
 .app {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  display: flex;
+  align-items: stretch;
   min-height: 100vh;
 }
+
+/* The rail is a flex item with a basis, not a grid column, because a grid column
+   can only be shown or hidden - and a sidebar that teleports reads as a glitch
+   rather than a decision. */
+.app > .side {
+  flex: 0 0 236px;
+  width: 236px;
+  transition:
+    flex-basis 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    width 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 260ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 200ms ease;
+  overflow: hidden;
+}
+.app > .wrap { flex: 1 1 auto; min-width: 0; }
 
 /* Collapsing the rail. The transcript takes the whole width, and the control to
    bring the rail back lives in the content column, because a control that only
    exists inside the thing you just hid is a one-way door. */
-.app.rail-hidden { grid-template-columns: minmax(0, 1fr); }
-.app.rail-hidden .side { display: none; }
+/* Collapsed: the rail slides out and the transcript takes the room it had. The
+   contents are non-interactive and invisible to a reader, so a hidden rail is not
+   a tab stop in the dark. */
+.app.rail-hidden > .side {
+  flex-basis: 0;
+  width: 0;
+  transform: translateX(-24px);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app > .side { transition: none; }
+}
 
 .rail-hide {
   position: absolute;
@@ -208,25 +235,31 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-  backdrop-filter: blur(8px);
 }
-.rail-restore .rail-show { margin: 0; }
-.rail-restore .rail-show button {
-  padding: 4px 7px;
+/* The show control mirrors the hide control's position, so the pair is one toggle
+   rather than a button that appears somewhere new each time. */
+.rail-show-top {
+  position: fixed;
+  top: 16px;
+  left: 12px;
+  z-index: 31;
+  margin: 0;
+}
+.rail-show-top button {
+  padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: transparent;
+  background: var(--panel);
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
+  backdrop-filter: blur(8px);
 }
-.rail-restore .rail-show button:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-show-top button:hover { color: var(--text); border-color: var(--line-strong); }
 .rail-restore .cog-only {
   display: inline-flex;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
   align-items: center;
   padding: 4px 7px;
   border: 1px solid var(--line);
