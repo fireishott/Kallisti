@@ -83,13 +83,6 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   pointer-events: none;
 }
 
-/* A picture is fitted, not cropped: the figure keeps her composition and the
-   black field of the drawing meets the obsidian page without a seam. */
-.app-wall.art {
-  background-size: contain;
-  background-position: right center;
-}
-
 .side {
   position: sticky;
   top: 0;
@@ -961,7 +954,6 @@ pre.code {
 
 @media (max-width: 900px) {
   .app { display: block; }
-  .app-wall.art { background-position: center top; }
   .side {
     /* Static on a phone: a rail that sticks while the transcript scrolls puts the
        navigation in the middle of the conversation. */

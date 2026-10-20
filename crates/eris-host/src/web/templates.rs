@@ -406,12 +406,9 @@ pub fn shell(
             }
             body {
                 @if let Some(url) = &chrome.wallpaper_url {
-                    // A raster wallpaper is a picture with a composition, so it is
-                    // fitted rather than cropped; the generated SVG fields fill the
-                    // frame by design.
-                    @let art = url.ends_with(".jpg") || url.ends_with(".jpeg") || url.ends_with(".png");
-                    div class=(if art { "app-wall art" } else { "app-wall" })
-                        style=(format!("background-image:url('{url}')")) {}
+                    // The backdrop is a field: the artwork's own edges fade to the
+                    // page colour, so `cover` has nothing to seam against.
+                    div .app-wall style=(format!("background-image:url('{url}')")) {}
                 }
                 div .app {
                     header .side {

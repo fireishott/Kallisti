@@ -142,12 +142,18 @@ pub fn url(wallpaper: &str) -> Option<String> {
             let preset = Preset::find(other).unwrap_or_else(|| {
                 Preset::find(DEFAULT_WALLPAPER).expect("the default preset exists")
             });
-            let extension = if raster(preset.id).is_some() {
-                "jpg"
+            // A raster is fingerprinted by version: the artwork is a long-lived
+            // cache entry, and replacing the bytes without changing the URL is
+            // how a fixed wallpaper keeps showing up as the old one.
+            if raster(preset.id).is_some() {
+                Some(format!(
+                    "{ROUTE_WALLPAPER_PREFIX}{}.jpg?v={}",
+                    preset.id,
+                    env!("CARGO_PKG_VERSION")
+                ))
             } else {
-                "svg"
-            };
-            Some(format!("{ROUTE_WALLPAPER_PREFIX}{}.{extension}", preset.id))
+                Some(format!("{ROUTE_WALLPAPER_PREFIX}{}.svg", preset.id))
+            }
         }
     }
 }
@@ -386,14 +392,20 @@ mod tests {
         assert!(url(NONE).is_none());
         assert_eq!(
             url("kallisti").as_deref(),
-            Some("/static/wallpaper/kallisti.jpg")
+            Some(concat!(
+                "/static/wallpaper/kallisti.jpg?v=",
+                env!("CARGO_PKG_VERSION")
+            ))
         );
         assert_eq!(url("arcs").as_deref(), Some("/static/wallpaper/arcs.svg"));
         assert_eq!(url(CUSTOM).as_deref(), Some("/static/wallpaper/custom"));
         // A garbage value still resolves, so a page never renders without one.
         assert_eq!(
             url("garbage").as_deref(),
-            Some("/static/wallpaper/kallisti.jpg")
+            Some(concat!(
+                "/static/wallpaper/kallisti.jpg?v=",
+                env!("CARGO_PKG_VERSION")
+            ))
         );
     }
 

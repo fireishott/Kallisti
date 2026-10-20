@@ -700,7 +700,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.4");
+        assert_eq!(VERSION, "1.0.5");
     }
 
     #[test]
