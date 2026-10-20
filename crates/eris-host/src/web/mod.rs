@@ -9,6 +9,7 @@
 pub mod backups;
 pub mod chat;
 pub mod css;
+pub mod dsml;
 pub mod proxy;
 pub mod routes;
 pub mod store;

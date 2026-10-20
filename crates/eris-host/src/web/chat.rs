@@ -1853,7 +1853,18 @@ pub fn drive_tool_loop(
         // now has to say what it found with what it already has, which is a
         // usable answer rather than a shrug.
         let tools_allowed = rounds < max_rounds;
-        let completion = stream(&messages, tools_allowed, &mut *sink)?;
+        let mut completion = stream(&messages, tools_allowed, &mut *sink)?;
+
+        // A route that fails to lift calls into the structured array passes the
+        // model's own markup through as content. Recover it: the calls the model
+        // decided to make become real calls, and the markup stops being the
+        // answer.
+        if let Some(recovered) = crate::web::dsml::recover(&completion.text) {
+            completion.text = recovered.text;
+            if completion.tool_calls.is_empty() {
+                completion.tool_calls = recovered.calls;
+            }
+        }
 
         usage = Some(match usage {
             None => completion.usage,
@@ -2038,6 +2049,61 @@ mod tests {
         );
         assert_eq!(image_extension(b"GIF89a"), "gif");
         assert_eq!(image_extension(b"not an image"), "bin");
+    }
+
+    #[test]
+    fn a_round_whose_calls_arrived_as_text_still_runs_them() {
+        // The provider handed back markup instead of a tool_calls array. The loop
+        // must turn it into a real call, run it, and answer from the result.
+        let mut offered = 0usize;
+        let mut executed: Vec<String> = Vec::new();
+        let outcome = drive_tool_loop(
+            &mut |call: &core_domain::ToolCall| {
+                executed.push(call.name.clone());
+                crate::tools::ToolResult::ok(serde_json::json!({ "rows": 3 }))
+            },
+            vec![ChatMessage::text(ChatRole::User, "check the warehouse")],
+            &mut |_call| GateDecision::Run,
+            MAX_TOOL_ROUNDS,
+            &mut |_part| {},
+            |_messages, tools, _emit| {
+                offered += 1;
+                // Markup once, then an answer: a stub that always returns markup
+                // would loop to the cap and prove nothing about recovery.
+                if tools && offered == 1 {
+                    Ok(completion_with_calls(
+                        Vec::new(),
+                        "<||DSML||calls>\
+                         <||DSML||invoke name=\"run_command\">\
+                         <||DSML||parameter name=\"command\" string=\"true\">ls db</||DSML||parameter>\
+                         </||DSML||invoke></||DSML||calls>",
+                    ))
+                } else {
+                    Ok(completion_with_calls(Vec::new(), "three rows"))
+                }
+            },
+        )
+        .expect("a turn");
+
+        assert_eq!(offered, 2, "the markup bought another round");
+        assert_eq!(
+            executed,
+            vec!["run_command".to_owned()],
+            "the call really ran"
+        );
+        assert_eq!(outcome.text, "three rows");
+        assert!(
+            outcome
+                .tools
+                .iter()
+                .all(|record| record.name == "run_command"),
+            "the recovered call is in the run log: {:?}",
+            outcome.tools.len()
+        );
+        assert!(
+            !outcome.text.contains("DSML"),
+            "markup never reaches the operator"
+        );
     }
 
     #[test]
