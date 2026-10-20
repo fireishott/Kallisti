@@ -26,11 +26,11 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_NEW,
-    ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL,
-    ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS, ROUTE_SETTINGS_FULL_ACCESS,
-    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
-    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
+    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_DELETE, ROUTE_CHAT_ID, ROUTE_CHAT_MODE,
+    ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
+    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -109,6 +109,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_CHAT, get(chat_page_handler))
         .route(ROUTE_CHAT_SEND, post(chat_send))
         .route(ROUTE_CHAT_CLEAR, post(chat_clear))
+        .route(ROUTE_CHAT_MODE, post(chat_mode))
         .route(ROUTE_CHAT_NEW, post(chat_new))
         .route(ROUTE_CHAT_SESSIONS, get(chat_sessions))
         .route(ROUTE_CHAT_ID, get(chat_conversation_handler))
@@ -2873,6 +2874,12 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         stats: chat::stats(&transcript),
         models,
         selected_model,
+        sandbox_mode: state
+            .engine
+            .permissions()
+            .map(|permissions| permissions.sandbox_mode.as_str().to_owned())
+            .unwrap_or_else(|_| crate::onboarding::SandboxMode::DEFAULT.as_str().to_owned()),
+        allow_full: state.allow_full(),
         context_window,
     })
 }
@@ -3406,6 +3413,71 @@ async fn read_multipart_chat(
 /// A field from a map, as a `&str` that outlives the call.
 fn field_value<'a>(fields: &'a std::collections::BTreeMap<String, String>, name: &str) -> &'a str {
     fields.get(name).map(String::as_str).unwrap_or("")
+}
+
+/// `POST /dashboard/chat/mode`.
+///
+/// The composer's picker posts one field. Everything else in the permission
+/// tuple is left exactly as it was, the same validator runs, and `full` is still
+/// refused unless the switch allows it.
+async fn chat_mode(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return refusal(error),
+    };
+    let current = match state.engine.permissions() {
+        Ok(permissions) => permissions,
+        Err(error) => return refusal(form_error(&error)),
+    };
+    let parsed = Permissions::validate_with(
+        field(&fields, "sandbox_mode"),
+        current.approval_policy.as_str(),
+        current.autopilot_ceiling.as_str(),
+        current.telemetry.as_str(),
+        state.engine.paired_device_count().unwrap_or(0) > 0,
+        state.engine.is_ready().unwrap_or(false),
+        state.allow_full(),
+    );
+    let mut permissions = match parsed {
+        Ok(permissions) => permissions,
+        Err(error) => {
+            return refusal(FormError::new(
+                Some(error.field()),
+                error.code(),
+                error.to_string(),
+            ));
+        }
+    };
+    permissions.approval_policy = current.approval_policy;
+    permissions.autopilot_ceiling = current.autopilot_ceiling;
+    permissions.telemetry = current.telemetry;
+    if let Err(error) = state.engine.set_permissions(permissions) {
+        return refusal(form_error(&error));
+    }
+    let detail = format!(
+        "{} -> {}",
+        current.sandbox_mode.as_str(),
+        permissions.sandbox_mode.as_str()
+    );
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "chat.mode", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "chat.mode", error);
+    }
+    ok_json(serde_json::json!({
+        "ok": true,
+        "sandbox_mode": permissions.sandbox_mode.as_str(),
+    }))
 }
 
 /// `POST /dashboard/chat/clear`.

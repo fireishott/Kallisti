@@ -207,7 +207,7 @@ fn main() -> ExitCode {
         }) => run_restore(cli.json, cli.state_dir, &from, force, dry_run),
         Some(Command::Doctor) => run_doctor(cli.json),
         Some(Command::Version) => {
-            println!("eris {}", admin::VERSION);
+            println!("eris {} build {}", admin::VERSION, admin::BUILD);
             ExitCode::SUCCESS
         }
     }

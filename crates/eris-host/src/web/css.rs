@@ -194,6 +194,19 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   margin: -12px 0 0;
   padding: 0 0 4px;
 }
+.session-row { display: flex; align-items: center; gap: 2px; }
+.session-row a { flex: 1 1 auto; min-width: 0; }
+.session-delete { margin: 0; flex: 0 0 auto; }
+.session-delete button {
+  padding: 2px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.session-delete button:hover { color: var(--bad); background: var(--raise); filter: none; }
 .sessions a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -649,11 +662,12 @@ pre.code {
   z-index: 1;
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 12px 20px;
-  margin-bottom: 18px;
+  gap: 10px 20px;
+  margin: 0 0 14px;
 }
+.chat-head h1 { margin: 0; }
 .chat-title .lede { margin-bottom: 0; max-width: 62ch; }
 .chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .chat-meta form { margin: 0; }
@@ -884,6 +898,7 @@ pre.code {
   gap: 10px;
 }
 .composer-pick { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.composer-pick #mode { max-width: 150px; }
 .composer-pick select {
   width: auto;
   max-width: 260px;

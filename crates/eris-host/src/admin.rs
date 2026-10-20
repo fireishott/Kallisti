@@ -58,6 +58,20 @@ pub const ADMIN_ADDR: &str = "127.0.0.1:7340";
 /// The version every response reports. Mirrors `[workspace.package]`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The build number inside this version.
+///
+/// The marketing version moves when behaviour changes shape; this number moves
+/// on every ship, so a fix can land without telling the world the product is a
+/// different version. It rides in the footer, `--version`, and the wallpaper
+/// fingerprint, which is what makes a rebuild visible to a cached browser.
+pub const BUILD: u32 = 10;
+
+/// `1.0.9 build 10`, for the places that state the whole identity.
+#[must_use]
+pub fn version_line() -> String {
+    format!("{VERSION} build {BUILD}")
+}
+
 /// `GET /healthz`.
 pub const ROUTE_HEALTHZ: &str = "/healthz";
 
@@ -80,6 +94,10 @@ pub const ROUTE_CHAT: &str = "/dashboard/chat";
 /// `POST /dashboard/chat/send` - one turn, streamed when the caller asks for an
 /// event stream and rendered on the next page when it does not.
 pub const ROUTE_CHAT_SEND: &str = "/dashboard/chat/send";
+
+/// `POST /dashboard/chat/mode` - the composer's sandbox-mode picker. One field,
+/// so the quick switch does not have to submit the whole permissions form.
+pub const ROUTE_CHAT_MODE: &str = "/dashboard/chat/mode";
 
 /// `POST /dashboard/chat/clear` - empty the transcript.
 pub const ROUTE_CHAT_CLEAR: &str = "/dashboard/chat/clear";

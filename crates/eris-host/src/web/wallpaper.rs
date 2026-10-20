@@ -149,7 +149,7 @@ pub fn url(wallpaper: &str) -> Option<String> {
                 Some(format!(
                     "{ROUTE_WALLPAPER_PREFIX}{}.jpg?v={}",
                     preset.id,
-                    env!("CARGO_PKG_VERSION")
+                    crate::admin::BUILD
                 ))
             } else {
                 Some(format!("{ROUTE_WALLPAPER_PREFIX}{}.svg", preset.id))
@@ -392,20 +392,22 @@ mod tests {
         assert!(url(NONE).is_none());
         assert_eq!(
             url("kallisti").as_deref(),
-            Some(concat!(
-                "/static/wallpaper/kallisti.jpg?v=",
-                env!("CARGO_PKG_VERSION")
+            Some(format!(
+                "/static/wallpaper/kallisti.jpg?v={}",
+                crate::admin::BUILD
             ))
+            .as_deref()
         );
         assert_eq!(url("arcs").as_deref(), Some("/static/wallpaper/arcs.svg"));
         assert_eq!(url(CUSTOM).as_deref(), Some("/static/wallpaper/custom"));
         // A garbage value still resolves, so a page never renders without one.
         assert_eq!(
             url("garbage").as_deref(),
-            Some(concat!(
-                "/static/wallpaper/kallisti.jpg?v=",
-                env!("CARGO_PKG_VERSION")
+            Some(format!(
+                "/static/wallpaper/kallisti.jpg?v={}",
+                crate::admin::BUILD
             ))
+            .as_deref()
         );
     }
 

@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
-use crate::admin::{ADMIN_ADDR, VERSION};
+use crate::admin::{ADMIN_ADDR, BUILD, VERSION};
 use crate::db::SetupState;
 use crate::device::DEVICE_ADDR;
 use crate::onboarding::{
@@ -429,11 +429,20 @@ pub fn shell(
                                 }
                                 @for session in &chrome.sessions {
                                     @let open = chrome.current_conversation.as_deref() == Some(session.id.as_str());
-                                    a href=(format!("/dashboard/chat/{}", session.id))
-                                        aria-current=[open.then_some("page")]
-                                        title=(session.title) {
-                                        span .session-title { (session.title) }
-                                        span .session-stamp { (session.stamp) }
+                                    div .session-row .open[open] {
+                                        a href=(format!("/dashboard/chat/{}", session.id))
+                                            aria-current=[open.then_some("page")]
+                                            title=(session.title) {
+                                            span .session-title { (session.title) }
+                                            span .session-stamp { (session.stamp) }
+                                        }
+                                        @if open {
+                                            form .session-delete method="post"
+                                                action=(format!("/dashboard/chat/{}/delete", session.id)) {
+                                                button type="submit" title="Delete this conversation"
+                                                    aria-label="Delete this conversation" { "×" }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -453,14 +462,14 @@ pub fn shell(
                                 }
                             }
                             span class=(state_class) { (state.as_str()) }
-                            span .ver { "Eris " (VERSION) }
+                            span .ver { "Eris " (VERSION) " build " (BUILD) }
                         }
                     }
                     div .wrap {
                         (body)
                         footer {
                             span .facts {
-                                "Eris " (VERSION)
+                                "Eris " (VERSION) " build " (BUILD)
                                 " | admin listener " (chrome.footer_line())
                                 @if let Some(url) = &chrome.public_url {
                                     " | public URL " (url)
@@ -2702,6 +2711,10 @@ pub struct ChatView {
     pub models: Vec<String>,
     /// The model the picker starts on.
     pub selected_model: String,
+    /// The sandbox mode the composer's picker starts on.
+    pub sandbox_mode: String,
+    /// Whether full host mode may be offered in that picker at all.
+    pub allow_full: bool,
     /// The window declared for the selected model, when one is known.
     pub context_window: Option<u64>,
 }
@@ -2812,43 +2825,13 @@ pub fn chat_page(view: &ChatView) -> Markup {
     let body = html! {
         div .chat-shell data-conversation=(view.conversation.clone()) {
         div .chat-head {
-            div .chat-title {
-                h1 { "Chat" }
-                p .lede {
-                    "One conversation with the daemon. Every turn carries the assistant identity and "
-                    "the recent pass of this transcript, and nothing here leaves the host except the "
-                    "turn itself."
-                }
-            }
-            div .chat-meta {
-                @if !view.provider_ready {
-                    span .badge.expired { "no provider" }
-                }
-                @if !view.messages.is_empty() {
-                    span .small { "times UTC" }
-                    form .inline-form method="post" action=(crate::admin::ROUTE_CHAT_CLEAR) {
-                        button type="submit" class="secondary" { "New chat" }
-                    }
-                }
+            h1 { "Chat" }
+            @if !view.provider_ready {
+                span .badge.expired { "no provider" }
             }
         }
         (alert_region(view.error.as_ref(), None))
         section .thread id="thread" aria-label="Conversation" {
-            @if view.messages.is_empty() {
-                div .chat-empty {
-                    div .mark aria-hidden="true" { "K" }
-                    h2 { "Nothing said yet" }
-                    p .small {
-                        "Ask anything. The reply streams in, the conversation stays on this host, and "
-                        "the transcript is yours to clear."
-                    }
-                    div .prompts {
-                        span .tag { "What can you do" }
-                        span .tag { "Summarise the audit log" }
-                        span .tag { "Draft a status update" }
-                    }
-                }
-            }
             @for line in &view.messages {
                 @let klass = format!(
                     "msg {}{}",
@@ -2883,6 +2866,21 @@ pub fn chat_page(view: &ChatView) -> Markup {
                     placeholder="Message Eris" {}
                 div .composer-bar {
                     div .composer-pick {
+                        label .sr-only for="mode" { "Access" }
+                        select id="mode" name="mode" aria-label="Access level" {
+                            @for mode in crate::onboarding::SandboxMode::ONBOARDING {
+                                option value=(mode.as_str())
+                                    selected[*mode.as_str() == view.sandbox_mode] {
+                                    (mode.label())
+                                }
+                            }
+                            @if view.allow_full {
+                                option value=(crate::onboarding::SandboxMode::Full.as_str())
+                                    selected[view.sandbox_mode == crate::onboarding::SandboxMode::Full.as_str()] {
+                                    (crate::onboarding::SandboxMode::Full.label())
+                                }
+                            }
+                        }
                         label .attach for="attachment" title="Attach a file" {
                             span aria-hidden="true" { "+" }
                             span .sr-only { "Attach a file" }
@@ -3043,10 +3041,10 @@ const CHAT_JS: &str = r##"(function () {
     try {
       var response = await fetch("/dashboard/chat/send", {
         method: "POST",
-        headers: {
-          "Accept": "text/event-stream",
-          "Content-Type": "application/x-www-form" + "-urlencoded"
-        },
+        // No Content-Type here on purpose: the body is FormData, and setting the
+        // header by hand omits the multipart boundary, which the server then
+        // cannot parse. The browser writes the correct header itself.
+        headers: { "Accept": "text/event-stream" },
         body: (function () {
           var body = new FormData();
           body.append("message", text);
@@ -3165,6 +3163,35 @@ const CHAT_JS: &str = r##"(function () {
     } catch (error) {
       // A rail that cannot refresh is not worth interrupting the conversation for.
     }
+  }
+
+  var mode = document.getElementById("mode");
+  if (mode) {
+    mode.addEventListener("change", async function () {
+      var previous = mode.getAttribute("data-last") || "";
+      var body = new URLSearchParams({ sandbox_mode: mode.value });
+      try {
+        var response = await fetch("/dashboard/chat/mode", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form" + "-urlencoded"
+          },
+          body: body
+        });
+        if (response.ok === false) {
+          var refusal = await response.json().catch(function () { return {}; });
+          if (previous) { mode.value = previous; }
+          if (status) { status.textContent = refusal.message || "access level refused"; }
+          return;
+        }
+        mode.setAttribute("data-last", mode.value);
+        if (status) { status.textContent = ""; }
+      } catch (error) {
+        if (previous) { mode.value = previous; }
+      }
+    });
+    mode.setAttribute("data-last", mode.value);
   }
 
   if (attachment) {

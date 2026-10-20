@@ -20,7 +20,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
-use crate::admin::{ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_SEND, ROUTE_SETTINGS};
+use crate::admin::{ROUTE_CHAT, ROUTE_CHAT_SEND, ROUTE_SETTINGS};
 use crate::web::chat::{self, CONVERSATION_ID, Role, State};
 use crate::web::templates::SettingsView;
 use crate::web::wallpaper;
@@ -90,12 +90,16 @@ fn the_chat_page_needs_a_session_and_renders_the_default_wallpaper() {
         "the form posts to the send route: {body}"
     );
     assert!(
-        body.contains("Nothing said yet"),
-        "an empty transcript says so: {body}"
+        !body.contains("Nothing said yet"),
+        "an empty conversation shows no placeholder panel: {body}"
     );
     assert!(
-        !body.contains(r#"action="/dashboard/chat/clear""#),
-        "there is nothing to clear yet: {body}"
+        !body.contains(r#"class="lede""#),
+        "the chat page carries no explanatory paragraph: {body}"
+    );
+    assert!(
+        body.contains(r#"id="mode""#),
+        "the composer offers the access picker: {body}"
     );
     assert_eq!(
         body.matches("<script").count(),
@@ -226,6 +230,47 @@ fn the_rail_list_is_served_for_a_page_that_stays_open() {
             .iter()
             .all(|row| row["title"].is_string() && row["stamp"].is_string()),
         "each row carries a title and a stamp: {body}"
+    );
+}
+
+#[test]
+fn the_composer_picker_changes_the_mode_and_refuses_full_when_closed() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let cookie = Some(cookie.as_str());
+
+    // Workspace write is a normal mode and needs nothing else.
+    let switched = block_on(send(
+        &app,
+        Call::post(
+            crate::admin::ROUTE_CHAT_MODE,
+            "sandbox_mode=workspace-write",
+        )
+        .cookie(cookie),
+    ));
+    assert_eq!(switched.status, StatusCode::OK, "{}", switched.body);
+    assert_eq!(switched.json()["sandbox_mode"], "workspace-write");
+    assert_eq!(
+        engine.permissions().unwrap().sandbox_mode.as_str(),
+        "workspace-write"
+    );
+
+    // Full is refused while the switch is off, by name.
+    let refused = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_CHAT_MODE, "sandbox_mode=full").cookie(cookie),
+    ));
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.json()["field"], "sandbox_mode");
+    assert_eq!(
+        engine.permissions().unwrap().sandbox_mode.as_str(),
+        "workspace-write",
+        "a refusal leaves the stored mode alone"
+    );
+
+    // The other three fields of the tuple are untouched by the picker.
+    assert_eq!(
+        engine.permissions().unwrap().approval_policy.as_str(),
+        "ask"
     );
 }
 
@@ -424,16 +469,19 @@ fn a_settled_transcript_renders_both_speakers_keeps_code_and_clears() {
         "the fence's language is shown: {body}"
     );
     assert!(
-        body.contains(r#"action="/dashboard/chat/clear""#),
-        "a non-empty transcript offers the clear: {body}"
+        body.contains(&format!(
+            r#"action="/dashboard/chat/{CONVERSATION_ID}/delete""#
+        )),
+        "the open conversation can be deleted from the rail: {body}"
     );
 
-    let cleared = block_on(send(
+    let deleted = block_on(send(
         &app,
-        Call::post(ROUTE_CHAT_CLEAR, "").cookie(Some(&cookie)),
+        Call::post_owned(format!("/dashboard/chat/{CONVERSATION_ID}/delete"), "")
+            .cookie(Some(&cookie)),
     ));
-    assert_eq!(cleared.status, StatusCode::SEE_OTHER, "{}", cleared.body);
-    assert_eq!(cleared.location().as_deref(), Some(ROUTE_CHAT));
+    assert_eq!(deleted.status, StatusCode::SEE_OTHER, "{}", deleted.body);
+    assert_eq!(deleted.location().as_deref(), Some(ROUTE_CHAT));
     assert_eq!(chat::count(db, CONVERSATION_ID).unwrap(), 0);
 }
 
