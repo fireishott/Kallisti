@@ -6,6 +6,32 @@ observe; commit history carries the detail.
 
 ## Unreleased
 
+- **A security page.** Rotating the sign-in credential gets its own page at
+  `/dashboard/security`, because the settings page is tested to contain no password
+  input at all - nothing stored there is a secret value, only references. Rotation
+  requires the current credential even with a live session, refuses anything under
+  eight characters, stores an argon2id verifier, and deletes every admin session so
+  old cookies do not survive the change. The page states the recovery truth: on a
+  self-hosted daemon there is no recovery e-mail, and the `admin_credential` row is
+  the only way back.
+- **The device listener can bind where a phone can reach it.** `/v1` bound
+  `127.0.0.1:7341` as a literal, so pairing was only ever provable from the host.
+  Settings > Device listener now takes a bind list, validated by the same parser the
+  admin listener uses, and every address binds at once. Loopback stays the default.
+  The device API is `/v1` only and every call needs a paired token, so opening an
+  address does not open the dashboard. Applied at the next start, and the page says
+  so rather than pretending it is instant.
+- **Scannable pairing.** Minting a code renders a QR on the Devices page whose
+  payload is the shape the legacy client already parses - compact JSON,
+  `{"code":"...","relay":"http://host:7341"}`. `relay` is the daemon's own bind,
+  preferring a non-loopback address, because a QR carrying `127.0.0.1` is a code
+  that cannot work on a phone. Drawn as inline SVG with a quiet zone; no image
+  encoder, no binary on the page.
+- **Calls that arrive as text are re-issued as calls.** Some provider routes fail to
+  lift a model's tool calls into the structured array and pass its own markup
+  through as content. That markup is now parsed back into real calls, which take the
+  normal path - same approval gate, same executor, same run-log records - and the
+  visible answer keeps the prose and loses the tags.
 - **Memory backends.** Before a turn answers, the daemon recalls from the operator's
   own memory and adds what it finds to the prompt, marked as possibly stale context
   rather than as instructions. Settings > Memory chooses the backend: **gbrain**
