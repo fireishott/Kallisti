@@ -28,6 +28,7 @@ use crate::onboarding::{
 
 use super::css::APP_CSS;
 use super::store::{AuditEntry, DeviceOverview, JobRow, SessionRow};
+use super::wallpaper;
 
 /// A validation failure, shaped for the JSON body and for the inline alert.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,6 +412,8 @@ pub fn shell(
 /// One section of the application shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
+    /// The conversation surface: the transcript, the composer, the wallpaper.
+    Chat,
     /// The dashboard home.
     Dashboard,
     /// Every device session, and the jobs each one started.
@@ -426,9 +429,10 @@ pub enum Nav {
 }
 
 impl Nav {
-    /// Every entry, in display order. Every one of them is a page now: the nav
-    /// has no placeholder left in it.
-    pub const ALL: [Self; 6] = [
+    /// Every entry, in display order. Every one of them is a page: the nav has
+    /// no placeholder in it.
+    pub const ALL: [Self; 7] = [
+        Self::Chat,
         Self::Dashboard,
         Self::Sessions,
         Self::Devices,
@@ -441,6 +445,7 @@ impl Nav {
     #[must_use]
     pub fn path(self) -> &'static str {
         match self {
+            Self::Chat => crate::admin::ROUTE_CHAT,
             Self::Dashboard => crate::admin::ROUTE_DASHBOARD,
             Self::Sessions => crate::admin::ROUTE_SESSIONS,
             Self::Devices => crate::admin::ROUTE_DEVICES,
@@ -454,6 +459,7 @@ impl Nav {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::Chat => "Chat",
             Self::Dashboard => "Dashboard",
             Self::Sessions => "Sessions",
             Self::Devices => "Devices",
@@ -1271,6 +1277,10 @@ pub struct SettingsView {
     pub persona_enabled: bool,
     /// The file the persona lives in, stated on the page.
     pub persona_path: String,
+    /// The stored wallpaper id: a preset name, `custom`, or `none`.
+    pub wallpaper: String,
+    /// Whether an uploaded image is on disk and usable.
+    pub wallpaper_custom: bool,
     /// The failure to show, when this render follows a refused post.
     pub error: Option<FormError>,
     /// The group that was saved and the sentence to show, after a redirect.
@@ -1297,6 +1307,8 @@ impl SettingsView {
             persona_text: String::new(),
             persona_enabled: true,
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
+            wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
+            wallpaper_custom: false,
             error: None,
             notice: None,
         }
@@ -1624,6 +1636,59 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it is the one setting that changes how the model talks rather than what it can reach."
             }
             (persona_group(view))
+        }
+
+        section .card aria-labelledby="appearance-heading" {
+            h2 id="appearance-heading" { "Appearance" }
+            p .small {
+                "The chat backdrop. It sits behind the conversation only, so the chrome keeps the "
+                "fixed palette and the text on top never depends on which picture is loaded."
+            }
+            form method="post" action=(wallpaper::ROUTE_WALLPAPER_SAVE) novalidate {
+                div .choices {
+                    @for preset in wallpaper::PRESETS {
+                        @let chosen = view.wallpaper == preset.id;
+                        div .choice .selected[chosen] {
+                            input type="radio" id=(format!("wallpaper-{}", preset.id))
+                                name="wallpaper" value=(preset.id) checked[chosen];
+                            label for=(format!("wallpaper-{}", preset.id)) {
+                                span .name { (preset.label) }
+                                span .why { (preset.hint) }
+                            }
+                        }
+                    }
+                    @if view.wallpaper_custom {
+                        @let chosen = view.wallpaper == wallpaper::CUSTOM;
+                        div .choice .selected[chosen] {
+                            input type="radio" id="wallpaper-custom" name="wallpaper"
+                                value=(wallpaper::CUSTOM) checked[chosen];
+                            label for="wallpaper-custom" {
+                                span .name { "Custom image" }
+                                span .why { "The image you uploaded below." }
+                            }
+                        }
+                    }
+                }
+                div .actions {
+                    button type="submit" { "Save wallpaper" }
+                }
+            }
+            h3 .mt { "Upload an image" }
+            form method="post" action=(wallpaper::ROUTE_WALLPAPER_UPLOAD)
+                enctype="multipart/form-data" novalidate {
+                div .field {
+                    label for="wallpaper-image" { "PNG, JPEG or WebP" }
+                    input type="file" id="wallpaper-image" name="image"
+                        accept="image/png,image/jpeg,image/webp";
+                    span .hint {
+                        "Up to 8 MiB, checked by the bytes rather than by the filename. SVG is "
+                        "refused: an SVG can carry script, and a wallpaper is not worth an injection."
+                    }
+                }
+                div .actions {
+                    button type="submit" class="secondary" { "Upload and use" }
+                }
+            }
         }
 
         section .card aria-labelledby="read-only-heading" {
@@ -2391,6 +2456,362 @@ pub fn devices_page(view: &DevicesView) -> Markup {
     )
 }
 
+/// One line of the conversation, as the page renders it.
+///
+/// The body is raw text and is rendered by [`blocks`]: an assistant answer can
+/// carry a fenced code block, and a chat that renders code as one grey paragraph
+/// is not a chat worth using.
+#[derive(Debug, Clone)]
+pub struct ChatLine {
+    /// True for the operator's own message.
+    pub user: bool,
+    /// The name over the bubble.
+    pub who: String,
+    /// What was said, so far.
+    pub body: String,
+    /// The clock time, for the line under the bubble.
+    pub stamp: String,
+    /// True when the turn was refused.
+    pub failed: bool,
+    /// The refusal's code, when it was.
+    pub error_code: Option<String>,
+    /// True while the answer is still arriving.
+    pub pending: bool,
+}
+
+/// Everything the chat surface needs.
+#[derive(Debug, Clone)]
+pub struct ChatView {
+    /// The listener truth this page states in its footer.
+    pub chrome: Chrome,
+    /// The daemon's state, which is `ready` on this page.
+    pub state: SetupState,
+    /// The version line.
+    pub version: String,
+    /// The configured model, shown as a chip so the answer has a return address.
+    pub model: String,
+    /// The backdrop, when one is chosen.
+    pub wallpaper_url: Option<String>,
+    /// The transcript, oldest first.
+    pub messages: Vec<ChatLine>,
+    /// False until a provider is stored; the composer is disabled when it is.
+    pub provider_ready: bool,
+    /// A refusal to show above the transcript.
+    pub error: Option<FormError>,
+}
+
+/// The clock time from a database timestamp, for the line under a bubble.
+///
+/// The database stamps RFC 3339 with a `T` and a `Z`, so the time is the five
+/// characters after the `T`. Anything unexpected falls back to the raw value
+/// rather than hiding the row.
+#[must_use]
+pub fn clock(stamp: &str) -> String {
+    stamp
+        .split_once('T')
+        .map(|(_date, rest)| rest.chars().take(5).collect::<String>())
+        .filter(|time| time.len() == 5)
+        .unwrap_or_else(|| stamp.to_owned())
+}
+
+/// Render message text into blocks: paragraphs, and fenced code as code.
+///
+/// This is deliberately not a markdown engine. A fence is the one structure an
+/// answer from a model needs in order to be readable, and everything else stays
+/// literal text so nothing in an answer can become markup.
+#[must_use]
+pub fn blocks(text: &str) -> Markup {
+    if text.trim().is_empty() {
+        return html! { p .muted-line { "Streaming" } };
+    }
+    let mut pieces: Vec<Markup> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("```") {
+        let (before, after) = rest.split_at(start);
+        if !before.trim().is_empty() {
+            pieces.push(html! { p { (before.trim()) } });
+        }
+        let after = &after[3..];
+        let (language, body_start) = match after.find('\n') {
+            Some(index) => (&after[..index], index + 1),
+            None => ("", after.len()),
+        };
+        let body = &after[body_start..];
+        let Some(end) = body.find("```") else {
+            pieces.push(html! {
+                pre .code { (body.trim_end()) }
+            });
+            rest = "";
+            break;
+        };
+        let code = &body[..end];
+        pieces.push(html! {
+            div .code-block {
+                @if !language.trim().is_empty() {
+                    span .code-lang { (language.trim()) }
+                }
+                pre .code { (code.trim_end()) }
+            }
+        });
+        rest = &body[end + 3..];
+    }
+    if !rest.trim().is_empty() {
+        pieces.push(html! { p { (rest.trim()) } });
+    }
+    html! { @for piece in pieces { (piece) } }
+}
+
+/// The chat surface: the transcript, the composer, and the backdrop behind it.
+///
+/// The form is a real POST, so the page works with no script at all and `curl`
+/// can drive it. The inline script at the bottom upgrades that form into a
+/// streaming conversation: it posts the same body, reads the same route as an
+/// event stream, and appends what arrives. It is the only script in the UI, it is
+/// inline (no `src`, no network, no third party), and every other page is still
+/// script-free.
+pub fn chat_page(view: &ChatView) -> Markup {
+    let body = html! {
+        @if let Some(url) = &view.wallpaper_url {
+            div .chat-wall style=(format!("background-image:url('{url}')")) {}
+        }
+        div .chat-shell {
+        div .chat-head {
+            div .chat-title {
+                h1 { "Chat" }
+                p .lede {
+                    "One conversation with the daemon. Every turn carries the assistant identity and "
+                    "the recent pass of this transcript, and nothing here leaves the host except the "
+                    "turn itself."
+                }
+            }
+            div .chat-meta {
+                @if view.provider_ready {
+                    span .tag { (view.model) }
+                } @else {
+                    span .badge.expired { "no provider" }
+                }
+                @if !view.messages.is_empty() {
+                    span .small { "times UTC" }
+                    form .inline-form method="post" action=(crate::admin::ROUTE_CHAT_CLEAR) {
+                        button type="submit" class="secondary" { "New chat" }
+                    }
+                }
+            }
+        }
+        (alert_region(view.error.as_ref(), None))
+        section .thread id="thread" aria-label="Conversation" {
+            @if view.messages.is_empty() {
+                div .chat-empty {
+                    div .mark aria-hidden="true" { "K" }
+                    h2 { "Nothing said yet" }
+                    p .small {
+                        "Ask anything. The reply streams in, the conversation stays on this host, and "
+                        "the transcript is yours to clear."
+                    }
+                    div .prompts {
+                        span .tag { "What can you do" }
+                        span .tag { "Summarise the audit log" }
+                        span .tag { "Draft a status update" }
+                    }
+                }
+            }
+            @for line in &view.messages {
+                @let klass = format!(
+                    "msg {}{}",
+                    if line.user { "user" } else { "assistant" },
+                    if line.pending { " pending" } else { "" },
+                );
+                article class=(klass) {
+                    div .who { (line.who) }
+                    div .bubble .failed[line.failed] { (blocks(&line.body)) }
+                    div .meta {
+                        span .mono { (line.stamp) }
+                        @if let Some(code) = &line.error_code {
+                            span .tag { (code) }
+                        }
+                    }
+                }
+            }
+        }
+        @if view.provider_ready {
+            form .composer id="composer-form" method="post"
+                action=(crate::admin::ROUTE_CHAT_SEND) novalidate {
+                label .sr-only for="composer" { "Message" }
+                textarea id="composer" name="message" rows="1" spellcheck="false"
+                    placeholder="Message Eris" {}
+                div .composer-actions {
+                    span .hint id="composer-status" {}
+                    button type="button" id="stop" class="secondary" hidden { "Stop" }
+                    button type="submit" id="send" { "Send" }
+                }
+            }
+        } @else {
+            p .empty {
+                strong { "No provider yet" }
+                "Finish onboarding, or set the endpoint and model on the settings page, and the "
+                "composer appears."
+            }
+        }
+        }
+        script { (PreEscaped(CHAT_JS)) }
+    };
+    shell("Chat", view.state, Some(Nav::Chat), body, &view.chrome)
+}
+
+/// The one script in the UI: progressive enhancement for the composer.
+///
+/// It posts the same form body the plain form posts, asks for the event stream,
+/// appends deltas, and offers a stop. With it off, the form still posts and the
+/// answer arrives on the next render.
+const CHAT_JS: &str = r##"(function () {
+  var form = document.getElementById("composer-form");
+  var box = document.getElementById("composer");
+  var thread = document.getElementById("thread");
+  var stop = document.getElementById("stop");
+  var status = document.getElementById("composer-status");
+  if (form === null || box === null || thread === null) { return; }
+
+  var busy = false;
+  var controller = null;
+
+  function toBottom() { thread.scrollTop = thread.scrollHeight; }
+
+  function line(role, who) {
+    var article = document.createElement("article");
+    article.className = "msg " + role;
+    var label = document.createElement("div");
+    label.className = "who";
+    label.textContent = who;
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    var text = document.createElement("p");
+    bubble.appendChild(text);
+    article.appendChild(label);
+    article.appendChild(bubble);
+    thread.appendChild(article);
+    return { article: article, bubble: bubble, text: text };
+  }
+
+  function setBusy(next) {
+    busy = next;
+    box.disabled = next;
+    var send = document.getElementById("send");
+    if (send) { send.disabled = next; }
+    if (stop) { stop.hidden = next === false; }
+    if (status) { status.textContent = next ? "streaming" : ""; }
+  }
+
+  function parseFrame(frame) {
+    var event = "message";
+    var data = "";
+    var lines = frame.split("\n");
+    for (var index = 0; index < lines.length; index += 1) {
+      if (lines[index].indexOf("event:") === 0) {
+        event = lines[index].slice(6).trim();
+      }
+      if (lines[index].indexOf("data:") === 0) {
+        data += lines[index].slice(5).trim();
+      }
+    }
+    return { event: event, data: data };
+  }
+
+  async function send() {
+    var text = box.value.trim();
+    if (text === "" || busy) { return; }
+    var userLine = document.createElement("article");
+    userLine.className = "msg user";
+    var userWho = document.createElement("div");
+    userWho.className = "who";
+    userWho.textContent = "You";
+    var userBubble = document.createElement("div");
+    userBubble.className = "bubble";
+    var userText = document.createElement("p");
+    userText.textContent = text;
+    userBubble.appendChild(userText);
+    userLine.appendChild(userWho);
+    userLine.appendChild(userBubble);
+    thread.appendChild(userLine);
+
+    box.value = "";
+    setBusy(true);
+    toBottom();
+    var target = line("assistant", "Eris");
+    target.article.className = "msg assistant pending";
+    var answer = "";
+    controller = new AbortController();
+    try {
+      var response = await fetch("/dashboard/chat/send", {
+        method: "POST",
+        headers: {
+          "Accept": "text/event-stream",
+          "Content-Type": "application/x-www-form" + "-urlencoded"
+        },
+        body: new URLSearchParams({ message: text }),
+        signal: controller.signal
+      });
+      if (response.ok === false) { throw new Error("HTTP " + response.status); }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+      var running = true;
+      while (running) {
+        var chunk = await reader.read();
+        if (chunk.done) { running = false; break; }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var frames = buffer.split("\n\n");
+        buffer = frames.pop();
+        for (var index = 0; index < frames.length; index += 1) {
+          var parsed = parseFrame(frames[index]);
+          if (parsed.event === "delta") {
+            answer += JSON.parse(parsed.data).text;
+            target.text.textContent = answer;
+            toBottom();
+          }
+          if (parsed.event === "done") { answer = JSON.parse(parsed.data).text; }
+          if (parsed.event === "error") {
+            target.bubble.className = "bubble failed";
+            target.text.textContent = JSON.parse(parsed.data).message;
+          }
+        }
+      }
+      target.text.textContent = answer;
+    } catch (error) {
+      if (controller && controller.signal.aborted) {
+        target.text.textContent = answer + " [stopped]";
+      } else {
+        target.bubble.className = "bubble failed";
+        target.text.textContent = "The turn failed: " + error.message;
+      }
+    }
+    controller = null;
+    target.article.className = "msg assistant";
+    setBusy(false);
+    toBottom();
+    box.focus();
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    send();
+  });
+
+  box.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && event.shiftKey === false) {
+      event.preventDefault();
+      send();
+    }
+  });
+
+  if (stop) {
+    stop.addEventListener("click", function () {
+      if (controller) { controller.abort(); }
+    });
+  }
+
+  box.focus();
+})();"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2427,6 +2848,35 @@ mod tests {
         assert!(page.contains("passphrase_rejected"));
         assert!(page.contains(r#"aria-invalid="true""#));
         assert!(!page.contains("<script"), "there is no script in the UI");
+    }
+
+    #[test]
+    fn a_fenced_block_becomes_code_and_everything_else_stays_text() {
+        let rendered = blocks("Use this:\n```sh\nls -l\n```\nThat is all.").into_string();
+        assert!(
+            rendered.contains(r#"<span class="code-lang">sh</span>"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"<pre class="code">ls -l</pre>"#),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<p>Use this:</p>"), "{rendered}");
+        assert!(rendered.contains("<p>That is all.</p>"), "{rendered}");
+
+        // An empty answer is a placeholder, not a blank bubble.
+        assert!(blocks("   ").into_string().contains("Streaming"));
+
+        // Markup in an answer stays text: the renderer never trusts the model.
+        let hostile = blocks("<script>alert(1)</script>").into_string();
+        assert!(!hostile.contains("<script>"), "{hostile}");
+        assert!(hostile.contains("&lt;script&gt;"), "{hostile}");
+    }
+
+    #[test]
+    fn the_clock_comes_from_the_database_stamp() {
+        assert_eq!(clock("2026-10-19T23:41:43.937Z"), "23:41");
+        assert_eq!(clock("nonsense"), "nonsense");
     }
 
     #[test]

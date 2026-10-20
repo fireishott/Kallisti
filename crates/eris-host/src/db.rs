@@ -29,21 +29,22 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The eleven tables the migrations create. `schema_migrations` is the twelfth
-/// and is created by the runner, not by a migration. 0001 creates the first
-/// nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds columns
-/// to `jobs` and no table at all, so the count is unchanged.
-pub const TABLES: [&str; 11] = [
+/// The twelve tables the migrations create. `schema_migrations` is the
+/// thirteenth and is created by the runner, not by a migration. 0001 creates the
+/// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
+/// columns to `jobs` and no table at all; 0005 adds `chat_messages`.
+pub const TABLES: [&str; 12] = [
     "admin_credential",
     "admin_sessions",
     "app_state",
     "audit_log",
     "auth_tokens",
+    "chat_messages",
     "devices",
     "job_events",
     "jobs",
@@ -80,6 +81,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "0004_turn_columns",
         sql: MIGRATION_0004,
+    },
+    Migration {
+        version: 5,
+        name: "0005_chat_messages",
+        sql: MIGRATION_0005,
     },
 ];
 
@@ -268,6 +274,35 @@ ALTER TABLE jobs ADD COLUMN lease_expires_at TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_device_idempotency
     ON jobs (device_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+";
+
+/// Migration 0005: the browser chat transcript.
+///
+/// One row is one message in one conversation. The pair is deliberate: the body
+/// is the operator's own words and the model's reply, so the row is the system of
+/// record for what was said, and the conversation id is what lets a second
+/// surface (a thread list, a shared chat) exist later without a rewrite.
+///
+/// `state` is a closed set for the same reason `jobs.status` is: a message is
+/// either settled, still arriving, or refused, and a fourth value would be a bug
+/// rather than a feature. `usage_json` keeps the provider's own token accounting
+/// beside the reply it belongs to, and it is nullable because a refused turn has
+/// no usage to report.
+const MIGRATION_0005: &str = r"
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id              TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    body            TEXT NOT NULL DEFAULT '',
+    state           TEXT NOT NULL DEFAULT 'complete'
+                    CHECK (state IN ('complete', 'streaming', 'failed')),
+    error_code      TEXT,
+    usage_json      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation
+    ON chat_messages (conversation_id, created_at);
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

@@ -13,8 +13,8 @@
 use axum::http::StatusCode;
 
 use crate::admin::{
-    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_LOGIN,
-    ROUTE_SESSIONS, ROUTE_SETTINGS, router_with,
+    AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_CHAT, ROUTE_DASHBOARD, ROUTE_DEVICES,
+    ROUTE_LOGIN, ROUTE_SESSIONS, ROUTE_SETTINGS, router_with,
 };
 
 use super::harness::{
@@ -23,7 +23,8 @@ use super::harness::{
 
 /// Every nav link that has a page behind it. Since P14 that is all of them: the
 /// backups page exists, so nothing is left as a placeholder.
-const LIVE_NAV: [&str; 6] = [
+const LIVE_NAV: [&str; 7] = [
+    ROUTE_CHAT,
     ROUTE_DASHBOARD,
     ROUTE_SESSIONS,
     ROUTE_DEVICES,
@@ -274,6 +275,7 @@ fn every_page_has_no_purple_and_no_herald() {
         ROUTE_DASHBOARD,
         ROUTE_SETTINGS,
         ROUTE_ACTIVITY,
+        ROUTE_CHAT,
         ROUTE_LOGIN,
         "/static/app.css",
     ] {
@@ -329,7 +331,24 @@ fn every_page_has_no_purple_and_no_herald() {
             !body.replace("<!DOCTYPE html>", "").contains('!'),
             "{label} carries an exclamation mark outside the doctype"
         );
-        assert!(!lowered.contains("<script"), "{label} carries a script");
+        if label == ROUTE_CHAT {
+            // The one exception, and it is deliberate: the chat page carries a
+            // single inline script that upgrades its own form into a streaming
+            // conversation. It has no `src`, reaches no network of its own, and
+            // the form still works when it is blocked. Every other page, and any
+            // second script anywhere, still fails this test.
+            assert_eq!(
+                lowered.matches("<script").count(),
+                1,
+                "{label} carries exactly one script"
+            );
+            assert!(
+                !lowered.contains("<script src") && !lowered.contains("http://"),
+                "{label} script is inline and fetches nothing"
+            );
+        } else {
+            assert!(!lowered.contains("<script"), "{label} carries a script");
+        }
         for banned in ["http://", "https://"] {
             if lowered.contains(banned) {
                 assert!(

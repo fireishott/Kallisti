@@ -1,14 +1,19 @@
 //! Server-rendered pages and the routes that serve them.
 //!
-//! `maud` for the markup, one inline stylesheet, no script, no build step, and no
-//! CDN: `curl` can read every step and a browser with JavaScript disabled works.
+//! `maud` for the markup, one inline stylesheet, no build step, and no CDN: a
+//! browser with JavaScript disabled can read and use every page. The chat
+//! surface adds one small inline script on that one page, as progressive
+//! enhancement: with it the answer streams in, without it the form still works
+//! and the reply arrives on the next page.
 
 pub mod backups;
+pub mod chat;
 pub mod css;
 pub mod proxy;
 pub mod routes;
 pub mod store;
 pub mod templates;
+pub mod wallpaper;
 
 /// P11 acceptance for the sign-in route. Test-only: the handlers live with the
 /// other handlers in `routes`, and this module is the suite that pins the
@@ -44,3 +49,8 @@ mod devices;
 /// refusals that keep an enabled-but-blank persona from existing.
 #[cfg(test)]
 mod persona;
+
+/// The conversation surface and the wallpaper: session gating, the transcript,
+/// the streaming POST's refusals, and the preset and upload paths.
+#[cfg(test)]
+mod chat_surface;

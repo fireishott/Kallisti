@@ -12,16 +12,22 @@
 
 use std::collections::BTreeMap;
 
+use std::convert::Infallible;
+
 use axum::body::Body;
+use axum::extract::multipart::Multipart;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::response::sse::{Event as SseEvent, KeepAlive as SseKeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::admin::{
     AppState, ROUTE_ACTIVITY, ROUTE_BACKUPS, ROUTE_BACKUPS_CREATE, ROUTE_BACKUPS_RESTORE,
-    ROUTE_DASHBOARD, ROUTE_DEVICES, ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS,
-    ROUTE_SETTINGS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
+    ROUTE_CHAT, ROUTE_CHAT_CLEAR, ROUTE_CHAT_SEND, ROUTE_DASHBOARD, ROUTE_DEVICES,
+    ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA, ROUTE_SETTINGS_PROVIDER,
     ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
@@ -34,14 +40,16 @@ use crate::onboarding::{
 };
 use crate::persona::{MAX_PERSONA_BYTES, SETTING_PERSONA_ENABLED, character_count};
 use crate::web::backups;
+use crate::web::chat;
 use crate::web::proxy::ClientContext;
 use crate::web::store;
 use crate::web::templates::{
-    ActivityView, BackupsView, DEVICE_NAME_LIMIT, DashboardView, DeviceRow, DevicesView, FormError,
-    IssuedCodeView, SessionDetailView, SessionsView, SettingsGroup, SettingsView, SetupView,
-    activity_page, backups_page, dashboard_page, devices_page, error_page, login_page,
-    session_page, sessions_page, settings_page, setup_page,
+    ActivityView, BackupsView, ChatLine, ChatView, DEVICE_NAME_LIMIT, DashboardView, DeviceRow,
+    DevicesView, FormError, IssuedCodeView, SessionDetailView, SessionsView, SettingsGroup,
+    SettingsView, SetupView, activity_page, backups_page, chat_page, dashboard_page, devices_page,
+    error_page, login_page, session_page, sessions_page, settings_page, setup_page,
 };
+use crate::web::wallpaper;
 
 /// The client context the middleware attached, or a plain direct context when a
 /// test drives a handler without it.
@@ -95,6 +103,11 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_BACKUPS_CREATE, post(create_backup))
         .route(ROUTE_BACKUPS_RESTORE, post(restore_backup))
         .route(ROUTE_JOB_CANCEL, post(cancel_job))
+        .route(ROUTE_CHAT, get(chat_page_handler))
+        .route(ROUTE_CHAT_SEND, post(chat_send))
+        .route(ROUTE_CHAT_CLEAR, post(chat_clear))
+        .route(wallpaper::ROUTE_WALLPAPER_SAVE, post(save_wallpaper))
+        .route(wallpaper::ROUTE_WALLPAPER_UPLOAD, post(upload_wallpaper))
         .route("/dashboard/provider/rotate", post(rotate_provider))
         .route("/dashboard/device/revoke", post(revoke_device))
         .route("/dashboard/mode", post(mode))
@@ -2745,6 +2758,537 @@ fn endpoint_has_host(url: &str) -> bool {
         .unwrap_or("");
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     !authority.is_empty() && !authority.starts_with(':') && !authority.ends_with(':')
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+/// The wallpaper the operator chose, and whether an uploaded image backs it.
+fn wallpaper_choice(state: &AppState) -> Result<(String, bool), FormError> {
+    let stored = state
+        .engine
+        .setting(wallpaper::SETTING_WALLPAPER)
+        .map_err(|error| FormError::new(None, "settings_unreadable", error.to_string()))?;
+    let selected = wallpaper::current(stored.as_deref());
+    let custom = wallpaper::custom_file(state.engine.paths()).is_file();
+    Ok((selected, custom))
+}
+
+/// Whether a provider is stored, which decides whether the composer renders.
+fn provider_ready(state: &AppState) -> bool {
+    chat::turn_config(&state.engine).ok().flatten().is_some()
+}
+
+/// Everything the chat page states, in one place, so the page and every refusal
+/// that re-renders it agree.
+fn build_chat_view(state: &AppState) -> Result<ChatView, FormError> {
+    let transcript = chat::load(state.engine.db(), chat::CONVERSATION_ID)
+        .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
+    let model = state
+        .engine
+        .setting(SETTING_MODEL)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let (selected, custom_present) = wallpaper_choice(state)?;
+    let url = if selected == wallpaper::CUSTOM && !custom_present {
+        // `custom` with no file behind it: paint the default rather than a hole.
+        wallpaper::url(wallpaper::DEFAULT_WALLPAPER)
+    } else {
+        wallpaper::url(&selected)
+    };
+
+    let messages = transcript
+        .iter()
+        .map(|message| {
+            let user = message.role == chat::Role::User;
+            ChatLine {
+                user,
+                who: if user {
+                    "You".to_owned()
+                } else {
+                    "Eris".to_owned()
+                },
+                body: message.body.clone(),
+                stamp: chat_clock(&message.created_at),
+                failed: message.state == chat::State::Failed,
+                error_code: message.error_code.clone(),
+                pending: message.state == chat::State::Streaming,
+            }
+        })
+        .collect();
+
+    Ok(ChatView {
+        chrome: state.chrome(),
+        state: state.engine.state().unwrap_or(crate::db::SetupState::Ready),
+        version: VERSION.to_owned(),
+        model,
+        wallpaper_url: url,
+        messages,
+        provider_ready: provider_ready(state),
+        error: None,
+    })
+}
+
+/// A clock label, re-exported so this file does not depend on the template's
+/// module path for one string operation.
+fn chat_clock(stamp: &str) -> String {
+    crate::web::templates::clock(stamp)
+}
+
+/// `GET /dashboard/chat`.
+async fn chat_page_handler(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match build_chat_view(&state) {
+        Ok(view) => page(chat_page(&view)),
+        Err(error) => refusal(error),
+    }
+}
+
+/// `POST /dashboard/chat/send`.
+///
+/// Two modes, one validation path. A browser that asked for the event stream gets
+/// the answer as it arrives; a plain form post waits for the whole turn and comes
+/// back to the transcript. The user's message is written before the provider is
+/// touched, so a refused turn still shows what was asked and why.
+async fn chat_send(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields_within(&headers, body, chat::MAX_MESSAGE_BYTES * 4).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_dashboard(&state, wants_html(&headers), error),
+    };
+    let text = match chat::accept_text(field(&fields, "message")) {
+        Ok(text) => text,
+        Err(message) => {
+            let error = FormError::new(Some("message"), "message_invalid", message);
+            return fail_dashboard(&state, wants_html(&headers), error);
+        }
+    };
+
+    // The provider is checked before anything is written: a daemon with no
+    // endpoint has not accepted the message, so the transcript does not gain a
+    // question that will never have an answer.
+    let Some(config) = chat::turn_config(&state.engine).ok().flatten() else {
+        let error = FormError::new(
+            None,
+            "provider_not_configured",
+            "no provider is stored: set the endpoint, the key reference and the model on the settings page",
+        );
+        return fail_dashboard(&state, wants_html(&headers), error);
+    };
+
+    let db = state.engine.db().clone();
+    if let Err(error) = chat::append(
+        &db,
+        chat::CONVERSATION_ID,
+        chat::Role::User,
+        &text,
+        chat::State::Complete,
+    ) {
+        return refusal(FormError::new(None, "chat_write_failed", error.to_string()));
+    }
+
+    // The assistant row exists before the first token, so a refresh mid-answer
+    // shows the partial reply rather than nothing at all.
+    let answer_id = match chat::append(
+        &db,
+        chat::CONVERSATION_ID,
+        chat::Role::Assistant,
+        "",
+        chat::State::Streaming,
+    ) {
+        Ok(id) => id,
+        Err(error) => return refusal(FormError::new(None, "chat_write_failed", error.to_string())),
+    };
+
+    let transcript = match chat::load(&db, chat::CONVERSATION_ID) {
+        Ok(transcript) => transcript,
+        Err(error) => return refusal(FormError::new(None, "chat_unreadable", error.to_string())),
+    };
+    let history = chat::history(&transcript, &answer_id);
+
+    let streaming = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
+
+    if !streaming {
+        let task = spawn_turn(&state, config, answer_id, history, None);
+        let _ = task.await;
+        return see_other(ROUTE_CHAT);
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<SseEvent, Infallible>>();
+    spawn_turn(&state, config, answer_id, history, Some(tx));
+    Sse::new(UnboundedReceiverStream::new(rx))
+        .keep_alive(SseKeepAlive::default())
+        .into_response()
+}
+
+/// `POST /dashboard/chat/clear`.
+async fn chat_clear(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    match chat::clear(state.engine.db(), chat::CONVERSATION_ID) {
+        Ok(removed) => {
+            if let Err(error) = state.engine.auth().audit(
+                "loopback",
+                "chat.cleared",
+                Some(&format!("{removed} messages")),
+            ) {
+                return audit_failure(&request_id.0, "chat.cleared", error);
+            }
+            see_other(ROUTE_CHAT)
+        }
+        Err(error) => refusal(FormError::new(None, "chat_clear_failed", error.to_string())),
+    }
+}
+
+/// Run one chat turn on its own thread, persisting the outcome.
+///
+/// The sink forwards each fragment to the channel when there is one, and the
+/// final row is written before the terminal event is sent, so a browser that
+/// reloads right after `done` reads the same text it just saw.
+fn spawn_turn(
+    state: &AppState,
+    config: chat::TurnConfig,
+    answer_id: String,
+    history: Vec<core_runtime::provider::ChatMessage>,
+    sender: Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
+) -> tokio::task::JoinHandle<()> {
+    let db = state.engine.db().clone();
+    let persona = state.persona.clone();
+    let stored_enabled = state
+        .engine
+        .setting(crate::persona::SETTING_PERSONA_ENABLED)
+        .ok()
+        .flatten();
+
+    tokio::task::spawn_blocking(move || {
+        let system = match persona.load(stored_enabled.as_deref()) {
+            Ok(text) => text,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = chat::fail(&db, &answer_id, error.code(), "");
+                send_terminal(
+                    &sender,
+                    "error",
+                    serde_json::json!({
+                        "code": error.code(),
+                        "message": message,
+                    }),
+                );
+                return;
+            }
+        };
+
+        let mut streamed = String::new();
+        let mut sink = |fragment: &str| {
+            streamed.push_str(fragment);
+            send_terminal(&sender, "delta", serde_json::json!({ "text": fragment }));
+        };
+        let outcome = chat::run_turn(&config, system, history, &mut sink);
+        drop(sink);
+
+        match outcome {
+            Ok((text, usage)) => {
+                let _ = chat::settle(&db, &answer_id, &text, usage.as_ref());
+                send_terminal(
+                    &sender,
+                    "done",
+                    serde_json::json!({
+                        "id": answer_id,
+                        "text": text,
+                    }),
+                );
+            }
+            Err((code, message)) => {
+                let _ = chat::fail(&db, &answer_id, &code, &streamed);
+                send_terminal(
+                    &sender,
+                    "error",
+                    serde_json::json!({
+                        "code": code,
+                        "message": message,
+                    }),
+                );
+            }
+        }
+    })
+}
+
+/// One event, when somebody is listening. A plain form post has no channel and
+/// needs none: the row in the database is the answer.
+fn send_terminal(
+    sender: &Option<tokio::sync::mpsc::UnboundedSender<Result<SseEvent, Infallible>>>,
+    event: &str,
+    data: serde_json::Value,
+) {
+    if let Some(sender) = sender {
+        let _ = sender.send(Ok(SseEvent::default().event(event).data(data.to_string())));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wallpaper
+// ---------------------------------------------------------------------------
+
+/// `POST /dashboard/settings/wallpaper`.
+async fn save_wallpaper(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, wants_html(&headers), error),
+    };
+    let choice = field(&fields, "wallpaper");
+    if !wallpaper::Preset::is_storable(choice) {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(
+                Some("wallpaper"),
+                "wallpaper_unknown",
+                format!("`{choice}` is not a wallpaper this build knows"),
+            ),
+        );
+    }
+    if choice == wallpaper::CUSTOM && !wallpaper::custom_file(state.engine.paths()).is_file() {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(
+                Some("wallpaper"),
+                "wallpaper_not_uploaded",
+                "there is no custom image yet: upload one first, then choose it",
+            ),
+        );
+    }
+    if let Err(error) = state
+        .engine
+        .set_setting(wallpaper::SETTING_WALLPAPER, choice)
+    {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(None, "settings_unwritable", error.to_string()),
+        );
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.wallpaper", Some(choice))
+    {
+        return audit_failure(&request_id.0, "settings.wallpaper", error);
+    }
+    see_other(ROUTE_SETTINGS)
+}
+
+/// `POST /dashboard/settings/wallpaper/image`.
+///
+/// The bytes are checked, not the label: only PNG, JPEG and WebP pass, and the
+/// file is written to a temporary name and renamed, so a half-uploaded image is
+/// never served.
+async fn upload_wallpaper(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut declared: Option<String> = None;
+    loop {
+        let next = match multipart.next_field().await {
+            Ok(next) => next,
+            Err(error) => {
+                return fail_settings(
+                    &state,
+                    wants_html(&headers),
+                    FormError::new(
+                        None,
+                        "upload_unreadable",
+                        format!("the upload did not parse: {error}"),
+                    ),
+                );
+            }
+        };
+        let Some(mut field) = next else { break };
+        if field.name() != Some("image") {
+            continue;
+        }
+        declared = field.file_name().map(str::to_owned);
+        while let Some(chunk) = match field.chunk().await {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                return fail_settings(
+                    &state,
+                    wants_html(&headers),
+                    FormError::new(
+                        None,
+                        "upload_unreadable",
+                        format!("the upload did not parse: {error}"),
+                    ),
+                );
+            }
+        } {
+            if bytes.len() + chunk.len() > wallpaper::MAX_UPLOAD_BYTES {
+                return fail_settings(
+                    &state,
+                    wants_html(&headers),
+                    FormError::new(
+                        Some("image"),
+                        "upload_too_large",
+                        format!(
+                            "the image must be under {} bytes",
+                            wallpaper::MAX_UPLOAD_BYTES
+                        ),
+                    ),
+                );
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+
+    if bytes.is_empty() {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(Some("image"), "upload_empty", "choose an image first"),
+        );
+    }
+    let Some(media_type) = wallpaper::sniff_image(&bytes) else {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(
+                Some("image"),
+                "upload_not_an_image",
+                "that is not a PNG, JPEG or WebP image; SVG is refused on purpose",
+            ),
+        );
+    };
+
+    let target = wallpaper::custom_file(state.engine.paths());
+    let written = write_atomically(&target, &bytes);
+    if let Err(error) = written {
+        return fail_settings(
+            &state,
+            wants_html(&headers),
+            FormError::new(None, "upload_write_failed", error.to_string()),
+        );
+    }
+    let _ = state
+        .engine
+        .set_setting(wallpaper::SETTING_CUSTOM_TYPE, media_type);
+    let _ = state
+        .engine
+        .set_setting(wallpaper::SETTING_WALLPAPER, wallpaper::CUSTOM);
+    let detail = format!(
+        "{media_type}, {} bytes, {}",
+        bytes.len(),
+        declared.as_deref().unwrap_or("unnamed")
+    );
+    if let Err(error) =
+        state
+            .engine
+            .auth()
+            .audit("loopback", "settings.wallpaper_image", Some(&detail))
+    {
+        return audit_failure(&request_id.0, "settings.wallpaper_image", error);
+    }
+    see_other(ROUTE_SETTINGS)
+}
+
+/// Write a file beside its destination and rename it into place.
+fn write_atomically(target: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let temporary = target.with_extension("upload");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, target)?;
+    Ok(())
+}
+
+/// `GET /static/wallpaper/{name}`: the presets, and the uploaded image.
+///
+/// Served before the ready gate, like the stylesheet, because a backdrop is part
+/// of the page rather than part of the dashboard.
+pub async fn wallpaper_file(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    if name == wallpaper::CUSTOM {
+        let stored = state
+            .engine
+            .setting(wallpaper::SETTING_CUSTOM_TYPE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "image/png".to_owned());
+        let media_type = match stored.as_str() {
+            "image/jpeg" | "image/webp" => stored,
+            _ => "image/png".to_owned(),
+        };
+        return match std::fs::read(wallpaper::custom_file(state.engine.paths())) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, media_type),
+                    (header::CACHE_CONTROL, "no-cache".to_owned()),
+                ],
+                bytes,
+            )
+                .into_response(),
+            // A selection with no file behind it is not a 500: the page falls back
+            // to the default, and this is the honest answer to a direct request.
+            Err(_) => ApiError::not_found(
+                "wallpaper".to_owned(),
+                "no uploaded wallpaper exists at /static/wallpaper/custom",
+            )
+            .into_response(),
+        };
+    }
+
+    let id = name.strip_suffix(".svg").unwrap_or(&name);
+    match wallpaper::svg(id) {
+        Some(svg) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/svg+xml".to_owned()),
+                (header::CACHE_CONTROL, "public, max-age=86400".to_owned()),
+            ],
+            svg,
+        )
+            .into_response(),
+        None => ApiError::not_found(
+            name.clone(),
+            "that wallpaper does not exist; the presets are served as /static/wallpaper/{preset}.svg",
+        )
+        .into_response(),
+    }
 }
 
 #[cfg(test)]

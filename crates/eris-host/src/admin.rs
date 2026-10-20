@@ -73,6 +73,17 @@ pub const ROUTE_SETUP_STATE: &str = "/setup/state";
 /// `GET /dashboard`.
 pub const ROUTE_DASHBOARD: &str = "/dashboard";
 
+/// `GET /dashboard/chat` - the conversation surface: transcript, composer,
+/// wallpaper.
+pub const ROUTE_CHAT: &str = "/dashboard/chat";
+
+/// `POST /dashboard/chat/send` - one turn, streamed when the caller asks for an
+/// event stream and rendered on the next page when it does not.
+pub const ROUTE_CHAT_SEND: &str = "/dashboard/chat/send";
+
+/// `POST /dashboard/chat/clear` - empty the transcript.
+pub const ROUTE_CHAT_CLEAR: &str = "/dashboard/chat/clear";
+
 /// `GET /dashboard/settings` - the three settings forms.
 pub const ROUTE_SETTINGS: &str = "/dashboard/settings";
 
@@ -320,6 +331,10 @@ pub fn router_with(state: AppState) -> Router {
         .route(ROUTE_ROOT, get(root))
         .route(ROUTE_SETUP_STATE, get(crate::web::routes::setup_state))
         .route(CSS_ROUTE, get(stylesheet))
+        .route(
+            "/static/wallpaper/{name}",
+            get(crate::web::routes::wallpaper_file),
+        )
         .merge(setup_routes())
         .merge(dashboard)
         .fallback(no_route)
@@ -633,7 +648,7 @@ mod tests {
 
     #[test]
     fn the_version_is_the_workspace_version() {
-        assert_eq!(VERSION, "1.0.0");
+        assert_eq!(VERSION, "1.0.1");
     }
 
     #[test]

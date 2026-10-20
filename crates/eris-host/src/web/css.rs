@@ -517,6 +517,192 @@ pre.code {
   line-height: 1.6;
 }
 
+
+/* The chat surface ------------------------------------------------------- */
+
+.chat-shell { max-width: 880px; margin: 0 auto; }
+.chat-wall {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: 0.9;
+  pointer-events: none;
+}
+.chat-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin-bottom: 18px;
+}
+.chat-title .lede { margin-bottom: 0; max-width: 62ch; }
+.chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chat-meta form { margin: 0; }
+
+.thread {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 18px;
+  padding: 4px 2px 10px;
+  max-height: 58vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.thread:empty { display: none; }
+
+.msg { display: flex; flex-direction: column; max-width: 48rem; }
+.msg.user { margin-left: auto; align-items: flex-end; }
+.msg.assistant { margin-right: auto; align-items: flex-start; }
+.msg .who {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px;
+  padding: 0 2px;
+}
+.msg .bubble {
+  padding: 13px 16px;
+  border-radius: 14px 14px 14px 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14.5px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+.msg.user .bubble {
+  border-radius: 14px 14px 5px 14px;
+  border-color: var(--line-strong);
+  background: var(--raise);
+}
+.msg .bubble.failed { border-color: var(--bad); }
+.msg .bubble p { margin: 0 0 10px; white-space: pre-wrap; }
+.msg .bubble > *:last-child { margin-bottom: 0; }
+.msg .meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.msg .meta .tag { margin-left: 0; }
+
+.msg.pending .bubble::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--platinum);
+  animation: caret 1.1s steps(1) infinite;
+}
+@keyframes caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+.muted-line { color: var(--muted); margin: 0; font-style: italic; }
+
+.code-block { position: relative; margin: 12px 0; }
+.code-lang {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.code-block pre.code { margin: 0; padding: 14px 16px; }
+.msg .bubble .code-block {
+  margin: 12px -16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--deep);
+}
+.msg .bubble .code-block pre.code { border: 0; border-radius: 0; background: transparent; }
+.msg .bubble .code-block .code-lang { top: 10px; right: 14px; }
+
+.chat-empty {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  text-align: center;
+  padding: 44px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.chat-empty .mark {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--raise);
+  color: var(--platinum);
+  font-size: 19px;
+  font-weight: 620;
+}
+.chat-empty h2 { margin: 0; font-size: 17px; }
+.chat-empty .small { max-width: 52ch; }
+.prompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+
+.composer {
+  position: sticky;
+  bottom: 14px;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px 12px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--panel);
+  transition: border-color 0.12s ease;
+}
+.composer:focus-within { border-color: var(--platinum); }
+.composer textarea {
+  width: 100%;
+  min-height: 46px;
+  max-height: 240px;
+  padding: 6px 6px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.55;
+  resize: none;
+}
+.composer textarea:focus { outline: none; border-color: transparent; }
+.composer-actions { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.composer-actions .hint { margin-right: auto; font-size: 11px; color: var(--muted); }
+.composer-actions button[hidden] { display: none; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* The wizard rail -------------------------------------------------------- */
 
 .rail {
@@ -584,6 +770,10 @@ pre.code {
   .kv dd { padding-top: 2px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
   .auth { margin-top: 4vh; }
+  .thread { max-height: 52vh; }
+  .chat-head { align-items: flex-start; }
+  .msg { max-width: 100%; }
+  .composer { bottom: 8px; }
 }
 
 /*

@@ -16,7 +16,7 @@ use eris_host::db::{Db, TABLES};
 use eris_host::error::REQUEST_ID_HEADER;
 use tower::ServiceExt;
 
-const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.0.0","state":"setup","db":"ok"}"#;
+const HEALTHZ_EXACT: &str = r#"{"status":"ok","version":"1.0.1","state":"setup","db":"ok"}"#;
 
 /// Send one request through the router and return status, body text and headers.
 async fn send(
@@ -53,14 +53,14 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("state/eris.db");
 
-    // First open: the file does not exist, so 0001 through 0004 run.
+    // First open: the file does not exist, so 0001 through 0005 run.
     // (The name above is the P5 contract name; P6 added 0002 and a tenth table,
     // P7 added 0003 and an eleventh, P8 added 0004 which adds columns to `jobs`
-    // and no table at all, so the version and count below are the current ones
-    // and `TABLES` is the list.)
+    // and no table at all, and 1.0.1 added 0005 and `chat_messages`, so the
+    // version and count below are the current ones and `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 4);
-    assert_eq!(first.applied_migration_count().expect("count"), 4);
+    assert_eq!(first.schema_version().expect("version"), 5);
+    assert_eq!(first.applied_migration_count().expect("count"), 5);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -86,10 +86,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 4);
+    assert_eq!(second.schema_version().expect("version"), 5);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        4,
+        5,
         "re-running migrations must not add a version row"
     );
     assert_eq!(
@@ -216,8 +216,8 @@ async fn healthz_returns_exactly_the_documented_body() {
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("healthz is json");
     assert_eq!(parsed["state"], "setup");
     assert_eq!(parsed["db"], "ok");
-    assert_eq!(parsed["version"], "1.0.0");
-    assert_eq!(VERSION, "1.0.0");
+    assert_eq!(parsed["version"], "1.0.1");
+    assert_eq!(VERSION, "1.0.1");
 }
 
 #[tokio::test]
