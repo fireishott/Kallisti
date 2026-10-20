@@ -66,6 +66,12 @@ pub const ROUTE_CANCEL: &str = "/v1/turns/{id}/cancel";
 /// `GET /v1/sessions/{id}` - the snapshot a buffer miss points at.
 pub const ROUTE_SESSION: &str = "/v1/sessions/{id}";
 
+/// `GET /v1/projects` and `POST /v1/projects` - the list, and naming one.
+pub const ROUTE_PROJECTS: &str = "/v1/projects";
+
+/// `POST /v1/projects/assign` - file one conversation under a project.
+pub const ROUTE_PROJECTS_ASSIGN: &str = "/v1/projects/assign";
+
 /// The bodies every device-surface error uses.
 ///
 /// `ok` is always false, `code` is the thing a client branches on, and `message`
@@ -361,6 +367,11 @@ pub fn router(service: DeviceService) -> Router {
         .route(ROUTE_EVENTS, get(handlers::events))
         .route(ROUTE_CANCEL, post(handlers::cancel))
         .route(ROUTE_SESSION, get(handlers::session))
+        .route(
+            ROUTE_PROJECTS,
+            get(handlers::projects).post(handlers::create_project),
+        )
+        .route(ROUTE_PROJECTS_ASSIGN, post(handlers::assign_project))
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -428,6 +439,8 @@ mod tests {
             ROUTE_EVENTS,
             ROUTE_CANCEL,
             ROUTE_SESSION,
+            ROUTE_PROJECTS,
+            ROUTE_PROJECTS_ASSIGN,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

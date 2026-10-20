@@ -34,11 +34,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use core_domain::{Capabilities, LlmError, ModelProfile, ProviderProfile};
 use core_runtime::prompt::{PromptInputs, compile};
-use core_runtime::provider::{
-    ChatRequest, OpenAiCompatProvider, ProviderEvent, SecretKey, SecretRef,
-};
+use core_runtime::provider::SecretRef;
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -62,11 +59,17 @@ pub const LEASE_SECONDS: i64 = 60;
 /// How long a device session lives before the device has to start a new one.
 pub const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Which frame this is. The four names are the wire names and the stored kinds.
+/// Which frame this is. The names are the wire names and the stored kinds, and
+/// they are the same names the browser's turn stream sends for the same events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameKind {
     /// One assistant text fragment.
     Delta,
+    /// One fragment of the model's own reasoning, when the provider streams one.
+    Reasoning,
+    /// One tool call that ran: its name, its arguments, its output, and whether
+    /// it reported a failure.
+    Tool,
     /// The turn finished, with the assembled text and the usage.
     Done,
     /// The turn failed.
@@ -81,6 +84,8 @@ impl FrameKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Delta => "delta",
+            Self::Reasoning => "reasoning",
+            Self::Tool => "tool",
             Self::Done => "done",
             Self::Error => "error",
             Self::Cancelled => "cancelled",
@@ -92,6 +97,8 @@ impl FrameKind {
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "delta" => Some(Self::Delta),
+            "reasoning" => Some(Self::Reasoning),
+            "tool" => Some(Self::Tool),
             "done" => Some(Self::Done),
             "error" => Some(Self::Error),
             "cancelled" => Some(Self::Cancelled),
@@ -100,16 +107,16 @@ impl FrameKind {
     }
 
     /// Whether this frame ends the stream. The last frame of a job is always one
-    /// of these three.
+    /// of the three terminal kinds.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        !matches!(self, Self::Delta)
+        !matches!(self, Self::Delta | Self::Reasoning | Self::Tool)
     }
 
     /// The job status a terminal frame moves the job to.
     const fn terminal_status(self) -> Option<&'static str> {
         match self {
-            Self::Delta => None,
+            Self::Delta | Self::Reasoning | Self::Tool => None,
             Self::Done => Some("succeeded"),
             Self::Error => Some("failed"),
             Self::Cancelled => Some("cancelled"),
@@ -141,6 +148,19 @@ impl TurnFrame {
 enum Signal {
     /// One provider text fragment.
     Delta(String),
+    /// One fragment of the model's own reasoning.
+    Reasoning(String),
+    /// One tool call that ran.
+    Tool {
+        /// The tool name.
+        name: String,
+        /// The arguments it was called with, as JSON.
+        arguments: String,
+        /// What it returned.
+        output: String,
+        /// Whether it reported a failure.
+        is_error: bool,
+    },
     /// The provider finished.
     Done {
         /// The assembled reply.
@@ -150,7 +170,7 @@ enum Signal {
     },
     /// The provider failed.
     Failed {
-        /// Stable code, from [`LlmError::kind`].
+        /// Stable code, from `LlmError::kind`.
         code: String,
         /// Human-readable detail.
         message: String,
@@ -211,12 +231,81 @@ pub struct ProviderConfig {
     pub model: String,
 }
 
-/// The adapter plus the key: everything a stream needs.
-pub struct PreparedProvider {
-    /// The streaming adapter.
-    pub provider: OpenAiCompatProvider,
-    /// The resolved key. Never printed.
-    pub key: SecretKey,
+/// Everything about a turn that is decided before it starts.
+///
+/// The browser decides the same things in `web::routes::spawn_turn`; this is the
+/// device's copy of that decision, resolved by the handler from the engine so the
+/// hub itself stays a worker rather than a settings reader.
+#[derive(Debug, Clone)]
+pub struct TurnPolicy {
+    /// Where a tool may work, and how much it may do there.
+    pub sandbox: crate::tools::Sandbox,
+    /// What happens to a call that is not simply run.
+    pub approval_policy: crate::onboarding::permissions::ApprovalPolicy,
+    /// Whether a turn may call tools at all.
+    pub tools: bool,
+    /// How many tool rounds it may take before the last one must answer.
+    pub max_rounds: usize,
+    /// Whether reasoning frames go out.
+    pub show_reasoning: bool,
+    /// Whether tool frames go out.
+    pub show_tool_log: bool,
+}
+
+impl Default for TurnPolicy {
+    /// The narrowest policy: a read-only workspace, writes refused rather than
+    /// parked, tools on, the documented round budget, and both displays on. A
+    /// caller that has no engine to read gets this rather than a permissive
+    /// guess.
+    fn default() -> Self {
+        Self {
+            sandbox: crate::tools::Sandbox::new(
+                std::path::PathBuf::from("."),
+                crate::onboarding::permissions::SandboxMode::ReadOnly,
+            ),
+            approval_policy: crate::onboarding::permissions::ApprovalPolicy::Ask,
+            tools: true,
+            max_rounds: crate::tools::DEFAULT_TOOL_ROUNDS,
+            show_reasoning: true,
+            show_tool_log: true,
+        }
+    }
+}
+
+impl TurnPolicy {
+    /// Resolve the policy from the settings the dashboard last saved.
+    ///
+    /// Every read is resolved the way the browser resolves it, and a read that
+    /// fails falls back to the narrow end rather than the permissive one: an
+    /// unreadable sandbox row is read-only, and an unreadable approval row asks.
+    #[must_use]
+    pub fn from_engine(engine: &crate::onboarding::SetupEngine) -> Self {
+        let workspace = engine
+            .workspace_path()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let permissions = engine.permissions().ok();
+        let mode = permissions
+            .map(|permissions| permissions.sandbox_mode)
+            .unwrap_or(crate::onboarding::permissions::SandboxMode::ReadOnly);
+        let approval_policy = permissions
+            .map(|permissions| permissions.approval_policy)
+            .unwrap_or(crate::onboarding::permissions::ApprovalPolicy::Ask);
+        let setting = |key: &str| engine.setting(key).ok().flatten();
+        Self {
+            sandbox: crate::tools::Sandbox::new(workspace, mode),
+            approval_policy,
+            tools: crate::tools::enabled(setting(crate::tools::SETTING_TOOLS_ENABLED).as_deref()),
+            max_rounds: crate::tools::max_rounds(
+                setting(crate::tools::SETTING_TOOL_ROUNDS).as_deref(),
+            ),
+            show_reasoning: crate::web::chat::show_reasoning(
+                setting(crate::web::chat::SETTING_SHOW_REASONING).as_deref(),
+            ),
+            show_tool_log: crate::web::chat::show_tool_log(
+                setting(crate::web::chat::SETTING_SHOW_TOOL_LOG).as_deref(),
+            ),
+        }
+    }
 }
 
 /// The environment lookup a hub resolves `env:NAME` against. Injected so a test
@@ -590,6 +679,26 @@ impl TurnStore {
         }))
     }
 
+    /// Every job of one device that has not settled yet, newest first.
+    ///
+    /// This is what a `/stop` over `/v1` cancels: the device's own live turns and
+    /// nobody else's, which is the same ownership rule every job route enforces.
+    pub fn live_jobs(&self, device_id: &str) -> Result<Vec<String>, DbError> {
+        self.db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id FROM jobs \
+                  WHERE device_id = ?1 AND status IN ('queued', 'running') \
+                  ORDER BY created_at DESC, id DESC",
+            )?;
+            let mut rows = statement.query(params![device_id])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get::<_, String>(0)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// The operator's persona switch, as the dashboard last saved it.
     ///
     /// `None` means no row: the `[persona] enabled` key in `config.toml` decides.
@@ -767,15 +876,29 @@ impl TurnHub {
     /// The provider stream is awaited on the runtime; every database write
     /// happens on a blocking task fed by a channel, so a slow provider never
     /// holds the connection and a slow disk never holds the provider.
-    pub fn spawn(self: &Arc<Self>, job_id: String, sender: broadcast::Sender<TurnFrame>) {
+    ///
+    /// `policy` is everything about the turn that was decided before it started:
+    /// where a tool may work, whether it may write, whether tools and their run
+    /// log and the reasoning are offered at all, and how many rounds it may take.
+    pub fn spawn(
+        self: &Arc<Self>,
+        job_id: String,
+        sender: broadcast::Sender<TurnFrame>,
+        policy: TurnPolicy,
+    ) {
         let hub = Arc::clone(self);
         tokio::spawn(async move {
-            hub.run(job_id, sender).await;
+            hub.run(job_id, sender, policy).await;
         });
     }
 
     /// The worker body. Split out so the spawned future stays small.
-    async fn run(self: Arc<Self>, job_id: String, sender: broadcast::Sender<TurnFrame>) {
+    async fn run(
+        self: Arc<Self>,
+        job_id: String,
+        sender: broadcast::Sender<TurnFrame>,
+        policy: TurnPolicy,
+    ) {
         let store = self.store.clone();
         let claim = {
             let store = store.clone();
@@ -821,17 +944,6 @@ impl TurnHub {
                         "provider_not_configured",
                         "no provider is stored: finish onboarding and pick an endpoint and model",
                     )
-                    .await;
-                self.retire(&job_id);
-                return;
-            }
-        };
-
-        let prepared = match prepare_provider(&config, self.key_lookup.as_ref()) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = self
-                    .fail_early(&job_id, &sender, error.kind(), &error.to_string())
                     .await;
                 self.retire(&job_id);
                 return;
@@ -934,6 +1046,35 @@ impl TurnHub {
                                 publish(&sender, seq, FrameKind::Delta, data);
                             }
                         }
+                        Signal::Reasoning(text) => {
+                            let data = serde_json::json!({ "text": text });
+                            if let Ok(Some(seq)) =
+                                store.append(&writer_job, FrameKind::Reasoning, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Reasoning, data);
+                            }
+                        }
+                        // The same four fields the browser sends for a finished
+                        // call. The browser's extra `term` reading is a rendering
+                        // of these four for its own terminal window, and a device
+                        // that wants one can build it from the output it has.
+                        Signal::Tool {
+                            name,
+                            arguments,
+                            output,
+                            is_error,
+                        } => {
+                            let data = serde_json::json!({
+                                "name": name,
+                                "arguments": arguments,
+                                "output": output,
+                                "is_error": is_error,
+                            });
+                            if let Ok(Some(seq)) = store.append(&writer_job, FrameKind::Tool, &data)
+                            {
+                                publish(&sender, seq, FrameKind::Tool, data);
+                            }
+                        }
                         Signal::Done { text, usage } => {
                             let data = serde_json::json!({ "text": text, "usage": usage });
                             if let Ok(Some(seq)) = store.finish(&writer_job, FrameKind::Done, &data)
@@ -958,58 +1099,131 @@ impl TurnHub {
         // request, so a claim after a restart carries the same text.
         let prompt = job.request_text.unwrap_or_default();
 
-        // The provider runs on its own blocking thread with its own single-thread
-        // runtime, and feeds fragments back over the channel. That is deliberate:
-        // `stream_chat` takes `&mut dyn FnMut`, which is not `Send`, so a sink
-        // cannot be held across an await on a multi-threaded worker. Running the
-        // call to completion on one dedicated thread keeps the request path free
-        // and the sink local, and the writer task above still owns every row.
-        let provider_task = tokio::task::spawn_blocking(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    let _ = tx.send(Signal::Failed {
-                        code: "runtime_unavailable".to_owned(),
-                        message: format!("cannot start the turn runtime: {error}"),
-                    });
-                    return;
-                }
-            };
-            let request = ChatRequest::with_system(system, prompt);
-            let mut sink = |event: ProviderEvent| {
-                if let ProviderEvent::Text(fragment) = event
-                    && !fragment.is_empty()
+        // The key, resolved through the hub's own lookup so a test can inject one.
+        // A key that cannot be resolved is a configuration failure and fails the
+        // turn before the loop starts, exactly as the browser's does.
+        let key = match core_runtime::provider::resolve_api_key_with(&config.key_ref, |name| {
+            self.key_lookup.as_ref()(name)
+        }) {
+            Ok(key) => key,
+            Err(error) => {
+                let _ = self
+                    .fail_early(&job_id, &sender, error.kind(), &error.to_string())
+                    .await;
+                self.retire(&job_id);
+                return;
+            }
+        };
+
+        let turn_config = crate::web::chat::TurnConfig {
+            base_url: config.base_url,
+            key_ref: config.key_ref,
+            model: config.model,
+        };
+
+        // The turn itself: the same `run_turn_with_key` the browser drives, so a
+        // device turn reasons, calls tools and reports them in the same order for
+        // the same reasons. It runs to completion on one dedicated thread, because
+        // `stream_chat` takes `&mut dyn FnMut` and the sink is not `Send`, and the
+        // writer task above still owns every row.
+        let turn_task = tokio::task::spawn_blocking(move || {
+            let TurnPolicy {
+                sandbox,
+                approval_policy,
+                tools,
+                max_rounds,
+                show_reasoning,
+                show_tool_log,
+            } = policy;
+            // The one place a device turn can be stopped from writing. The
+            // approvals queue is not reachable over `/v1`, so a call that would be
+            // parked cannot be parked: under `ask` it is refused with the reason,
+            // and the model is told so rather than left waiting on a human who has
+            // no surface to answer from. `never` runs it, as it does in the
+            // browser.
+            let mut gate = |call: &core_domain::ToolCall| -> crate::web::chat::GateDecision {
+                let gated = call.name == "write_file";
+                if !gated
+                    || approval_policy == crate::onboarding::permissions::ApprovalPolicy::Never
                 {
-                    let _ = tx.send(Signal::Delta(fragment));
+                    return crate::web::chat::GateDecision::Run;
+                }
+                crate::web::chat::GateDecision::Refuse {
+                    reason: "a device turn cannot park a write for approval: the approvals \
+                             queue is not reachable over /v1, so nothing was written"
+                        .to_owned(),
                 }
             };
-            let outcome = runtime.block_on(prepared.provider.stream_chat(
-                &request,
-                &prepared.key,
+            let settings = crate::web::chat::TurnSettings { tools, max_rounds };
+            let mut sink = |part: crate::web::chat::StreamPart<'_>| match part {
+                crate::web::chat::StreamPart::Text(fragment) => {
+                    if !fragment.is_empty() {
+                        let _ = tx.send(Signal::Delta(fragment.to_owned()));
+                    }
+                }
+                crate::web::chat::StreamPart::Reasoning(fragment) => {
+                    // The same switch the browser honours: off means the reasoning
+                    // never leaves the daemon.
+                    if show_reasoning && !fragment.is_empty() {
+                        let _ = tx.send(Signal::Reasoning(fragment.to_owned()));
+                    }
+                }
+                crate::web::chat::StreamPart::Tool {
+                    name,
+                    arguments,
+                    output,
+                    is_error,
+                } => {
+                    // Behind its own switch, as in the browser: a run log that is
+                    // off does not ship command output anyway.
+                    if show_tool_log {
+                        let _ = tx.send(Signal::Tool {
+                            name: name.to_owned(),
+                            arguments: arguments.to_owned(),
+                            output: output.to_owned(),
+                            is_error,
+                        });
+                    }
+                }
+                // The finished call already carries the whole output. The device
+                // stream does not carry a second frame for the chunks that built
+                // it, because the browser's `tool_output` frames exist to fill a
+                // terminal window this surface does not render.
+                crate::web::chat::StreamPart::ToolOutput { .. } => {}
+            };
+            let messages = vec![core_runtime::provider::ChatMessage::text(
+                core_runtime::provider::ChatRole::User,
+                prompt,
+            )];
+            let outcome = crate::web::chat::run_turn_with_key(
+                &turn_config,
+                &key,
+                system,
+                messages,
+                &sandbox,
+                &mut gate,
+                None,
+                None,
+                None,
+                settings,
                 &mut sink,
-            ));
+            );
             match outcome {
-                Ok(completion) => {
+                Ok(outcome) => {
                     let usage =
-                        serde_json::to_value(completion.usage).unwrap_or(serde_json::Value::Null);
+                        serde_json::to_value(outcome.usage).unwrap_or(serde_json::Value::Null);
                     let _ = tx.send(Signal::Done {
-                        text: completion.text,
+                        text: outcome.text,
                         usage,
                     });
                 }
-                Err(error) => {
-                    let _ = tx.send(Signal::Failed {
-                        code: error.kind().to_owned(),
-                        message: error.to_string(),
-                    });
+                Err((code, message)) => {
+                    let _ = tx.send(Signal::Failed { code, message });
                 }
             }
         });
 
-        let _ = provider_task.await;
+        let _ = turn_task.await;
         let _ = writer.await;
         self.retire(&job_id);
     }
@@ -1051,26 +1265,6 @@ fn publish(
     data: serde_json::Value,
 ) {
     let _ = sender.send(TurnFrame { seq, kind, data });
-}
-
-/// Build the adapter and resolve the key: the same shape `eris probe` uses, from
-/// the settings the wizard wrote rather than from `eris.env`.
-fn prepare_provider(
-    config: &ProviderConfig,
-    lookup: &(dyn Fn(&str) -> Option<String> + Send + Sync),
-) -> Result<PreparedProvider, LlmError> {
-    let profile = ProviderProfile::new(
-        "device-turn",
-        config.base_url.clone(),
-        config.key_ref.clone(),
-    )?;
-    let provider = OpenAiCompatProvider::new(
-        profile,
-        ModelProfile::new(config.model.clone()),
-        Capabilities::openai_compatible(),
-    )?;
-    let key = core_runtime::provider::resolve_api_key_with(&config.key_ref, |name| lookup(name))?;
-    Ok(PreparedProvider { provider, key })
 }
 
 #[cfg(test)]
@@ -1186,6 +1380,63 @@ mod tests {
         assert_eq!(
             store.append(&job, FrameKind::Delta, &data).expect("append"),
             Some(6)
+        );
+    }
+
+    #[test]
+    fn the_frame_vocabulary_is_the_browsers_and_round_trips_through_storage() {
+        for kind in [
+            FrameKind::Delta,
+            FrameKind::Reasoning,
+            FrameKind::Tool,
+            FrameKind::Done,
+            FrameKind::Error,
+            FrameKind::Cancelled,
+        ] {
+            assert_eq!(FrameKind::parse(kind.as_str()), Some(kind));
+        }
+        assert!(
+            FrameKind::parse("tool_output").is_none(),
+            "the device stream does not carry the browser's per-chunk output frame"
+        );
+        // Reasoning and tool frames are progress, not endings: only the three
+        // settlement kinds can move a job to a terminal status.
+        assert!(!FrameKind::Reasoning.is_terminal());
+        assert!(!FrameKind::Tool.is_terminal());
+        assert!(!FrameKind::Delta.is_terminal());
+        assert!(FrameKind::Done.is_terminal());
+        assert!(FrameKind::Error.is_terminal());
+        assert!(FrameKind::Cancelled.is_terminal());
+        // And a progress frame is stored and read back without ending the job.
+        let (store, device) = store(DEFAULT_SSE_BUFFER);
+        let (job, _) = queued(&store, &device);
+        assert!(store.claim(&job).expect("claim"));
+        let tool = serde_json::json!({
+            "name": "list_dir",
+            "arguments": "{}",
+            "output": "[]",
+            "is_error": false,
+        });
+        assert_eq!(
+            store.append(&job, FrameKind::Tool, &tool).expect("append"),
+            Some(1)
+        );
+        let reasoning = serde_json::json!({ "text": "thinking" });
+        assert_eq!(
+            store
+                .append(&job, FrameKind::Reasoning, &reasoning)
+                .expect("append"),
+            Some(2)
+        );
+        let frames = store.events_after(&job, 0).expect("events");
+        assert_eq!(
+            frames.iter().map(|frame| frame.kind).collect::<Vec<_>>(),
+            vec![FrameKind::Tool, FrameKind::Reasoning]
+        );
+        assert_eq!(
+            store.status(&job).expect("status").as_deref(),
+            Some("running"),
+            "progress frames do not settle the job"
         );
     }
 

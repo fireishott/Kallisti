@@ -1673,12 +1673,53 @@ pub enum StreamPart<'a> {
 /// device turn: `stream_chat` takes `&mut dyn FnMut`, which is not `Send`, so the
 /// sink must not be held across an await. The caller runs this inside
 /// `spawn_blocking`.
+///
+/// The key is resolved here, from the daemon's own environment. A caller that
+/// resolves it elsewhere - the device surface injects its lookup so a test can
+/// prove the path - calls [`run_turn_with_key`] with the key it already has.
 // Eight arguments is the seam: provider, prompt, sandbox, gate, pool, settings,
 // sink. Bundling them into a struct would only move the same fields behind a
 // name, and every one of them is independently optional at the call site.
 #[allow(clippy::too_many_arguments)]
 pub fn run_turn(
     config: &TurnConfig,
+    system: Option<String>,
+    messages: Vec<ChatMessage>,
+    sandbox: &crate::tools::Sandbox,
+    gate: &mut dyn FnMut(&core_domain::ToolCall) -> GateDecision,
+    mcp: Option<&crate::mcp::Pool>,
+    web_extract: Option<&TurnConfig>,
+    image: Option<&TurnConfig>,
+    settings: TurnSettings,
+    sink: &mut dyn FnMut(StreamPart<'_>),
+) -> Result<TurnOutcome, TurnFailure> {
+    let key = core_runtime::provider::resolve_api_key(&config.key_ref)
+        .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
+    run_turn_with_key(
+        config,
+        &key,
+        system,
+        messages,
+        sandbox,
+        gate,
+        mcp,
+        web_extract,
+        image,
+        settings,
+        sink,
+    )
+}
+
+/// The same turn, with the provider key already resolved.
+///
+/// Split from [`run_turn`] so the device surface drives this exact loop rather
+/// than a second copy of it, while still resolving `env:NAME` through the lookup
+/// its own tests inject. Everything about the rounds, the tool calls and the
+/// reasoning is shared: there is one loop, and this is it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_turn_with_key(
+    config: &TurnConfig,
+    key: &core_runtime::provider::SecretKey,
     system: Option<String>,
     messages: Vec<ChatMessage>,
     sandbox: &crate::tools::Sandbox,
@@ -1698,8 +1739,6 @@ pub fn run_turn(
         Capabilities::openai_compatible(),
     )
     .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
-    let key = core_runtime::provider::resolve_api_key(&config.key_ref)
-        .map_err(|error| (error.kind().to_owned(), error.to_string()))?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1841,7 +1880,7 @@ pub fn run_turn(
                 ..ChatRequest::default()
             };
             runtime
-                .block_on(provider.stream_chat(&request, &key, &mut forward))
+                .block_on(provider.stream_chat(&request, key, &mut forward))
                 .map_err(|error| (error.kind().to_owned(), error.to_string()))
         },
     )?;

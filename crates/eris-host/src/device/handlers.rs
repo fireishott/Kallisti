@@ -1,4 +1,4 @@
-//! The six `/v1` handlers.
+//! The `/v1` handlers.
 //!
 //! Every route does the same three things in the same order: authenticate the
 //! bearer, check the gate that route is subject to, then act on the state store.
@@ -25,7 +25,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::auth::{
     PairingService, Scope, ScopeSet, TokenOrigin, TokenService, VerifiedToken, format_timestamp,
 };
-use crate::device::turns::TurnFrame;
+use crate::device::turns::{FrameKind, TurnFrame, TurnPolicy};
 use crate::device::{DeviceError, DeviceService};
 
 /// The upload ceiling for one device body. A prompt is text, and text is not
@@ -459,6 +459,16 @@ pub async fn create_turn(
         }
     }
 
+    // A message that begins with a slash is a command, not a prompt. It is
+    // dispatched here, before a session or a job exists and before the provider
+    // settings are even read: a command has no turn to spend a token on, so the
+    // guarantee is structural rather than a rule somebody has to remember. This
+    // is the same parser and the same answer copy the browser's send handler
+    // uses.
+    if let Some(command) = crate::commands::parse(text) {
+        return run_command(&service, token.device_id(), text, &command, idempotency_key);
+    }
+
     let session_id = match store.ensure_session(token.device_id()) {
         Ok(session_id) => session_id,
         Err(error) => {
@@ -475,9 +485,15 @@ pub async fn create_turn(
     };
 
     // The channel exists before the response does, so a client that subscribes
-    // the instant it reads the 202 cannot miss the first frame.
+    // the instant it reads the 202 cannot miss the first frame. The policy is
+    // what the dashboard last saved: the same sandbox, gate, tool and display
+    // settings the browser's turn reads.
     let sender = service.hub().begin(&job_id);
-    service.hub().spawn(job_id.clone(), sender);
+    service.hub().spawn(
+        job_id.clone(),
+        sender,
+        TurnPolicy::from_engine(service.engine()),
+    );
 
     (
         StatusCode::ACCEPTED,
@@ -489,6 +505,353 @@ pub async fn create_turn(
         })),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Slash commands over /v1
+// ---------------------------------------------------------------------------
+
+/// Answer a message that is a slash command.
+///
+/// No provider is called and no token is spent: the reply is written as the
+/// `done` frame of a job that never had a worker, so the device reads it through
+/// the same stream it reads any other turn through and renders it the same way.
+/// The parser, the help text and the refusal copy are `crate::commands`, which is
+/// the same module the browser's send handler dispatches through.
+///
+/// Four of the six cannot mean the same thing here as they do in the browser.
+/// `/new` and `/clear` act on a conversation transcript this surface does not
+/// have, and `/model` and `/memory` are settings writes: a device is minted
+/// `chat`, `sessions` and `files`, so changing the stored model or memory backend
+/// behind that token would be a settings write with no settings scope to check.
+/// All four are refused by name with the reason, rather than silently skipped or
+/// emulated into something that looks like it worked.
+fn run_command(
+    service: &DeviceService,
+    device_id: &str,
+    text: &str,
+    command: &crate::commands::Command,
+    idempotency_key: Option<&str>,
+) -> Response {
+    let reply = match crate::commands::immediate(command) {
+        Some(crate::commands::Outcome::Reply(reply)) => reply,
+        Some(crate::commands::Outcome::Unsupported(name)) => {
+            return DeviceError::bad_request(
+                "command_unsupported",
+                crate::commands::unsupported(&name),
+            )
+            .into_response();
+        }
+        None => match command.name.as_str() {
+            "stop" => match stop_device_turns(service, device_id) {
+                Ok(reply) => reply,
+                Err(error) => return error.into_response(),
+            },
+            other => {
+                return DeviceError::bad_request(
+                    "command_not_available",
+                    format!(
+                        "/{other} is handled by this daemon but not on this surface: a device \
+                         turn has no conversation transcript and no settings scope, so nothing \
+                         was changed and nothing was sent to a model. /help lists what a device \
+                         turn answers."
+                    ),
+                )
+                .into_response();
+            }
+        },
+    };
+
+    // Recorded before the answer is written, as the browser records it: a command
+    // that changed something and was not recorded did not happen as far as this
+    // product is concerned. The detail is the command, never the answer, so the
+    // audit log stays a log of actions rather than a second transcript.
+    if let Err(error) =
+        service
+            .engine()
+            .auth()
+            .audit(device_id, "chat.command", Some(&command_detail(command)))
+    {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the chat.command audit row: {error}"
+        ))
+        .into_response();
+    }
+
+    let store = service.hub().store();
+    let session_id = match store.ensure_session(device_id) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot open a session: {error}"))
+                .into_response();
+        }
+    };
+    let job_id = match store.create_job(device_id, &session_id, idempotency_key, text) {
+        Ok(job_id) => job_id,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot queue the turn: {error}"))
+                .into_response();
+        }
+    };
+    // No number was reported because no model ran, so the usage is unreported
+    // rather than zero: a client that sums a command's "tokens" would otherwise
+    // read a confident 0 where the truth is that nothing was billed.
+    let usage = core_domain::Usage::unavailable(core_domain::UnavailableReason::FieldsAbsent);
+    let data = serde_json::json!({
+        "text": reply,
+        "usage": usage,
+        "command": format!("/{}", command.name),
+    });
+    if let Err(error) = store.finish(&job_id, FrameKind::Done, &data) {
+        return DeviceError::db_unavailable(format!("cannot record the answer: {error}"))
+            .into_response();
+    }
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "job_id": job_id,
+            "session_id": session_id,
+            "state": "succeeded",
+        })),
+    )
+        .into_response()
+}
+
+/// The audit detail for one command: its name and the argument it carried.
+///
+/// Bounded, because the argument is client text and an audit row is not the place
+/// for a paragraph.
+fn command_detail(command: &crate::commands::Command) -> String {
+    let argument: String = command.argument.chars().take(120).collect();
+    if argument.is_empty() {
+        format!("/{}", command.name)
+    } else {
+        format!("/{} {}", command.name, argument)
+    }
+}
+
+/// Cancel every live turn this device owns, and say what that did.
+///
+/// The same ownership rule every job route enforces: a turn belongs to the device
+/// that queued it, so this cannot stop somebody else's work. The copy says what
+/// was stopped and that nothing was sent to a model, and it carries no exclamation
+/// mark and no em dash.
+fn stop_device_turns(service: &DeviceService, device_id: &str) -> Result<String, DeviceError> {
+    let store = service.hub().store();
+    let live = store.live_jobs(device_id).map_err(|error| {
+        DeviceError::db_unavailable(format!("cannot read the turn list: {error}"))
+    })?;
+    let mut stopped = 0usize;
+    for job_id in &live {
+        match service.hub().cancel(job_id) {
+            Ok(Some(_)) => stopped += 1,
+            Ok(None) => {}
+            Err(error) => {
+                return Err(DeviceError::db_unavailable(format!(
+                    "cannot cancel a turn: {error}"
+                )));
+            }
+        }
+    }
+    Ok(match stopped {
+        0 => "Nothing was running on this device, so there was nothing to stop.".to_owned(),
+        1 => "Stopped the one turn that was running on this device: its stream ends with a \
+              cancelled frame, and nothing else was sent to a model."
+            .to_owned(),
+        count => format!(
+            "Stopped the {count} turns that were running on this device: each stream ends with a \
+             cancelled frame, and nothing else was sent to a model."
+        ),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/projects` - the project list, in the order the rail shows it.
+///
+/// A project is conversation state, so this is the `sessions` scope, exactly as
+/// `GET /v1/sessions/{id}` is. Nothing here depends on which device asked: the
+/// list is the operator's filing system, and a paired device holds no admin
+/// scope to change what it means.
+pub async fn projects(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let projects = match crate::projects::list(service.engine().db()) {
+        Ok(projects) => projects,
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the project list: {error}"))
+                .into_response();
+        }
+    };
+    let projects: Vec<serde_json::Value> = projects
+        .into_iter()
+        .map(|project| {
+            serde_json::json!({
+                "id": project.id,
+                "name": project.name,
+                "created_at": project.created_at,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({ "ok": true, "projects": projects })).into_response()
+}
+
+/// `POST /v1/projects` - name a project, `201` with the row that was created.
+///
+/// The name rules are `crate::projects`' own, so a blank, oversized or duplicate
+/// name is refused by the same code that refuses it on the dashboard, and the
+/// refusal names the field it came from.
+pub async fn create_project(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let name = field(&fields, "project_name").to_owned();
+    let created = match crate::projects::create(service.engine().db(), &name) {
+        Ok(id) => id,
+        Err(crate::db::DbError::InvalidProjectName { max }) => {
+            return DeviceError::bad_request(
+                "project_name_invalid",
+                format!("a project name is 1 to {max} characters"),
+            )
+            .into_response();
+        }
+        Err(crate::db::DbError::DuplicateProjectName { name }) => {
+            return DeviceError::bad_request(
+                "project_name_duplicate",
+                format!("a project named `{name}` already exists"),
+            )
+            .into_response();
+        }
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot create the project: {error}"))
+                .into_response();
+        }
+    };
+    // The actor is the device, not `loopback`: the dashboard logs a person at a
+    // browser, and this row has to say which paired device changed the filing.
+    if let Err(error) = service.engine().auth().audit(
+        token.device_id(),
+        "projects.created",
+        Some(&format!("{name}; id={created}")),
+    ) {
+        return DeviceError::db_unavailable(format!(
+            "cannot append the projects.created audit row: {error}"
+        ))
+        .into_response();
+    }
+    // The row that was just written, read back rather than assembled from the
+    // request: the stamp on it is the database's, and a client that files a
+    // conversation under this project should be able to show the same one.
+    let created_at = match crate::projects::list(service.engine().db()) {
+        Ok(projects) => projects
+            .into_iter()
+            .find(|project| project.id == created)
+            .map(|project| project.created_at)
+            .unwrap_or_default(),
+        Err(error) => {
+            return DeviceError::db_unavailable(format!("cannot read the project row: {error}"))
+                .into_response();
+        }
+    };
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "project": { "id": created, "name": name.trim(), "created_at": created_at },
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /v1/projects/assign` - file one conversation under a project, or take it
+/// out of one.
+///
+/// An empty `project` field is the select's "No project" entry, which is a clear
+/// rather than a missing value. Nothing changed is not a success: a conversation
+/// or project the daemon does not know is refused by code, because a client that
+/// reads `ok` must be able to believe it.
+pub async fn assign_project(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_scope(&token, Scope::Sessions) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let conversation = field(&fields, "conversation").to_owned();
+    if conversation.is_empty() {
+        return DeviceError::bad_request(
+            "conversation_missing",
+            "the body did not name a conversation",
+        )
+        .into_response();
+    }
+    let requested = field(&fields, "project").to_owned();
+    let project = if requested.is_empty() {
+        None
+    } else {
+        Some(requested.as_str())
+    };
+    match crate::projects::assign(service.engine().db(), &conversation, project) {
+        Ok(0) => DeviceError::bad_request(
+            "project_assign_refused",
+            "that conversation or that project is not one this daemon knows",
+        )
+        .into_response(),
+        Ok(_) => {
+            let detail = match project {
+                Some(id) => format!("{conversation}; project={id}"),
+                None => format!("{conversation}; project=none"),
+            };
+            if let Err(error) =
+                service
+                    .engine()
+                    .auth()
+                    .audit(token.device_id(), "projects.assigned", Some(&detail))
+            {
+                return DeviceError::db_unavailable(format!(
+                    "cannot append the projects.assigned audit row: {error}"
+                ))
+                .into_response();
+            }
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "conversation": conversation,
+                "project": project,
+            }))
+            .into_response()
+        }
+        Err(error) => DeviceError::db_unavailable(format!("cannot file the conversation: {error}"))
+            .into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +1110,6 @@ mod tests {
 
     #[test]
     fn a_frame_reports_its_own_termination() {
-        use crate::device::turns::FrameKind;
         let delta = TurnFrame {
             seq: 1,
             kind: FrameKind::Delta,
