@@ -175,6 +175,36 @@ struct SettingsScreen: View {
 
                 sectionDivider
 
+                // Eris daemon: pairing and chat. One destination that shows the
+                // pairing form until this device holds a usable pair.
+                NavigationLink(value: Route.eris) {
+                    HStack(spacing: Design.Spacing.sm) {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Design.Colors.accent)
+                            .frame(width: 20, alignment: .center)
+
+                        Text("Eris")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.foreground)
+
+                        Spacer()
+
+                        Text("Pair or chat")
+                            .font(Design.Typography.callout)
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+                    }
+                    .frame(minHeight: Design.Size.minTapTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.eris")
+
+                sectionDivider
+
                 if pairingStore.pairedRelayConfiguration != nil {
                     NavigationLink(value: Route.connectHost) {
                         HStack(spacing: Design.Spacing.sm) {
