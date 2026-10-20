@@ -495,22 +495,23 @@ pub fn shell(
                         }
                     }
                     div .wrap {
-                        @if chrome.rail_hidden {
-                            div .wrap-tools {
+                        @if chrome.rail_hidden && nav.is_some() {
+                            /* The rail's foot, collapsed. The word "Settings" is what
+                               the hidden sidebar took with it, so the cog stays in
+                               the corner it has always occupied and only the label
+                               goes. The control that brings the rail back sits
+                               beside it rather than floating at the top of the page,
+                               where it looked like part of the content. */
+                            div .rail-restore {
                                 form .rail-show method="post" action=(crate::admin::ROUTE_SIDEBAR) {
                                     input type="hidden" name="rail" value="shown";
                                     button type="submit" title="Show the sidebar"
                                         aria-label="Show the sidebar" { "\u{00BB}" }
                                 }
-                                /* The cog lives in the sidebar's foot, so hiding the
-                                   rail would take settings with it. With the rail
-                                   hidden the cog moves out here. */
-                                @if nav.is_some() {
-                                    a .cog .cog-floating href=(crate::admin::ROUTE_SETTINGS)
-                                        aria-label="Settings"
-                                        aria-current=[(nav == Some(Nav::Settings)).then_some("page")] {
-                                        span .cog-glyph aria-hidden="true" { "\u{2699}" }
-                                    }
+                                a .cog .cog-only href=(crate::admin::ROUTE_SETTINGS)
+                                    aria-label="Settings"
+                                    aria-current=[(nav == Some(Nav::Settings)).then_some("page")] {
+                                    span .cog-glyph aria-hidden="true" { "\u{2699}" }
                                 }
                             }
                         }

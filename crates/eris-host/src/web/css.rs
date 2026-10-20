@@ -198,25 +198,44 @@ a:focus-visible { outline: 2px solid var(--platinum); outline-offset: 2px; borde
   white-space: nowrap;
 }
 
-.wrap-tools {
+/* The rail's foot, collapsed into the corner it already occupied. Fixed so it
+   stays where the word "Settings" was regardless of scroll. */
+.rail-restore {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 30;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-bottom: 4px;
-}
-.cog-floating {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--panel);
+  backdrop-filter: blur(8px);
+}
+.rail-restore .rail-show { margin: 0; }
+.rail-restore .rail-show button {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
   color: var(--muted);
-  text-decoration: none;
+  cursor: pointer;
   font-size: 12px;
 }
-.cog-floating:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-restore .rail-show button:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-restore .cog-only {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.rail-restore .cog-only:hover { color: var(--text); border-color: var(--line-strong); }
+.rail-restore .cog-only[aria-current=page] { color: var(--text); border-color: var(--line-strong); }
 .top-nav {
   position: sticky;
   top: 0;

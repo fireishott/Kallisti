@@ -162,6 +162,45 @@ fn the_rail_carries_new_chat_the_sessions_and_the_cog() {
         "the dashboard carries the section list: {body}"
     );
 
+    // With the rail hidden the foot collapses into the corner it occupied: the
+    // show control and the cog, together, instead of a stray button at the top.
+    let hidden = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SIDEBAR, "rail=hidden")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+    assert_eq!(hidden.status, StatusCode::SEE_OTHER, "{}", hidden.body);
+    let collapsed = block_on(send(
+        &app,
+        Call::get(ROUTE_DASHBOARD).html().cookie(Some(&cookie)),
+    ));
+    let body = &collapsed.body;
+    assert!(
+        body.contains(r#"class="rail-restore""#),
+        "the foot collapses into one corner cluster: {body}"
+    );
+    assert!(
+        body.contains(r#"aria-label="Show the sidebar""#),
+        "the show control is in it"
+    );
+    assert!(
+        body.contains(&format!(r#"href="{ROUTE_SETTINGS}""#)),
+        "and so is the cog, where the word used to be"
+    );
+    assert!(
+        body.contains(r#"aria-label="Settings""#),
+        "the collapsed cog is still labelled for a reader"
+    );
+
+    // Put it back so the rest of the test reads a shown rail.
+    let _ = block_on(send(
+        &app,
+        Call::post(crate::admin::ROUTE_SIDEBAR, "rail=shown")
+            .html()
+            .cookie(Some(&cookie)),
+    ));
+
     // Settings is where the sections live, and it marks itself.
     let settings = block_on(send(
         &app,
