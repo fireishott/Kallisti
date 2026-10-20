@@ -320,6 +320,7 @@ fn every_page_has_no_purple_and_no_herald() {
         ROUTE_DASHBOARD,
         ROUTE_SETTINGS,
         ROUTE_ACTIVITY,
+        ROUTE_DEVICES,
         ROUTE_CHAT,
         ROUTE_LOGIN,
         "/static/app.css",

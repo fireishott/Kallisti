@@ -57,12 +57,13 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // (The name above is the P5 contract name; P6 added 0002 and a tenth table,
     // P7 added 0003 and an eleventh, P8 added 0004 which adds columns to `jobs`
     // and no table at all, 1.0.1 added 0005 and `chat_messages`, 0013 added
-    // `projects` and the conversation column that files one, and 0014 added
-    // `subagents`, so the version and count below are the current ones and
+    // `projects` and the conversation column that files one, 0014 added
+    // `subagents`, and 0015 added the `admin` flag on `pairing_codes` and no
+    // table at all, so the version and count below are the current ones and
     // `TABLES` is the list.)
     let first = Db::open(&path).expect("first open");
-    assert_eq!(first.schema_version().expect("version"), 14);
-    assert_eq!(first.applied_migration_count().expect("count"), 14);
+    assert_eq!(first.schema_version().expect("version"), 15);
+    assert_eq!(first.applied_migration_count().expect("count"), 15);
 
     let mut names = first.table_names().expect("table names");
     for expected in TABLES {
@@ -88,10 +89,10 @@ fn migrations_are_idempotent_and_create_all_nine_tables() {
     // Second open of the same file: no error, no duplicate version row, no
     // duplicate app_state row.
     let second = Db::open(&path).expect("second open must not fail");
-    assert_eq!(second.schema_version().expect("version"), 14);
+    assert_eq!(second.schema_version().expect("version"), 15);
     assert_eq!(
         second.applied_migration_count().expect("count"),
-        14,
+        15,
         "re-running migrations must not add a version row"
     );
     assert_eq!(

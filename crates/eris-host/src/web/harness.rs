@@ -376,6 +376,21 @@ pub fn seed_redeemed_code(db: &Db, device_id: &str) {
     .expect("seed pairing code");
 }
 
+/// One `auth_tokens` row, carrying the scope spelling the pairing would have
+/// written. The devices page reads the scope from here and nowhere else, so a
+/// fixture that wants an administrator seeds it the same way redemption does.
+pub fn seed_token(db: &Db, id: &str, device_id: &str, scope: &str, expires_at: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO auth_tokens (id, device_id, kind, token_hash, scope, expires_at) \
+             VALUES (?1, ?2, 'access', ?3, ?4, ?5)",
+            rusqlite::params![id, device_id, "not-a-real-verifier", scope, expires_at],
+        )?;
+        Ok(())
+    })
+    .expect("seed token");
+}
+
 /// One `sessions` row.
 pub fn seed_session(
     db: &Db,

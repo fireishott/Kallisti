@@ -797,7 +797,12 @@ SELECT d.id, d.name, d.platform, d.paired_at, d.revoked_at,
            SELECT 1 FROM pairing_codes p
            WHERE p.device_id = d.id AND p.consumed_at IS NOT NULL
          )
-       ) AS paired
+       ) AS paired,
+       EXISTS (
+         SELECT 1 FROM auth_tokens a
+         WHERE a.device_id = d.id AND a.revoked_at IS NULL AND a.rotated_at IS NULL
+           AND instr(' ' || a.scope || ' ', ' admin ') > 0
+       ) AS admin
 FROM devices d
 ORDER BY d.created_at DESC";
     store
@@ -814,6 +819,7 @@ ORDER BY d.created_at DESC";
                     paired_at: row.get(3)?,
                     revoked_at: row.get(4)?,
                     paired: row.get(5)?,
+                    admin: row.get(6)?,
                 });
             }
             Ok(out)
@@ -1420,8 +1426,12 @@ async fn mint_pairing_code(
     };
 
     // The one pairing path in the binary: the same service the wizard mints from.
+    // The box is read here and nowhere else, and it is stored on the code rather
+    // than on the device: the decision belongs to the moment of pairing, and
+    // redemption has nobody left to ask.
+    let allow_admin = matches!(field(&fields, "allow_admin").trim(), "on" | "true" | "1");
     let pairing = PairingService::new(db.clone());
-    let issued = match pairing.issue_for_device(&device_id) {
+    let issued = match pairing.issue_for_device_asking(&device_id, allow_admin) {
         Ok(issued) => issued,
         Err(error) => {
             return mint_refusal(
@@ -1433,8 +1443,15 @@ async fn mint_pairing_code(
         }
     };
 
-    // The audit row names the device and never the code.
-    if let Err(error) = store.audit("loopback", "device.pairing_code_issued", Some(&name)) {
+    // The audit row names the device and never the code. An ordinary mint keeps
+    // the bare name it always had; a mint that asked for administration says so,
+    // because the audit trail is a surface that shows this too.
+    let audited = if allow_admin {
+        format!("{name}; admin=true")
+    } else {
+        name.clone()
+    };
+    if let Err(error) = store.audit("loopback", "device.pairing_code_issued", Some(&audited)) {
         return ApiError::internal(
             request_id.0,
             format!("the code was minted but the audit row could not be written: {error}"),
@@ -1473,6 +1490,7 @@ async fn mint_pairing_code(
             "ok": true,
             "device_id": device_id,
             "device_name": name,
+            "admin": allow_admin,
             "code": issued.code(),
             "expires_at": expires_at,
         }))

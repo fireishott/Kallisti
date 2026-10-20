@@ -77,24 +77,36 @@ impl fmt::Display for TokenKind {
     }
 }
 
-/// Who asked for the mint. `admin` requires `Loopback`, and the onboarding flow
-/// is the only caller that can honestly claim it.
+/// Who asked for the mint. `admin` requires [`TokenOrigin::Loopback`] or
+/// [`TokenOrigin::PairedAdmin`], and both are claims a caller can only make at a
+/// point where a person decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenOrigin {
     /// A paired device: scopes are the device defaults, never `admin`.
     Device,
+    /// A paired device whose pairing code was minted with the administration box
+    /// ticked. The operator made that decision once, at mint time, and the code
+    /// carried it here; this origin is how the token says so.
+    PairedAdmin,
     /// The loopback onboarding surface or `eris setup`.
     Loopback,
 }
 
 impl TokenOrigin {
-    /// The audit actor for this origin.
+    /// The audit actor for this origin. A paired device is a device whichever
+    /// box was ticked, so both device origins log the same actor.
     #[must_use]
     pub const fn actor(self) -> &'static str {
         match self {
-            Self::Device => "device",
+            Self::Device | Self::PairedAdmin => "device",
             Self::Loopback => "loopback",
         }
+    }
+
+    /// Whether this origin may mint a token that carries `admin`.
+    #[must_use]
+    pub const fn may_mint_admin(self) -> bool {
+        matches!(self, Self::PairedAdmin | Self::Loopback)
     }
 }
 
@@ -376,7 +388,7 @@ impl TokenService {
         if scope.is_empty() {
             return Err(AuthError::EmptyScope);
         }
-        if scope.has_admin() && origin != TokenOrigin::Loopback {
+        if scope.has_admin() && !origin.may_mint_admin() {
             return Err(AuthError::AdminScopeRequiresLoopback);
         }
         match self.store.device(device_id)? {

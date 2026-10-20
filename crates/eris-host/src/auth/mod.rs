@@ -12,10 +12,12 @@
 //!   device id, nothing else. There is no JWT, so there is nothing to decode.
 //! - A refresh token has the same shape with a longer life, and rotation retires
 //!   the presented row before the new pair is minted.
-//! - A scope set is a type, not a free-form string. `admin` can only be minted
-//!   from a [`LoopbackMint`] witness and only when the caller declares
-//!   [`token::TokenOrigin::Loopback`], which is the seam the onboarding flow and
-//!   `eris setup` use after they have checked the peer themselves.
+//! - A scope set is a type, not a free-form string. `admin` is never granted by
+//!   default: it is minted either from a [`LoopbackMint`] witness, which the
+//!   onboarding flow and `eris setup` hold after they checked the peer
+//!   themselves, or from a pairing code whose operator ticked the administration
+//!   box at mint time. The second one arrives as
+//!   [`token::TokenOrigin::PairedAdmin`], so the two are never confused.
 //! - Revocation is a database fact that is re-read on every verification. There
 //!   is no cache, so a revoke is immediate and a rotated token is dead at once.
 //!
@@ -45,8 +47,10 @@ pub use token::{
 ///
 /// The name of the constructor is the audit hook: P7 and `eris setup` call
 /// [`LoopbackMint::assume_loopback_peer`] only after they have checked the
-/// connection peer, so `grep -rn assume_loopback_peer` lists every place that
-/// can mint `admin`. A request on the device listener never gets one.
+/// connection peer, so `grep -rn assume_loopback_peer` lists every place that can
+/// mint `admin` this way. A request on the device listener never gets one; the
+/// other way `admin` is minted is a pairing code the operator ticked the
+/// administration box for, which is `token::TokenOrigin::PairedAdmin`.
 #[derive(Clone, Copy, Debug)]
 pub struct LoopbackMint(());
 
@@ -104,8 +108,9 @@ pub enum AuthError {
     /// The matching pairing code is past its expiry.
     #[error("the pairing code has expired")]
     PairingExpired,
-    /// `admin` was requested without the loopback witness.
-    #[error("admin scope is only minted on loopback")]
+    /// `admin` was requested by an origin that may not mint it: neither a
+    /// loopback mint nor a pairing code the operator asked administration for.
+    #[error("admin scope needs a loopback mint or a pairing code minted for it")]
     AdminScopeRequiresLoopback,
     /// The scope set does not carry the scope the operation needs.
     #[error("scope {required} is not granted")]

@@ -29,7 +29,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// Highest schema version this binary understands.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// How long a blocked writer waits before SQLite returns `SQLITE_BUSY`.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,7 +39,8 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// first nine; 0002 adds `auth_tokens`; 0003 adds `admin_sessions`; 0004 adds
 /// columns to `jobs` and no table at all; 0005 adds `chat_messages`; 0008 adds
 /// `chat_attachments`; 0009 adds `approvals`; 0013 adds `projects`; 0014 adds
-/// `subagents`.
+/// `subagents`; 0015 adds the opt-in `admin` flag to `pairing_codes` and no
+/// table at all.
 pub const TABLES: [&str; 17] = [
     "admin_credential",
     "admin_sessions",
@@ -138,6 +139,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "0014_subagents",
         sql: MIGRATION_0014,
+    },
+    Migration {
+        version: 15,
+        name: "0015_pairing_admin",
+        sql: MIGRATION_0015,
     },
 ];
 
@@ -559,6 +565,19 @@ CREATE TABLE IF NOT EXISTS subagents (
 CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents (status);
 CREATE INDEX IF NOT EXISTS idx_subagents_parent_turn ON subagents (parent_turn);
 CREATE INDEX IF NOT EXISTS idx_subagents_created_at ON subagents (created_at);
+";
+
+/// Migration 0015: the pairing code remembers whether the operator asked for
+/// administration to travel with it.
+///
+/// The decision belongs to the code, not to the device, because it is made once,
+/// by a person, at the moment the code is minted. `0` is the default, so every
+/// row written before this migration is an ordinary code and keeps behaving as
+/// one: nothing is retroactively granted. The `CHECK` keeps the column a closed
+/// two-value set rather than a flag that can hold anything.
+const MIGRATION_0015: &str = r"
+ALTER TABLE pairing_codes ADD COLUMN admin INTEGER NOT NULL DEFAULT 0
+    CHECK (admin IN (0, 1));
 ";
 
 /// Where 1.0 lives, for the reader who lands here first.

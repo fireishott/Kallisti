@@ -53,6 +53,9 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Every backend, in the order the settings page offers them.
+    pub const ALL: [Self; 3] = [Self::Gbrain, Self::Vault, Self::Off];
+
     /// The stored spelling.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -61,6 +64,18 @@ impl Backend {
             Self::Vault => "vault",
             Self::Off => "off",
         }
+    }
+
+    /// Parse a submitted value. Anything outside the closed set is `None`.
+    ///
+    /// This is the strict counterpart to [`backend`]: a stored row that cannot be
+    /// read falls back to gbrain, but a value somebody just typed is named as
+    /// unknown rather than silently replaced with a backend they did not ask for.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == value.trim())
     }
 }
 
@@ -427,6 +442,32 @@ fn truncate(text: &mut String, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_backend_set_is_closed_and_reads_its_own_spellings() {
+        for backend in Backend::ALL {
+            assert_eq!(
+                Backend::parse(backend.as_str()),
+                Some(backend),
+                "{} parses back to itself",
+                backend.as_str()
+            );
+            assert_eq!(
+                Backend::parse(&format!(" {} ", backend.as_str())),
+                Some(backend)
+            );
+        }
+        for refused in ["", "gbrian", "GBRAIN", "none", "memory", "vaults"] {
+            assert_eq!(
+                Backend::parse(refused),
+                None,
+                "{refused:?} is not a backend"
+            );
+        }
+        // The lenient reader still falls back rather than refusing a stored row.
+        assert_eq!(backend(Some("gbrian")), Backend::Gbrain);
+        assert_eq!(backend(None), Backend::Gbrain);
+    }
 
     #[test]
     fn gbrain_output_parses_and_the_upgrade_notice_is_not_a_memory() {

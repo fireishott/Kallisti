@@ -6,6 +6,11 @@
 //! `/v1`. The port is a literal for the same reason the admin port is - "reachable
 //! from this host only" must survive a copied config.
 //!
+//! `/v1/settings` is the one route here that touches a setting, and it is not an
+//! admin plane either: it reads a fixed, credential-free snapshot and writes four
+//! closed-set values, and only for a token whose pairing code was minted with the
+//! administration box ticked.
+//!
 //! Three things have to be true before a turn is accepted, in this order:
 //!
 //! 1. a bearer access token that verifies against a stored Argon2id verifier and
@@ -81,6 +86,10 @@ pub const ROUTE_CONVERSATION: &str = "/v1/conversations/{id}";
 
 /// `POST /v1/conversations/{id}/clear` - drop that conversation's messages.
 pub const ROUTE_CONVERSATION_CLEAR: &str = "/v1/conversations/{id}/clear";
+
+/// `GET /v1/settings` and `POST /v1/settings` - the operator-facing settings,
+/// behind the `admin` scope.
+pub const ROUTE_SETTINGS: &str = "/v1/settings";
 
 /// How many conversations one page of `GET /v1/conversations` reports.
 ///
@@ -415,6 +424,10 @@ pub fn router(service: DeviceService) -> Router {
         )
         .route(ROUTE_CONVERSATION, get(handlers::conversation))
         .route(ROUTE_CONVERSATION_CLEAR, post(handlers::clear_conversation))
+        .route(
+            ROUTE_SETTINGS,
+            get(handlers::settings).post(handlers::update_settings),
+        )
         .fallback(not_here)
         .method_not_allowed_fallback(wrong_method)
         .layer(axum::middleware::from_fn(assign_request_id))
@@ -487,6 +500,7 @@ mod tests {
             ROUTE_CONVERSATIONS,
             ROUTE_CONVERSATION,
             ROUTE_CONVERSATION_CLEAR,
+            ROUTE_SETTINGS,
         ] {
             assert!(route.starts_with("/v1/"), "{route} must live under /v1");
         }

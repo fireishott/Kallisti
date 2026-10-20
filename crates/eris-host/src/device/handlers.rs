@@ -29,6 +29,7 @@ use crate::device::turns::{ConversationTurn, FrameKind, TurnFrame, TurnPolicy};
 use crate::device::{
     CONVERSATION_LIST_LIMIT, CONVERSATION_MESSAGE_LIMIT, DeviceError, DeviceService,
 };
+use crate::onboarding::{PermissionError, Permissions, SetupEngine};
 use crate::web::chat;
 
 /// The upload ceiling for one device body. A prompt is text, and text is not
@@ -91,6 +92,24 @@ fn require_scope(token: &VerifiedToken, scope: Scope) -> Result<(), DeviceError>
             StatusCode::FORBIDDEN,
             "scope_denied",
             format!("the token does not carry the {scope} scope"),
+        )
+    })
+}
+
+/// The administration check, with a refusal that says what actually happened.
+///
+/// A device whose pairing code was minted without the administration box gets
+/// this rather than a bare "forbidden": the scope is missing because nobody
+/// asked for it when the code was minted, and this message is the only place
+/// that is stated out loud.
+fn require_admin(token: &VerifiedToken) -> Result<(), DeviceError> {
+    token.scope().require(Scope::Admin).map_err(|_| {
+        DeviceError::new(
+            StatusCode::FORBIDDEN,
+            "scope_denied",
+            "this device was paired without administration, so its token carries no admin scope \
+             and it cannot read or change the settings: mint a pairing code with the \
+             administration box ticked and pair the device again",
         )
     })
 }
@@ -305,8 +324,22 @@ pub async fn pair(
         }
     };
 
-    let scopes = ScopeSet::device_default();
-    let minted = match tokens.mint_pair(&device_id, scopes, TokenOrigin::Device) {
+    // The scope set is the code's own decision, read back rather than inferred:
+    // an ordinary code yields the device defaults, and a code the operator
+    // minted with the administration box ticked yields those plus `admin`. A
+    // code minted before this flag existed reads as an ordinary code, because
+    // the column defaults to zero.
+    let scopes = if redeemed.admin() {
+        ScopeSet::device_default().with(Scope::Admin)
+    } else {
+        ScopeSet::device_default()
+    };
+    let origin = if redeemed.admin() {
+        TokenOrigin::PairedAdmin
+    } else {
+        TokenOrigin::Device
+    };
+    let minted = match tokens.mint_pair(&device_id, scopes, origin) {
         Ok(minted) => minted,
         Err(error) => {
             let status = match error {
@@ -368,21 +401,21 @@ pub async fn refresh(
             .into_response();
         }
     };
-    if verified.scope().has_admin() {
-        return DeviceError::unauthorized(
-            "token_invalid",
-            "an admin-scoped refresh token is not accepted on the device listener",
-        )
-        .into_response();
-    }
-    let access =
-        match tokens.mint_access(verified.device_id(), verified.scope(), TokenOrigin::Device) {
-            Ok(access) => access,
-            Err(error) => {
-                return DeviceError::unauthorized("token_invalid", error.to_string())
-                    .into_response();
-            }
-        };
+    // The access token inherits the scope set of the row that was verified: a
+    // device the operator asked to administer keeps that across a refresh, and a
+    // device that was paired without it cannot acquire it here. Refreshing
+    // decides nothing, it carries a decision that was already made.
+    let origin = if verified.scope().has_admin() {
+        TokenOrigin::PairedAdmin
+    } else {
+        TokenOrigin::Device
+    };
+    let access = match tokens.mint_access(verified.device_id(), verified.scope(), origin) {
+        Ok(access) => access,
+        Err(error) => {
+            return DeviceError::unauthorized("token_invalid", error.to_string()).into_response();
+        }
+    };
     axum::Json(serde_json::json!({
         "ok": true,
         "access_token": access.token(),
@@ -604,11 +637,11 @@ pub async fn create_turn(
 /// Four of the six cannot mean the same thing here as they do in the browser.
 /// `/new` and `/clear` act on the conversation the browser is showing, and a
 /// command is answered before this surface writes any transcript row, so there is
-/// nothing for either one to act on. `/model` and `/memory` are settings writes: a
-/// device is minted `chat`, `sessions` and `files`, so changing the stored model
-/// or memory backend behind that token would be a settings write with no settings
-/// scope to check. All four are refused by name with the reason, rather than
-/// silently skipped or emulated into something that looks like it worked.
+/// nothing for either one to act on. `/model` and `/memory` are settings writes,
+/// and settings have exactly one path on this listener: `POST /v1/settings`,
+/// behind the admin scope. A slash command is not a second path into them, so it
+/// is refused by name whatever the token holds, rather than silently skipped or
+/// emulated into something that looks like it worked.
 fn run_command(
     service: &DeviceService,
     device_id: &str,
@@ -636,9 +669,9 @@ fn run_command(
                     format!(
                         "/{other} is handled by this daemon but not on this surface: a command \
                          is answered before a turn or a transcript write exists, and the stored \
-                         model and memory backend sit behind a settings scope this token does \
-                         not hold, so nothing was changed and nothing was sent to a model. \
-                         /help lists what a device turn answers."
+                         model and memory backend are changed through the settings route rather \
+                         than from a command here, so nothing was changed and nothing was sent \
+                         to a model. /help lists what a device turn answers."
                     ),
                 )
                 .into_response();
@@ -1376,6 +1409,390 @@ pub async fn session(
         "turns": turns,
     }))
     .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// /v1/settings
+// ---------------------------------------------------------------------------
+
+/// The four fields `POST /v1/settings` accepts, in the order the response lists
+/// them. A body that names none of these changes nothing.
+pub const SETTINGS_FIELDS: [&str; 4] = ["model", "sandbox", "memory", "approval"];
+
+/// The values `approval` accepts, for a refusal that names them.
+const APPROVAL_ALLOWED: &str = "ask or never";
+
+/// One field a settings write will change, as the audit row records it.
+struct SettingsChange {
+    /// The field name the request used.
+    field: &'static str,
+    /// The value that will be written.
+    value: String,
+}
+
+/// One validated settings write, assembled before anything is stored.
+///
+/// Every value is checked first and written second, so a body that carries one
+/// invalid value leaves every row exactly as it was.
+#[derive(Default)]
+struct SettingsWrite {
+    /// The default model, when the request named one that differs.
+    model: Option<String>,
+    /// The permission tuple, when `sandbox` or `approval` differs.
+    permissions: Option<Permissions>,
+    /// The memory backend, when the request named one that differs.
+    memory: Option<crate::memory::Backend>,
+    /// What will change, in the order the body was read.
+    changes: Vec<SettingsChange>,
+    /// Whether the body named any field this route understands.
+    named: bool,
+}
+
+/// `GET /v1/settings` - a read snapshot of the operator-facing settings.
+///
+/// Behind the bearer and the `admin` scope. The body is what a settings screen
+/// draws: no credential, no key reference, no path and no base URL, because
+/// there is nothing here for a response somebody reads over a shoulder to leak
+/// beyond the choices the operator already made.
+pub async fn settings(State(service): State<DeviceService>, headers: HeaderMap) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    match read_settings(&service) {
+        Ok(body) => axum::Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// `POST /v1/settings` - change a subset of the operator-facing settings.
+///
+/// Form or JSON, any subset of `model`, `sandbox`, `memory` and `approval`. Each
+/// value is checked by the same parser the dashboard checks it with, a refusal
+/// names the field and the values it would have accepted, and nothing is written
+/// unless every field in the body is valid.
+pub async fn update_settings(
+    State(service): State<DeviceService>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let token = match authenticate(&service, &headers) {
+        Ok(token) => token,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = require_admin(&token) {
+        return error.into_response();
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return error.into_response(),
+    };
+    let write = match parse_settings(&service, &fields) {
+        Ok(write) => write,
+        Err(error) => return error.into_response(),
+    };
+    if !write.named {
+        return DeviceError::bad_request(
+            "settings_empty",
+            format!(
+                "the body named none of {}: nothing was changed",
+                SETTINGS_FIELDS.join(", ")
+            ),
+        )
+        .into_response();
+    }
+    if let Err(error) = apply_settings(&service, &write) {
+        return error.into_response();
+    }
+    // One row per request, carrying every field it changed. The dashboard audits
+    // a settings post the same way; the actor here is the device, because a
+    // paired phone made this change and not the browser.
+    if !write.changes.is_empty() {
+        let detail = write
+            .changes
+            .iter()
+            .map(|change| format!("{}={}", change.field, change.value))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if let Err(error) = service.engine().auth().audit(
+            token.device_id(),
+            "settings.device_update",
+            Some(&detail),
+        ) {
+            return DeviceError::db_unavailable(format!(
+                "cannot append the settings.device_update audit row: {error}"
+            ))
+            .into_response();
+        }
+    }
+    let changed: Vec<&'static str> = write.changes.iter().map(|change| change.field).collect();
+    axum::Json(serde_json::json!({ "ok": true, "changed": changed })).into_response()
+}
+
+/// The snapshot `GET /v1/settings` answers with.
+fn read_settings(service: &DeviceService) -> Result<serde_json::Value, DeviceError> {
+    let engine = service.engine();
+    let stored = |key: &str| engine.setting(key).map_err(settings_unavailable);
+    let permissions = engine.permissions().map_err(settings_unavailable)?;
+    let model = engine
+        .model()
+        .map_err(settings_unavailable)?
+        .unwrap_or_default();
+    let memory = crate::memory::backend(stored(crate::memory::SETTING_BACKEND)?.as_deref());
+    let tools_enabled =
+        crate::tools::enabled(stored(crate::tools::SETTING_TOOLS_ENABLED)?.as_deref());
+    let tool_rounds =
+        crate::tools::max_rounds(stored(crate::tools::SETTING_TOOL_ROUNDS)?.as_deref());
+    let timezone = crate::zone::Zone::parse(stored(crate::zone::SETTING_TIMEZONE)?.as_deref());
+    Ok(serde_json::json!({
+        "ok": true,
+        "model": model,
+        "sandbox": permissions.sandbox_mode.as_str(),
+        "memory": memory.as_str(),
+        "tools_enabled": tools_enabled,
+        "tool_rounds": tool_rounds,
+        "approval": permissions.approval_policy.as_str(),
+        "timezone": timezone.as_str(),
+    }))
+}
+
+/// Validate every field the body named, or refuse naming one.
+///
+/// A value that is valid but already stored is not a change: it is recorded as
+/// nothing, so `changed` in the response is a list of differences rather than a
+/// list of fields somebody mentioned.
+fn parse_settings(
+    service: &DeviceService,
+    fields: &BTreeMap<String, String>,
+) -> Result<SettingsWrite, DeviceError> {
+    let engine = service.engine();
+    let mut write = SettingsWrite::default();
+
+    if let Some(raw) = fields.get("model") {
+        write.named = true;
+        let known = engine.provider_models().map_err(settings_unavailable)?;
+        let model = engine.check_model(raw).map_err(|_| {
+            let allowed = if known.is_empty() {
+                "none yet, because no provider probe has published a list".to_owned()
+            } else {
+                known.join(", ")
+            };
+            DeviceError::bad_request(
+                "model_invalid",
+                format!(
+                    "model does not accept {}: the allowed values are the ids the last provider \
+                     probe published ({allowed})",
+                    shown_value(raw)
+                ),
+            )
+        })?;
+        let current = engine
+            .model()
+            .map_err(settings_unavailable)?
+            .unwrap_or_default();
+        if model != current {
+            write.changes.push(SettingsChange {
+                field: "model",
+                value: model.clone(),
+            });
+            write.model = Some(model);
+        }
+    }
+
+    if fields.contains_key("sandbox") || fields.contains_key("approval") {
+        write.named = true;
+        let current = engine.permissions().map_err(settings_unavailable)?;
+        let sandbox = fields
+            .get("sandbox")
+            .map_or(current.sandbox_mode.as_str(), |value| value.trim());
+        let approval = fields
+            .get("approval")
+            .map_or(current.approval_policy.as_str(), |value| value.trim());
+        let allow_full = full_allowed(engine);
+        let parsed = Permissions::validate_with(
+            sandbox,
+            approval,
+            current.autopilot_ceiling.as_str(),
+            current.telemetry.as_str(),
+            engine.paired_device_count().unwrap_or(0) > 0,
+            engine.is_ready().unwrap_or(false),
+            allow_full,
+        )
+        .map_err(|error| permission_refusal(error, sandbox, approval, allow_full))?;
+        let sandbox_changed =
+            fields.contains_key("sandbox") && parsed.sandbox_mode != current.sandbox_mode;
+        let approval_changed =
+            fields.contains_key("approval") && parsed.approval_policy != current.approval_policy;
+        if sandbox_changed {
+            write.changes.push(SettingsChange {
+                field: "sandbox",
+                value: parsed.sandbox_mode.as_str().to_owned(),
+            });
+        }
+        if approval_changed {
+            write.changes.push(SettingsChange {
+                field: "approval",
+                value: parsed.approval_policy.as_str().to_owned(),
+            });
+        }
+        if sandbox_changed || approval_changed {
+            write.permissions = Some(parsed);
+        }
+    }
+
+    if let Some(raw) = fields.get("memory") {
+        write.named = true;
+        let backend = crate::memory::Backend::parse(raw).ok_or_else(|| {
+            DeviceError::bad_request(
+                "memory_invalid",
+                format!(
+                    "memory does not accept {}: the allowed values are {}",
+                    shown_value(raw),
+                    crate::memory::Backend::ALL
+                        .iter()
+                        .map(|known| known.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+        })?;
+        // The same rule the dashboard enforces: the vault backend needs a
+        // directory of markdown that exists, and a device cannot supply one, so
+        // choosing it here without one stored would be a backend that silently
+        // remembers nothing.
+        if backend == crate::memory::Backend::Vault {
+            let vault = engine
+                .setting(crate::memory::SETTING_VAULT)
+                .map_err(settings_unavailable)?
+                .unwrap_or_default();
+            if vault.trim().is_empty() || !std::path::Path::new(vault.trim()).is_dir() {
+                return Err(DeviceError::bad_request(
+                    "memory_invalid",
+                    format!(
+                        "memory does not accept {}: the vault backend needs a directory of \
+                         markdown, and no directory is stored, so set that on the dashboard first",
+                        shown_value(raw)
+                    ),
+                ));
+            }
+        }
+        let current = crate::memory::backend(
+            engine
+                .setting(crate::memory::SETTING_BACKEND)
+                .map_err(settings_unavailable)?
+                .as_deref(),
+        );
+        if backend != current {
+            write.changes.push(SettingsChange {
+                field: "memory",
+                value: backend.as_str().to_owned(),
+            });
+            write.memory = Some(backend);
+        }
+    }
+
+    Ok(write)
+}
+
+/// Write what [`parse_settings`] validated. Every value is already checked, so a
+/// failure here is the database refusing rather than the body being wrong.
+fn apply_settings(service: &DeviceService, write: &SettingsWrite) -> Result<(), DeviceError> {
+    let engine = service.engine();
+    if let Some(model) = &write.model {
+        engine
+            .set_setting(crate::onboarding::SETTING_MODEL, model)
+            .map_err(settings_unavailable)?;
+    }
+    if let Some(permissions) = write.permissions {
+        engine
+            .set_permissions(permissions)
+            .map_err(settings_unavailable)?;
+    }
+    if let Some(memory) = write.memory {
+        engine
+            .set_setting(crate::memory::SETTING_BACKEND, memory.as_str())
+            .map_err(settings_unavailable)?;
+    }
+    Ok(())
+}
+
+/// Whether this process may select `full` sandbox mode.
+///
+/// The dashboard combines the `--allow-full` flag with the stored switch; the
+/// device listener has no flag of its own to combine, so it reads the switch that
+/// the dashboard's own full-access form writes. A device can therefore never turn
+/// `full` on through this route and then use it: that still takes a restart.
+fn full_allowed(engine: &SetupEngine) -> bool {
+    matches!(
+        engine.setting(crate::onboarding::SETTING_ALLOW_FULL),
+        Ok(Some(value)) if value.trim().eq_ignore_ascii_case("true")
+    )
+}
+
+/// The permission parser's refusal, said in the field names this route uses.
+fn permission_refusal(
+    error: PermissionError,
+    sandbox: &str,
+    approval: &str,
+    allow_full: bool,
+) -> DeviceError {
+    let sandbox_allowed = if allow_full {
+        "read-only, workspace-write, full"
+    } else {
+        "read-only or workspace-write, because full needs a restart of eris with --allow-full"
+    };
+    match error {
+        PermissionError::UnknownValue {
+            field: "approval_policy",
+            ..
+        } => refuse_value("approval", "approval_invalid", approval, APPROVAL_ALLOWED),
+        PermissionError::NeverRequiresPairedDevice => DeviceError::bad_request(
+            "approval_invalid",
+            format!(
+                "approval does not accept {}: never needs a paired device and a finished setup",
+                shown_value(approval)
+            ),
+        ),
+        PermissionError::UnknownValue { .. } | PermissionError::FullNotAvailableInOnboarding => {
+            refuse_value("sandbox", "sandbox_invalid", sandbox, sandbox_allowed)
+        }
+        other => DeviceError::bad_request("settings_value_invalid", other.to_string()),
+    }
+}
+
+/// The one refusal shape: the field, the value, and what the field accepts.
+fn refuse_value(
+    field: &'static str,
+    code: &'static str,
+    submitted: &str,
+    allowed: &str,
+) -> DeviceError {
+    DeviceError::bad_request(
+        code,
+        format!(
+            "{field} does not accept {}: the allowed values are {allowed}",
+            shown_value(submitted)
+        ),
+    )
+}
+
+/// A submitted value as a refusal quotes it: never a secret, and an empty
+/// submission says so rather than printing empty backticks.
+fn shown_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        "an empty value".to_owned()
+    } else {
+        format!("`{trimmed}`")
+    }
+}
+
+/// A settings read or write that the state store refused.
+fn settings_unavailable(error: impl std::fmt::Display) -> DeviceError {
+    DeviceError::db_unavailable(format!("cannot reach the settings: {error}"))
 }
 
 #[cfg(test)]

@@ -1,9 +1,18 @@
 //! Scopes: what a token is allowed to do, as a type rather than a string.
 //!
-//! There are four, and the set is closed. `admin` is the one that matters: it is
-//! never granted by a pairing code, and [`crate::auth::LoopbackMint`] is the only
-//! way to add it. A scope string that comes from anywhere else is a parse error,
-//! not an unknown scope that is silently ignored.
+//! There are four, and the set is closed. `admin` is the one that matters, and
+//! the rule is that it is never granted by default: it is not in
+//! [`ScopeSet::device_default`], and nothing adds it by accident. Two things add
+//! it, both of them a person deciding:
+//!
+//! - [`crate::auth::LoopbackMint`], on the loopback onboarding surface;
+//! - a pairing code whose operator ticked "allow this device to administer" when
+//!   minting it. Redemption reads that flag off the code and mints
+//!   [`ScopeSet::device_default`]`().with(Scope::Admin)` for it, and an ordinary
+//!   code still mints the default set.
+//!
+//! A scope string that comes from anywhere else is a parse error, not an unknown
+//! scope that is silently ignored.
 
 use std::fmt;
 
@@ -19,7 +28,11 @@ pub enum Scope {
     Sessions,
     /// Read and write workspace files.
     Files,
-    /// Onboarding and administration. Loopback only.
+    /// Onboarding and administration.
+    ///
+    /// Never granted by default. It reaches a paired device only when the
+    /// operator ticked the administration box at mint time, and reaches the
+    /// loopback surfaces through [`crate::auth::LoopbackMint`].
     Admin,
 }
 
@@ -69,6 +82,9 @@ impl ScopeSet {
     pub const EMPTY: Self = Self(0);
 
     /// `chat`, `sessions` and `files`: what a paired device is for.
+    ///
+    /// An ordinary pairing code yields exactly this set. It is deliberately
+    /// without `admin`.
     #[must_use]
     pub const fn device_default() -> Self {
         Self(Scope::Chat.bit() | Scope::Sessions.bit() | Scope::Files.bit())
@@ -189,6 +205,23 @@ fn admin_scope_required() {
         )
         .expect_err("the device origin must not mint admin");
     assert_eq!(refused.code(), "admin_scope_requires_loopback");
+
+    // The other origin that may mint it, because a person ticked the box when
+    // the pairing code was minted.
+    let paired = service
+        .mint_access(
+            &device,
+            device_scopes.with(Scope::Admin),
+            TokenOrigin::PairedAdmin,
+        )
+        .expect("a pairing code minted for administration grants admin");
+    assert!(
+        service
+            .verify_access(paired.token())
+            .expect("the paired admin token verifies")
+            .scope()
+            .has_admin()
+    );
 
     let admin_scopes = LoopbackMint::assume_loopback_peer().grant_admin(device_scopes);
     let minted = service

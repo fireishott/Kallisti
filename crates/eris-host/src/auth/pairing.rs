@@ -13,6 +13,11 @@
 //! Only the Argon2id PHC string is stored. A code is handed to the caller once,
 //! on the screen it was printed to, and is unrecoverable from the database by
 //! design. `Debug` is redacted.
+//!
+//! A code also carries one bit that is not a secret: whether the operator ticked
+//! "allow this device to administer" when it was minted. It travels with the
+//! code because redemption has nobody to ask, and it is the only way `admin`
+//! reaches a paired device.
 
 use std::fmt;
 use std::time::Duration;
@@ -94,6 +99,7 @@ impl fmt::Debug for IssuedCode {
 pub struct RedeemedCode {
     code_id: String,
     device_id: Option<String>,
+    admin: bool,
 }
 
 impl RedeemedCode {
@@ -107,6 +113,13 @@ impl RedeemedCode {
     #[must_use]
     pub fn device_id(&self) -> Option<&str> {
         self.device_id.as_deref()
+    }
+
+    /// Whether the operator asked, when minting this code, for the redeeming
+    /// device to carry `admin`.
+    #[must_use]
+    pub fn admin(&self) -> bool {
+        self.admin
     }
 }
 
@@ -132,17 +145,32 @@ impl PairingService {
         }
     }
 
-    /// Issue one unbound code: `eris setup` mints it before a device exists.
+    /// Issue one unbound code: `eris setup` mints it before a device exists. An
+    /// unbound code is always an ordinary one.
     pub fn issue(&self) -> Result<IssuedCode, AuthError> {
-        self.issue_bound(None)
+        self.issue_bound(None, false)
     }
 
-    /// Issue one code bound to a known device.
+    /// Issue one ordinary code bound to a known device.
     pub fn issue_for_device(&self, device_id: &str) -> Result<IssuedCode, AuthError> {
+        self.issue_for_device_asking(device_id, false)
+    }
+
+    /// Issue one code bound to a known device, saying whether the operator asked
+    /// the device to be able to administer.
+    ///
+    /// This is the one place `admin` can enter a pairing: the flag is written to
+    /// the code row now, and redemption reads it back rather than deciding
+    /// anything of its own.
+    pub fn issue_for_device_asking(
+        &self,
+        device_id: &str,
+        admin: bool,
+    ) -> Result<IssuedCode, AuthError> {
         if self.store.device(device_id)?.is_none() {
             return Err(AuthError::UnknownDevice);
         }
-        self.issue_bound(Some(device_id))
+        self.issue_bound(Some(device_id), admin)
     }
 
     /// Redeem a code. Single use: the consume update is conditional on
@@ -171,16 +199,17 @@ impl PairingService {
         Ok(RedeemedCode {
             code_id: row.id,
             device_id: row.device_id,
+            admin: row.admin,
         })
     }
 
-    fn issue_bound(&self, device_id: Option<&str>) -> Result<IssuedCode, AuthError> {
+    fn issue_bound(&self, device_id: Option<&str>, admin: bool) -> Result<IssuedCode, AuthError> {
         let code = generate_code()?;
         let code_hash = hash_secret(code.as_bytes())?;
         let expires_at = now() + self.policy.ttl;
         let code_id = self
             .store
-            .insert_pairing_code(&code_hash, device_id, expires_at)?;
+            .insert_pairing_code(&code_hash, device_id, expires_at, admin)?;
         self.store
             .audit("loopback", "auth.pairing_issued", Some(&code_id))?;
         Ok(IssuedCode {
@@ -319,6 +348,45 @@ fn pairing_codes_look_uniform() {
             "{ambiguous} is ambiguous in a hand-copied code"
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_code_records_whether_admin_was_asked_for() {
+    use crate::auth::AuthStore;
+    use crate::db::Db;
+
+    use super::PairingService;
+
+    let db = Db::open_in_memory().expect("db");
+    let device = AuthStore::new(db.clone())
+        .register_device("phone", "ios")
+        .expect("device row");
+    let pairing = PairingService::new(db.clone());
+
+    // An ordinary code redeems without the flag.
+    let ordinary = pairing.issue_for_device(&device).expect("ordinary code");
+    let redeemed = pairing.redeem(ordinary.code()).expect("redeem");
+    assert!(
+        !redeemed.admin(),
+        "a code minted without the box does not ask for administration"
+    );
+    assert_eq!(redeemed.device_id(), Some(device.as_str()));
+
+    // A code minted with the box ticked comes back with it, and the value is on
+    // the row rather than in the caller's memory.
+    let asked = pairing
+        .issue_for_device_asking(&device, true)
+        .expect("admin code");
+    assert!(pairing.redeem(asked.code()).expect("redeem").admin());
+
+    let rows = AuthStore::new(db).pairing_rows().expect("pairing rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().filter(|row| row.admin).count(),
+        1,
+        "exactly the ticked code carries the flag: {rows:?}"
+    );
 }
 
 #[cfg(test)]

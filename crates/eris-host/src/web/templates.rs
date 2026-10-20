@@ -77,11 +77,23 @@ pub struct DeviceRow {
     pub paired_at: Option<String>,
     /// True only when a code was redeemed or a live token exists.
     pub paired: bool,
+    /// True when one of its live tokens carries `admin`.
+    pub admin: bool,
     /// When it was revoked, if it was.
     pub revoked_at: Option<String>,
 }
 
 impl DeviceRow {
+    /// Whether this device may change the operator's settings, in plain words.
+    #[must_use]
+    pub fn admin_label(&self) -> &'static str {
+        if self.admin {
+            "can administer"
+        } else {
+            "chat only"
+        }
+    }
+
     /// The one-word state the table shows.
     #[must_use]
     pub fn state_label(&self) -> &'static str {
@@ -1436,6 +1448,7 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                             th scope="col" { "Device" }
                             th scope="col" { "Platform" }
                             th scope="col" { "State" }
+                            th scope="col" { "Access" }
                             th scope="col" { "Registered" }
                             th scope="col" { "Action" }
                         }
@@ -1446,6 +1459,7 @@ pub fn dashboard_page(view: &DashboardView) -> Markup {
                                 td { (device.name) }
                                 td { (device.platform) }
                                 td { (device.state_label()) }
+                                td .small { (device.admin_label()) }
                                 td .mono { (device.paired_at.as_deref().unwrap_or("not yet")) }
                                 td {
                                     @if device.revoked_at.is_some() {
@@ -3483,6 +3497,7 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                             th scope="col" { "Paired" }
                             th scope="col" { "Last seen" }
                             th scope="col" { "State" }
+                            th scope="col" { "Access" }
                             th scope="col" { "Action" }
                         }
                     }
@@ -3504,6 +3519,7 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                                         (row.state_label())
                                     }
                                 }
+                                td .small { (row.admin_label()) }
                                 td {
                                     @if row.revoked_at.is_some() {
                                         span .small { "revoked" }
@@ -3533,6 +3549,17 @@ pub fn devices_page(view: &DevicesView) -> Markup {
                         "already known binds the code to that device instead of adding a second row."
                     }
                 }
+                div .field {
+                    label for="allow_admin" {
+                        input type="checkbox" id="allow_admin" name="allow_admin" value="true";
+                        " Allow this device to administer"
+                    }
+                    span .hint {
+                        "Ticked, the code redeems into a token that may read and change the "
+                        "operator's settings as well as chat; unticked, it can chat and file "
+                        "conversations and nothing more."
+                    }
+                }
                 div .actions {
                     button type="submit" { "Mint pairing code" }
                 }
@@ -3540,7 +3567,7 @@ pub fn devices_page(view: &DevicesView) -> Markup {
             p .small {
                 "One code per press: eight characters, five minutes, single use. The code is never "
                 "written to the database in readable form, never logged, and never recorded in the "
-                "audit log, which notes only the device name."
+                "audit log, which notes the device name and whether administration was asked for."
             }
         }
     };

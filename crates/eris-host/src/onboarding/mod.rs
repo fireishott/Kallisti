@@ -737,8 +737,17 @@ impl SetupEngine {
         self.set_setting(SETTING_PROVIDER_CONTEXTS, &json)
     }
 
-    /// Store the default model, which must be in the probe's list.
-    pub fn set_model(&self, model: &str) -> Result<(), OnboardingError> {
+    /// Check that a model id is one the last probe published, without writing it.
+    ///
+    /// One rule, three callers: the wizard, the dashboard, and the device
+    /// settings route. Splitting it out is what keeps a device from storing a
+    /// model id the endpoint never offered.
+    ///
+    /// # Errors
+    ///
+    /// [`OnboardingError::ModelRequired`] for a blank id, and
+    /// [`OnboardingError::ModelNotInProbe`] for an id outside the published list.
+    pub fn check_model(&self, model: &str) -> Result<String, OnboardingError> {
         let model = model.trim();
         if model.is_empty() {
             return Err(OnboardingError::ModelRequired);
@@ -746,9 +755,15 @@ impl SetupEngine {
         if !self.provider_models()?.iter().any(|known| known == model) {
             return Err(OnboardingError::ModelNotInProbe);
         }
-        self.set_setting(SETTING_MODEL, model)?;
+        Ok(model.to_owned())
+    }
+
+    /// Store the default model, which must be in the probe's list.
+    pub fn set_model(&self, model: &str) -> Result<(), OnboardingError> {
+        let model = self.check_model(model)?;
+        self.set_setting(SETTING_MODEL, &model)?;
         self.complete_step(Step::Models)?;
-        self.auth().audit("loopback", "setup.model", Some(model))?;
+        self.auth().audit("loopback", "setup.model", Some(&model))?;
         Ok(())
     }
 

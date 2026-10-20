@@ -72,6 +72,8 @@ pub struct StoredPairingCode {
     pub expires_at: String,
     /// When it was redeemed.
     pub consumed_at: Option<String>,
+    /// Whether the operator ticked the box that lets this pairing mint `admin`.
+    pub admin: bool,
 }
 
 /// A device row as read back.
@@ -272,19 +274,24 @@ impl AuthStore {
     }
 
     /// Write one pairing code verifier and return the row id.
+    ///
+    /// `admin` is what the operator asked for at mint time. It is stored on the
+    /// code because redemption has nobody to ask: the code is the whole record
+    /// of the decision.
     pub fn insert_pairing_code(
         &self,
         code_hash: &str,
         device_id: Option<&str>,
         expires_at: OffsetDateTime,
+        admin: bool,
     ) -> Result<String, AuthError> {
         let id = Uuid::now_v7().to_string();
         let expires_at = format_timestamp(expires_at);
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO pairing_codes (id, code_hash, device_id, expires_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id, code_hash, device_id, expires_at],
+                "INSERT INTO pairing_codes (id, code_hash, device_id, expires_at, admin) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, code_hash, device_id, expires_at, admin],
             )?;
             Ok(())
         })?;
@@ -295,7 +302,7 @@ impl AuthStore {
     pub fn pairing_rows(&self) -> Result<Vec<StoredPairingCode>, AuthError> {
         let rows = self.db.with_conn(|conn| {
             let mut statement = conn.prepare(
-                "SELECT id, code_hash, device_id, expires_at, consumed_at \
+                "SELECT id, code_hash, device_id, expires_at, consumed_at, admin \
                  FROM pairing_codes ORDER BY created_at, id",
             )?;
             let mut rows = statement.query([])?;
@@ -307,6 +314,7 @@ impl AuthStore {
                     device_id: row.get(2)?,
                     expires_at: row.get(3)?,
                     consumed_at: row.get(4)?,
+                    admin: row.get::<_, i64>(5)? != 0,
                 });
             }
             Ok(out)

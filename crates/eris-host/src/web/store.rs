@@ -398,9 +398,25 @@ pub struct DeviceOverview {
     /// True when a live token exists or a code was redeemed. The same two facts
     /// the dashboard's own count uses.
     pub paired: bool,
+    /// True when one of this device's live tokens carries `admin`.
+    ///
+    /// Read from the stored token scope, which is the only record of what the
+    /// pairing code granted: the page states the fact, it does not guess it from
+    /// the device name or from a second column somebody could forget to update.
+    pub admin: bool,
 }
 
 impl DeviceOverview {
+    /// Whether this device may change the operator's settings, in plain words.
+    #[must_use]
+    pub fn admin_label(&self) -> &'static str {
+        if self.admin {
+            "can administer"
+        } else {
+            "chat only"
+        }
+    }
+
     /// The one-word state the table shows.
     #[must_use]
     pub fn state_label(&self) -> &'static str {
@@ -415,6 +431,11 @@ impl DeviceOverview {
 }
 
 /// Every device, newest first, revoked ones included.
+///
+/// The `admin` column is read from `auth_tokens.scope`, which stores the set as
+/// one word per scope (`chat sessions files admin`). Padding the value with a
+/// space on each side and looking for ` admin ` is therefore an exact word test
+/// on the stored spelling, not a prefix match that `administrator` would satisfy.
 pub fn devices_list(db: &Db) -> Result<Vec<DeviceOverview>, DbError> {
     const SQL: &str = "\
 SELECT d.id, d.name, d.platform, d.paired_at, d.last_seen_at, d.revoked_at, \
@@ -423,7 +444,10 @@ SELECT d.id, d.name, d.platform, d.paired_at, d.last_seen_at, d.revoked_at, \
           WHERE t.device_id = d.id AND t.revoked_at IS NULL AND t.rotated_at IS NULL) \
   OR EXISTS (SELECT 1 FROM pairing_codes p \
              WHERE p.device_id = d.id AND p.consumed_at IS NOT NULL) \
-) AS paired \
+) AS paired, \
+EXISTS (SELECT 1 FROM auth_tokens a \
+        WHERE a.device_id = d.id AND a.revoked_at IS NULL AND a.rotated_at IS NULL \
+          AND instr(' ' || a.scope || ' ', ' admin ') > 0) AS admin \
 FROM devices d ORDER BY d.created_at DESC, d.id DESC";
     db.with_conn(|conn| {
         let mut statement = conn.prepare(SQL)?;
@@ -438,6 +462,7 @@ FROM devices d ORDER BY d.created_at DESC, d.id DESC";
                 last_seen_at: row.get(4)?,
                 revoked_at: row.get(5)?,
                 paired: row.get(6)?,
+                admin: row.get(7)?,
             });
         }
         Ok(out)

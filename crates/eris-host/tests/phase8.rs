@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use eris_host::auth::{AuthStore, PairingService, ScopeSet, TokenOrigin, TokenService};
+use eris_host::auth::{AuthStore, PairingService, Scope, ScopeSet, TokenOrigin, TokenService};
 use eris_host::config::Paths;
 use eris_host::db::{Db, SetupState};
 use eris_host::device::turns::{DEFAULT_SSE_BUFFER, TurnStore};
@@ -123,6 +123,36 @@ impl Harness {
             .issue_for_device(&device_id)
             .expect("pairing code");
         (device_id, issued.code().to_owned())
+    }
+
+    /// Register a device and mint a pairing code the operator ticked the
+    /// administration box for.
+    fn device_with_admin_code(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let issued = PairingService::new(db)
+            .issue_for_device_asking(&device_id, true)
+            .expect("pairing code");
+        (device_id, issued.code().to_owned())
+    }
+
+    /// A device and a live token that carries `admin`, without going through
+    /// `/v1/pair`: the same scope set a ticked code redeems into.
+    fn device_with_admin_token(&self, name: &str) -> (String, String) {
+        let db = self.engine.db().clone();
+        let device_id = AuthStore::new(db.clone())
+            .register_device(name, "ios")
+            .expect("device row");
+        let token = TokenService::new(db)
+            .mint_access(
+                &device_id,
+                ScopeSet::device_default().with(Scope::Admin),
+                TokenOrigin::PairedAdmin,
+            )
+            .expect("admin access token");
+        (device_id, token.token().to_owned())
     }
 
     /// A device and a live access token, without going through `/v1/pair`.
@@ -2396,6 +2426,506 @@ async fn a_cancelled_turn_does_not_settle_its_conversation_answer() {
     );
     assert_eq!(messages[1]["body"], "Stopped before it finished.");
     assert!(provider.hits() >= 1);
+
+    harness.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Settings behind the admin scope
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_code_minted_with_the_box_ticked_yields_an_admin_token() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+
+    // An ordinary code: the device defaults, which do not include admin, and the
+    // settings route refuses the token it buys.
+    let (ordinary_device, ordinary_code) = harness.device_with_code("iPhone");
+    let ordinary = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{ordinary_code}","device_name":"iPhone"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(ordinary.status, 201, "{}", ordinary.body);
+    let ordinary_body = ordinary.json();
+    let ordinary_scopes = ordinary_body["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .clone();
+    assert!(
+        !ordinary_scopes.contains(&serde_json::json!("admin")),
+        "an ordinary code mints no admin: {ordinary_scopes:?}"
+    );
+    let ordinary_access = ordinary_body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refused = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {ordinary_access}"))],
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // A code the operator ticked the administration box for.
+    let (admin_device, admin_code) = harness.device_with_admin_code("iPad");
+    let admin = harness
+        .request(
+            "POST",
+            "/v1/pair",
+            &[],
+            Some(&format!(
+                r#"{{"code":"{admin_code}","device_name":"iPad"}}"#
+            )),
+        )
+        .await;
+    assert_eq!(admin.status, 201, "{}", admin.body);
+    let admin_body = admin.json();
+    assert_eq!(admin_body["device_id"], admin_device);
+    let admin_scopes = admin_body["scopes"]
+        .as_array()
+        .expect("a scope list")
+        .clone();
+    assert!(
+        admin_scopes.contains(&serde_json::json!("admin")),
+        "the ticked box reaches the token: {admin_scopes:?}"
+    );
+    for expected in ["chat", "sessions", "files"] {
+        assert!(
+            admin_scopes.contains(&serde_json::json!(expected)),
+            "the admin code keeps the defaults too: {admin_scopes:?}"
+        );
+    }
+    let admin_access = admin_body["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let admin_refresh = admin_body["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+
+    // The token that code redeemed reads the snapshot, so the admin scope on it
+    // is usable and not only listed.
+    let readable = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_access}"))],
+            None,
+        )
+        .await;
+    assert_eq!(readable.status, 200, "{}", readable.body);
+
+    // The scope is on the stored row, not only in the response.
+    let stored: Vec<String> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT scope FROM auth_tokens WHERE device_id = ?1 ORDER BY id")?;
+            let mut rows = statement.query([admin_device.as_str()])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get::<_, String>(0)?);
+            }
+            Ok(out)
+        })
+        .expect("the stored scopes");
+    assert_eq!(stored.len(), 2, "an access row and a refresh row");
+    for scope in &stored {
+        assert!(
+            scope.split_whitespace().any(|word| word == "admin"),
+            "the stored scope set carries admin: {scope}"
+        );
+    }
+
+    // And it survives a refresh, because a token that expires in an hour is not
+    // an administration grant, it is a one-hour one.
+    let refreshed = harness
+        .request(
+            "POST",
+            "/v1/token/refresh",
+            &[],
+            Some(&format!(r#"{{"refresh_token":"{admin_refresh}"}}"#)),
+        )
+        .await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.body);
+    let fresh = refreshed.json()["access_token"]
+        .as_str()
+        .expect("a fresh access token")
+        .to_owned();
+    let after_refresh = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {fresh}"))],
+            None,
+        )
+        .await;
+    assert_eq!(after_refresh.status, 200, "{}", after_refresh.body);
+
+    // The ordinary device is untouched by all of that: its scope set is unchanged
+    // and still cannot administer.
+    let ordinary_stored: String = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT scope FROM auth_tokens WHERE device_id = ?1 ORDER BY id LIMIT 1",
+                [ordinary_device.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .expect("the ordinary scope");
+    assert_eq!(ordinary_stored, "chat sessions files");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn settings_require_a_bearer_and_the_admin_scope() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+
+    // No bearer at all: the same 401 every other route answers.
+    for method in ["GET", "POST"] {
+        let anonymous = harness
+            .request(method, "/v1/settings", &[], Some(r#"{"memory":"off"}"#))
+            .await;
+        assert_eq!(anonymous.status, 401, "{method}: {}", anonymous.body);
+        assert_eq!(anonymous.json()["code"], "token_invalid");
+    }
+
+    // A real token without admin: 403, and the message says why rather than the
+    // word forbidden.
+    for method in ["GET", "POST"] {
+        let denied = harness
+            .request(
+                method,
+                "/v1/settings",
+                &[("authorization", format!("Bearer {device_token}"))],
+                Some(r#"{"memory":"off"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method}: {}", denied.body);
+        let body = denied.json();
+        assert_eq!(body["code"], "scope_denied");
+        let message = body["message"].as_str().expect("a message");
+        assert!(
+            message.contains("paired without administration"),
+            "the refusal says what actually happened: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("forbidden"),
+            "the refusal is not the bare word: {message}"
+        );
+    }
+
+    // Nothing was written by either refused post.
+    let written: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'memory.backend'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the memory row count");
+    assert_eq!(written, 0, "a refused post writes nothing");
+
+    // An admin token reads the snapshot.
+    let read = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_token}"))],
+            None,
+        )
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let body = read.json();
+    assert_eq!(body["ok"], true);
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "approval",
+            "memory",
+            "model",
+            "ok",
+            "sandbox",
+            "timezone",
+            "tool_rounds",
+            "tools_enabled"
+        ],
+        "the body is the documented snapshot and nothing else: {body}"
+    );
+    assert_eq!(body["model"], "p8-model");
+    assert_eq!(body["sandbox"], "read-only");
+    assert_eq!(body["approval"], "ask");
+    assert_eq!(body["memory"], "gbrain");
+    assert_eq!(body["tools_enabled"], true);
+    assert_eq!(body["tool_rounds"], 12);
+    assert!(body["timezone"].as_str().is_some());
+
+    // Nothing credential shaped is in it. A settings screen that carried a key,
+    // a reference or a path would be the leak it exists to avoid.
+    let raw = read.body.clone();
+    for banned in [
+        "env:", "http", "sk-", "key", "password", "token", "base_url",
+    ] {
+        assert!(
+            !raw.to_ascii_lowercase().contains(banned),
+            "the snapshot carries no {banned}: {raw}"
+        );
+    }
+    assert!(!raw.contains('/'), "no path is in the snapshot: {raw}");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn settings_post_changes_a_subset_and_refuses_an_invalid_value() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    // Two ids the endpoint publishes, so a model change is a real change.
+    harness
+        .engine
+        .set_provider(
+            &provider.url,
+            TEST_KEY_REF,
+            &["p8-model".to_owned(), "p8-model-alt".to_owned()],
+        )
+        .expect("the catalog");
+    let (device_id, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // A valid subset: two fields, one of them a model the endpoint published.
+    let changed = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"sandbox":"workspace-write","model":"p8-model-alt"}"#),
+        )
+        .await;
+    assert_eq!(changed.status, 200, "{}", changed.body);
+    let body = changed.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body["changed"],
+        serde_json::json!(["model", "sandbox"]),
+        "the response lists what changed: {body}"
+    );
+
+    let after = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(after.json()["sandbox"], "workspace-write");
+    assert_eq!(after.json()["model"], "p8-model-alt");
+    assert_eq!(
+        after.json()["approval"],
+        "ask",
+        "a field the body did not name is untouched"
+    );
+
+    // The write is audited with the device as the actor, and the detail names the
+    // fields and values that were written.
+    let audited: Vec<(String, String, String)> = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT actor, action, detail FROM audit_log \
+                  WHERE action = 'settings.device_update' ORDER BY id",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push((row.get(0)?, row.get(1)?, row.get(2)?));
+            }
+            Ok(out)
+        })
+        .expect("the audit rows");
+    assert_eq!(audited.len(), 1, "one write, one row: {audited:?}");
+    assert_eq!(audited[0].0, device_id, "the actor is the device");
+    assert_eq!(audited[0].1, "settings.device_update");
+    assert!(
+        audited[0].2.contains("model=p8-model-alt"),
+        "the detail names the model that was written: {}",
+        audited[0].2
+    );
+    assert!(
+        audited[0].2.contains("sandbox=workspace-write"),
+        "the detail names the sandbox that was written: {}",
+        audited[0].2
+    );
+
+    // An invalid value is a 400 that names the field and what it accepts, and it
+    // writes nothing at all: the valid model in the same body is left alone.
+    let refused = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"model":"p8-model","sandbox":"yolo"}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    let refusal = refused.json();
+    assert_eq!(refusal["code"], "sandbox_invalid");
+    let message = refusal["message"].as_str().expect("a message");
+    assert!(message.contains("sandbox"), "names the field: {message}");
+    assert!(message.contains("yolo"), "names the value: {message}");
+    assert!(
+        message.contains("read-only") && message.contains("workspace-write"),
+        "names the allowed values: {message}"
+    );
+
+    let untouched = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(untouched.status, 200, "{}", untouched.body);
+    assert_eq!(
+        untouched.json()["sandbox"],
+        "workspace-write",
+        "the refused value was not written"
+    );
+    assert_eq!(
+        untouched.json()["model"],
+        "p8-model-alt",
+        "all or nothing: the valid model beside an invalid sandbox is not written either"
+    );
+    let rows: i64 = harness
+        .engine
+        .db()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'settings.device_update'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("the audit count");
+    assert_eq!(rows, 1, "a refused write appends no audit row");
+
+    // A body that names none of the four fields is refused rather than 200.
+    let empty = harness
+        .request("POST", "/v1/settings", &auth, Some(r#"{}"#))
+        .await;
+    assert_eq!(empty.status, 400, "{}", empty.body);
+    assert_eq!(empty.json()["code"], "settings_empty");
+
+    // A model the endpoint never published is refused by field too.
+    let unknown = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &auth,
+            Some(r#"{"model":"no-such-model"}"#),
+        )
+        .await;
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    assert_eq!(unknown.json()["code"], "model_invalid");
+    assert!(
+        unknown.body.contains("p8-model-alt"),
+        "the refusal names the ids the probe published: {}",
+        unknown.body
+    );
+
+    // And the admin scope is what unlocks it: the same post from a device token
+    // is a 403 that writes nothing.
+    let (_, device_token) = harness.device_with_token("iPhone");
+    let denied = harness
+        .request(
+            "POST",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {device_token}"))],
+            Some(r#"{"sandbox":"read-only"}"#),
+        )
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+    assert_eq!(denied.json()["code"], "scope_denied");
+    let still = harness.request("GET", "/v1/settings", &auth, None).await;
+    assert_eq!(still.json()["sandbox"], "workspace-write");
+
+    harness.stop();
+}
+
+#[tokio::test]
+async fn the_admin_scope_unlocks_settings_and_nothing_else() {
+    let provider = StubProvider::start(&["o", "k"], Duration::ZERO).await;
+    let harness = Harness::start(&provider.url, DEFAULT_SSE_BUFFER).await;
+    let (_, admin_token) = harness.device_with_admin_token("iPad");
+    let auth = [("authorization", format!("Bearer {admin_token}"))];
+
+    // Admin is not chat and it is not sessions: a token carrying only admin is
+    // still refused by the routes that need those, so one scope cannot silently
+    // become the other.
+    let admin_only = {
+        let db = harness.engine.db().clone();
+        let device = AuthStore::new(db.clone())
+            .register_device("AdminOnly", "ios")
+            .expect("device row");
+        TokenService::new(db)
+            .mint_access(
+                &device,
+                ScopeSet::EMPTY.with(Scope::Admin),
+                TokenOrigin::PairedAdmin,
+            )
+            .expect("admin only token")
+            .token()
+            .to_owned()
+    };
+    let settings = harness
+        .request(
+            "GET",
+            "/v1/settings",
+            &[("authorization", format!("Bearer {admin_only}"))],
+            None,
+        )
+        .await;
+    assert_eq!(settings.status, 200, "{}", settings.body);
+    for (method, path) in [
+        ("GET", "/v1/projects"),
+        ("GET", "/v1/conversations"),
+        ("POST", "/v1/turns"),
+    ] {
+        let denied = harness
+            .request(
+                method,
+                path,
+                &[("authorization", format!("Bearer {admin_only}"))],
+                Some(r#"{"text":"hello","project_name":"Work"}"#),
+            )
+            .await;
+        assert_eq!(denied.status, 403, "{method} {path}: {}", denied.body);
+        assert_eq!(denied.json()["code"], "scope_denied");
+    }
+
+    // The admin token that was paired with the defaults keeps them, so nothing
+    // was widened on the routes that were already there.
+    let conversations = harness
+        .request("GET", "/v1/conversations", &auth, None)
+        .await;
+    assert_eq!(conversations.status, 200, "{}", conversations.body);
 
     harness.stop();
 }

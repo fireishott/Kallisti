@@ -18,7 +18,7 @@ use crate::auth::pairing::{ALPHABET, CODE_LENGTH};
 
 use super::harness::{
     Call, audit_rows, block_on, dump_text, ready_app, row_window, seed_device, seed_redeemed_code,
-    send,
+    seed_token, send,
 };
 
 /// The route the revoke form posts to. It predates this page: the test asserts
@@ -332,5 +332,152 @@ fn revoking_a_device_keeps_the_row_and_marks_it() {
         "an unknown device is refused: {} {}",
         unknown.status,
         unknown.body
+    );
+}
+
+#[test]
+fn the_mint_form_offers_administration_and_starts_unchecked() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    seed_device(
+        db,
+        "dev-chat",
+        "iPhone",
+        "ios",
+        Some("2026-10-19T09:00:00.000Z"),
+        Some("2026-10-19T12:00:00.000Z"),
+        None,
+    );
+    seed_redeemed_code(db, "dev-chat");
+    seed_token(
+        db,
+        "tok-chat",
+        "dev-chat",
+        "chat sessions files",
+        "2026-12-31T00:00:00.000Z",
+    );
+    seed_device(
+        db,
+        "dev-admin",
+        "iPad",
+        "ios",
+        Some("2026-10-19T10:00:00.000Z"),
+        Some("2026-10-19T12:30:00.000Z"),
+        None,
+    );
+    seed_redeemed_code(db, "dev-admin");
+    seed_token(
+        db,
+        "tok-admin",
+        "dev-admin",
+        "chat sessions files admin",
+        "2026-12-31T00:00:00.000Z",
+    );
+
+    let reply = block_on(send(
+        &app,
+        Call::get(ROUTE_DEVICES).html().cookie(Some(&cookie)),
+    ));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let page = &reply.body;
+
+    // The box exists, is a checkbox, posts `true`, and starts unchecked.
+    let at = page
+        .find(r#"id="allow_admin""#)
+        .unwrap_or_else(|| panic!("the administration box is on the page: {page}"));
+    let open = page[..at].rfind("<input").expect("an input tag opens");
+    let close = at + page[at..].find('>').expect("the tag closes");
+    let tag = &page[open..close];
+    assert!(tag.contains(r#"type="checkbox""#), "{tag}");
+    assert!(tag.contains(r#"name="allow_admin""#), "{tag}");
+    assert!(tag.contains(r#"value="true""#), "{tag}");
+    assert!(
+        !tag.contains("checked"),
+        "the box is unchecked by default: {tag}"
+    );
+    assert!(
+        page.contains("Allow this device to administer"),
+        "the box carries a label a person can read: {page}"
+    );
+    // And the card says what ticked means, in one sentence.
+    assert!(
+        page.contains("Ticked, the code redeems into a token"),
+        "the pairing card explains the box: {page}"
+    );
+
+    // The table states it per device, in plain words, from the stored scope.
+    assert!(page.contains(r#"<th scope="col">Access</th>"#), "{page}");
+    let admin_row = row_window(page, "iPad");
+    assert!(
+        admin_row.contains("can administer"),
+        "an admin device says so in its row: {admin_row}"
+    );
+    let chat_row = row_window(page, "iPhone");
+    assert!(
+        chat_row.contains("chat only"),
+        "a device without administration says that: {chat_row}"
+    );
+    assert!(
+        !chat_row.contains("can administer"),
+        "only the administrator is marked: {chat_row}"
+    );
+}
+
+#[test]
+fn minting_with_the_box_ticked_records_it_on_the_code() {
+    let (_dir, engine, app, cookie) = ready_app();
+    let db = engine.db();
+
+    let plain = block_on(send(
+        &app,
+        Call::post(ROUTE_DEVICES, "device_name=iPhone").cookie(Some(&cookie)),
+    ));
+    assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
+    assert_eq!(plain.json()["admin"], false);
+
+    let ticked = block_on(send(
+        &app,
+        Call::post(ROUTE_DEVICES, "device_name=iPad&allow_admin=true").cookie(Some(&cookie)),
+    ));
+    assert_eq!(ticked.status, StatusCode::OK, "{}", ticked.body);
+    assert_eq!(ticked.json()["admin"], true);
+
+    // The flag is on the code row, which is the only place redemption can read
+    // it from: the code itself is never stored.
+    let flags: Vec<i64> = db
+        .with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT admin FROM pairing_codes ORDER BY created_at, id")?;
+            let mut rows = statement.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(out)
+        })
+        .expect("the pairing flags");
+    assert_eq!(
+        flags.iter().filter(|flag| **flag == 1).count(),
+        1,
+        "exactly the ticked mint records it: {flags:?}"
+    );
+    assert_eq!(flags.len(), 2);
+
+    // The audit trail says so too, and still never carries the code.
+    let issued: Vec<_> = audit_rows(db)
+        .into_iter()
+        .filter(|row| row.action == "device.pairing_code_issued")
+        .collect();
+    assert_eq!(issued.len(), 2);
+    assert_eq!(issued[0].detail.as_deref(), Some("iPhone"));
+    assert_eq!(issued[1].detail.as_deref(), Some("iPad; admin=true"));
+    let code = ticked.json()["code"]
+        .as_str()
+        .expect("the ticked mint answers with its code")
+        .to_owned();
+    assert!(
+        !dump_text(db, "SELECT * FROM audit_log").contains(&code),
+        "the audit row carries the decision and never the code"
     );
 }
