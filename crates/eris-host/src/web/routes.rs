@@ -30,8 +30,8 @@ use crate::admin::{
     ROUTE_CHAT_NEW, ROUTE_CHAT_SEND, ROUTE_CHAT_SESSIONS, ROUTE_DASHBOARD, ROUTE_DEVICES,
     ROUTE_JOB_CANCEL, ROUTE_LOGIN, ROUTE_SESSION, ROUTE_SESSIONS, ROUTE_SETTINGS,
     ROUTE_SETTINGS_FULL_ACCESS, ROUTE_SETTINGS_PERMISSIONS, ROUTE_SETTINGS_PERSONA,
-    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_WORKSPACE, VERSION,
-    session_path,
+    ROUTE_SETTINGS_PROVIDER, ROUTE_SETTINGS_REASONING, ROUTE_SETTINGS_TIMEZONE,
+    ROUTE_SETTINGS_WORKSPACE, VERSION, session_path,
 };
 use crate::auth::{AuthStore, PairingService};
 use crate::backup::BackupError;
@@ -99,6 +99,7 @@ pub fn dashboard_routes() -> axum::Router<AppState> {
         .route(ROUTE_SETTINGS_PERMISSIONS, post(save_permissions))
         .route(ROUTE_SETTINGS_PERSONA, post(save_persona))
         .route(ROUTE_SETTINGS_REASONING, post(save_reasoning))
+        .route(ROUTE_SETTINGS_TIMEZONE, post(save_timezone))
         .route(ROUTE_SETTINGS_FULL_ACCESS, post(save_full_access))
         .route(ROUTE_ACTIVITY, get(activity))
         .route(ROUTE_SESSIONS, get(sessions))
@@ -550,6 +551,13 @@ fn build_settings_view(state: &AppState) -> Result<SettingsView, FormError> {
             .map_err(|error| form_error(&error))?
             .as_deref(),
     );
+    view.timezone = crate::zone::Zone::parse(
+        engine
+            .setting(crate::zone::SETTING_TIMEZONE)
+            .map_err(|error| form_error(&error))?
+            .as_deref(),
+    )
+    .as_str();
     view.show_reasoning = chat::show_reasoning(
         engine
             .setting(chat::SETTING_SHOW_REASONING)
@@ -2370,6 +2378,9 @@ const SAVED_WORKSPACE: &str = "/dashboard/settings?saved=workspace";
 
 /// Where the reasoning toggle returns to.
 const SAVED_REASONING: &str = "/dashboard/settings?saved=reasoning";
+
+/// Where the clock setting returns to.
+const SAVED_TIMEZONE: &str = "/dashboard/settings?saved=timezone";
 const SAVED_PERMISSIONS: &str = "/dashboard/settings?saved=permissions";
 const SAVED_PERSONA: &str = "/dashboard/settings?saved=persona";
 
@@ -2567,6 +2578,52 @@ async fn save_reasoning(
     }
 
     see_other(SAVED_REASONING)
+}
+
+/// `POST /dashboard/settings/timezone` - the clock every stamp is shown in.
+///
+/// A typo is refused next to the field rather than silently replaced with the
+/// host zone, because a clock that quietly ignores what was typed is worse than
+/// one that says it did not understand.
+async fn save_timezone(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let as_html = wants_html(&headers);
+    if !session_valid(&state, &headers) {
+        return no_dashboard_session(&headers, &request_id.0);
+    }
+    let fields = match read_fields(&headers, body).await {
+        Ok(fields) => fields,
+        Err(error) => return fail_settings(&state, as_html, error),
+    };
+    let zone = match crate::zone::validate(field(&fields, "timezone")) {
+        Ok(zone) => zone,
+        Err(message) => {
+            return fail_settings(
+                &state,
+                as_html,
+                FormError::new(Some("timezone"), "timezone_invalid", message),
+            );
+        }
+    };
+    let stored = zone.as_str();
+    if let Err(error) =
+        store::settings_put(state.engine.db(), crate::zone::SETTING_TIMEZONE, &stored)
+    {
+        return store_failure(&request_id.0, crate::zone::SETTING_TIMEZONE, error);
+    }
+    if let Err(error) = state
+        .engine
+        .auth()
+        .audit("loopback", "settings.timezone", Some(&stored))
+    {
+        return audit_failure(&request_id.0, "settings.timezone", error);
+    }
+
+    see_other(SAVED_TIMEZONE)
 }
 
 /// `POST /dashboard/settings/permissions` - the closed permission tuple.
@@ -2888,6 +2945,17 @@ fn provider_ready(state: &AppState) -> bool {
 /// that re-renders it agree.
 fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView, FormError> {
     let db = state.engine.db();
+    // One offset for the whole page: every stamp in a transcript has to agree,
+    // or a reply can appear to precede its own question.
+    let zone = crate::zone::Zone::parse(
+        state
+            .engine
+            .setting(crate::zone::SETTING_TIMEZONE)
+            .ok()
+            .flatten()
+            .as_deref(),
+    );
+    let offset = crate::zone::offset_minutes(db, zone);
     let conversation = chat::resolve_conversation(db, requested)
         .map_err(|error| FormError::new(None, "chat_unreadable", error.to_string()))?;
     let transcript = chat::load(db, &conversation)
@@ -2918,7 +2986,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                     assistant_name.clone()
                 },
                 body: message.body.clone(),
-                stamp: chat_clock(&message.created_at),
+                stamp: crate::zone::clock_in(&message.created_at, offset),
                 failed: message.state == chat::State::Failed,
                 error_code: message.error_code.clone(),
                 pending: message.state == chat::State::Streaming,
@@ -2977,7 +3045,7 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
                 .flatten()
                 .as_deref(),
         ),
-        greeting: crate::web::templates::greeting_for(chat::local_hour(db).unwrap_or(9)).to_owned(),
+        greeting: crate::web::templates::greeting_for(crate::zone::hour_in(offset)).to_owned(),
         sandbox_mode: state
             .engine
             .permissions()
@@ -2986,12 +3054,6 @@ fn build_chat_view(state: &AppState, requested: Option<&str>) -> Result<ChatView
         allow_full: state.allow_full(),
         context_window,
     })
-}
-
-/// A clock label, re-exported so this file does not depend on the template's
-/// module path for one string operation.
-fn chat_clock(stamp: &str) -> String {
-    crate::web::templates::clock(stamp)
 }
 
 /// `GET /dashboard/chat` - the newest conversation.
@@ -3038,6 +3100,19 @@ async fn chat_sessions(
     if !session_valid(&state, &headers) {
         return no_dashboard_session(&headers, &request_id.0);
     }
+    // The rail is refreshed by the page's own script, so it resolves the offset
+    // the same way the page did rather than carrying a second clock.
+    let offset = crate::zone::offset_minutes(
+        state.engine.db(),
+        crate::zone::Zone::parse(
+            state
+                .engine
+                .setting(crate::zone::SETTING_TIMEZONE)
+                .ok()
+                .flatten()
+                .as_deref(),
+        ),
+    );
     match chat::conversations(state.engine.db(), chat::SESSION_LIMIT) {
         Ok(rows) => {
             let sessions: Vec<serde_json::Value> = rows
@@ -3046,7 +3121,7 @@ async fn chat_sessions(
                     serde_json::json!({
                         "id": row.id,
                         "title": row.title,
-                        "stamp": crate::web::templates::clock(&row.updated_at),
+                        "stamp": crate::zone::clock_in(&row.updated_at, offset),
                     })
                 })
                 .collect();

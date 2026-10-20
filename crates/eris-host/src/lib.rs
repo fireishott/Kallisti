@@ -37,3 +37,4 @@ pub mod persona;
 pub mod probe;
 pub mod tools;
 pub mod web;
+pub mod zone;

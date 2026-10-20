@@ -1362,6 +1362,8 @@ pub struct SettingsView {
     pub persona_enabled: bool,
     /// Whether the model's reasoning is shown in a collapsed bubble.
     pub show_reasoning: bool,
+    /// The clock every stamp is shown in: `host`, `UTC`, or an offset.
+    pub timezone: String,
     /// The file the persona lives in, stated on the page.
     pub persona_path: String,
     /// The stored wallpaper id: a preset name, `custom`, or `none`.
@@ -1397,6 +1399,7 @@ impl SettingsView {
             persona_text: String::new(),
             persona_enabled: true,
             show_reasoning: true,
+            timezone: crate::zone::HOST.to_owned(),
             persona_path: crate::persona::DEFAULT_PERSONA_PATH.to_owned(),
             wallpaper: wallpaper::DEFAULT_WALLPAPER.to_owned(),
             wallpaper_custom: false,
@@ -1708,6 +1711,49 @@ fn reasoning_group(view: &SettingsView) -> Markup {
     }
 }
 
+/// The clock the operator reads, as its own form.
+///
+/// Free text rather than a fixed list: a dropdown of zones would either be a
+/// short list that omits his zone or a long one that never ends. The three
+/// accepted shapes are stated next to the field.
+fn clock_group(view: &SettingsView) -> Markup {
+    let error = view.error.as_ref();
+    let focuses = |name: &str| error.is_some_and(|error| error.field.as_deref() == Some(name));
+    html! {
+        form method="post" action=(crate::admin::ROUTE_SETTINGS_TIMEZONE) novalidate {
+            div .field {
+                label for="timezone" { "Time zone" }
+                input id="timezone" type="text" name="timezone" value=(view.timezone)
+                    list="timezone-options" autocomplete="off" spellcheck="false"
+                    autofocus[focuses("timezone")];
+                datalist id="timezone-options" {
+                    option value=(crate::zone::HOST);
+                    option value="UTC";
+                    option value="-04:00";
+                    option value="-05:00";
+                    option value="-06:00";
+                    option value="-07:00";
+                    option value="-08:00";
+                    option value="+00:00";
+                    option value="+01:00";
+                    option value="+05:30";
+                    option value="+09:00";
+                }
+                @if let Some(error) = error.filter(|error| error.field.as_deref() == Some("timezone")) {
+                    span .error { (error.message) }
+                }
+                span .hint {
+                    "`host` follows this machine and handles daylight saving. `UTC` is UTC. "
+                    "An offset like `-04:00` is fixed and does not move when the clocks do."
+                }
+            }
+            div .actions {
+                button type="submit" { "Save time zone" }
+            }
+        }
+    }
+}
+
 /// The settings page: four forms, then the rows that are read-only by design.
 pub fn settings_page(view: &SettingsView) -> Markup {
     let page_error = view.error.as_ref().filter(|error| error.field.is_none());
@@ -1825,6 +1871,15 @@ pub fn settings_page(view: &SettingsView) -> Markup {
                 "it appears above the answer in a collapsed, faded bubble you can open."
             }
             (reasoning_group(view))
+        }
+
+        section .card aria-labelledby="clock-heading" {
+            h2 id="clock-heading" { "Clock" }
+            p .small {
+                "Every stamp in the transcript and the rail is shown in this zone. Timestamps are "
+                "stored in UTC and converted for display, so changing this never rewrites history."
+            }
+            (clock_group(view))
         }
 
         section .card aria-labelledby="appearance-heading" {
